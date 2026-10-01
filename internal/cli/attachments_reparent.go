@@ -123,6 +123,13 @@ type connectorReparentResult struct {
 	// desktop had already committed the child, so this run adopted that child
 	// instead of reporting a failure it would have posted the bytes again to fix.
 	SaveReplyLost bool
+	// CreateUnresolved records that the temporary parent's SaveItems errored
+	// and nothing settled whether it landed. Session and ConnKey are the only
+	// evidence of that possible create, so they reach the result and journal.
+	CreateUnresolved bool
+	Session          string
+	ConnKey          string
+	ConnectorError   string
 }
 
 // newConnectorReparentNonce returns a short random tag identifying one run.
@@ -249,6 +256,17 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 			detail["temp_parent_marker"] = connectorTempParentPrefix + " " + out.Nonce
 		}
 		detail["message"] = err.Error()
+		if out.CreateUnresolved {
+			// SaveItems may have committed the temporary parent. Same convention
+			// as every other unresolved connector create: a committed conflict
+			// keeps the session evidence in the journal, so neither a rerun nor
+			// journal undo treats the write as never having happened.
+			detail["committed"] = true
+			detail["session"] = out.Session
+			detail["connector_key"] = out.ConnKey
+			detail["connector_error"] = out.ConnectorError
+			return "conflict", detail, err
+		}
 		return "failed", detail, err
 	}
 	detail["parent_key"] = req.ParentKey
@@ -331,6 +349,8 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 		if res.Session != "" {
 			// The create route could not settle whether SaveItems landed, and
 			// the marker lookup found nothing yet either.
+			out.CreateUnresolved = true
+			out.Session, out.ConnKey, out.ConnectorError = res.Session, res.ConnKey, res.ConnectorError
 			return out, fmt.Errorf("temporary parent %q may have been created but could not be confirmed, so the route stopped: %w",
 				sanitizeForTerminal(out.TempTitle), createErr)
 		}
@@ -677,14 +697,38 @@ func bodyIsTemporaryParentFor(body json.RawMessage, targetKey, nonce string) boo
 	return markerIdentifies(envelope.Data.ItemType, envelope.Data.AbstractNote, targetKey, nonce)
 }
 
+// markerIdentifies requires the exact abstractNote connectorTempParentMarker
+// writes, carrying a well-formed run nonce and naming targetKey. Substrings
+// are not enough: an ordinary document can quote the prefix and "for item
+// <key>" in its abstract, and the reaper trashes what this accepts.
 func markerIdentifies(itemType, abstract, targetKey, nonce string) bool {
-	if itemType != "document" || !strings.Contains(abstract, connectorTempParentPrefix) {
+	if itemType != "document" {
 		return false
 	}
-	if !strings.Contains(abstract, "for item "+targetKey) {
+	abstract = strings.TrimSpace(abstract)
+	rest, ok := strings.CutPrefix(abstract, connectorTempParentPrefix+" ")
+	if !ok {
 		return false
 	}
-	return nonce == "" || strings.Contains(abstract, nonce)
+	written, _, ok := strings.Cut(rest, " ")
+	if !ok || !isConnectorReparentNonce(written) || (nonce != "" && written != nonce) {
+		return false
+	}
+	return abstract == connectorTempParentMarker(written, targetKey)
+}
+
+// isConnectorReparentNonce reports whether s has the shape
+// newConnectorReparentNonce produces: 16 lowercase hex digits.
+func isConnectorReparentNonce(s string) bool {
+	if len(s) != 16 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // awaitTempParentKey polls for the item carrying this run's nonce.
@@ -1248,6 +1292,20 @@ func reparentAttachment(c *client.Client, attachKey, newParentKey, tempParentKey
 // Every caller must therefore move or trash the child FIRST, and this refusal is
 // what keeps a future caller from forgetting.
 func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, targetKey string) ([]string, error) {
+	return trashMarkedTemporaryParent(ctx, c, key, nonce, targetKey, false)
+}
+
+// trashEmptyTemporaryParent is trashTemporaryParent in strict mode: it also
+// refuses a live child of any other type, read immediately before the PATCH.
+// The reaper uses it. It trashes a parent no run of its own owns, so a note
+// someone added after the reaper's empty check is theirs, and trashing would
+// leave that note live beneath a trashed parent with nobody told.
+func trashEmptyTemporaryParent(ctx context.Context, c *client.Client, key, targetKey string) error {
+	_, err := trashMarkedTemporaryParent(ctx, c, key, "", targetKey, true)
+	return err
+}
+
+func trashMarkedTemporaryParent(ctx context.Context, c *client.Client, key, nonce, targetKey string, refuseAnyLiveChild bool) ([]string, error) {
 	if key == "" || key == targetKey {
 		return nil, fmt.Errorf("refusing to trash %q: it is the target item, not a temporary parent", key)
 	}
@@ -1287,6 +1345,10 @@ func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, tar
 			orphaned, orphanErr := liveNonAttachmentChildren(c, key)
 			if orphanErr != nil {
 				return nil, fmt.Errorf("cannot confirm what temporary parent %s still holds, so refusing to trash it: %w", key, orphanErr)
+			}
+			if refuseAnyLiveChild && len(orphaned) > 0 {
+				return nil, fmt.Errorf("refusing to trash temporary parent %s: it now holds %d live child item(s) (%s) "+
+					"that zotio did not put there", key, len(orphaned), strings.Join(orphaned, ", "))
 			}
 			if itemAlreadyTrashed(body) {
 				return orphaned, nil
@@ -1345,7 +1407,9 @@ func liveAttachmentChildren(c *client.Client, parentKey string) ([]string, error
 // refusing on one would mean any note a plugin or the operator adds to this
 // route's temporary parent permanently blocks the route's own cleanup, trading a
 // rare orphan for certain litter on every run. So they are named, not obeyed:
-// the caller reports them, and nothing is orphaned silently.
+// the caller reports them, and nothing is orphaned silently. The one exception
+// is the reaper (trashEmptyTemporaryParent), which cleans up a parent no run of
+// its own owns and so refuses on any live child.
 func liveNonAttachmentChildren(c *client.Client, parentKey string) ([]string, error) {
 	rows, err := allChildRows(c, parentKey)
 	if err != nil {
@@ -1620,8 +1684,9 @@ const connectorTempParentAbandonedAfter = connectorReparentRouteTimeout + recent
 //   - no live child of any type on either plane, so trashing it strands no
 //     file and discards nothing anyone added.
 //
-// The trash itself goes through trashTemporaryParent, which re-checks the marker
-// and the attachment children on the write plane and is reversible.
+// The trash itself goes through trashEmptyTemporaryParent, which re-checks the
+// exact marker and every live child on the write plane immediately before its
+// reversible PATCH.
 func reapAbandonedTemporaryParents(ctx context.Context, flags *rootFlags, webClient *client.Client, targetKey string, now time.Time) ([]string, error) {
 	local, err := localClientForRoute(ctx, flags)
 	if err != nil {
@@ -1649,7 +1714,7 @@ func reapAbandonedTemporaryParents(ctx context.Context, flags *rootFlags, webCli
 		if !empty {
 			continue
 		}
-		if _, err := trashTemporaryParent(ctx, webClient, key, "", targetKey); err != nil {
+		if err := trashEmptyTemporaryParent(ctx, webClient, key, targetKey); err != nil {
 			return trashed, fmt.Errorf("trashing abandoned temporary parent %s: %w", key, err)
 		}
 		trashed = append(trashed, key)

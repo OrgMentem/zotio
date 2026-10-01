@@ -19,11 +19,8 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 		// Use an item key placeholder, not a token.
 		Example:     "  zotio items children ABC12345",
 		Annotations: map[string]string{"zotio:endpoint": "items.children", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/children", "mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err

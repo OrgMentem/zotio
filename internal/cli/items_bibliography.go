@@ -63,6 +63,8 @@ func summarizeBibliographyValues(values []string) string {
 
 func newItemsBibliographyCmd(flags *rootFlags) *cobra.Command {
 	var flagScope string
+	var flagManuscripts []string
+	var flagFollowIncludes bool
 	var flagStyle string
 	var flagFormat string
 
@@ -78,11 +80,23 @@ translators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys
 so Pandoc and Quarto citations resolve against the output.
 
 The Web API limits itemKey batches, so large scopes are fetched in stable
-50-key chunks and merged in scope order.`,
+50-key chunks and merged in scope order.
+
+--manuscript selects the items a manuscript cites instead of a scope. It reads
+.tex, .md, .markdown, and .qmd files with the items bibcheck parser and
+resolves each citation key against the synced Better BibTeX keys. Items appear
+once, in first-citation order across the files. --follow-includes also reads
+.tex files pulled in by \input{PATH} and \include{PATH}, exactly as items
+bibcheck --follow-includes does. When any citation key is unknown or
+ambiguous, or an include is missing or cyclic, nothing is rendered: the
+command names each problem with its file and line and exits 11.`,
 		Example: `  zotio items bibliography --scope collection:ABCD1234 --style apa
   zotio items bibliography --scope tag:to-submit --format csljson
   zotio items bibliography --scope collection:ABCD1234 --format bibtex
-  zotio items bibliography --scope item:ABCD1234 --json`,
+  zotio items bibliography --scope item:ABCD1234 --json
+  zotio items bibliography --manuscript paper.tex --format biblatex
+  zotio items bibliography --manuscript thesis.tex --follow-includes --format bibtex
+  zotio items bibliography --manuscript intro.md --manuscript methods.md --format csljson`,
 		Annotations: map[string]string{"zotio:endpoint": "items.list", "zotio:method": "GET", "zotio:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
@@ -95,33 +109,47 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 			if format != "bib" && strings.TrimSpace(flagStyle) != "" {
 				return usageErr(fmt.Errorf("--style applies only to --format bib"))
 			}
+			if len(flagManuscripts) > 0 && cmd.Flags().Changed("scope") {
+				return usageErr(fmt.Errorf("--manuscript and --scope are mutually exclusive"))
+			}
+			if flagFollowIncludes && len(flagManuscripts) == 0 {
+				return usageErr(fmt.Errorf("--follow-includes requires --manuscript"))
+			}
 
 			wc, err := webAPIReadClient(cmd, flags, "items bibliography")
 			if err != nil {
 				return err
 			}
 
-			spec, err := parseScopeSpec(flagScope)
-			if err != nil {
-				return usageErr(err)
-			}
 			var selection bibliographySelection
-			if spec.Type == "saved-search" {
-				// Zotero evaluates the search on the desktop local API; the
-				// resolved keys then render through the Web API like item:KEY.
-				// The saved-search arm never reads the store, so none is opened.
-				resolved, err := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, spec)
+			if len(flagManuscripts) > 0 {
+				keys, err := bibliographyManuscriptKeys(cmd, flags, flagManuscripts, flagFollowIncludes)
 				if err != nil {
 					return err
 				}
-				if resolved.Precondition != "" {
-					return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "items bibliography", resolved)
-				}
-				selection = bibliographySelection{Keys: resolved.Keys}
+				selection = bibliographySelection{Keys: keys}
 			} else {
-				selection, err = bibliographyScopeSelection(wc, spec, flags)
+				spec, err := parseScopeSpec(flagScope)
 				if err != nil {
-					return err
+					return usageErr(err)
+				}
+				if spec.Type == "saved-search" {
+					// Zotero evaluates the search on the desktop local API; the
+					// resolved keys then render through the Web API like item:KEY.
+					// The saved-search arm never reads the store, so none is opened.
+					resolved, err := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, spec)
+					if err != nil {
+						return err
+					}
+					if resolved.Precondition != "" {
+						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "items bibliography", resolved)
+					}
+					selection = bibliographySelection{Keys: resolved.Keys}
+				} else {
+					selection, err = bibliographyScopeSelection(wc, spec, flags)
+					if err != nil {
+						return err
+					}
 				}
 			}
 
@@ -180,10 +208,64 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
+	cmd.Flags().StringArrayVar(&flagManuscripts, "manuscript", nil, "Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11")
+	cmd.Flags().BoolVar(&flagFollowIncludes, "follow-includes", false, "With --manuscript, also read .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11")
 	cmd.Flags().StringVar(&flagStyle, "style", "", "CSL style ID for --format bib (default uses Zotero's default bibliography style)")
 	cmd.Flags().StringVar(&flagFormat, "format", "bib", "Output format: bib, csljson, bibtex, biblatex, or ris")
 
 	return cmd
+}
+
+// bibliographyManuscriptKeys resolves the manuscripts' citation keys to item
+// keys against the synced Better BibTeX keys. Any unknown or ambiguous key is
+// a gate failure, so no partial bibliography is ever rendered.
+func bibliographyManuscriptKeys(cmd *cobra.Command, flags *rootFlags, paths []string, followIncludes bool) ([]string, error) {
+	occurrences, includeFindings, err := parseManuscriptFiles(paths, followIncludes)
+	if err != nil {
+		return nil, err
+	}
+	if len(includeFindings) > 0 {
+		problems := make([]string, 0, len(includeFindings))
+		for _, f := range includeFindings {
+			problems = append(problems, fmt.Sprintf("%v: %s", f.Evidence["file_line"], f.Title))
+		}
+		return nil, gateErr(fmt.Errorf("no bibliography written: %d include error(s): %s", len(problems), strings.Join(problems, "; ")))
+	}
+	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+	if err != nil {
+		return nil, fmt.Errorf("opening local database: %w", err)
+	}
+	if rawDB == nil {
+		out := cmd.OutOrStdout()
+		if flags.quiet {
+			out = nil
+		}
+		return nil, emitPreconditionUnmetWithRemediation(out, flags, "items bibliography", preconditionSyncedStore,
+			"--manuscript resolves citation keys against the synced local store, which does not exist",
+			remediationFor(cmd.Context(), flags, preconditionSyncedStore))
+	}
+	defer rawDB.Close()
+	items, err := loadCitekeyItems(localQueryStore{rawDB})
+	if err != nil {
+		return nil, err
+	}
+	resolution := resolveManuscriptCitations(occurrences, items)
+	if len(resolution.Unresolved) > 0 {
+		problems := make([]string, 0, len(resolution.Unresolved))
+		for _, u := range resolution.Unresolved {
+			problem := fmt.Sprintf("%s: %s citation key %q", bibcheckLocationString(u.Location), u.Key.Status, u.Key.CiteKey)
+			if len(u.Key.Matches) > 0 {
+				matches := make([]string, 0, len(u.Key.Matches))
+				for _, m := range u.Key.Matches {
+					matches = append(matches, m.ItemKey)
+				}
+				problem += " (items " + strings.Join(matches, ", ") + ")"
+			}
+			problems = append(problems, problem)
+		}
+		return nil, gateErr(fmt.Errorf("no bibliography written: %d manuscript citation key(s) do not resolve to one item: %s", len(problems), strings.Join(problems, "; ")))
+	}
+	return resolution.ItemKeys, nil
 }
 
 func webAPIReadClient(cmd *cobra.Command, flags *rootFlags, capability string) (*client.Client, error) {

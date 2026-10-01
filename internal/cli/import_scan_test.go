@@ -315,6 +315,9 @@ func TestImportScanUnreadablePDFProducesWarning(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	if err := db.SaveSyncState("items", "", 0); err != nil {
+		t.Fatalf("save completed empty items sync: %v", err)
+	}
 
 	dir := t.TempDir()
 	broken := filepath.Join(dir, "unreadable.pdf")

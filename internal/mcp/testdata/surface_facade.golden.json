@@ -129,6 +129,10 @@
                 "description": "Name of an earlier step whose output becomes stdin.",
                 "type": "string"
               },
+              "stdin_select": {
+                "description": "JSON selector over the stdin_from step's output, such as findings[kind=missing_doi].item_key; each selected value becomes one stdin line. Missing, malformed, or incompatible selections fail the step; no values skip it.",
+                "type": "string"
+              },
               "when": {
                 "additionalProperties": false,
                 "properties": {

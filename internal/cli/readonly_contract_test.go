@@ -51,6 +51,7 @@ var readOnlyWriters = map[string]string{
 	"newAnnotationsExportCmd": "writes the annotations export to the path the user passes",
 	"newCollectionsBundleCmd": "writes the bundle directory the user passes",
 	"newCollectionsExportCmd": "writes the collections export to the path the user passes",
+	"newCreatorsAuditCmd":     "--orcid persists CrossRef ORCID evidence into the local creator_orcids sidecar table",
 	"newDemoCmd":              "seeds its sandbox demo.db, and --reset deletes it",
 	"newExportSnapshotCmd":    "writes the user's snapshot plus its own adjacent lock and checkpoint artifacts",
 	"newImportDiscoverCmd":    "writes the discovery report to the path the user passes",
@@ -90,6 +91,10 @@ var osWriters = map[string]bool{
 	"Truncate": true, "Chmod": true, "Symlink": true, "Link": true,
 	"MkdirTemp": true, "CreateTemp": true,
 }
+
+// storeWriteSinks are store methods that write SQLite, matched on any
+// receiver because callers hold the store in a local variable (db.ExecWrite).
+var storeWriteSinks = map[string]bool{"ExecWrite": true}
 
 var statefulPkgs = map[string]bool{
 	"store": true, "journal": true, "config": true, "cache": true,
@@ -358,6 +363,8 @@ func (p *cliPackage) markers(body ast.Node, fnName, file string) []writeSink {
 			out = append(out, writeSink{fnName, file, line, "HTTP", sel.Sel.Name})
 		case recv.Name == "os" && osWriters[sel.Sel.Name]:
 			out = append(out, writeSink{fnName, file, line, "LOCAL", "os." + sel.Sel.Name})
+		case storeWriteSinks[sel.Sel.Name]:
+			out = append(out, writeSink{fnName, file, line, "LOCAL", recv.Name + "." + sel.Sel.Name})
 		case statefulPkgs[recv.Name] && hasWriteVerb(sel.Sel.Name):
 			out = append(out, writeSink{fnName, file, line, "LOCAL", recv.Name + "." + sel.Sel.Name})
 		}

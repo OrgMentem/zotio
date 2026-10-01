@@ -28,6 +28,8 @@ var (
 
 type importMonitorReport struct {
 	Out                          string `json:"out"`
+	Replaced                     bool   `json:"replaced"`
+	DryRun                       bool   `json:"dry_run,omitempty"`
 	WorksSeen                    int    `json:"works_seen"`
 	Emitted                      int    `json:"emitted"`
 	SkippedAlreadyInLibraryDOI   int    `json:"skipped_already_in_library_doi"`
@@ -100,6 +102,7 @@ func (d *importManifestDedup) mark(doi, title string) {
 func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 	var authorInputs []string
 	var query, since, until, out string
+	var overwrite bool
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "monitor",
@@ -150,26 +153,55 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolving manifest output: %w", err)
 			}
-			return withPathWriterLock(cmd, lockPath, "import monitor", func() error {
+			run := func() error {
+				// The manifest is the operator's review surface: import apply
+				// executes whatever create/skip choices it holds, so replacing an
+				// existing one can silently discard reviewed edits. Refuse before
+				// any provider request unless the operator opted in.
+				exists, err := checkAtomicOutputTarget(target)
+				if err != nil {
+					return fmt.Errorf("writing manifest: %w", err)
+				}
+				if exists && !overwrite {
+					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --out", out))
+				}
 				manifest, report, err := buildImportMonitorManifest(cmd.Context(), flags, authors, strings.TrimSpace(query), since, until, limit, out)
 				if err != nil {
 					return err
 				}
-				if err := withAtomicOutputFile(target, 0o600, func(w io.Writer) error {
-					return writeImportManifest(w, manifest)
-				}); err != nil {
-					return fmt.Errorf("writing manifest: %w", err)
+				report.Replaced = exists
+				report.DryRun = flags.dryRun
+				if !flags.dryRun {
+					if err := withAtomicOutputFile(target, 0o600, func(w io.Writer) error {
+						return writeImportManifest(w, manifest)
+					}); err != nil {
+						return fmt.Errorf("writing manifest: %w", err)
+					}
 				}
 				if flags.asJSON {
 					return printCommandJSON(cmd.OutOrStdout(), report, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Emitted, out)
+				switch {
+				case flags.dryRun && exists:
+					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s, replacing the existing manifest and any review edits in it; nothing was written\n", report.Emitted, out)
+				case flags.dryRun:
+					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s; nothing was written\n", report.Emitted, out)
+				case exists:
+					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s (replaced the existing manifest)\n", report.Emitted, out)
+				default:
+					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Emitted, out)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Works seen=%d; already in library (DOI)=%d; already in library (title)=%d; without DOI=%d; truncated=%t\n", report.WorksSeen, report.SkippedAlreadyInLibraryDOI, report.SkippedAlreadyInLibraryTitle, report.SkippedWithoutIdentifier, report.Truncated)
 				if report.Truncated {
 					fmt.Fprintf(cmd.OutOrStdout(), "Truncation: %s\n", report.TruncationReason)
 				}
 				return nil
-			})
+			}
+			// --dry-run creates nothing, not even the <out>.lock sibling.
+			if flags.dryRun {
+				return run()
+			}
+			return withPathWriterLock(cmd, lockPath, "import monitor", run)
 		},
 	}
 	cmd.Flags().StringArrayVar(&authorInputs, "author", nil, "Author ORCID or OpenAlex author ID (or their https URL); repeat to match any author")
@@ -178,6 +210,7 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&until, "until", "", "Publication date upper bound (YYYY-MM-DD, inclusive)")
 	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum manifest entries to write")
 	cmd.Flags().StringVar(&out, "out", "", "Required reviewable import manifest output path")
+	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "Replace an existing manifest at --out; review edits in it are lost")
 	return cmd
 }
 

@@ -124,19 +124,23 @@ func main() {
 			fmt.Fprintf(os.Stderr, "MCP server error: cannot resolve auth token: %v\n", tokErr)
 			os.Exit(1)
 		}
-		httpSrv := newHardenedStreamableHTTPServer(s, *addr, authToken)
+		httpSrv, httpServer := newHardenedStreamableHTTPServer(s, *addr, authToken)
 		if !isLoopbackHTTPAddr(*addr) { // Warn when the MCP HTTP surface is exposed off-host.
 			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it exposes typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
 		}
-		if err := announceMCPAuth(os.Stderr, *addr, authToken, tokSource, tokGenerated); err != nil {
-			fmt.Fprintf(os.Stderr, "MCP server error: cannot hand over generated auth token: %v\n", err)
+		listener, err := listenMCPHTTP(os.Stderr, *addr, authToken, tokSource, tokGenerated)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "zotio-mcp serving MCP over streamable HTTP at %s\n", *addr)
 
 		errs := make(chan error, 1)
 		go func() {
-			errs <- httpSrv.Start(*addr)
+			// httpSrv.Start would bind again; serve the listener that the
+			// token handover was published for. httpSrv.Shutdown still
+			// drains this server: it is the one installed on httpSrv.
+			errs <- httpServer.Serve(listener)
 		}()
 
 		signals := make(chan os.Signal, 1)
@@ -176,8 +180,10 @@ const maxMCPHTTPBodyBytes = 4 << 20 // Cap POST bodies before mcp-go's io.ReadAl
 
 // Route mcp-go through a custom HTTP server so POST bodies are capped,
 // browser-origin requests are constrained, and the transport can drain via
-// StreamableHTTPServer.Shutdown.
-func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToken string) *server.StreamableHTTPServer {
+// StreamableHTTPServer.Shutdown. The returned *http.Server is the one installed
+// on the StreamableHTTPServer, so the caller can serve it on a listener it has
+// already bound.
+func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToken string) (*server.StreamableHTTPServer, *http.Server) {
 	var httpSrv *server.StreamableHTTPServer
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +206,27 @@ func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToke
 	})
 	httpServer := newMCPHTTPServer(addr, mux)
 	httpSrv = server.NewStreamableHTTPServer(mcpServer, server.WithStreamableHTTPServer(httpServer))
-	return httpSrv
+	return httpSrv, httpServer
+}
+
+// listenMCPHTTP binds addr and only then hands over the auth token. The
+// generated token file is named by the bind address, so publishing it before
+// the bind let a second server on a busy address replace the live server's
+// token and then exit on the bind failure, locking every client out.
+func listenMCPHTTP(log io.Writer, addr, token, source string, generated bool) (net.Listener, error) {
+	bind := addr
+	if bind == "" {
+		bind = ":http" // http.Server.ListenAndServe's default
+	}
+	listener, err := net.Listen("tcp", bind)
+	if err != nil {
+		return nil, err
+	}
+	if err := announceMCPAuth(log, addr, token, source, generated); err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("cannot hand over generated auth token: %w", err)
+	}
+	return listener, nil
 }
 
 const (

@@ -82,6 +82,14 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 		return importManifest{}, preconditionErr(errors.New("local store disappeared after the synced_store check; run 'zotio sync' and retry"))
 	}
 	defer db.Close()
+	ready, detail, err := importItemsMirrorReady(cmd.Context(), db)
+	if err != nil {
+		return importManifest{}, err
+	}
+	if !ready {
+		return importManifest{}, emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "import resolve", preconditionSyncedStore, detail,
+			importItemsMirrorRemediation())
+	}
 	idx, err := buildLibraryDOIIndex(cmd.Context(), db)
 	if err != nil {
 		return importManifest{}, fmt.Errorf("indexing library DOIs: %w", err)

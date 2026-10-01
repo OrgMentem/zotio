@@ -24,6 +24,9 @@ type summarizeOpts struct {
 	maxChars       int
 	maxAnnotations int
 	noFulltext     bool
+	// focus holds the --focus search terms; empty keeps the first-pages
+	// excerpt and the page-ordered annotations.
+	focus string
 }
 
 type summarizeTruncation struct {
@@ -47,6 +50,7 @@ type summarizeBundle struct {
 	// same item.
 	Annotations []annotationSummary `json:"annotations,omitempty"`
 	Fulltext    string              `json:"fulltext_excerpt,omitempty"`
+	Focus       *summarizeFocus     `json:"focus,omitempty"`
 	Gaps        []string            `json:"gaps,omitempty"`
 	Warnings    []string            `json:"warnings,omitempty"`
 	Truncated   summarizeTruncation `json:"truncated"`
@@ -66,6 +70,43 @@ type summarizeCollectionBundle struct {
 	Warnings   []string          `json:"warnings,omitempty"`
 }
 
+// Fulltext status values of a --focus section. Each says what the PDF-text
+// search could see for the item, so a missing index is never reported as
+// "searched, nothing matched".
+const (
+	focusFulltextMatched    = "matched"     // at least one indexed PDF matched
+	focusFulltextNoMatch    = "no_match"    // indexed PDF text was searched; nothing matched
+	focusFulltextNotIndexed = "not_indexed" // no synced PDF text under the item; nothing was searched
+	focusFulltextSkipped    = "skipped"     // --no-fulltext
+	focusFulltextError      = "error"       // the search failed; see warnings
+)
+
+// summarizeFocus is the --focus section of one item's bundle: ranked passages
+// that match the focus terms, drawn only from this item's indexed PDF text and
+// its annotations. It replaces the first-pages excerpt and the page-ordered
+// annotation list, which ignore the question being asked.
+type summarizeFocus struct {
+	Terms    string `json:"terms"`
+	Fulltext string `json:"fulltext"`
+	// NoHit is true only when every search ran and none matched. A failed
+	// search leaves it false and adds a warning instead.
+	NoHit    bool                    `json:"no_hit"`
+	Passages []summarizeFocusPassage `json:"passages"`
+}
+
+// summarizeFocusPassage is one attributable piece of evidence. Annotation
+// passages come first in FTS rank order, then PDF-text passages in FTS rank
+// order; each PDF-text passage is the best-matching snippet of one attachment.
+type summarizeFocusPassage struct {
+	Source        string `json:"source"` // "annotation" or "fulltext"
+	ItemKey       string `json:"item_key"`
+	AttachmentKey string `json:"attachment_key"`
+	AnnotationKey string `json:"annotation_key,omitempty"`
+	Page          string `json:"page,omitempty"`
+	Text          string `json:"text"`
+	Comment       string `json:"comment,omitempty"`
+}
+
 const itemSynthesisPrompt = "Summarize this work for a literature review: core claim/contribution, method, key findings, and limitations. Ground every point in the abstract, annotations, and excerpt above — do not invent."
 
 func collectionSynthesisPrompt(n int) string {
@@ -79,6 +120,7 @@ func newItemsSummarizeCmd(flags *rootFlags) *cobra.Command {
 		flagMaxChars       int
 		flagMaxAnnotations int
 		flagNoFulltext     bool
+		flagFocus          string
 	)
 	cmd := &cobra.Command{
 		Use:   "summarize [<itemKey>]",
@@ -87,16 +129,35 @@ func newItemsSummarizeCmd(flags *rootFlags) *cobra.Command {
 collection) into one bounded bundle — citation, abstract, your annotations, a
 capped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.
 
+With --focus TERMS, each item instead carries a "focus" section: the passages
+that match TERMS in that item's indexed PDF text (one ranked snippet per
+attachment, within --max-chars) and in its annotations (within
+--max-annotations), each with its item and attachment key. Only the selected
+items are searched, and no full PDF text is loaded. An item with no synced PDF
+text says so (fulltext: not_indexed) rather than reporting "no match".
+
 This command never calls a model: it does the assembly and budgeting the host LLM
 is bad at, then hands off. Reads are local only. With --agent/--json it emits the
 structured bundle; otherwise a readable Markdown brief you can paste into any LLM.`,
 		Example: `  zotio items summarize 9UXV5R7L
   zotio items summarize 9UXV5R7L --agent --max-chars 6000
   zotio items summarize --collection MAR7RFQN --no-fulltext
-  zotio items summarize --scope tag:to-read --agent`,
+  zotio items summarize --scope tag:to-read --agent
+  zotio items summarize --scope collection:MAR7RFQN --focus "transfer learning" --max-chars 2000`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		// One item key, or a cohort through --collection or --scope instead.
+		// With none of them there is nothing to summarize: a usage error, checked
+		// before the store opens, not help that exits 0.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && strings.TrimSpace(flagCollection) == "" && strings.TrimSpace(flagScope) == "" {
+				return usageErr(errors.New("missing <itemKey>: pass an item key, --collection <key>, or --scope <spec>"))
+			}
+			return cobra.MaximumNArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("focus") && strings.TrimSpace(flagFocus) == "" {
+				return usageErr(errors.New("--focus needs search terms"))
+			}
 			db, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
@@ -107,9 +168,9 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			}
 			defer db.Close()
 			// database/sql opens SQLite lazily. Force the read-only connection now
-			// so a corrupt existing database is reported as an open failure rather
-			// than being mistaken for a missing local mirror when no item query is
-			// needed (for example, `items summarize` with no arguments).
+			// so a corrupt existing database is reported as an open failure on every
+			// path, not as an error from whichever item or cohort query touches it
+			// first.
 			//
 			// An absent row is a successful probe: the point is that the connection
 			// opened and the schema is readable, and the empty key never matches.
@@ -121,6 +182,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				maxChars:       flagMaxChars,
 				maxAnnotations: flagMaxAnnotations,
 				noFulltext:     flagNoFulltext,
+				focus:          strings.TrimSpace(flagFocus),
 			}
 
 			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
@@ -137,9 +199,6 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			if flagCollection != "" {
 				return runSummarizeCollection(cmd.Context(), cmd, db, flagCollection, opts, flags)
 			}
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			raw, err := db.Get("items", args[0])
 			if errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
@@ -149,6 +208,12 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			}
 
 			var warnings []string
+			if opts.focus != "" {
+				focus, focusWarnings := loadSummarizeFocus(cmd.Context(), db, []string{args[0]}, "item "+args[0], opts)
+				bundle := buildFocusBundle(raw, focus[args[0]], opts)
+				bundle.Warnings = focusWarnings
+				return finishItemSummary(cmd, bundle, flags)
+			}
 			annByKey, err := db.AnnotationsForItems([]string{args[0]})
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("reading annotations for item %s: %v", args[0], err))
@@ -169,9 +234,10 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 	// --scope collection:KEY (see reconcileScopeFlags).
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Summarize every item in this collection key")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
-	cmd.Flags().IntVar(&flagMaxChars, "max-chars", 8000, "Max characters of fulltext excerpt per item")
+	cmd.Flags().IntVar(&flagMaxChars, "max-chars", 8000, "Max characters of fulltext per item: the excerpt, or with --focus the matched PDF-text passages")
 	cmd.Flags().IntVar(&flagMaxAnnotations, "max-annotations", 40, "Max annotations included per item")
 	cmd.Flags().BoolVar(&flagNoFulltext, "no-fulltext", false, "Omit the fulltext excerpt (abstract + annotations only)")
+	cmd.Flags().StringVar(&flagFocus, "focus", "", "Select ranked passages matching these terms from each item's indexed PDF text and annotations, instead of the first-pages excerpt")
 	return cmd
 }
 
@@ -223,17 +289,26 @@ func summarizeCohort(ctx context.Context, cmd *cobra.Command, db *store.Store, s
 		keys = append(keys, vaultItemMeta(raw).Key)
 	}
 	var warnings []string
-	annByKey, err := db.AnnotationsForItems(keys)
-	if err != nil {
-		warnings = append(warnings, fmt.Sprintf("reading annotations for scope %s: %v", sel.Expr, err))
-	}
-	// Batch fulltext once (parent item key -> content) so a cohort does not
-	// re-scan the attachment table per item.
+	var focus map[string]*summarizeFocusHits
+	var annByKey map[string][]json.RawMessage
 	var ftByItem map[string]string
-	if !opts.noFulltext {
-		ftByItem, err = fulltextByParentItemWithErr(ctx, db)
+	if opts.focus != "" {
+		// Focus mode reads only ranked snippets and matching annotations for
+		// these keys; it never loads the cohort's full PDF text.
+		focus, warnings = loadSummarizeFocus(ctx, db, keys, "scope "+sel.Expr, opts)
+	} else {
+		var err error
+		annByKey, err = db.AnnotationsForItems(keys)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("reading fulltext for scope %s: %v", sel.Expr, err))
+			warnings = append(warnings, fmt.Sprintf("reading annotations for scope %s: %v", sel.Expr, err))
+		}
+		// Batch fulltext once (parent item key -> content) so a cohort does not
+		// re-scan the attachment table per item.
+		if !opts.noFulltext {
+			ftByItem, err = fulltextByParentItemWithErr(ctx, db)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("reading fulltext for scope %s: %v", sel.Expr, err))
+			}
 		}
 	}
 
@@ -243,6 +318,10 @@ func summarizeCohort(ctx context.Context, cmd *cobra.Command, db *store.Store, s
 	}
 	for _, raw := range items {
 		key := vaultItemMeta(raw).Key
+		if opts.focus != "" {
+			cb.Items = append(cb.Items, buildFocusBundle(raw, focus[key], opts))
+			continue
+		}
 		cb.Items = append(cb.Items, buildItemBundle(raw, annByKey[key], ftByItem[key], opts))
 	}
 	cb.Prompt = collectionSynthesisPrompt(len(items))
@@ -295,16 +374,7 @@ func summarizeWarnings(cmd *cobra.Command, command string, warnings []string, fl
 // no store access) so it is easy to test and reuse. fulltext is "" when omitted
 // or unavailable.
 func buildItemBundle(raw json.RawMessage, annRows []json.RawMessage, fulltext string, opts summarizeOpts) summarizeBundle {
-	meta := vaultItemMeta(raw)
-	b := summarizeBundle{
-		Key:      meta.Key,
-		Citation: summarizeCitation(meta, extractVenue(raw)),
-		ItemType: meta.ItemType,
-		DOI:      meta.DOI,
-		URL:      meta.URL,
-		Abstract: meta.Abstract,
-		Prompt:   itemSynthesisPrompt,
-	}
+	b, meta := newSummarizeBundle(raw)
 
 	anns := annotationSummariesSorted(annRows)
 	total := len(anns)
@@ -332,6 +402,182 @@ func buildItemBundle(raw json.RawMessage, annRows []json.RawMessage, fulltext st
 	}
 
 	b.Gaps = itemGaps(meta, hasFulltext, opts.noFulltext)
+	return b
+}
+
+// newSummarizeBundle fills the item identity both bundle shapes share.
+func newSummarizeBundle(raw json.RawMessage) (summarizeBundle, vaultMeta) {
+	meta := vaultItemMeta(raw)
+	return summarizeBundle{
+		Key:      meta.Key,
+		Citation: summarizeCitation(meta, extractVenue(raw)),
+		ItemType: meta.ItemType,
+		DOI:      meta.DOI,
+		URL:      meta.URL,
+		Abstract: meta.Abstract,
+		Prompt:   itemSynthesisPrompt,
+	}, meta
+}
+
+// summarizeFocusHits is what --focus found for one item before budgeting:
+// matching annotations and PDF-text snippets, each in FTS rank order.
+type summarizeFocusHits struct {
+	fulltextStatus string
+	annotationsOK  bool
+	annotations    []annotationSummary
+	fulltext       []store.FulltextSearchResult
+}
+
+// loadSummarizeFocus runs the --focus searches once for the whole selection.
+// The store restricts both searches to keys in SQL, so no other item's text is
+// read, and only bounded FTS snippets are returned, never full PDF text. label
+// names the selection in warnings. Every key gets an entry.
+func loadSummarizeFocus(ctx context.Context, db *store.Store, keys []string, label string, opts summarizeOpts) (map[string]*summarizeFocusHits, []string) {
+	hits := make(map[string]*summarizeFocusHits, len(keys))
+	for _, key := range keys {
+		hits[key] = &summarizeFocusHits{fulltextStatus: focusFulltextSkipped, annotationsOK: true}
+	}
+	if len(keys) == 0 {
+		return hits, nil
+	}
+	var warnings []string
+
+	annHits, err := db.SearchAnnotationsContext(ctx, store.AnnotationSearch{Query: opts.focus, ParentKeys: keys})
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("searching annotations for %s: %v", label, err))
+		for _, h := range hits {
+			h.annotationsOK = false
+		}
+	} else {
+		for _, hit := range annHits {
+			var obj map[string]any
+			if json.Unmarshal(hit.Data, &obj) != nil {
+				continue
+			}
+			summaries := annotationSummariesFromItems([]map[string]any{obj})
+			if len(summaries) == 0 {
+				continue
+			}
+			// The store matches a standalone attachment by its own key, and
+			// then reports no parent item.
+			owner := hit.ItemKey
+			if owner == "" {
+				owner = summaries[0].ParentItem
+			}
+			if h, ok := hits[owner]; ok {
+				h.annotations = append(h.annotations, summaries[0])
+			}
+		}
+	}
+	if opts.noFulltext {
+		return hits, warnings
+	}
+
+	indexed, err := db.FulltextIndexedParentsContext(ctx, keys)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("checking indexed fulltext for %s: %v", label, err))
+		for _, h := range hits {
+			h.fulltextStatus = focusFulltextError
+		}
+		return hits, warnings
+	}
+	for key, h := range hits {
+		h.fulltextStatus = focusFulltextNotIndexed
+		if indexed[key] {
+			h.fulltextStatus = focusFulltextNoMatch
+		}
+	}
+	matches, err := db.SearchFulltextContext(ctx, store.FulltextSearch{Query: opts.focus, Limit: -1, ParentKeys: keys})
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("searching fulltext for %s: %v", label, err))
+		for _, h := range hits {
+			if h.fulltextStatus == focusFulltextNoMatch {
+				h.fulltextStatus = focusFulltextError
+			}
+		}
+		return hits, warnings
+	}
+	for _, m := range matches {
+		if h, ok := hits[m.ItemKey]; ok {
+			h.fulltext = append(h.fulltext, m)
+			h.fulltextStatus = focusFulltextMatched
+		}
+	}
+	return hits, warnings
+}
+
+// buildFocusBundle assembles an item's bundle in --focus mode (pure; no store
+// access). The matched annotations replace the page-ordered list and are capped
+// by --max-annotations; the PDF-text snippets replace the first-pages excerpt
+// and share the --max-chars budget, so the passage that would overflow it is
+// cut and the rest dropped. Both caps report through the existing truncation
+// fields.
+func buildFocusBundle(raw json.RawMessage, hits *summarizeFocusHits, opts summarizeOpts) summarizeBundle {
+	b, meta := newSummarizeBundle(raw)
+	if hits == nil {
+		hits = &summarizeFocusHits{fulltextStatus: focusFulltextSkipped, annotationsOK: true}
+	}
+	focus := &summarizeFocus{
+		Terms:    opts.focus,
+		Fulltext: hits.fulltextStatus,
+		Passages: make([]summarizeFocusPassage, 0),
+	}
+
+	anns := make([]annotationSummary, 0, len(hits.annotations))
+	for _, a := range hits.annotations {
+		if strings.TrimSpace(a.Text) != "" || strings.TrimSpace(a.Comment) != "" {
+			anns = append(anns, a)
+		}
+	}
+	if total := len(anns); opts.maxAnnotations > 0 && total > opts.maxAnnotations {
+		anns = anns[:opts.maxAnnotations]
+		b.Truncated.Annotations = true
+		b.Truncated.AnnotationsKept = len(anns)
+		b.Truncated.AnnotationsTotal = total
+	}
+	for _, a := range anns {
+		focus.Passages = append(focus.Passages, summarizeFocusPassage{
+			Source:        "annotation",
+			ItemKey:       b.Key,
+			AttachmentKey: a.ParentItem,
+			AnnotationKey: a.Key,
+			Page:          a.Page,
+			Text:          a.Text,
+			Comment:       a.Comment,
+		})
+	}
+
+	remaining := opts.maxChars
+	for _, m := range hits.fulltext {
+		text := strings.TrimSpace(m.Snippet)
+		if text == "" {
+			continue
+		}
+		if opts.maxChars > 0 {
+			if remaining <= 0 {
+				b.Truncated.Fulltext = true
+				break
+			}
+			excerpt, cut := truncateRunes(text, remaining)
+			if cut {
+				b.Truncated.Fulltext = true
+			}
+			remaining -= utf8.RuneCountInString(excerpt)
+			text = excerpt
+		}
+		focus.Passages = append(focus.Passages, summarizeFocusPassage{
+			Source:        "fulltext",
+			ItemKey:       m.ItemKey,
+			AttachmentKey: m.AttachmentKey,
+			Text:          text,
+		})
+	}
+
+	focus.NoHit = len(focus.Passages) == 0 && hits.annotationsOK && hits.fulltextStatus != focusFulltextError
+	b.Focus = focus
+	indexed := hits.fulltextStatus == focusFulltextMatched || hits.fulltextStatus == focusFulltextNoMatch
+	// A failed search proves nothing about the item, so it claims no gap.
+	b.Gaps = itemGaps(meta, indexed, opts.noFulltext || hits.fulltextStatus == focusFulltextError)
 	return b
 }
 
@@ -540,6 +786,37 @@ func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string 
 			}
 			if a.Comment != "" {
 				sb.WriteString(" — " + summarizeInlineQuote(a.Comment))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	if f := b.Focus; f != nil {
+		fmt.Fprintf(&sb, "\n**Focus passages for %s** (PDF text: %s", summarizeInlineQuote(f.Terms), f.Fulltext)
+		if b.Truncated.Fulltext || b.Truncated.Annotations {
+			sb.WriteString("; truncated")
+		}
+		sb.WriteString(")\n\n")
+		switch {
+		case f.NoHit:
+			sb.WriteString("No passage matched.\n")
+		case len(f.Passages) == 0:
+			sb.WriteString("No passage found; a search failed (see warnings).\n")
+		}
+		for _, p := range f.Passages {
+			sb.WriteString("- [" + p.Source)
+			if p.AttachmentKey != "" {
+				fmt.Fprintf(&sb, " `%s`", p.AttachmentKey)
+			}
+			if p.Page != "" {
+				fmt.Fprintf(&sb, " p.%s", p.Page)
+			}
+			sb.WriteString("] ")
+			if p.Text != "" {
+				sb.WriteString(summarizeInlineQuote(p.Text))
+			}
+			if p.Comment != "" {
+				sb.WriteString(" — " + summarizeInlineQuote(p.Comment))
 			}
 			sb.WriteString("\n")
 		}

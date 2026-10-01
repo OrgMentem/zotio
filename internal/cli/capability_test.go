@@ -464,7 +464,8 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 		skip: "chases citations through external metadata providers, a plane no precondition in this vocabulary describes",
 	},
 	// Refuses on the missing mirror before any provider request or output write.
-	"import monitor": {args: []string{"import", "monitor", "--author", "0000-0002-1825-0097", "--since", "2026-01-01", "--out", probeTempFile}},
+	// {tmpfile} already exists, so --overwrite gets past the manifest guard.
+	"import monitor": {args: []string{"import", "monitor", "--author", "0000-0002-1825-0097", "--since", "2026-01-01", "--out", probeTempFile, "--overwrite"}},
 	// Classify the package directory, which holds no PDFs, against the mirror.
 	"import scan":    {args: []string{"import", "scan", "."}},
 	"import resolve": {args: []string{"import", "resolve", "."}},

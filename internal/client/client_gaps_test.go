@@ -291,8 +291,14 @@ func TestReadCacheHonorsFreshness(t *testing.T) {
 	if got, ok := c.readCache(gen, "/items", params, nil); ok {
 		t.Fatalf("readCache hit expired cache with body %s", got)
 	}
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Fatalf("expired cache file still exists: %v", err)
+	// Expiry is a miss, not a delete: the refetch that follows a miss replaces
+	// the stale entry atomically.
+	refreshed := []byte(`{"cached":"again"}`)
+	if err := c.writeCacheAtGeneration(gen, "/items", params, nil, refreshed); err != nil {
+		t.Fatalf("rewrite expired entry: %v", err)
+	}
+	if got, ok := c.readCache(gen, "/items", params, nil); !ok || !bytes.Equal(got, refreshed) {
+		t.Fatalf("readCache after rewrite = (%s, %v), want %s", got, ok, refreshed)
 	}
 }
 

@@ -274,7 +274,7 @@ func previewDemo(ctx context.Context, dbPath string, reset bool) (demoDryRunRepo
 	} else if err != nil {
 		return report, fmt.Errorf("inspecting sandbox: %w", err)
 	}
-	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath)
+	db, err := store.OpenImmutableSnapshotContext(ctx, dbPath)
 	if err != nil {
 		return report, fmt.Errorf("opening sandbox: %w", err)
 	}

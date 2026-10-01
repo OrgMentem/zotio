@@ -255,23 +255,11 @@ func timeoutErr(err error) error { return &cliError{code: 14, err: err} }
 func stuckErr(err error) error { return &cliError{code: 15, err: err} }
 
 // dryRunOK reports whether the command should short-circuit without doing any
-// real work because --dry-run was set. The verify pipeline probes hand-written
-// commands with --dry-run; commands that put validation in cobra's `Args:` or
-// `MarkFlagRequired` cannot reach a dry-run guard inside RunE because cobra
-// runs those checks before RunE. The verify-friendly pattern for hand-written
-// commands is:
-//
-//	RunE: func(cmd *cobra.Command, args []string) error {
-//	    if len(args) == 0 {
-//	        return cmd.Help()
-//	    }
-//	    if dryRunOK(flags) {
-//	        return nil
-//	    }
-//	    // ... real work ...
-//	}
-//
-// See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
+// real work because --dry-run was set. Positional arguments are still checked
+// first: they belong in Cobra's `Args:`, which runs before RunE and whose
+// failures installPositionalArgUsage turns into usage errors (exit 2). A
+// missing argument is refused even under --dry-run, never answered with help
+// that exits 0.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
 }

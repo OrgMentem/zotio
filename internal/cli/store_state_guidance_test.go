@@ -20,7 +20,9 @@ func TestStoreStateGuidance(t *testing.T) {
 	commands := map[string]func(t *testing.T) *cobra.Command{
 		"items summarize": func(t *testing.T) *cobra.Command {
 			t.Helper()
-			return newItemsSummarizeCmd(&rootFlags{})
+			cmd := newItemsSummarizeCmd(&rootFlags{})
+			cmd.SetArgs([]string{"ITEM0001"})
+			return cmd
 		},
 	}
 	for name, newCmd := range commands {

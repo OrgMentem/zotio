@@ -5,9 +5,11 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/text/unicode/norm"
 
 	"zotio/internal/store"
 )
@@ -32,10 +34,8 @@ annotation belongs to. --refresh searches live through the Zotero API:
 each word or "quoted phrase" must appear, in any letter case, in the
 annotation's text, comment or tags; stems and operators do not apply.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			query := strings.Join(args, " ")
 
 			if refresh && flags.dataSource == "local" {
@@ -255,30 +255,68 @@ func annotationColorSpellings(requested string) []string {
 
 // annotationQueryTerms splits a query the way Zotero's quick search does:
 // "quoted phrases" stay whole and other text splits on whitespace. Terms are
-// lower-cased for case-insensitive matching.
+// normalized with zoteroSearchNormalize, as Zotero normalizes search terms.
 func annotationQueryTerms(query string) []string {
 	var terms []string
 	for i, part := range strings.Split(query, `"`) {
 		if i%2 == 1 {
-			if phrase := strings.ToLower(strings.TrimSpace(part)); phrase != "" {
+			if phrase := zoteroSearchNormalize(strings.TrimSpace(part)); phrase != "" {
 				terms = append(terms, phrase)
 			}
 			continue
 		}
 		for _, word := range strings.Fields(part) {
-			terms = append(terms, strings.ToLower(word))
+			if term := zoteroSearchNormalize(word); term != "" {
+				terms = append(terms, term)
+			}
 		}
 	}
 	return terms
 }
 
+// zoteroSearchFormattingTags is Zotero's _searchFormattingTagRE: the
+// rich-text tags its search strips, so literal angle brackets stay matchable.
+var zoteroSearchFormattingTags = regexp.MustCompile(`</?(?:i|b|sub|sup)>|<span (?:style="font-variant:small-caps;"|class="nocase")>|</span>`)
+
+// zoteroSearchFold is Zotero's _searchNormalizeMap (letters NFKD leaves
+// non-ASCII) followed by its typographic quote and dash folding.
+var zoteroSearchFold = strings.NewReplacer(
+	"ø", "o", "œ", "oe", "æ", "ae", "ł", "l", "đ", "d", "ð", "d", "þ", "th", "ß", "ss", "ı", "i", "\u2044", "/",
+	"\u2018", "'", "\u2019", "'", "\u201a", "'", "\u201b", "'", "\u2032", "'",
+	"\u201c", `"`, "\u201d", `"`, "\u201e", `"`, "\u201f", `"`, "\u2033", `"`,
+	"\u2010", "-", "\u2011", "-", "\u2012", "-", "\u2013", "-", "\u2014", "-", "\u2015", "-", "\u2212", "-",
+)
+
+// zoteroSearchNormalize ports Zotero.Utilities.Internal.normalizeForSearch,
+// the form Zotero stores for annotation text and comments and applies to
+// search terms: strip formatting tags, NFKD, drop combining diacritics,
+// lower-case, fold the letters and punctuation above, then recompose (NFC).
+// "seance" therefore matches "séance", "fi" matches the "ﬁ" ligature, and a
+// straight apostrophe matches a curly one.
+// https://github.com/zotero/zotero/blob/main/chrome/content/zotero/xpcom/utilities_internal.js
+func zoteroSearchNormalize(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.Contains(s, "<") {
+		s = zoteroSearchFormattingTags.ReplaceAllString(s, "")
+	}
+	s = strings.Map(func(r rune) rune {
+		if r >= 0x0300 && r <= 0x036f {
+			return -1
+		}
+		return r
+	}, norm.NFKD.String(s))
+	return norm.NFC.String(zoteroSearchFold.Replace(strings.ToLower(s)))
+}
+
 // annotationMatchesTerms reports whether every term occurs in the
 // annotation's own text, comment or one of its tags, the annotation fields
-// Zotero's quick search matches.
+// Zotero's quick search matches. Terms come from annotationQueryTerms.
 func annotationMatchesTerms(item map[string]any, terms []string) bool {
 	fields := []string{
-		strings.ToLower(zoteroString(item, "annotationText")),
-		strings.ToLower(zoteroString(item, "annotationComment")),
+		zoteroSearchNormalize(zoteroString(item, "annotationText")),
+		zoteroSearchNormalize(zoteroString(item, "annotationComment")),
 	}
 	data := zoteroData(item)
 	if data == nil {
@@ -288,7 +326,7 @@ func annotationMatchesTerms(item map[string]any, terms []string) bool {
 	for _, raw := range tags {
 		tag, _ := raw.(map[string]any)
 		if name, _ := tag["tag"].(string); name != "" {
-			fields = append(fields, strings.ToLower(name))
+			fields = append(fields, zoteroSearchNormalize(name))
 		}
 	}
 	for _, term := range terms {

@@ -114,7 +114,112 @@ func runSyncWorker(ctx context.Context, work <-chan string, results chan<- syncR
 	}
 }
 
+// syncChangeSummary is the typed change signal of one sync run. watch
+// --workflow-on-change reads it in-process instead of parsing sync output or
+// timestamps; sync's own output and exit codes never show it.
+//
+// Upserted counts mirror rows a page write created, rewrote with different
+// content, or removed. A row the plane re-sends unchanged is not a change:
+// tags and schema rows carry no version, so a plane without a usable cursor
+// refetches them whole on every pass. Deleted counts rows reaped because
+// their objects no longer exist upstream (incremental collection and trash
+// reconciliation, or a full pass's sweep).
+//
+// Complete is true only when sync returned success and no selected resource
+// failed. A resource skipped for lack of access is a warning that sync
+// reports as complete, and it stays complete here.
+type syncChangeSummary struct {
+	Upserted int
+	Deleted  int
+	Complete bool
+}
+
+func (s syncChangeSummary) changed() bool {
+	return s.Upserted > 0 || s.Deleted > 0
+}
+
+type syncChangeTrackerContextKey struct{}
+
+// syncChangeTracker accumulates one run's change counts across the
+// concurrent sync workers. Only a run that asked for a summary installs one,
+// so a plain sync does no change detection at all.
+type syncChangeTracker struct {
+	upserted atomic.Int64
+	deleted  atomic.Int64
+}
+
+func syncChangeTrackerFrom(ctx context.Context) *syncChangeTracker {
+	tracker, _ := ctx.Value(syncChangeTrackerContextKey{}).(*syncChangeTracker)
+	return tracker
+}
+
+func (t *syncChangeTracker) addDeleted(n int) {
+	if t != nil && n > 0 {
+		t.deleted.Add(int64(n))
+	}
+}
+
+// syncRowRef names one mirror row by its store resource type and id.
+type syncRowRef struct {
+	resource string
+	id       string
+}
+
+// syncRowImage is one row's stored payload. known is false when the read
+// failed; such a row counts as changed rather than hiding a change.
+type syncRowImage struct {
+	known   bool
+	present bool
+	data    string
+}
+
+func readSyncRowImages(ctx context.Context, db *store.Store, refs []syncRowRef) []syncRowImage {
+	images := make([]syncRowImage, len(refs))
+	for i, ref := range refs {
+		data, err := db.GetContext(ctx, ref.resource, ref.id)
+		switch {
+		case err == nil:
+			images[i] = syncRowImage{known: true, present: true, data: string(data)}
+		case errors.Is(err, store.ErrNotFound):
+			images[i] = syncRowImage{known: true}
+		}
+	}
+	return images
+}
+
+// trackSyncRowChanges runs write and, when the run tracks changes, counts
+// the rows it actually changed by comparing each named row before and after.
+// A version-guarded no-op and an identical refetch therefore count nothing.
+// rowRefs runs only when tracking, so an untracked sync decodes nothing extra.
+func trackSyncRowChanges(ctx context.Context, db *store.Store, rowRefs func() []syncRowRef, write func() error) error {
+	tracker := syncChangeTrackerFrom(ctx)
+	if tracker == nil {
+		return write()
+	}
+	refs := rowRefs()
+	before := readSyncRowImages(ctx, db, refs)
+	if err := write(); err != nil {
+		return err
+	}
+	after := readSyncRowImages(ctx, db, refs)
+	var changed int64
+	for i := range refs {
+		if !before[i].known || !after[i].known || before[i] != after[i] {
+			changed++
+		}
+	}
+	tracker.upserted.Add(changed)
+	return nil
+}
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
+	return newSyncCmdWithSummary(flags, nil)
+}
+
+// newSyncCmdWithSummary builds the sync command. A non-nil summary receives
+// the run's change counts and completeness when RunE returns; see
+// syncChangeSummary. A nil summary is the plain `zotio sync` command.
+func newSyncCmdWithSummary(flags *rootFlags, summary *syncChangeSummary) *cobra.Command {
 	var resources []string
 	var full bool
 	var sinceVersion int
@@ -292,6 +397,17 @@ Exit codes & warnings:
 
 			ctx := context.WithValue(cmd.Context(), dependentSchemaPrerequisiteContextKey{}, dependentPrereqs)
 			ctx = context.WithValue(ctx, syncEventWriterContextKey{}, &syncEventWriter{w: cmd.OutOrStdout()})
+			var tracker *syncChangeTracker
+			if summary != nil {
+				tracker = &syncChangeTracker{}
+				ctx = context.WithValue(ctx, syncChangeTrackerContextKey{}, tracker)
+				// Counts are reported whatever the outcome; Complete is set
+				// only on the success path below.
+				defer func() {
+					summary.Upserted = int(tracker.upserted.Load())
+					summary.Deleted = int(tracker.deleted.Load())
+				}()
+			}
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -388,7 +504,8 @@ Exit codes & warnings:
 			// pass already swept everything); it warns and keeps the mirror
 			// on any problem, never failing the sync.
 			if !full {
-				reconcileIncrementalSync(ctx, c, db, resources, cleanSync)
+				reaped := reconcileIncrementalSync(ctx, c, db, resources, cleanSync)
+				tracker.addDeleted(reaped.collectionsReaped + reaped.trashReaped)
 			}
 
 			// The full-text pass runs after the core resource sync. It keeps a
@@ -482,6 +599,9 @@ Exit codes & warnings:
 				if errCount > 0 {
 					return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
 				}
+			}
+			if summary != nil {
+				summary.Complete = errCount == 0
 			}
 			return nil
 		},
@@ -872,7 +992,17 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			ids = append(ids, result.Source)
 			payloads = append(payloads, result.Value)
 		}
-		if _, err := db.UpsertKeyedContext(ctx, resource, ids, payloads); err != nil {
+		rowRefs := func() []syncRowRef {
+			refs := make([]syncRowRef, len(ids))
+			for i, id := range ids {
+				refs[i] = syncRowRef{resource: resource, id: id}
+			}
+			return refs
+		}
+		if err := trackSyncRowChanges(ctx, db, rowRefs, func() error {
+			_, uerr := db.UpsertKeyedContext(ctx, resource, ids, payloads)
+			return uerr
+		}); err != nil {
 			return fail(fmt.Errorf("persisting %s rows: %w", resource, err), totalFetched)
 		}
 		totalFetched += len(results)
@@ -888,9 +1018,11 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 	for _, itemType := range prereq.itemTypes {
 		seen[itemType] = true
 	}
-	if _, err := db.SweepMissingContext(ctx, resource, seen); err != nil {
+	reaped, err := db.SweepMissingContext(ctx, resource, seen)
+	if err != nil {
 		return fail(fmt.Errorf("reaping stale %s rows: %w", resource, err), totalFetched)
 	}
+	syncChangeTrackerFrom(ctx).addDeleted(reaped)
 	if prereq.schemaVersion != "" {
 		if err := db.SaveZoteroSchemaVersionContext(ctx, resource, prereq.schemaVersion); err != nil {
 			return fail(fmt.Errorf("persisting %s schema checkpoint: %w", resource, err), totalFetched)
@@ -1501,9 +1633,12 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			// the stale rows and markers are still in the mirror, and reporting
 			// success would checkpoint past them.
 			storeResource := canonicalStoreResource(resource)
-			if reaped, rerr := db.SweepMissingContext(ctx, storeResource, seenKeys); rerr != nil {
+			reaped, rerr := db.SweepMissingContext(ctx, storeResource, seenKeys)
+			if rerr != nil {
 				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("reaping deleted %s rows: %w", storeResource, rerr), Duration: time.Since(started)}
-			} else if reaped > 0 && humanFriendly {
+			}
+			syncChangeTrackerFrom(ctx).addDeleted(reaped)
+			if reaped > 0 && humanFriendly {
 				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
 			}
 		} else if full && !observedEverything && canonicalStoreResource(resource) == resource {
@@ -1871,6 +2006,42 @@ func upsertResourceBatch(ctx context.Context, db *store.Store, resource string, 
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
 	}
+	var stored, extractFailures int
+	err := trackSyncRowChanges(ctx, db, func() []syncRowRef {
+		return syncBatchRowRefs(resource, items)
+	}, func() error {
+		var werr error
+		stored, extractFailures, werr = writeResourceBatch(ctx, db, resource, items)
+		return werr
+	})
+	return stored, extractFailures, err
+}
+
+// syncBatchRowRefs names the mirror rows a page write targets, keyed exactly
+// as writeResourceBatch keys them. Duplicates within a page name one row.
+func syncBatchRowRefs(resource string, items []json.RawMessage) []syncRowRef {
+	refs := make([]syncRowRef, 0, len(items))
+	seen := make(map[syncRowRef]bool, len(items))
+	for _, item := range items {
+		var obj map[string]any
+		if json.Unmarshal(item, &obj) != nil {
+			continue
+		}
+		target := canonicalStoreResource(resolveDiscriminatedResource(resource, obj))
+		ref := syncRowRef{resource: target, id: extractID(target, obj)}
+		if ref.id == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// writeResourceBatch stores one reconciled page under the resource's store
+// type, or under each row's discriminated type.
+func writeResourceBatch(ctx context.Context, db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+	storeResource := canonicalStoreResource(resource)
 	if _, ok := discriminatorDispatchers[resource]; !ok {
 		// store.UpsertBatch has its own generated ID map;
 		// key resources with sync-local overrides here so tags and global schema
@@ -2010,7 +2181,10 @@ func upsertSingleObject(ctx context.Context, db *store.Store, resource string, d
 
 	switch resource {
 	default:
-		return db.UpsertContext(ctx, canonicalStoreResource(resource), id, data)
+		ref := syncRowRef{resource: canonicalStoreResource(resource), id: id}
+		return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func() error {
+			return db.UpsertContext(ctx, ref.resource, ref.id, data)
+		})
 	}
 }
 

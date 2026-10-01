@@ -35,6 +35,9 @@ type vltZotero struct {
 	patches   []string // If-Unmodified-Since-Version of each PATCH, in order
 	writes    int      // every non-GET request
 	noteReads int      // GETs of the note itself
+	// library is the response's `library` object: the library Zotero says
+	// serves the note. Nil sends null, which identifies no library.
+	library map[string]any
 }
 
 func (z *vltZotero) snapshot() (version int, html string, patches []string, writes, noteReads int) {
@@ -61,6 +64,7 @@ func vltServe(t *testing.T, z *vltZotero, userID string) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"key":     vltNoteKey,
 				"version": z.version,
+				"library": z.library,
 				"data":    map[string]string{"itemType": "note", "parentItem": z.parent, "note": z.html},
 			})
 		case r.Method == http.MethodPatch && r.URL.Path == notePath:
@@ -205,7 +209,7 @@ func TestVltVaultLibraryScopeGatesEveryDirection(t *testing.T) {
 	// Control: the same fixture in its own library pulls, so the check (not
 	// the fixture) is what stopped every case above.
 	t.Run("pull same library applies", func(t *testing.T) {
-		z := &vltZotero{version: 6, html: markdownToNoteHTML(vltCitekey, "remote edit"), parent: vltItemKey}
+		z := &vltZotero{version: 6, html: markdownToNoteHTML(vltCitekey, "remote edit"), parent: vltItemKey, library: map[string]any{"type": "user", "id": 111}}
 		vltServe(t, z, "111")
 		outDir := t.TempDir()
 		path, _ := vltWriteNote(t, outDir, "users/111", "local notes")

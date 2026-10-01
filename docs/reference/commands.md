@@ -1314,6 +1314,7 @@ zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --out new-w
 | `--author` | `stringArray` | `[]` | Author ORCID or OpenAlex author ID (or their https URL); repeat to match any author |
 | `--limit` | `int` | `25` | Maximum manifest entries to write |
 | `--out` | `string` |  | Required reviewable import manifest output path |
+| `--overwrite` | `bool` | `false` | Replace an existing manifest at --out; review edits in it are lost |
 | `--query` | `string` |  | Free-text topic search; with --author, match both |
 | `--since` | `string` |  | Required publication date lower bound (YYYY-MM-DD, inclusive) |
 | `--until` | `string` |  | Publication date upper bound (YYYY-MM-DD, inclusive) |
@@ -1553,6 +1554,7 @@ zotio items audit [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--duplicate-attachment-bytes` | `bool` | `false` | List groups of stored attachments that share a Zotero-registered MD5 (candidate duplicates; never deletes) |
 | `--limit` | `int` | `0` | Maximum number of items per category (0 = no limit) |
 | `--missing-abstract` | `bool` | `false` | List items with no abstract |
 | `--missing-citation` | `bool` | `false` | List citeable items missing core citation fields (creators, title, date, venue) |
@@ -1614,6 +1616,15 @@ so Pandoc and Quarto citations resolve against the output.
 The Web API limits itemKey batches, so large scopes are fetched in stable
 50-key chunks and merged in scope order.
 
+--manuscript selects the items a manuscript cites instead of a scope. It reads
+.tex, .md, .markdown, and .qmd files with the items bibcheck parser and
+resolves each citation key against the synced Better BibTeX keys. Items appear
+once, in first-citation order across the files. --follow-includes also reads
+.tex files pulled in by \input{PATH} and \include{PATH}, exactly as items
+bibcheck --follow-includes does. When any citation key is unknown or
+ambiguous, or an include is missing or cyclic, nothing is rendered: the
+command names each problem with its file and line and exits 11.
+
 ```
 zotio items bibliography [flags]
 ```
@@ -1625,11 +1636,16 @@ zotio items bibliography --scope collection:ABCD1234 --style apa
   zotio items bibliography --scope tag:to-submit --format csljson
   zotio items bibliography --scope collection:ABCD1234 --format bibtex
   zotio items bibliography --scope item:ABCD1234 --json
+  zotio items bibliography --manuscript paper.tex --format biblatex
+  zotio items bibliography --manuscript thesis.tex --follow-includes --format bibtex
+  zotio items bibliography --manuscript intro.md --manuscript methods.md --format csljson
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--follow-includes` | `bool` | `false` | With --manuscript, also read .tex files pulled in by \input{PATH} and \include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11 |
 | `--format` | `string` | `bib` | Output format: bib, csljson, bibtex, biblatex, or ris |
+| `--manuscript` | `stringArray` | `[]` | Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11 |
 | `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
 | `--style` | `string` |  | CSL style ID for --format bib (default uses Zotero's default bibliography style) |
 
@@ -2211,6 +2227,13 @@ Gather the highest-signal local context for an item (or every item in a
 collection) into one bounded bundle — citation, abstract, your annotations, a
 capped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.
 
+With --focus TERMS, each item instead carries a "focus" section: the passages
+that match TERMS in that item's indexed PDF text (one ranked snippet per
+attachment, within --max-chars) and in its annotations (within
+--max-annotations), each with its item and attachment key. Only the selected
+items are searched, and no full PDF text is loaded. An item with no synced PDF
+text says so (fulltext: not_indexed) rather than reporting "no match".
+
 This command never calls a model: it does the assembly and budgeting the host LLM
 is bad at, then hands off. Reads are local only. With --agent/--json it emits the
 structured bundle; otherwise a readable Markdown brief you can paste into any LLM.
@@ -2226,13 +2249,15 @@ zotio items summarize 9UXV5R7L
   zotio items summarize 9UXV5R7L --agent --max-chars 6000
   zotio items summarize --collection MAR7RFQN --no-fulltext
   zotio items summarize --scope tag:to-read --agent
+  zotio items summarize --scope collection:MAR7RFQN --focus "transfer learning" --max-chars 2000
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Summarize every item in this collection key |
+| `--focus` | `string` |  | Select ranked passages matching these terms from each item's indexed PDF text and annotations, instead of the first-pages excerpt |
 | `--max-annotations` | `int` | `40` | Max annotations included per item |
-| `--max-chars` | `int` | `8000` | Max characters of fulltext excerpt per item |
+| `--max-chars` | `int` | `8000` | Max characters of fulltext per item: the excerpt, or with --focus the matched PDF-text passages |
 | `--no-fulltext` | `bool` | `false` | Omit the fulltext excerpt (abstract + annotations only) |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 
@@ -2871,6 +2896,8 @@ otherwise searches local data. Falls back to local on network failure.
 In live mode: uses the API search endpoint only.
 In local mode: searches locally synced data only.
 Use --fulltext to search synced PDF text and resolve hits to parent items.
+With --fulltext, --scope limits hits to one item cohort before ranking and
+--limit apply, so a hit outside the cohort never takes a place in the limit.
 
 ```
 zotio search <query> [flags]
@@ -2891,6 +2918,9 @@ Examples:
   # Resolve synced PDF full-text matches to their parent items
   zotio search "calibration feedback" --fulltext --data-source local
 
+  # Search PDF text only inside one collection
+  zotio search "calibration feedback" --fulltext --scope collection:ABCD1234 --limit 5
+
   # JSON output for piping
   zotio search "critical" --json --limit 20
 ```
@@ -2900,6 +2930,7 @@ Examples:
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
 | `--fulltext` | `bool` | `false` | Search synced PDF full text and return parent item context |
 | `--limit` | `int` | `50` | Maximum results to return |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library); requires --fulltext |
 | `--type` | `string` |  | Filter by resource type |
 
 ## `zotio searches`
@@ -3184,6 +3215,12 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 The cursor advances only after the triggered invocation returns, so a crash
 before or during the trigger replays the same batch on the next poll.
 
+A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
+receives the cycle's events, with upserted and deleted keys in separate lists.
+It is skipped, with a notice, on the first poll (no stored cursor), which lists
+the current records rather than changes, and on a cycle with more than 500
+events.
+
 Deletions are reported only when the configured API serves /deleted. The Zotero
 desktop local API does not, so against the default local base this feed emits
 upserts only, and says so once on the first poll that checks; point base_url
@@ -3431,6 +3468,12 @@ successful sync cycle. It previews unless this watch invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 
+Add --workflow-on-change to run the workflow only after a cycle that changed
+the mirror: a row stored, rewritten with different content, or reaped because
+its object no longer exists upstream. An unchanged cycle logs that it skipped
+the workflow. A cycle whose sync failed, or in which any resource failed, never
+runs it; its changes wait for the next complete cycle.
+
 ```
 zotio watch [resource...] [flags]
 ```
@@ -3445,6 +3488,7 @@ zotio watch [resource...] [flags]
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
 | `--workflow` | `string` |  | Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume |
+| `--workflow-on-change` | `bool` | `false` | With --workflow: run it only after a complete sync cycle that stored, rewrote, or reaped mirror rows; unchanged cycles log a skip |
 
 ## `zotio which`
 
@@ -3518,10 +3562,20 @@ are previewed with --dry-run while read-only steps run normally.
 
 Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
 Override declared values with repeatable --var NAME=value. Arguments may also
-use ${steps.NAME.output}, the trimmed output of an earlier named step. A step
-can pipe an earlier step's raw output with "stdin_from", and "when" can run a
-step only when an earlier step is ok, failed, or skipped. In preview mode,
-substituted step outputs are preview outputs.
+use ${steps.NAME.output}, the trimmed output of an earlier named step, or
+${steps.NAME.json:PATH}, one string, number, or boolean selected from that
+step's JSON output. A step can pipe an earlier step's raw output with
+"stdin_from"; add "stdin_select": "PATH" to pipe the selected JSON values
+instead, one per line. A missing, malformed, or incompatible selection fails
+the step, and a selection with no values skips it. "when" can run a step only
+when an earlier step is ok, failed, or skipped. In preview mode, substituted
+step outputs are preview outputs.
+
+A run started by tail --workflow can read its change batch: the selector
+${trigger.json:PATH} and "stdin_trigger": "PATH" select from
+{"source", "resource", "events": [{"event", "resource", "key"}],
+"upsert_keys", "delete_keys"}. "stdin_trigger": "upsert_keys" feeds
+--keys-from -. The batch is data; it never approves a write.
 
 Pass --yes once to apply the whole workflow. Steps apply in order, and every
 mutation from that run shares one journal run ID (zotio journal list --workflow

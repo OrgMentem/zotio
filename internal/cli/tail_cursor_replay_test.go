@@ -200,9 +200,9 @@ func TestEmitChangesWithHook_RunsTriggerBeforeCursorSave(t *testing.T) {
 	var hookRuns int
 	var cursorAtHook int
 	var emittedAtHook int
-	hook := func(emitted int) error {
+	hook := func(batch tailChangeBatch) error {
 		hookRuns++
-		emittedAtHook = emitted
+		emittedAtHook = len(batch.Events)
 		v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items")
 		if err != nil {
 			return err

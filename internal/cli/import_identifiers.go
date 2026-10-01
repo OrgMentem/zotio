@@ -49,12 +49,8 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-
 			pmid := args[0]
 			item, err := fetchPubMedItem(cmd, flags.timeout, pmid)
 			if err != nil {
@@ -179,12 +175,8 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-
 			id := args[0]
 			item, err := fetchArxivItem(cmd, flags.timeout, id)
 			if err != nil {
@@ -287,12 +279,8 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-
 			isbn := args[0]
 			item, err := fetchOpenLibraryItem(cmd, flags.timeout, isbn)
 			if err != nil {

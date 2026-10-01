@@ -66,8 +66,11 @@ func writeExport(writer io.Writer, format string, data []byte, limit int) (int, 
 	case "jsonl":
 		var items []json.RawMessage
 		if err := json.Unmarshal(data, &items); err != nil {
-			_, err := fmt.Fprintln(writer, string(data))
-			return 0, err
+			if _, err := fmt.Fprintln(writer, string(data)); err != nil {
+				return 0, err
+			}
+			// A single object (for example an item fetched by key) is one record.
+			return 1, nil
 		}
 		count := 0
 		for _, item := range items {
@@ -85,9 +88,16 @@ func writeExport(writer io.Writer, format string, data []byte, limit int) (int, 
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			return 0, err
 		}
+		count := 1
+		if list, ok := parsed.([]any); ok {
+			count = len(list)
+		}
 		enc := json.NewEncoder(writer)
 		enc.SetIndent("", "  ")
-		return 0, enc.Encode(parsed)
+		if err := enc.Encode(parsed); err != nil {
+			return 0, err
+		}
+		return count, nil
 	}
 }
 
@@ -111,7 +121,8 @@ backwards-compatible resource exports.`,
 
   # Pipe to another tool
   zotio export items | jq '.id'`,
-		Args: cobra.MinimumNArgs(1),
+		Annotations: map[string]string{"mcp:writes-files": "true"},
+		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			validResources := map[string]bool{
 				"collections": true,

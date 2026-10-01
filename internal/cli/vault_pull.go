@@ -171,7 +171,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 		liveVer, liveHTML = rs.ver, rs.html
 	} else {
 		var err error
-		liveVer, liveHTML, err = getNote(c, n.state.NoteKey, n.itemKey)
+		liveVer, liveHTML, err = getNote(c, n.state.NoteKey, n.itemKey, n.library)
 		if err != nil {
 			if apiStatus(err) == 404 {
 				res.Status = "remote_deleted"

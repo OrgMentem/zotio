@@ -105,6 +105,7 @@ func newSearchCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 	var dbFlag string
 	var fulltextOnly bool
+	var flagScope string
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -116,7 +117,9 @@ In auto mode (default): uses the API search endpoint if the API has one,
 otherwise searches local data. Falls back to local on network failure.
 In live mode: uses the API search endpoint only.
 In local mode: searches locally synced data only.
-Use --fulltext to search synced PDF text and resolve hits to parent items.`,
+Use --fulltext to search synced PDF text and resolve hits to parent items.
+With --fulltext, --scope limits hits to one item cohort before ranking and
+--limit apply, so a hit outside the cohort never takes a place in the limit.`,
 		Example: `  # Search (uses API endpoint if available, local FTS otherwise)
   zotio search "error timeout"
 
@@ -129,6 +132,9 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
   # Resolve synced PDF full-text matches to their parent items
   zotio search "calibration feedback" --fulltext --data-source local
 
+  # Search PDF text only inside one collection
+  zotio search "calibration feedback" --fulltext --scope collection:ABCD1234 --limit 5
+
   # JSON output for piping
   zotio search "critical" --json --limit 20`,
 		// mcp:read-only is what the capability registry reads to type this
@@ -139,16 +145,26 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 		// surface exposes search through the command facade, not as a mirrored
 		// tool.
 		Annotations: map[string]string{"mcp:hidden": "true", "mcp:read-only": "true"},
+		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			query := strings.Join(args, " ")
 			if fulltextOnly && resourceType != "" {
 				return fmt.Errorf("--fulltext cannot be combined with --type")
 			}
 			if fulltextOnly && flags.dataSource == "live" {
 				return fmt.Errorf("--fulltext requires synced local data; use --data-source local or auto")
+			}
+			// Cohort membership is an item property. Only --fulltext resolves
+			// every hit to a parent item; cross-resource search also returns
+			// collections, tags and searches, which have no item membership.
+			scopeExpr := strings.TrimSpace(flagScope)
+			if scopeExpr != "" {
+				if !fulltextOnly {
+					return usageErr(fmt.Errorf("--scope requires --fulltext: only full-text search resolves every hit to an item"))
+				}
+				if _, err := parseScopeSpec(scopeExpr); err != nil {
+					return usageErr(err)
+				}
 			}
 			// Zotero item full-text search is GET /items
 			// with qmode=everything; /searches returns saved-search definitions.
@@ -231,10 +247,26 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 			}
 			defer db.Close()
 
+			// The cohort resolves against this library's own mirror, so a
+			// `--group all` run scopes each library by its own keys.
+			fulltextSearch := store.FulltextSearch{Query: query, Limit: limit}
+			if scopeExpr != "" {
+				sel, scopeErr := resolveScopeSelection(cmd, flags, commandRegistryPath(cmd), localQueryStore{Store: db}, scopeExpr)
+				if scopeErr != nil {
+					return scopeErr
+				}
+				if sel.restricted() {
+					fulltextSearch.ParentKeys = make([]string, 0, len(sel.Keys))
+					for key := range sel.Keys {
+						fulltextSearch.ParentKeys = append(fulltextSearch.ParentKeys, key)
+					}
+				}
+			}
+
 			results := make([]json.RawMessage, 0)
 			switch {
 			case fulltextOnly:
-				matches, searchErr := db.SearchFulltextContext(cmd.Context(), query, limit)
+				matches, searchErr := db.SearchFulltextContext(cmd.Context(), fulltextSearch)
 				if searchErr != nil {
 					err = searchErr
 					break
@@ -271,6 +303,7 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().BoolVar(&fulltextOnly, "fulltext", false, "Search synced PDF full text and return parent item context")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary+"; requires --fulltext")
 
 	return cmd
 }

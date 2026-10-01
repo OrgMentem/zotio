@@ -33,13 +33,10 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 		// ArbitraryArgs, so `items delete K1 K2` used to purge K1 and drop K2 on
 		// the floor: the path, the op id and the whole envelope are built from
 		// args[0] alone, and nothing reported the ignored keys. A destructive
-		// command must not silently do less than it was asked. Zero args still
-		// renders help, which MaximumNArgs allows and ExactArgs would not.
-		Args: cobra.MaximumNArgs(1),
+		// command must not silently do less than it was asked, and a missing key
+		// is a usage error, not a help request that exits 0.
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			path := "/items/{itemKey}"
 			path = replacePathParam(path, "itemKey", args[0])
 			// The engine renders plan and apply in the same shape, so callers can

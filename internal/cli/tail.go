@@ -54,6 +54,12 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 The cursor advances only after the triggered invocation returns, so a crash
 before or during the trigger replays the same batch on the next poll.
 
+A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
+receives the cycle's events, with upserted and deleted keys in separate lists.
+It is skipped, with a notice, on the first poll (no stored cursor), which lists
+the current records rather than changes, and on a cycle with more than 500
+events.
+
 Deletions are reported only when the configured API serves /deleted. The Zotero
 desktop local API does not, so against the default local base this feed emits
 upserts only, and says so once on the first poll that checks; point base_url
@@ -147,17 +153,33 @@ native streaming instead of polling.`,
 			// Run a trigger after delivery but before the cursor advances. A
 			// crash or workflow failure leaves this window retryable. A crash
 			// after a successful trigger can replay it, so workflows must be
-			// idempotent.
-			afterDelivery := func(events int) error {
-				if events == 0 || workflowPath == "" {
-					return nil
+			// idempotent. Without --workflow there is no hook, so no batch is
+			// collected.
+			var afterDelivery func(batch tailChangeBatch) error
+			if workflowPath != "" {
+				afterDelivery = func(batch tailChangeBatch) error {
+					if len(batch.Events) == 0 {
+						return nil
+					}
+					inv := workflowRunInvocation{
+						Yes:     flags.yes,
+						DryRun:  flags.dryRun,
+						Agent:   flags.agent,
+						NoInput: flags.noInput,
+					}
+					// A spec that cannot be read is reported by the run
+					// itself. Only a spec that reads trigger values gets the
+					// batch, so any other spec runs exactly as before.
+					if spec, err := readWorkflowRunSpec(workflowPath); err == nil && workflowRunSpecReadsTrigger(spec) {
+						trigger, skip := tailWorkflowTrigger(resource, batch)
+						if skip != "" {
+							fmt.Fprintf(cmd.ErrOrStderr(), "[tail] %s workflow skipped: %s\n", time.Now().UTC().Format(time.RFC3339), skip)
+							return nil
+						}
+						inv.Trigger = trigger
+					}
+					return runTriggeredWorkflowE(cmd.Context(), cmd, "tail", workflowPath, inv)
 				}
-				return runTriggeredWorkflowE(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
-					Yes:     flags.yes,
-					DryRun:  flags.dryRun,
-					Agent:   flags.agent,
-					NoInput: flags.noInput,
-				})
 			}
 
 			// Initial poll
@@ -229,6 +251,31 @@ func tailKnownResources() []string {
 	}
 }
 
+// tailChangeBatch is one poll cycle's emitted events, in emission order, as
+// the post-delivery hook sees them.
+type tailChangeBatch struct {
+	// Baseline marks the first poll (no stored cursor): its upserts list the
+	// current records, not changes.
+	Baseline bool
+	Events   []workflowRunTriggerEvent
+}
+
+// tailWorkflowTrigger turns a batch into the trigger for a workflow that
+// reads trigger values. A non-empty reason means the run is skipped: a
+// baseline lists the whole current set rather than changes, and a batch
+// above the bound is never cut down to a partial key list. A skip lets the
+// cursor advance; the events were still delivered.
+func tailWorkflowTrigger(resource string, batch tailChangeBatch) (*workflowRunTrigger, string) {
+	if batch.Baseline {
+		return nil, fmt.Sprintf("the first %s poll lists %d current record(s), not changes; workflows that read trigger values start with the next poll", resource, len(batch.Events))
+	}
+	trigger, err := newWorkflowRunTrigger("tail", resource, batch.Events)
+	if err != nil {
+		return nil, err.Error() + "; run the workflow over an explicit scope instead"
+	}
+	return trigger, ""
+}
+
 // emitChangesWithHook polls one resource for changes since the stored tail
 // cursor, emits upsert/delete NDJSON events for the cycle, routes them to the
 // deliver sink, and advances the cursor. It returns the number of emitted
@@ -237,9 +284,10 @@ func tailKnownResources() []string {
 // sync_state so it never collides with sync's own checkpoint.
 //
 // A non-nil afterDelivery runs a triggered workflow after delivery and before
-// saving the cursor. A failure holds the cursor for retry. A crash after the
-// hook completes can replay it, so triggers have at-least-once semantics.
-func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, afterDelivery func(emitted int) error) (int, error) {
+// saving the cursor. It receives the emitted events. A failure holds the
+// cursor for retry. A crash after the hook completes can replay it, so
+// triggers have at-least-once semantics.
+func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, afterDelivery func(batch tailChangeBatch) error) (int, error) {
 	cursorKey := "tail:" + resource
 	cursor, err := db.GetLibraryVersion(cursorKey, c.BaseURL)
 	if err != nil {
@@ -260,6 +308,12 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	enc := json.NewEncoder(&buf)
 	now := time.Now().UTC().Format(time.RFC3339)
 	emitted := 0
+	batch := tailChangeBatch{Baseline: cursor <= 0}
+	recordEvent := func(event, key string) {
+		if afterDelivery != nil {
+			batch.Events = append(batch.Events, workflowRunTriggerEvent{Event: event, Resource: resource, Key: key})
+		}
+	}
 
 	items, _, _, isPage, extractErr := extractPageItemsWithError(body, "")
 	if extractErr != nil {
@@ -284,10 +338,11 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		if id := store.ExtractResourceID(resource, obj); id == "" {
 			return 0, fmt.Errorf("tail %s: decoding change object %d: missing resource identity", resource, i)
 		}
+		key := fmt.Sprintf("%v", store.LookupFieldValue(obj, "key"))
 		event := map[string]any{
 			"event":     "upsert",
 			"resource":  resource,
-			"key":       fmt.Sprintf("%v", store.LookupFieldValue(obj, "key")),
+			"key":       key,
 			"version":   store.LookupFieldValue(obj, "version"),
 			"timestamp": now,
 			"data":      obj,
@@ -296,6 +351,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 			return emitted, err
 		}
 		emitted++
+		recordEvent("upsert", key)
 	}
 
 	// Deletions only make sense once a baseline cursor exists: the first
@@ -348,6 +404,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 					return emitted, err
 				}
 				emitted++
+				recordEvent("delete", k)
 			}
 		}
 	}
@@ -401,7 +458,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	}
 
 	if afterDelivery != nil {
-		if err := afterDelivery(emitted); err != nil {
+		if err := afterDelivery(batch); err != nil {
 			return emitted, fmt.Errorf("tail %s: triggered workflow: %w", resource, err)
 		}
 	}

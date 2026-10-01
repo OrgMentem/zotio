@@ -140,7 +140,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					return "failed", batchEnvelope.Error(), batchEnvelope
 				}
 				if failure, ok := batchFailed[strconv.Itoa(index)]; ok {
-					return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+					return "failed", failure.detail(strconv.Itoa(index)), nil
 				}
 				return "applied", nil, nil
 			}

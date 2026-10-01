@@ -115,14 +115,7 @@ func postFeedback(endpoint string, entry FeedbackEntry) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		// net/http strips only the password from the URL it reports; the
-		// path and query, where receivers carry their credential, would
-		// otherwise reach stderr and the JSON result.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			urlErr.URL = webhookOrigin(urlErr.URL)
-		}
-		return fmt.Errorf("posting feedback: %w", err)
+		return outboundRequestError("posting feedback", endpoint, err)
 	}
 	defer resp.Body.Close()
 	return externalHTTPPostStatusError("feedback endpoint", resp)

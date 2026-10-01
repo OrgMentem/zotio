@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +27,19 @@ const (
 	workflowRunOutputLimit             = 64 * 1024
 	workflowRunModePreview             = "preview"
 	workflowRunModeApply               = "apply"
-	workflowRunCheckpointSchemaVersion = 2
+	workflowRunCheckpointSchemaVersion = 3
+	// workflowRunCheckpointSchemaVersionV2 checkpoints predate trigger
+	// batches. v3 only added the optional "trigger" member, so a v2 sidecar
+	// still resumes as a v3 checkpoint without a batch.
+	workflowRunCheckpointSchemaVersionV2 = 2
+	// workflowRunTriggerMaxEvents bounds the change batch a triggered run can
+	// read. A larger batch is not cut down to a partial key list: the caller
+	// skips the run (see tailWorkflowTrigger).
+	workflowRunTriggerMaxEvents = 500
+	// workflowRunSelectorMaxLength and workflowRunSelectorMaxSteps bound a
+	// JSON selector (see parseWorkflowRunSelector).
+	workflowRunSelectorMaxLength = 256
+	workflowRunSelectorMaxSteps  = 32
 )
 
 // InstallRuntimeHooks installs the mutation hooks used by production entry
@@ -44,10 +58,16 @@ type workflowRunSpec struct {
 }
 
 type workflowRunStepSpec struct {
-	Name      string               `json:"name,omitempty"`
-	Args      []string             `json:"args"`
-	StdinFrom string               `json:"stdin_from,omitempty"`
-	When      *workflowRunStepWhen `json:"when,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Args      []string `json:"args"`
+	StdinFrom string   `json:"stdin_from,omitempty"`
+	// StdinSelect pipes JSON-selected values from the stdin_from step's
+	// output, one per line, instead of the raw output.
+	StdinSelect string `json:"stdin_select,omitempty"`
+	// StdinTrigger pipes JSON-selected values from the trigger batch, one per
+	// line. It excludes stdin_from.
+	StdinTrigger string               `json:"stdin_trigger,omitempty"`
+	When         *workflowRunStepWhen `json:"when,omitempty"`
 }
 
 type workflowRunStepWhen struct {
@@ -70,6 +90,9 @@ type workflowRunInvocation struct {
 	Agent        bool
 	NoInput      bool
 	VarOverrides []string // NAME=value, same syntax as --var
+	// Trigger is the change batch that started this run. It is read-only
+	// data for the steps and never approves a write: only Yes applies.
+	Trigger *workflowRunTrigger
 }
 
 type workflowRunStepReport struct {
@@ -95,10 +118,20 @@ are previewed with --dry-run while read-only steps run normally.
 
 Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
 Override declared values with repeatable --var NAME=value. Arguments may also
-use ${steps.NAME.output}, the trimmed output of an earlier named step. A step
-can pipe an earlier step's raw output with "stdin_from", and "when" can run a
-step only when an earlier step is ok, failed, or skipped. In preview mode,
-substituted step outputs are preview outputs.
+use ${steps.NAME.output}, the trimmed output of an earlier named step, or
+${steps.NAME.json:PATH}, one string, number, or boolean selected from that
+step's JSON output. A step can pipe an earlier step's raw output with
+"stdin_from"; add "stdin_select": "PATH" to pipe the selected JSON values
+instead, one per line. A missing, malformed, or incompatible selection fails
+the step, and a selection with no values skips it. "when" can run a step only
+when an earlier step is ok, failed, or skipped. In preview mode, substituted
+step outputs are preview outputs.
+
+A run started by tail --workflow can read its change batch: the selector
+${trigger.json:PATH} and "stdin_trigger": "PATH" select from
+{"source", "resource", "events": [{"event", "resource", "key"}],
+"upsert_keys", "delete_keys"}. "stdin_trigger": "upsert_keys" feeds
+--keys-from -. The batch is data; it never approves a write.
 
 Pass --yes once to apply the whole workflow. Steps apply in order, and every
 mutation from that run shares one journal run ID (zotio journal list --workflow
@@ -158,10 +191,21 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 	if inv.Resume && (!inv.Yes || inv.DryRun) {
 		return workflowRunReport{}, usageErr(fmt.Errorf("--resume requires --yes without --dry-run; resume continues an already-approved run"))
 	}
+	// Only a spec that reads trigger values receives the batch, so a spec
+	// that reads none runs and checkpoints exactly like an untriggered run.
+	readsTrigger := workflowRunSpecReadsTrigger(spec)
+	var trigger *workflowRunTrigger
+	if readsTrigger {
+		trigger = inv.Trigger
+		if trigger == nil && !inv.Resume {
+			return workflowRunReport{}, preconditionErr(fmt.Errorf("workflow spec %q reads trigger values (${trigger.json:...} or stdin_trigger), but this run has no trigger batch; start it with tail --workflow, or continue an interrupted triggered run with --yes --resume", specPath))
+		}
+	}
 
 	execution := workflowRunExecution{
-		Mode: workflowRunModePreview,
-		Vars: resolvedVars,
+		Mode:    workflowRunModePreview,
+		Vars:    resolvedVars,
+		Trigger: trigger,
 	}
 	if inv.Yes && !inv.DryRun {
 		checkpointPath := workflowRunCheckpointPath(specPath)
@@ -170,6 +214,7 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 			SchemaVersion: workflowRunCheckpointSchemaVersion,
 			SpecSHA256:    specSHA256,
 			Vars:          cloneWorkflowRunVars(resolvedVars),
+			Trigger:       trigger,
 		}
 
 		if inv.Resume {
@@ -183,6 +228,14 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 			completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps), resolvedVars)
 			if err != nil {
 				return workflowRunReport{}, err
+			}
+			// Resume replays the batch the run was approved with, never a
+			// newer one.
+			if readsTrigger {
+				if checkpoint.Trigger == nil {
+					return workflowRunReport{}, fmt.Errorf("workflow checkpoint %q has no trigger batch, but the spec reads trigger values; delete %q to start over", checkpointPath, checkpointPath)
+				}
+				trigger = checkpoint.Trigger
 			}
 			execution.Completed = completed
 		} else {
@@ -208,6 +261,7 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 			Completed:      execution.Completed,
 			Checkpoint:     &checkpoint,
 			CheckpointPath: checkpointPath,
+			Trigger:        trigger,
 		}
 	}
 
@@ -291,6 +345,22 @@ func validateWorkflowRunSpec(spec workflowRunSpec) error {
 				return fmt.Errorf("workflow step %d stdin_from %q must name an earlier step", stepIndex, step.StdinFrom)
 			}
 		}
+		if step.StdinSelect != "" {
+			if step.StdinFrom == "" {
+				return fmt.Errorf("workflow step %d stdin_select needs stdin_from to name the step whose JSON output it selects from", stepIndex)
+			}
+			if _, err := parseWorkflowRunSelector(step.StdinSelect); err != nil {
+				return fmt.Errorf("workflow step %d stdin_select: %w", stepIndex, err)
+			}
+		}
+		if step.StdinTrigger != "" {
+			if step.StdinFrom != "" {
+				return fmt.Errorf("workflow step %d sets both stdin_from and stdin_trigger; a step reads stdin from one source", stepIndex)
+			}
+			if _, err := parseWorkflowRunSelector(step.StdinTrigger); err != nil {
+				return fmt.Errorf("workflow step %d stdin_trigger: %w", stepIndex, err)
+			}
+		}
 		if step.When != nil {
 			if _, exists := earlierStepNames[step.When.Step]; !exists {
 				return fmt.Errorf("workflow step %d when.step %q must name an earlier step", stepIndex, step.When.Step)
@@ -323,19 +393,24 @@ func validateWorkflowRunStepArgPlaceholders(arg string, stepIndex int, vars map[
 			return workflowRunInvalidPlaceholderError(stepIndex, arg[start:])
 		}
 		end += start + 2
-		placeholder := arg[start : end+1]
-		kind, name, ok := workflowRunParsePlaceholder(placeholder)
+		text := arg[start : end+1]
+		placeholder, ok := workflowRunParsePlaceholder(text)
 		if !ok {
-			return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+			return workflowRunInvalidPlaceholderError(stepIndex, text)
 		}
-		switch kind {
+		switch placeholder.kind {
 		case "vars":
-			if _, exists := vars[name]; !exists {
-				return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+			if _, exists := vars[placeholder.name]; !exists {
+				return workflowRunInvalidPlaceholderError(stepIndex, text)
 			}
 		case "steps":
-			if _, exists := earlierStepNames[name]; !exists {
-				return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+			if _, exists := earlierStepNames[placeholder.name]; !exists {
+				return workflowRunInvalidPlaceholderError(stepIndex, text)
+			}
+		}
+		if placeholder.selector != "" {
+			if _, err := parseWorkflowRunArgumentSelector(placeholder.selector); err != nil {
+				return fmt.Errorf("workflow step %d placeholder %q: %w", stepIndex, text, err)
 			}
 		}
 		offset = end + 1
@@ -347,20 +422,52 @@ func workflowRunInvalidPlaceholderError(stepIndex int, placeholder string) error
 	return fmt.Errorf("workflow step %d has invalid placeholder %q", stepIndex, placeholder)
 }
 
-func workflowRunParsePlaceholder(placeholder string) (kind, name string, ok bool) {
-	if !strings.HasPrefix(placeholder, "${") || !strings.HasSuffix(placeholder, "}") {
-		return "", "", false
+// workflowRunPlaceholder is one parsed ${...} reference in a step argument.
+type workflowRunPlaceholder struct {
+	kind     string // "vars", "steps", or "trigger"
+	name     string // variable or step name; empty for trigger
+	selector string // JSON selector; empty for vars and raw step output
+}
+
+func workflowRunParsePlaceholder(text string) (workflowRunPlaceholder, bool) {
+	if !strings.HasPrefix(text, "${") || !strings.HasSuffix(text, "}") {
+		return workflowRunPlaceholder{}, false
 	}
-	value := placeholder[2 : len(placeholder)-1]
+	value := text[2 : len(text)-1]
 	if strings.HasPrefix(value, "vars.") {
-		name = strings.TrimPrefix(value, "vars.")
-		return "vars", name, name != ""
+		name := strings.TrimPrefix(value, "vars.")
+		return workflowRunPlaceholder{kind: "vars", name: name}, name != ""
+	}
+	if selector, ok := strings.CutPrefix(value, "trigger.json:"); ok {
+		return workflowRunPlaceholder{kind: "trigger", selector: selector}, selector != ""
+	}
+	if rest, ok := strings.CutPrefix(value, "steps."); ok {
+		if name, selector, ok := strings.Cut(rest, ".json:"); ok {
+			return workflowRunPlaceholder{kind: "steps", name: name, selector: selector}, name != "" && selector != ""
+		}
 	}
 	if strings.HasPrefix(value, "steps.") && strings.HasSuffix(value, ".output") {
-		name = strings.TrimSuffix(strings.TrimPrefix(value, "steps."), ".output")
-		return "steps", name, name != ""
+		name := strings.TrimSuffix(strings.TrimPrefix(value, "steps."), ".output")
+		return workflowRunPlaceholder{kind: "steps", name: name}, name != ""
 	}
-	return "", "", false
+	return workflowRunPlaceholder{}, false
+}
+
+// workflowRunSpecReadsTrigger reports whether any step reads the trigger
+// batch. A validated spec has only well-formed placeholders, so a
+// "${trigger." prefix is always a trigger selector.
+func workflowRunSpecReadsTrigger(spec workflowRunSpec) bool {
+	for _, step := range spec.Steps {
+		if step.StdinTrigger != "" {
+			return true
+		}
+		for _, arg := range step.Args {
+			if strings.Contains(arg, "${trigger.") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func resolveWorkflowRunVars(specVars map[string]string, overrides []string) (map[string]string, error) {
@@ -516,6 +623,7 @@ type workflowRunCheckpoint struct {
 	RunID         string                      `json:"run_id"`
 	SpecSHA256    string                      `json:"spec_sha256"`
 	Vars          map[string]string           `json:"vars,omitempty"`
+	Trigger       *workflowRunTrigger         `json:"trigger,omitempty"`
 	Completed     []workflowRunCheckpointStep `json:"completed"`
 }
 
@@ -535,6 +643,7 @@ type workflowRunExecution struct {
 	Completed      []workflowRunCheckpointStep
 	Checkpoint     *workflowRunCheckpoint
 	CheckpointPath string
+	Trigger        *workflowRunTrigger
 }
 
 func workflowRunCheckpointPath(specPath string) string {
@@ -563,12 +672,17 @@ func readWorkflowRunCheckpoint(path string) (workflowRunCheckpoint, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return workflowRunCheckpoint{}, fmt.Errorf("parse workflow checkpoint %q: %w", path, err)
 	}
-	if header.SchemaVersion != workflowRunCheckpointSchemaVersion {
+	if header.SchemaVersion != workflowRunCheckpointSchemaVersion && header.SchemaVersion != workflowRunCheckpointSchemaVersionV2 {
 		return workflowRunCheckpoint{SchemaVersion: header.SchemaVersion}, nil
 	}
 	var checkpoint workflowRunCheckpoint
 	if err := json.Unmarshal(data, &checkpoint); err != nil {
 		return workflowRunCheckpoint{}, fmt.Errorf("parse workflow checkpoint %q: %w", path, err)
+	}
+	if header.SchemaVersion == workflowRunCheckpointSchemaVersionV2 {
+		// A v2 run never carried a trigger batch.
+		checkpoint.Trigger = nil
+		checkpoint.SchemaVersion = workflowRunCheckpointSchemaVersion
 	}
 	return checkpoint, nil
 }
@@ -706,8 +820,39 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 		workflowRunRememberStepResult(stepResults, name, completed.Status, completed.Output)
 	}
 
+	triggerDocument, err := workflowRunTriggerDocument(execution.Trigger)
+	if err != nil {
+		return report, err
+	}
+
 	stopped := false
 	var executionErr error
+	// skipStep records a step that deliberately does not run. It is ok and
+	// checkpointed, so --resume does not run it, and its output stays
+	// unavailable to later steps.
+	skipStep := func(stepReport workflowRunStepReport, reason string) {
+		stepReport.OK = true
+		stepReport.Status = "skipped"
+		stepReport.Reason = reason
+		if err := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, stepReport.Status, stepReport.Output); err != nil {
+			stepReport.OK = false
+			stepReport.Status = "failed"
+			stepReport.Reason = ""
+			stepReport.Error = err.Error()
+			report.OK = false
+			stopped = true
+			executionErr = err
+		} else {
+			completedByIndex[stepReport.Index] = workflowRunCheckpointStep{
+				Index:  stepReport.Index,
+				Name:   stepReport.Name,
+				Status: stepReport.Status,
+				Output: stepReport.Output,
+			}
+		}
+		workflowRunRememberStepResult(stepResults, stepReport.Name, stepReport.Status, stepReport.Output)
+		report.Steps = append(report.Steps, stepReport)
+	}
 	for i, step := range spec.Steps {
 		stepReport := workflowRunStepReport{
 			Index:  i + 1,
@@ -754,32 +899,12 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 				actual = result.Status
 			}
 			if actual != step.When.Is {
-				stepReport.OK = true
-				stepReport.Status = "skipped"
-				stepReport.Reason = fmt.Sprintf("when: %s is %s, want %s", step.When.Step, actual, step.When.Is)
-				if err := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, stepReport.Status, stepReport.Output); err != nil {
-					stepReport.OK = false
-					stepReport.Status = "failed"
-					stepReport.Reason = ""
-					stepReport.Error = err.Error()
-					report.OK = false
-					stopped = true
-					executionErr = err
-				} else {
-					completedByIndex[stepReport.Index] = workflowRunCheckpointStep{
-						Index:  stepReport.Index,
-						Name:   stepReport.Name,
-						Status: stepReport.Status,
-						Output: stepReport.Output,
-					}
-				}
-				workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output)
-				report.Steps = append(report.Steps, stepReport)
+				skipStep(stepReport, fmt.Sprintf("when: %s is %s, want %s", step.When.Step, actual, step.When.Is))
 				continue
 			}
 		}
 
-		resolvedArgs, err := substituteWorkflowRunStepArgs(step.Args, resolvedVars, stepResults)
+		resolvedArgs, err := substituteWorkflowRunStepArgs(step.Args, resolvedVars, stepResults, triggerDocument)
 		if err != nil {
 			stepReport.Status = "failed"
 			stepReport.Error = err.Error()
@@ -804,21 +929,23 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 		}
 		stepReport.Args = resolvedArgs
 
-		var stdin *string
-		if step.StdinFrom != "" {
-			piped, err := workflowRunAvailableStepOutput(step.StdinFrom, stepResults)
-			if err != nil {
-				stepReport.Status = "failed"
-				stepReport.Error = err.Error()
-				report.OK = false
-				if !spec.ContinueOnError {
-					stopped = true
-				}
-				workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output)
-				report.Steps = append(report.Steps, stepReport)
-				continue
+		// A selection that yields no values skips the step: an empty list
+		// piped into --keys-from - must never reach the command.
+		stdin, emptySelection, err := workflowRunStepStdin(step, stepResults, triggerDocument)
+		if err != nil {
+			stepReport.Status = "failed"
+			stepReport.Error = err.Error()
+			report.OK = false
+			if !spec.ContinueOnError {
+				stopped = true
 			}
-			stdin = &piped
+			workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output)
+			report.Steps = append(report.Steps, stepReport)
+			continue
+		}
+		if emptySelection != "" {
+			skipStep(stepReport, emptySelection)
+			continue
 		}
 
 		root := newRoot()
@@ -983,10 +1110,10 @@ func workflowRunAvailableStepOutput(name string, results map[string]workflowRunS
 	return result.Output, nil
 }
 
-func substituteWorkflowRunStepArgs(args []string, vars map[string]string, results map[string]workflowRunStepResult) ([]string, error) {
+func substituteWorkflowRunStepArgs(args []string, vars map[string]string, results map[string]workflowRunStepResult, triggerDocument any) ([]string, error) {
 	substituted := make([]string, len(args))
 	for i, arg := range args {
-		value, err := substituteWorkflowRunStepArg(arg, vars, results)
+		value, err := substituteWorkflowRunStepArg(arg, vars, results, triggerDocument)
 		if err != nil {
 			return nil, err
 		}
@@ -995,7 +1122,7 @@ func substituteWorkflowRunStepArgs(args []string, vars map[string]string, result
 	return substituted, nil
 }
 
-func substituteWorkflowRunStepArg(arg string, vars map[string]string, results map[string]workflowRunStepResult) (string, error) {
+func substituteWorkflowRunStepArg(arg string, vars map[string]string, results map[string]workflowRunStepResult, triggerDocument any) (string, error) {
 	var substituted strings.Builder
 	substituted.Grow(len(arg))
 	for offset := 0; offset < len(arg); {
@@ -1011,28 +1138,482 @@ func substituteWorkflowRunStepArg(arg string, vars map[string]string, results ma
 			return "", fmt.Errorf("invalid workflow placeholder %q", arg[start:])
 		}
 		end += start + 2
-		placeholder := arg[start : end+1]
-		kind, name, ok := workflowRunParsePlaceholder(placeholder)
+		text := arg[start : end+1]
+		placeholder, ok := workflowRunParsePlaceholder(text)
 		if !ok {
-			return "", fmt.Errorf("invalid workflow placeholder %q", placeholder)
+			return "", fmt.Errorf("invalid workflow placeholder %q", text)
 		}
-		switch kind {
-		case "vars":
-			value, exists := vars[name]
-			if !exists {
-				return "", fmt.Errorf("workflow variable %q is unavailable", name)
-			}
-			substituted.WriteString(value)
-		case "steps":
-			output, err := workflowRunAvailableStepOutput(name, results)
-			if err != nil {
-				return "", err
-			}
-			substituted.WriteString(strings.TrimSpace(output))
+		value, err := resolveWorkflowRunPlaceholder(placeholder, vars, results, triggerDocument)
+		if err != nil {
+			return "", err
 		}
+		substituted.WriteString(value)
 		offset = end + 1
 	}
 	return substituted.String(), nil
+}
+
+// errWorkflowRunNoTrigger refuses a trigger read in a run without a batch.
+var errWorkflowRunNoTrigger = errors.New("workflow trigger values are unavailable: this run has no trigger batch")
+
+func resolveWorkflowRunPlaceholder(placeholder workflowRunPlaceholder, vars map[string]string, results map[string]workflowRunStepResult, triggerDocument any) (string, error) {
+	switch placeholder.kind {
+	case "vars":
+		value, exists := vars[placeholder.name]
+		if !exists {
+			return "", fmt.Errorf("workflow variable %q is unavailable", placeholder.name)
+		}
+		return value, nil
+	case "steps":
+		output, err := workflowRunAvailableStepOutput(placeholder.name, results)
+		if err != nil {
+			return "", err
+		}
+		if placeholder.selector == "" {
+			return strings.TrimSpace(output), nil
+		}
+		document, err := decodeWorkflowRunJSON(output)
+		var value string
+		if err == nil {
+			value, err = workflowRunSelectArgument(document, placeholder.selector)
+		}
+		if err != nil {
+			return "", fmt.Errorf("select %q from step %q output: %w", placeholder.selector, placeholder.name, err)
+		}
+		return value, nil
+	case "trigger":
+		if triggerDocument == nil {
+			return "", errWorkflowRunNoTrigger
+		}
+		value, err := workflowRunSelectArgument(triggerDocument, placeholder.selector)
+		if err != nil {
+			return "", fmt.Errorf("select %q from the trigger batch: %w", placeholder.selector, err)
+		}
+		return value, nil
+	}
+	return "", fmt.Errorf("invalid workflow placeholder kind %q", placeholder.kind)
+}
+
+// workflowRunStepStdin resolves a step's stdin: the raw stdin_from output,
+// its stdin_select values, or stdin_trigger values, one value per line. A
+// selection with no values returns a skip reason instead of stdin.
+func workflowRunStepStdin(step workflowRunStepSpec, results map[string]workflowRunStepResult, triggerDocument any) (*string, string, error) {
+	if step.StdinTrigger != "" {
+		if triggerDocument == nil {
+			return nil, "", errWorkflowRunNoTrigger
+		}
+		lines, count, err := workflowRunSelectLines(triggerDocument, step.StdinTrigger)
+		if err != nil {
+			return nil, "", fmt.Errorf("stdin_trigger: select %q from the trigger batch: %w", step.StdinTrigger, err)
+		}
+		if count == 0 {
+			return nil, "stdin_trigger selected no values", nil
+		}
+		return &lines, "", nil
+	}
+	if step.StdinFrom == "" {
+		return nil, "", nil
+	}
+	output, err := workflowRunAvailableStepOutput(step.StdinFrom, results)
+	if err != nil {
+		return nil, "", err
+	}
+	if step.StdinSelect == "" {
+		return &output, "", nil
+	}
+	document, err := decodeWorkflowRunJSON(output)
+	var lines string
+	var count int
+	if err == nil {
+		lines, count, err = workflowRunSelectLines(document, step.StdinSelect)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("stdin_select: select %q from step %q output: %w", step.StdinSelect, step.StdinFrom, err)
+	}
+	if count == 0 {
+		return nil, "stdin_select selected no values", nil
+	}
+	return &lines, "", nil
+}
+
+// workflowRunTriggerEvent is one change event: the type ("upsert" or
+// "delete"), the resource, and the key that tail emitted for it.
+type workflowRunTriggerEvent struct {
+	Event    string `json:"event"`
+	Resource string `json:"resource"`
+	Key      string `json:"key"`
+}
+
+// workflowRunTrigger is the read-only change batch that started a run. Steps
+// read it through ${trigger.json:PATH} and stdin_trigger. It is checkpointed
+// so --resume replays the same batch.
+type workflowRunTrigger struct {
+	Source   string                    `json:"source"`
+	Resource string                    `json:"resource"`
+	Events   []workflowRunTriggerEvent `json:"events"`
+	// UpsertKeys lists each upserted key once, in event order. A key that is
+	// also deleted in the batch is only in DeleteKeys.
+	UpsertKeys []string `json:"upsert_keys"`
+	DeleteKeys []string `json:"delete_keys"`
+}
+
+// newWorkflowRunTrigger builds a bounded trigger batch. It refuses a batch
+// above workflowRunTriggerMaxEvents rather than truncate it, because a
+// partial key list would silently leave changed records out.
+func newWorkflowRunTrigger(source, resource string, events []workflowRunTriggerEvent) (*workflowRunTrigger, error) {
+	if len(events) > workflowRunTriggerMaxEvents {
+		return nil, fmt.Errorf("the batch has %d change events, above the %d-event limit for workflows that read trigger values", len(events), workflowRunTriggerMaxEvents)
+	}
+	trigger := &workflowRunTrigger{
+		Source:     source,
+		Resource:   resource,
+		Events:     append(make([]workflowRunTriggerEvent, 0, len(events)), events...),
+		UpsertKeys: []string{},
+		DeleteKeys: []string{},
+	}
+	deleted := make(map[string]struct{})
+	for _, event := range events {
+		if event.Event != "delete" {
+			continue
+		}
+		if _, seen := deleted[event.Key]; !seen {
+			deleted[event.Key] = struct{}{}
+			trigger.DeleteKeys = append(trigger.DeleteKeys, event.Key)
+		}
+	}
+	upserted := make(map[string]struct{})
+	for _, event := range events {
+		if event.Event != "upsert" {
+			continue
+		}
+		if _, gone := deleted[event.Key]; gone {
+			continue
+		}
+		if _, seen := upserted[event.Key]; !seen {
+			upserted[event.Key] = struct{}{}
+			trigger.UpsertKeys = append(trigger.UpsertKeys, event.Key)
+		}
+	}
+	return trigger, nil
+}
+
+// workflowRunTriggerDocument returns the batch as the generic JSON value the
+// selectors read, or nil for a run without a batch.
+func workflowRunTriggerDocument(trigger *workflowRunTrigger) (any, error) {
+	if trigger == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(trigger)
+	if err != nil {
+		return nil, fmt.Errorf("encode workflow trigger batch: %w", err)
+	}
+	return decodeWorkflowRunJSON(string(data))
+}
+
+// decodeWorkflowRunJSON parses step output that must be exactly one JSON
+// value. Numbers stay json.Number so a selected key or ID keeps its text.
+func decodeWorkflowRunJSON(text string) (any, error) {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("the output is empty, not JSON")
+		}
+		return nil, fmt.Errorf("the output is not valid JSON: %w", err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("the output has more content after its JSON value")
+	}
+	return document, nil
+}
+
+const (
+	workflowRunSelectField = iota
+	workflowRunSelectIndex
+	workflowRunSelectEach
+	workflowRunSelectFilter
+)
+
+type workflowRunSelectorStep struct {
+	kind  int
+	token string // source text, for errors
+	name  string // object field, or the field a filter compares
+	value string // filter value
+	index int
+}
+
+// workflowRunSelector is a parsed JSON selector. The grammar is bounded:
+//
+//	PATH    = SEGMENT *("." SEGMENT)
+//	SEGMENT = FIELD *("[" (INDEX | "" | FIELD "=" VALUE) "]")
+//	FIELD   = 1*(ALPHA | DIGIT | "_" | "-")
+//
+// Only the first segment may omit FIELD, to index a top-level array. [N]
+// takes element N, [] takes every element, and [field=value] keeps the
+// object elements whose field is a string, number, or boolean equal to
+// value. [] and [field=value] can select several values (fanOut).
+type workflowRunSelector struct {
+	steps  []workflowRunSelectorStep
+	fanOut bool
+}
+
+func parseWorkflowRunSelector(text string) (workflowRunSelector, error) {
+	var selector workflowRunSelector
+	if text == "" {
+		return selector, errors.New("JSON selector is empty")
+	}
+	if len(text) > workflowRunSelectorMaxLength {
+		return selector, fmt.Errorf("JSON selector %q is longer than %d characters", text, workflowRunSelectorMaxLength)
+	}
+	for i := 0; i < len(text); {
+		start := i
+		for i < len(text) && workflowRunSelectorNameByte(text[i]) {
+			i++
+		}
+		if i > start {
+			selector.steps = append(selector.steps, workflowRunSelectorStep{kind: workflowRunSelectField, token: text[start:i], name: text[start:i]})
+		} else if start != 0 || text[i] != '[' {
+			return selector, fmt.Errorf("JSON selector %q needs a field name at offset %d", text, start)
+		}
+		for i < len(text) && text[i] == '[' {
+			end := strings.IndexByte(text[i:], ']')
+			if end == -1 {
+				return selector, fmt.Errorf("JSON selector %q has an unclosed [", text)
+			}
+			step, err := parseWorkflowRunSelectorBracket(text[i : i+end+1])
+			if err != nil {
+				return selector, fmt.Errorf("JSON selector %q: %w", text, err)
+			}
+			if step.kind == workflowRunSelectEach || step.kind == workflowRunSelectFilter {
+				selector.fanOut = true
+			}
+			selector.steps = append(selector.steps, step)
+			i += end + 1
+		}
+		if i == len(text) {
+			break
+		}
+		if text[i] != '.' {
+			return selector, fmt.Errorf("JSON selector %q has an unexpected %q at offset %d", text, text[i], i)
+		}
+		i++
+		if i == len(text) {
+			return selector, fmt.Errorf("JSON selector %q ends with a dot", text)
+		}
+	}
+	if len(selector.steps) > workflowRunSelectorMaxSteps {
+		return selector, fmt.Errorf("JSON selector %q has more than %d steps", text, workflowRunSelectorMaxSteps)
+	}
+	return selector, nil
+}
+
+// parseWorkflowRunArgumentSelector parses a selector for one argument value,
+// which must select exactly one value.
+func parseWorkflowRunArgumentSelector(text string) (workflowRunSelector, error) {
+	selector, err := parseWorkflowRunSelector(text)
+	if err != nil {
+		return selector, err
+	}
+	if selector.fanOut {
+		return selector, fmt.Errorf("JSON selector %q can select several values, but an argument takes one; use [N], or pipe a list with stdin_select or stdin_trigger", text)
+	}
+	return selector, nil
+}
+
+func parseWorkflowRunSelectorBracket(token string) (workflowRunSelectorStep, error) {
+	step := workflowRunSelectorStep{token: token}
+	inner := token[1 : len(token)-1]
+	if inner == "" {
+		step.kind = workflowRunSelectEach
+		return step, nil
+	}
+	if name, value, ok := strings.Cut(inner, "="); ok {
+		if !workflowRunSelectorName(name) || value == "" || strings.ContainsAny(value, "[{}") {
+			return step, fmt.Errorf("%s must be [field=value] with a field name and a non-empty value", token)
+		}
+		step.kind = workflowRunSelectFilter
+		step.name = name
+		step.value = value
+		return step, nil
+	}
+	if len(inner) > 6 || !workflowRunSelectorDigits(inner) {
+		return step, fmt.Errorf("%s must be [], [N] with N below 1000000, or [field=value]", token)
+	}
+	index, err := strconv.Atoi(inner)
+	if err != nil {
+		return step, fmt.Errorf("%s: %w", token, err)
+	}
+	step.kind = workflowRunSelectIndex
+	step.index = index
+	return step, nil
+}
+
+func workflowRunSelectorNameByte(c byte) bool {
+	return c == '_' || c == '-' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func workflowRunSelectorName(text string) bool {
+	if text == "" {
+		return false
+	}
+	for i := range len(text) {
+		if !workflowRunSelectorNameByte(text[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func workflowRunSelectorDigits(text string) bool {
+	for i := range len(text) {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return text != ""
+}
+
+// selectFrom applies the selector to a decoded JSON value. A missing field,
+// an out-of-range index, or a value of the wrong JSON type fails closed; only
+// a filter that matches no element yields an empty result.
+func (s workflowRunSelector) selectFrom(document any) ([]any, error) {
+	current := []any{document}
+	for _, step := range s.steps {
+		next := make([]any, 0, len(current))
+		for _, value := range current {
+			if step.kind == workflowRunSelectField {
+				object, ok := value.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("field %q needs an object, found %s", step.name, workflowRunJSONKind(value))
+				}
+				member, ok := object[step.name]
+				if !ok {
+					return nil, fmt.Errorf("field %q is missing", step.name)
+				}
+				next = append(next, member)
+				continue
+			}
+			array, ok := value.([]any)
+			if !ok {
+				return nil, fmt.Errorf("%s needs an array, found %s", step.token, workflowRunJSONKind(value))
+			}
+			switch step.kind {
+			case workflowRunSelectIndex:
+				if step.index >= len(array) {
+					return nil, fmt.Errorf("%s is out of range: the array has %d element(s)", step.token, len(array))
+				}
+				next = append(next, array[step.index])
+			case workflowRunSelectEach:
+				next = append(next, array...)
+			case workflowRunSelectFilter:
+				for _, element := range array {
+					object, ok := element.(map[string]any)
+					if !ok {
+						return nil, fmt.Errorf("%s needs an array of objects, found an element that is %s", step.token, workflowRunJSONKind(element))
+					}
+					if text, ok := workflowRunSelectorScalarText(object[step.name]); ok && text == step.value {
+						next = append(next, element)
+					}
+				}
+			}
+		}
+		current = next
+	}
+	return current, nil
+}
+
+// workflowRunSelectArgument selects the one string, number, or boolean an
+// argument value takes. Command and flag identity are checked after
+// substitution (validateWorkflowRunResolvedStepArgs), so a selected value
+// can fill a value but never choose a command or a flag.
+func workflowRunSelectArgument(document any, selectorText string) (string, error) {
+	selector, err := parseWorkflowRunArgumentSelector(selectorText)
+	if err != nil {
+		return "", err
+	}
+	values, err := selector.selectFrom(document)
+	if err != nil {
+		return "", err
+	}
+	text, ok := workflowRunSelectorScalarText(values[0])
+	if !ok {
+		return "", fmt.Errorf("selected %s, but an argument takes a string, number, or boolean", workflowRunJSONKind(values[0]))
+	}
+	return text, nil
+}
+
+// workflowRunSelectLines renders the selected values one per line for stdin.
+// A selected array contributes its elements. Every line value must be a
+// string, number, or boolean without a line break.
+func workflowRunSelectLines(document any, selectorText string) (string, int, error) {
+	selector, err := parseWorkflowRunSelector(selectorText)
+	if err != nil {
+		return "", 0, err
+	}
+	values, err := selector.selectFrom(document)
+	if err != nil {
+		return "", 0, err
+	}
+	var lines strings.Builder
+	count := 0
+	addLine := func(value any) error {
+		text, ok := workflowRunSelectorScalarText(value)
+		if !ok {
+			return fmt.Errorf("selected %s, but stdin takes strings, numbers, or booleans, one per line", workflowRunJSONKind(value))
+		}
+		if strings.ContainsAny(text, "\r\n") {
+			return errors.New("selected a value with a line break, but stdin takes one value per line")
+		}
+		lines.WriteString(text)
+		lines.WriteByte('\n')
+		count++
+		return nil
+	}
+	for _, value := range values {
+		if elements, ok := value.([]any); ok {
+			for _, element := range elements {
+				if err := addLine(element); err != nil {
+					return "", 0, err
+				}
+			}
+			continue
+		}
+		if err := addLine(value); err != nil {
+			return "", 0, err
+		}
+	}
+	return lines.String(), count, nil
+}
+
+func workflowRunSelectorScalarText(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case json.Number:
+		return typed.String(), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	}
+	return "", false
+}
+
+func workflowRunJSONKind(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case map[string]any:
+		return "an object"
+	case []any:
+		return "an array"
+	case string:
+		return "a string"
+	case json.Number:
+		return "a number"
+	case bool:
+		return "a boolean"
+	}
+	return fmt.Sprintf("%T", value)
 }
 
 func validateWorkflowRunResolvedStepArgs(root *cobra.Command, stepIndex int, literalArgs, resolvedArgs []string) error {

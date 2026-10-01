@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -176,6 +177,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagVerifyFiles bool
 	var flagScope string
+	var flagDuplicateAttachmentBytes bool
 
 	cmd := &cobra.Command{
 		Use:         "audit",
@@ -203,6 +205,9 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations, sel)
+			if flagDuplicateAttachmentBytes {
+				checks = append(checks, duplicateAttachmentBytesAuditCheck(sel))
+			}
 			if len(checks) == 0 {
 				summary, err := itemsAuditSummaryForScope(db, sel)
 				if err != nil {
@@ -260,6 +265,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&flagCitations, "missing-citation", false, "List citeable items missing core citation fields (creators, title, date, venue)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items per category (0 = no limit)")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Verify each PDF attachment's file exists on disk (one local-API lookup per attachment)")
+	cmd.Flags().BoolVar(&flagDuplicateAttachmentBytes, "duplicate-attachment-bytes", false, "List groups of stored attachments that share a Zotero-registered MD5 (candidate duplicates; never deletes)")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 
 	return cmd
@@ -319,6 +325,12 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 func itemsAuditFindingsForChecks(checks []itemsAuditCheck, results map[string][]map[string]any) []Finding {
 	findings := make([]Finding, 0)
 	for _, check := range checks {
+		if check.name == duplicateAttachmentBytesKind {
+			for _, group := range results[check.name] {
+				findings = append(findings, duplicateAttachmentBytesFinding(group, FindingSource{Kind: "local"}))
+			}
+			continue
+		}
 		for _, row := range results[check.name] {
 			finding := Finding{
 				Kind:        check.name,
@@ -990,4 +1002,175 @@ func filterAuditRowsByParent(rows []map[string]any, sel scopeSelection) []map[st
 		}
 	}
 	return filtered
+}
+
+// duplicateAttachmentBytesKind names the stored-attachment MD5 check in both
+// `items audit` and `library health`.
+const duplicateAttachmentBytesKind = "duplicate_attachment_bytes"
+
+// duplicateAttachmentBytesAuditCheck reports MD5 groups whose members belong
+// to the cohort. The limit caps groups, not attachments.
+func duplicateAttachmentBytesAuditCheck(sel scopeSelection) itemsAuditCheck {
+	return itemsAuditCheck{name: duplicateAttachmentBytesKind, query: func(db localQueryStore, limit int) ([]map[string]any, error) {
+		rows, err := queryStoredAttachmentsWithMD5(db)
+		if err != nil {
+			return nil, err
+		}
+		// A restricted cohort never holds "", so standalone attachments drop out.
+		groups := groupDuplicateAttachmentBytes(rows, sel.allows)
+		if limit > 0 && len(groups) > limit {
+			groups = groups[:limit]
+		}
+		return groups, nil
+	}}
+}
+
+// queryStoredAttachmentsWithMD5 lists attachments whose bytes Zotero stores
+// (imported_file, imported_url) and for which Zotero registered an MD5. Linked
+// files are excluded: Zotero never records a checksum it can trust for bytes
+// it does not hold, and deleting one frees no storage. The byte size comes
+// from the API's links.enclosure.length and is NULL when the mirror lacks it.
+func queryStoredAttachmentsWithMD5(db localQueryStore) ([]map[string]any, error) {
+	return db.QueryRaw(`
+SELECT
+	a.id AS key,
+	COALESCE(a.parent_key, '') AS parent,
+	COALESCE(json_extract(p.data, '$.data.title'), '') AS parent_title,
+	COALESCE(json_extract(a.data, '$.data.filename'), json_extract(a.data, '$.data.title'), '') AS filename,
+	json_extract(a.data, '$.data.linkMode') AS link_mode,
+	json_extract(a.data, '$.data.md5') AS md5,
+	json_extract(a.data, '$.links.enclosure.length') AS size
+FROM resources a
+LEFT JOIN resources p ON p.resource_type = 'items' AND p.id = a.parent_key
+WHERE a.resource_type = 'items'
+	AND a.item_type = 'attachment'
+	AND COALESCE(json_extract(a.data, '$.data.linkMode'), '') IN ('imported_file', 'imported_url')
+	AND TRIM(COALESCE(json_extract(a.data, '$.data.md5'), '')) <> ''
+ORDER BY LOWER(TRIM(json_extract(a.data, '$.data.md5'))), parent, key`)
+}
+
+// groupDuplicateAttachmentBytes groups admitted rows by MD5 and keeps groups
+// of two or more. Rows must arrive ordered by md5. A group is same_parent
+// when every copy hangs off one parent, cross_parent otherwise. Equal MD5 is
+// candidate evidence of equal bytes, not proof. reclaimable_bytes is the size
+// of every copy beyond the first, emitted only when a member's size is known;
+// each attachment belongs to exactly one group, so no byte counts twice.
+func groupDuplicateAttachmentBytes(rows []map[string]any, admit func(parent string) bool) []map[string]any {
+	groups := make([]map[string]any, 0)
+	flush := func(md5 string, members []map[string]any) {
+		if len(members) < 2 {
+			return
+		}
+		parents := make([]string, 0, len(members))
+		size := 0
+		standalone := false
+		attachments := make([]map[string]any, 0, len(members))
+		for _, m := range members {
+			parent := sqlStringValue(m["parent"])
+			if parent == "" {
+				standalone = true
+			}
+			if parent != "" && !slices.Contains(parents, parent) {
+				parents = append(parents, parent)
+			}
+			att := map[string]any{
+				"key":          sqlStringValue(m["key"]),
+				"parent":       parent,
+				"parent_title": sqlStringValue(m["parent_title"]),
+				"filename":     sqlStringValue(m["filename"]),
+				"link_mode":    sqlStringValue(m["link_mode"]),
+			}
+			if n := sqlIntValue(m["size"]); n > 0 {
+				att["size_bytes"] = n
+				if size == 0 {
+					size = n
+				}
+			}
+			attachments = append(attachments, att)
+		}
+		class := "cross_parent"
+		if len(parents) == 1 && !standalone {
+			class = "same_parent"
+		}
+		group := map[string]any{
+			"md5":         md5,
+			"class":       class,
+			"count":       len(members),
+			"parents":     parents,
+			"attachments": attachments,
+		}
+		if size > 0 {
+			group["size_bytes"] = size
+			group["reclaimable_bytes"] = size * (len(members) - 1)
+		}
+		groups = append(groups, group)
+	}
+	var current string
+	var members []map[string]any
+	for _, r := range rows {
+		if !admit(sqlStringValue(r["parent"])) {
+			continue
+		}
+		md5 := strings.ToLower(strings.TrimSpace(sqlStringValue(r["md5"])))
+		if md5 != current {
+			flush(current, members)
+			current, members = md5, nil
+		}
+		members = append(members, r)
+	}
+	flush(current, members)
+	return groups
+}
+
+// duplicateAttachmentBytesFinding renders one MD5 group. The finding names no
+// single item; Evidence.keys carries the parents so a scoped health run keeps
+// it, and group/value give it a stable baseline identity.
+func duplicateAttachmentBytesFinding(group map[string]any, src FindingSource) Finding {
+	parents, _ := group["parents"].([]string)
+	ev := map[string]any{
+		"group":       "md5",
+		"value":       group["md5"],
+		"class":       group["class"],
+		"count":       group["count"],
+		"keys":        parents,
+		"attachments": group["attachments"],
+	}
+	if v, ok := group["reclaimable_bytes"]; ok {
+		ev["size_bytes"] = group["size_bytes"]
+		ev["reclaimable_bytes"] = v
+	}
+	text := "Matching MD5 values are candidate evidence of identical files, not proof. Open the attachments in Zotero and compare them; delete a copy only after review. zotio never deletes attachments by hash."
+	if group["class"] == "cross_parent" {
+		text = "The same stored file is attached to more than one item, which can mean the items are duplicates. Review them with `zotio items duplicates`; merge or delete only after review. zotio never deletes attachments by hash."
+	}
+	return Finding{
+		Kind:              duplicateAttachmentBytesKind,
+		Severity:          sevInfo,
+		Title:             fmt.Sprintf("%v stored attachments share MD5 %v", group["count"], group["md5"]),
+		Evidence:          ev,
+		Source:            src,
+		RecommendedAction: &RecommendedAction{Text: text},
+	}
+}
+
+// queryNonportablePDFAttachments lists PDF children stored as linked_file.
+// Their bytes stay on the machine that linked them: Zotero sync and group
+// members see only the path. imported_file and imported_url children are
+// stored and travel; linked_url children are web links, not PDF files.
+func queryNonportablePDFAttachments(db localQueryStore) ([]map[string]any, error) {
+	return db.QueryRaw(`
+SELECT
+	a.id AS key,
+	a.parent_key AS parent,
+	COALESCE(json_extract(p.data, '$.data.title'), '') AS title,
+	COALESCE(json_extract(a.data, '$.data.filename'), json_extract(a.data, '$.data.title'), '') AS name,
+	COALESCE(json_extract(a.data, '$.data.path'), '') AS path
+FROM resources a
+LEFT JOIN resources p ON p.resource_type = 'items' AND p.id = a.parent_key
+WHERE a.resource_type = 'items'
+	AND a.item_type = 'attachment'
+	AND COALESCE(a.parent_key, '') <> ''
+	AND json_extract(a.data, '$.data.contentType') = 'application/pdf'
+	AND json_extract(a.data, '$.data.linkMode') = 'linked_file'
+ORDER BY a.parent_key, a.id`)
 }

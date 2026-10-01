@@ -310,26 +310,11 @@ func TestItemsUpdateAndRestoreRefuseMoreThanOneKey(t *testing.T) {
 			if err == nil {
 				t.Fatalf("items %s accepted two keys; it acts on the first and drops the rest without saying so", tt.name)
 			}
-			if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
+			if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
 				t.Errorf("error = %q, want the arity bound the neighbouring commands report", err.Error())
-			}
-			// The sibling single-target commands surface this refusal as exit 1 (a
-			// standalone Cobra arity error, not a wrapped usage error); the command
-			// must match that convention, not invent its own code.
-			if ExitCode(err) != 1 {
-				t.Errorf("ExitCode = %d, want 1 (the Cobra-arity convention siblings follow)", ExitCode(err))
 			}
 			if g.requests != 0 {
 				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", g.requests)
-			}
-
-			// Zero args still renders help rather than erroring, which is why the
-			// bound is MaximumNArgs and not ExactArgs.
-			helpGuard := newItemsUpdateArgGuardServer(t)
-			help := tt.new(&rootFlags{asJSON: true})
-			help.SilenceErrors, help.SilenceUsage = true, true
-			if err := runItemsUpdateArgGuardCmd(t, helpGuard, help); err != nil {
-				t.Errorf("items %s with no key = %v, want the help output", tt.name, err)
 			}
 
 			// The single-key path still previews unchanged: no error and no HTTP call.

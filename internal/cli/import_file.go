@@ -55,12 +55,8 @@ Records are posted in batches, so a record Zotero rejects cannot un-submit the
 records sent alongside it. Every record therefore reports its own outcome
 instead of the run stopping at the first rejection.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-
 			filePath := args[0]
 			content, err := os.ReadFile(filePath)
 			if err != nil {
@@ -182,7 +178,7 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 		return "failed", err.Error(), err
 	}
 	if failure, ok := b.failed[index]; ok {
-		return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+		return "failed", failure.detail(strconv.Itoa(index)), nil
 	}
 	return "applied", nil, nil
 }
@@ -230,7 +226,8 @@ func (b *importFileBatch) runBatch(start int) {
 		if convErr != nil {
 			// Zotero returned a non-numeric element index; charge it to the
 			// batch's first record rather than dropping the rejection.
-			b.failed[start] = batchWriteFailure{Code: failure.Code, Message: fmt.Sprintf("index %s: %s", key, failure.Message)}
+			failure.Message = fmt.Sprintf("index %s: %s", key, failure.Message)
+			b.failed[start] = failure
 			continue
 		}
 		b.failed[index] = failure

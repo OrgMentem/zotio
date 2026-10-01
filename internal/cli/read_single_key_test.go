@@ -52,16 +52,15 @@ func executeReadSingleKeyCmd(t *testing.T, ctr *readSingleKeyCounter, cmd *cobra
 // from args[0] alone, and the operator reads one result as two.
 func TestSingleKeyReadsRefuseMoreThanOneKey(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		new      func(*rootFlags) *cobra.Command
-		refuse   []string
-		noun     string
-		helpNoun string
+		name   string
+		new    func(*rootFlags) *cobra.Command
+		refuse []string
+		noun   string
 	}{
-		{name: "items get", new: newItemsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
-		{name: "collections get", new: newCollectionsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
-		{name: "searches get", new: newSearchesGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
-		{name: "tags get", new: newTagsGetCmd, refuse: []string{"A", "B"}, noun: "names", helpNoun: "name"},
+		{name: "items get", new: newItemsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys"},
+		{name: "collections get", new: newCollectionsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys"},
+		{name: "searches get", new: newSearchesGetCmd, refuse: []string{"K1", "K2"}, noun: "keys"},
+		{name: "tags get", new: newTagsGetCmd, refuse: []string{"A", "B"}, noun: "names"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctr := newReadSingleKeyCounter(t)
@@ -72,13 +71,6 @@ func TestSingleKeyReadsRefuseMoreThanOneKey(t *testing.T) {
 			}
 			if ctr.requests != 0 {
 				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
-			}
-
-			// Zero args still renders help rather than erroring, which is why the
-			// bound is MaximumNArgs and not ExactArgs.
-			helpCtr := newReadSingleKeyCounter(t)
-			if _, err := executeReadSingleKeyCmd(t, helpCtr, tt.new(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
-				t.Errorf("%s with no %s = %v, want the help output", tt.name, tt.helpNoun, err)
 			}
 		})
 	}
@@ -99,16 +91,6 @@ func TestItemsOpenRefusesMoreThanOneKey(t *testing.T) {
 	}
 	if got := out.String(); got != "" {
 		t.Errorf("stdout = %q, want nothing: the refused keys must not produce a deep link", got)
-	}
-
-	// Zero args still renders help rather than erroring, which is why the
-	// bound is MaximumNArgs and not ExactArgs.
-	help := newItemsOpenCmd(&rootFlags{})
-	help.SilenceErrors, help.SilenceUsage = true, true
-	help.SetOut(&bytes.Buffer{})
-	help.SetErr(io.Discard)
-	if err := help.Execute(); err != nil {
-		t.Errorf("items open with no key = %v, want the help output", err)
 	}
 
 	// The single-key path still prints the deep link unchanged.

@@ -145,6 +145,30 @@ func OpenReadOnlyDiagnosticContext(ctx context.Context, dbPath string) (*Store, 
 	return s, nil
 }
 
+// OpenImmutableSnapshotContext opens an existing store with SQLite's
+// immutable=1 URI flag. SQLite then takes no locks and never creates -wal or
+// -shm sidecars, so callers that promise to leave the filesystem untouched
+// (for example --dry-run previews) can read the main database file. Content
+// still held only in an existing -wal file is not visible.
+func OpenImmutableSnapshotContext(ctx context.Context, dbPath string) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1"+
+		"&_pragma=foreign_keys(ON)"+
+		"&_pragma=temp_store(MEMORY)")
+	if err != nil {
+		return nil, fmt.Errorf("opening database (immutable): %w", err)
+	}
+	db.SetMaxOpenConns(2)
+	s := &Store{db: db}
+	if err := s.db.PingContext(ctx); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("opening database (immutable): %w", err)
+	}
+	return s, nil
+}
+
 func openReadOnlyStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
 		"&_pragma=busy_timeout(10000)"+

@@ -126,6 +126,14 @@ or text-only PDFs may report "unidentified".`,
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			defer db.Close()
+			ready, detail, err := importItemsMirrorReady(cmd.Context(), db)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "import scan", preconditionSyncedStore,
+					detail, importItemsMirrorRemediation())
+			}
 
 			idx, err := buildLibraryDOIIndex(cmd.Context(), db)
 			if err != nil {
@@ -179,6 +187,42 @@ func listPDFs(dir string, limit int) ([]string, error) {
 		}
 	}
 	return pdfs, nil
+}
+
+// importItemsMirrorReady reports whether the mirror holds a completed items
+// pass, the only data DOI classification reads. The shared synced_store
+// precondition accepts a checkpoint for any resource, so after
+// `sync --resources collections` every DOI would classify as new and an
+// applied manifest would duplicate the library. A completed pass clears the
+// resume cursor; a cursor left beside a library-version stamp is an
+// interrupted incremental pass over an earlier completed one, which still
+// mirrors every item. A completed empty items pass is a valid mirror.
+func importItemsMirrorReady(ctx context.Context, db *store.Store) (bool, string, error) {
+	cursor, _, lastSynced, _, err := db.GetSyncResumeStateContext(ctx, "items")
+	if err != nil && !syncHintMissingTable(err) {
+		return false, "", fmt.Errorf("reading items sync checkpoint: %w", err)
+	}
+	if err != nil || lastSynced.IsZero() {
+		return false, "local store has no items sync checkpoint, so every DOI would classify as new", nil
+	}
+	if cursor == "" {
+		return true, "", nil
+	}
+	_, source, err := db.StoredLibraryVersionContext(ctx, "items")
+	if err != nil {
+		return false, "", fmt.Errorf("reading items library-version checkpoint: %w", err)
+	}
+	if source == "" {
+		return false, "the initial items sync has not finished, so DOIs of unsynced items would classify as new", nil
+	}
+	return true, "", nil
+}
+
+func importItemsMirrorRemediation() []string {
+	return []string{
+		"Run 'zotio sync --resources items' to finish mirroring library items, then retry.",
+		"If this is a group library, pass --group <id> or set ZOTERO_GROUP before syncing and retrying.",
+	}
 }
 
 type libItem struct {

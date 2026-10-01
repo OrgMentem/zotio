@@ -59,13 +59,10 @@ command emits {uri, target_type, library_scope, launched}.`,
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `items open K1 K2` used to open K1 and drop K2 on
 		// the floor: the deep link is built from args[0] alone, and nothing
-		// reported the ignored keys. Zero args still renders help, which
-		// MaximumNArgs allows and ExactArgs would not.
-		Args: cobra.MaximumNArgs(1),
+		// reported the ignored keys. A missing key is a usage error, not a help
+		// request that exits 0.
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			uri, targetType, libScope, err := zoteroDeepLink(flagType, args[0])
 			if err != nil {
 				return err

@@ -263,7 +263,7 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 				return "failed", envelope.Error(), envelope
 			}
 			if failure, ok := failed[strconv.Itoa(index)]; ok {
-				return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+				return "failed", failure.detail(strconv.Itoa(index)), nil
 			}
 			return "applied", itemCreateAppliedReason("web", keys[strconv.Itoa(index)]), nil
 		}

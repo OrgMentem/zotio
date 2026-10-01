@@ -209,9 +209,10 @@ func TestSummaryWarningsEmitResultThenDegrade(t *testing.T) {
 	}
 }
 
-// TestItemsSummarizeEmptyStoreProbeAllowsHelp pins the probe's missing-row path.
-// Without the ErrNotFound exception, an empty valid store reports an open failure.
-func TestItemsSummarizeEmptyStoreProbeAllowsHelp(t *testing.T) {
+// TestItemsSummarizeEmptyStoreProbeAllowsEmptyCohort pins the probe's
+// missing-row path. Without the ErrNotFound exception, an empty valid store
+// reports an open failure instead of an empty collection bundle.
+func TestItemsSummarizeEmptyStoreProbeAllowsEmptyCohort(t *testing.T) {
 	isolateDemoEnv(t, "0")
 	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
@@ -225,11 +226,9 @@ func TestItemsSummarizeEmptyStoreProbeAllowsHelp(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--collection", "EMPTY001", "--no-fulltext"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("summarize against empty store: %v", err)
-	}
-	if !strings.Contains(out.String(), "Usage:") {
-		t.Fatalf("stdout = %q, want command help", out.String())
+		t.Fatalf("summarize an empty collection against an empty store: %v (stdout=%q)", err, out.String())
 	}
 }
 

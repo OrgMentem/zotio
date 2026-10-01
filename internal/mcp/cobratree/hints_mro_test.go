@@ -65,6 +65,7 @@ func TestMroMirrorNeverAdvertisesFileWritersReadOnly(t *testing.T) {
 		"collections_bundle",
 		"annotations_export",
 		"library_wrapped",
+		"creators_audit",
 	} {
 		if !fileWriters[name] {
 			t.Errorf("%s is not marked as a file writer on the mirror; it would be advertised read-only", name)
@@ -94,6 +95,11 @@ func TestMroFacadeSearchReportsFileWriters(t *testing.T) {
 	}
 	if got := detail("export snapshot"); !got.WritesFiles {
 		t.Errorf("command_search export snapshot = %+v, want writesFiles=true", got)
+	}
+	for _, name := range []string{"export", "creators audit"} {
+		if got := detail(name); !got.WritesFiles {
+			t.Errorf("command_search %s = %+v, want writesFiles=true", name, got)
+		}
 	}
 	if got := detail("library stats"); got.WritesFiles {
 		t.Errorf("command_search library stats = %+v, want writesFiles=false", got)

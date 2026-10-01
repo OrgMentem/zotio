@@ -25,11 +25,8 @@ result read runs against Zotero desktop's local API. With Zotero closed, or on
 a plane without /searches/{key}/items, the command refuses with a
 precondition_unmet envelope (exit 9) instead of an empty-looking answer.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			// encode the saved-search key as a single path segment.
 			rawSearchKey := args[0]
 			searchKey := url.PathEscape(rawSearchKey)

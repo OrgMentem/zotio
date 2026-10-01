@@ -74,11 +74,8 @@ does not own the DOI.
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			// The DOI import plan is known before fetching metadata: one create,
 			// plus the resolver attachment when requested. In apply mode, reject
 			// an over-cap plan before constructing clients or making network calls.
@@ -126,10 +123,7 @@ wins over --yes.`,
 					} else {
 						res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 					}
-					if err != nil {
-						return "failed", nil, err
-					}
-					return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
+					return singleItemCreateApplyResult(res, err, args[0])
 				},
 			}}
 			if flagFetchPDF {

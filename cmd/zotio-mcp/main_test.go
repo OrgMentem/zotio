@@ -79,7 +79,8 @@ func TestValidateMCPHTTPRequestOriginCases(t *testing.T) {
 
 func TestHardenedHTTPServerRejectsForeignHostOnLoopback(t *testing.T) {
 	mcpServer := server.NewMCPServer("test", "1.0.0")
-	httpServer := httptest.NewServer(newHardenedStreamableHTTPServer(mcpServer, "127.0.0.1:7777", ""))
+	handler, _ := newHardenedStreamableHTTPServer(mcpServer, "127.0.0.1:7777", "")
+	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
 	req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/mcp", nil)

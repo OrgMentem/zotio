@@ -40,11 +40,8 @@ after each sync (or run 'zotio workflow run refresh.json --yes').`,
 			"zotio:requires-allow-destructive": "false",
 			"zotio:default-max-changes":        "500",
 		},
-		Args: cobra.MaximumNArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			if toCollection == "" {
 				return fmt.Errorf("required flag %q not set", "to")
 			}

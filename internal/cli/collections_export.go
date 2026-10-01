@@ -58,11 +58,8 @@ synced mirror already holds, so it also works with Zotero closed
 		// the same precondition_unmet envelope and exit code, only for the
 		// formats that actually need Zotero.
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true", preflightAnnotationKey: preflightAnnotationSkip},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			collKey := args[0]
 
 			format := flagFormat

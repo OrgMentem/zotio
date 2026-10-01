@@ -50,17 +50,13 @@ type batchItemUpdater struct {
 	objects []map[string]any
 
 	done      map[int]bool              // chunk start index -> executed
-	failed    map[int]batchWriteFailure // absolute object index -> failure
+	failed    map[int]batchWriteFailure // absolute object index -> failure; Malformed means unknown outcome
 	transport map[int]error             // chunk start index -> request failure
 	// unattributable marks a chunk whose response cannot prove its objects'
 	// outcomes: it named an index that cannot belong to the chunk, or it was
 	// not the batch envelope at all. Every object in that chunk has an unknown
 	// outcome.
 	unattributable map[int]bool
-	// malformed marks an object whose `failed` entry is not a {code, message}
-	// object. Zotero rejected it in some way, so its outcome is unknown; it
-	// must never fall through to "applied".
-	malformed map[int]bool
 
 	// err aggregates whatever the command should return as its own error.
 	err error
@@ -76,7 +72,6 @@ func newBatchItemUpdater(c *client.Client, path, operation string, objects []map
 		failed:         make(map[int]batchWriteFailure),
 		transport:      make(map[int]error),
 		unattributable: make(map[int]bool),
-		malformed:      make(map[int]bool),
 	}
 }
 
@@ -122,6 +117,9 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 		return "failed", transportErr.Error(), transportErr
 	}
 	if failure, ok := b.failed[index]; ok {
+		if failure.Malformed {
+			return "failed", "batch response carried a malformed failure entry for this item; its outcome is unknown", nil
+		}
 		detail := map[string]any{"code": failure.Code, "message": failure.Message}
 		// 412 is a lost precondition and 428 a missing one; both are the
 		// conflict the per-item path reports, so they must not be flattened
@@ -130,9 +128,6 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 			return "conflict", detail, nil
 		}
 		return "failed", detail, nil
-	}
-	if b.malformed[index] {
-		return "failed", "batch response carried a malformed failure entry for this item; its outcome is unknown", nil
 	}
 	if b.unattributable[start] {
 		// The response named an index this request cannot own, so the absence
@@ -164,24 +159,11 @@ func (b *batchItemUpdater) send(start int) {
 		}
 		return
 	}
-	// Decode each failed entry on its own. Decoding the map in one call drops
-	// every failure when any entry is malformed, which would report the
-	// rejected objects applied.
-	var envelope struct {
-		Failed map[string]json.RawMessage `json:"failed"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		b.unattributable[start] = true
-		if b.err == nil {
-			b.err = fmt.Errorf("%s: batch response failed map could not be decoded: %w; the outcome of the %d item(s) in that request is unknown", b.operation, err, end-start)
-		}
-		return
-	}
 	// checkBatchEnvelope already proved the union of claimed indices covers the
 	// chunk, so this loop only distributes failures. The range guard stays as
 	// defence in depth: a response that contradicts the verified envelope
 	// must fail the chunk, never poison the failure map.
-	for index, raw := range envelope.Failed {
+	for index, failure := range decodeBatchWriteResponse(data).Failed {
 		offset, convErr := strconv.Atoi(index)
 		// Compare inside the chunk: start+offset would overflow for an
 		// offset near MaxInt and wrap past this bound.
@@ -192,13 +174,8 @@ func (b *batchItemUpdater) send(start int) {
 			}
 			continue
 		}
-		var failure batchWriteFailure
-		if decodeErr := json.Unmarshal(raw, &failure); decodeErr != nil || failure.Code == 0 {
-			b.malformed[start+offset] = true
-			if b.err == nil {
-				b.err = fmt.Errorf("%s: batch response reported a malformed failure for index %q; that item's outcome is unknown", b.operation, index)
-			}
-			continue
+		if failure.Malformed && b.err == nil {
+			b.err = fmt.Errorf("%s: batch response reported a malformed failure for index %q; that item's outcome is unknown", b.operation, index)
 		}
 		b.failed[start+offset] = failure
 	}

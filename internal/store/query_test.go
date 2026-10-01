@@ -686,7 +686,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 		t.Fatalf("seed full-text search documents: %v", err)
 	}
 
-	got, err := s.SearchFulltextContext(context.Background(), "uniquely searchable", 10)
+	got, err := s.SearchFulltextContext(context.Background(), FulltextSearch{Query: "uniquely searchable", Limit: 10})
 	if err != nil {
 		t.Fatalf("SearchFulltextContext: %v", err)
 	}
@@ -701,7 +701,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	}
 
 	for _, structuralToken := range []string{"content", "fulltext"} {
-		unrelated, err := s.SearchFulltextContext(context.Background(), structuralToken, 10)
+		unrelated, err := s.SearchFulltextContext(context.Background(), FulltextSearch{Query: structuralToken, Limit: 10})
 		if err != nil {
 			t.Fatalf("SearchFulltextContext(%q): %v", structuralToken, err)
 		}
@@ -716,7 +716,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("replace oversized full text: %v", err)
 	}
-	bounded, err := s.SearchFulltextContext(context.Background(), "boundaryneedle", 10)
+	bounded, err := s.SearchFulltextContext(context.Background(), FulltextSearch{Query: "boundaryneedle", Limit: 10})
 	if err != nil {
 		t.Fatalf("SearchFulltextContext oversized: %v", err)
 	}

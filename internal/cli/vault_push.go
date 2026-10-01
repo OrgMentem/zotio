@@ -189,6 +189,9 @@ func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 // targetLib, or "" when it may. A note with no recorded zotero_library is
 // unscoped. A note that records one fails closed when the active library is
 // unknown (personal user ID not cached), because the check cannot be made.
+// This is a pre-check, not proof: the cached user ID names the Web API
+// account, not the account a keyless desktop serves. getNote proves the
+// library from each note response.
 func vaultLibraryMismatch(n *pushNote, targetLib string) string {
 	switch {
 	case n.library == "":
@@ -296,7 +299,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 	// still files that key as a child note of this item before planning or
 	// sending the write, so a copied or stale binding never overwrites a note
 	// that belongs to another item.
-	if _, _, err := getNote(c, n.state.NoteKey, n.itemKey); err != nil {
+	if _, _, err := getNote(c, n.state.NoteKey, n.itemKey, n.library); err != nil {
 		res.Status = "error"
 		res.Note = pushErr(err, flags)
 		return res
@@ -341,7 +344,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	}
 
 	// Stale precondition. Read the live note and classify.
-	liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey, n.itemKey)
+	liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey, n.itemKey, n.library)
 	if gerr != nil {
 		res.Status = "error"
 		res.Note = pushErr(gerr, flags)
@@ -414,7 +417,7 @@ func convergeNote(n *pushNote, res pushResult, liveVer int, liveHTML, srcHash st
 // finalizeState fetches the just-written note to capture the sanitized remote
 // HTML and authoritative version, then persists the baseline into the note file.
 func finalizeState(n *pushNote, noteKey, srcHash string, c *client.Client) error {
-	ver, remoteHTML, err := getNote(c, noteKey, n.itemKey)
+	ver, remoteHTML, err := getNote(c, noteKey, n.itemKey, n.library)
 	if err != nil {
 		return fmt.Errorf("note written but reading it back failed: %w", err)
 	}
@@ -510,11 +513,8 @@ against --max-changes.`,
   zotio vault resolve smith2024 --keep-vault --yes
   zotio vault resolve smith2024 --keep-remote --yes`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			if flagKeepVault && flagKeepRemote {
 				return fmt.Errorf("--keep-vault and --keep-remote are opposite directions; pass only one")
 			}
@@ -592,7 +592,7 @@ against --max-changes.`,
 					if n.state.NoteKey == "" {
 						return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
 					}
-					liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey, n.itemKey)
+					liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey, n.itemKey, n.library)
 					if gerr != nil {
 						if apiStatus(gerr) == 404 {
 							return fmt.Errorf("remote note %s was deleted; nothing to keep (use --keep-vault --recreate to re-create it)", n.state.NoteKey)
@@ -643,7 +643,7 @@ against --max-changes.`,
 
 				// --keep-vault: overwrite remote using the live version as precondition.
 				report.Direction = "keep-vault"
-				liveVer, _, gerr := getNote(c, n.state.NoteKey, n.itemKey)
+				liveVer, _, gerr := getNote(c, n.state.NoteKey, n.itemKey, n.library)
 				if gerr != nil {
 					return vaultNoteReadErr(gerr, flags)
 				}
@@ -1084,7 +1084,12 @@ var errNoteBindingMismatch = errors.New("vault note binding does not match Zoter
 // errNoteBindingMismatch) unless Zotero files noteKey as a child note of
 // parentKey: the vault state comment is user-editable and can be copied between
 // files, so a reachable key is not proof that the note belongs to this item.
-func getNote(c *client.Client, noteKey, parentKey string) (int, string, error) {
+//
+// library is the vault note's recorded zotero_library. When set, the response
+// itself must name that library. The configured user ID cannot prove it: a
+// keyless local read goes to /api/users/0, which serves whichever account the
+// desktop is signed in to, and another account can hold the same keys.
+func getNote(c *client.Client, noteKey, parentKey, library string) (int, string, error) {
 	// Encode the state-derived note key as one path segment rather than allowing
 	// slashes/dots to reshape the URL.
 	if err := validateZoteroKey(noteKey); err != nil {
@@ -1095,7 +1100,8 @@ func getNote(c *client.Client, noteKey, parentKey string) (int, string, error) {
 		return 0, "", err
 	}
 	var obj struct {
-		Version int `json:"version"`
+		Version int               `json:"version"`
+		Library servedLibraryJSON `json:"library"`
 		Data    struct {
 			ItemType   string `json:"itemType"`
 			ParentItem string `json:"parentItem"`
@@ -1105,6 +1111,17 @@ func getNote(c *client.Client, noteKey, parentKey string) (int, string, error) {
 	if uerr := json.Unmarshal(data, &obj); uerr != nil {
 		return 0, "", fmt.Errorf("parsing note: %w", uerr)
 	}
+	if library != "" {
+		served := obj.Library.segment()
+		if served == "" {
+			return 0, "", fmt.Errorf("%w: Zotero did not say which library serves note %s, and the vault note records %s; refusing to treat it as this note",
+				errNoteBindingMismatch, noteKey, library)
+		}
+		if served != library {
+			return 0, "", fmt.Errorf("%w: Zotero serves note %s from library %s, but the vault note records %s; refusing to treat it as this note",
+				errNoteBindingMismatch, noteKey, served, library)
+		}
+	}
 	if parentKey == "" || obj.Data.ItemType != "note" || obj.Data.ParentItem != parentKey {
 		return 0, "", fmt.Errorf("%w: Zotero item %s is not a child note of item %q (itemType %q, parentItem %q); fix the vault note's zotero_key or state comment",
 			errNoteBindingMismatch, noteKey, parentKey, obj.Data.ItemType, obj.Data.ParentItem)
@@ -1113,6 +1130,30 @@ func getNote(c *client.Client, noteKey, parentKey string) (int, string, error) {
 		ver = obj.Version
 	}
 	return ver, obj.Data.Note, nil
+}
+
+// servedLibraryJSON is the `library` object of a Zotero item response.
+type servedLibraryJSON struct {
+	Type string `json:"type"`
+	ID   any    `json:"id"`
+}
+
+// segment returns the library as an API segment ("users/<id>" or
+// "groups/<id>"), or "" when the response does not identify one. A signed-out
+// desktop reports user id 0 (Zotero.Library.libraryTypeID falls back to 0),
+// which names no account.
+func (l servedLibraryJSON) segment() string {
+	id, ok := l.ID.(float64)
+	if !ok || id <= 0 || id != float64(int64(id)) {
+		return ""
+	}
+	switch l.Type {
+	case "user":
+		return "users/" + strconv.FormatInt(int64(id), 10)
+	case "group":
+		return "groups/" + strconv.FormatInt(int64(id), 10)
+	}
+	return ""
 }
 
 // fetchNoteVersions returns a key->version map for the given note keys, batched

@@ -18,11 +18,8 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 		Use:         "collections-of <itemKey>",
 		Short:       "Show collections containing an item",
 		Annotations: map[string]string{"mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err

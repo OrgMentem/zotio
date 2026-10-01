@@ -112,6 +112,112 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   stay `not_attempted`. `--fetch-pdf` creates and `recognize` entries still
   open one session per entry: the desktop resolver and recognizer steps are
   bound to each item's own session.
+- **A command with a missing positional argument exits 2 and names it.**
+  Commands that need an item, collection or search key, a DOI, a path, a
+  query or a manuscript used to print help and exit 0, so a scheduled
+  `items delete`, `collections delete` or `searches materialize` with an
+  empty key variable reported success. `--help` still exits 0. A wrong
+  argument count on any command now exits 2 instead of 1, and the message
+  ends with `(usage: <use line>)`. `items summarize` with no key still runs
+  with `--collection` or `--scope`.
+- **Invalid flag values and resource names exit 2.** An invalid `--via` or
+  `--data-source`, an unknown `analytics --type`, and a negative `library
+  health --require-fresh` now exit 2 (usage) instead of 1; a negative
+  `--require-fresh` used to switch the check off. `analytics` lists the
+  valid resource kinds and item types, and an unknown `--scope` type lists
+  the valid scope forms. `watch` rejects an unknown resource name with exit
+  2 before the first cycle, instead of failing or skipping it every cycle.
+- **Profiles never apply approval flags.** `profile save` no longer stores
+  `--yes`, `--allow-destructive`, `--allow-zotero-cloud` or `--dry-run`, and
+  a profile or `ZOTERO_PROFILE` that holds one of them no longer approves a
+  write. A stored `--max-changes` can only tighten the cap; a value above the
+  default (500, or 50 under `--agent`) is ignored. Ignored values print a
+  notice on stderr. Pass approvals on the command line.
+- **A missing profile exits 3.** Every path that loads a profile now exits
+  3 (it was 1), lists the available profiles, and prints an error envelope
+  under `--json`/`--agent`.
+- **`zotio init` asks before the first sync.** Under `--no-input` or
+  `--agent`, the first sync runs only with `--yes`; without it the sync step
+  reports `consent_required` and init exits 9. Before, init synced without
+  asking. An interactive run asks `[Y/n]`. The new sync statuses are
+  `consent_required`, `declined` and `read_error`. The health step's
+  `status` is now `checked`; the verdict stays in `health_verdict` and the
+  human output prints it once.
+- **`import discover` and `import monitor` refuse to replace an existing
+  manifest.** A manifest at `--out` can hold review edits, so a re-run to the
+  same path now exits 9 before any request. Pass `--overwrite` to replace it.
+  The report gains `replaced` and `dry_run`, and `--dry-run` writes no
+  manifest and no lock file.
+- **More commands refuse an unsynced library with exit 9.** `import scan`,
+  `import resolve <dir>` and `items duplicates resolve` return
+  `precondition_unmet` (`synced_store`) until a completed items sync exists.
+  Before, `import scan` printed "Run 'zotio sync' first." and exited 0,
+  `import resolve` marked every DOI as a create, so `import apply` could
+  duplicate library items, and `duplicates resolve` reported a zero-op
+  success. A mirror that holds only collections no longer passes. Refreshing
+  an existing manifest with `import resolve` still needs no mirror. `library
+  health` with a gate (`--fail-on`, a gating `--for`, `--fail-on-new` or
+  `--badge`) also exits 9 instead of passing over zero items.
+- **`items duplicates resolve` reports conflicts instead of unsafe merges.**
+  Trashed copies are left out of the plan, so a merge never lands on a
+  trashed item or trashes the last live copy. An apply whose merge target is
+  already in the trash writes nothing and reports a conflict. A half-applied
+  merge (target updated, duplicate trash failed) now reports `ok: false`,
+  status `conflict` with a `committed` reason object, and exits 1; it used
+  to report `applied` and exit 0. A new run retries only the trash.
+- **An unconfirmed connector save is a committed conflict.** When a
+  connector create reports an error and the follow-up lookup also fails,
+  `items new`, `import url/pmid/arxiv/isbn/doi`, `import apply --fetch-pdf`
+  and `attachments add --via connector` now report status `conflict` with
+  `committed: true`, the session and the connector key, and the journal
+  keeps it. These were plain failures that invited a duplicate retry. `import
+  doi` exits with the conflict code, and a save that committed but could not
+  be filed is `applied` with a retry-filing message.
+- **`feedback --send` fails when nothing is sent.** It exits 10 when no
+  usable `ZOTERO_FEEDBACK_ENDPOINT` is set and 5 when the POST fails; it
+  used to exit 0. The local entry is still recorded, and auto-send stays
+  best effort. `feedback` no longer reads `AGENT_ID` from the environment;
+  pass `--agent-id` to record one. `upstream.endpoint` now holds only
+  `scheme://host[:port]`, not the full URL. `feedback --help` lists the
+  exact fields that are stored and sent.
+- **`zotio-mcp --transport http` no longer logs a generated bearer token.**
+  It writes the token to a 0600 file in the zotio state directory, one file
+  per bind address, and logs only the path. The file also works as
+  `--mcp-auth-token-file`. Scripts that read the token from stderr must read
+  the file instead.
+- **MCP no longer advertises file-writing commands as read-only.** `export`,
+  `export snapshot`, `demo`, `import discover`, `import monitor`,
+  `collections bundle`, `collections export`, `annotations export`,
+  `creators audit`, `library health`, `library wrapped` and `schema drift`
+  now carry `readOnlyHint: false` and `destructiveHint: true`, so MCP hosts
+  may ask for approval.
+- **`--dry-run` no longer writes local files.** `demo` reports the sandbox
+  files it would delete or seed and creates no database or WAL files.
+  `export --output` and `export snapshot` leave the target, manifest and
+  checkpoint alone. `collections bundle` and `import discover` create no
+  directory, file or lock. `library health` does not write `--write-baseline`
+  or `--report` and names each target on stderr. `schema drift` does not
+  write the baseline and adds `dry_run: true` to JSON. `auth set-token`,
+  `auth logout`, `profile save` and `profile delete` write nothing and take
+  no writer lock. `export --output` now also prints a JSON result
+  (`records`, `replaced`, `dry_run`) under `--json`/`--agent`.
+- **`library health --limit` caps only the listed findings.**
+  `remediation_plan` keys and counts now cover every counted finding, so
+  piping them to `--keys-from -` no longer misses items.
+- **`vault pull`, `vault push` and `vault resolve` check the library and
+  the note binding.** A note served from another library than its recorded
+  `zotero_library`, or from a desktop that cannot name its library (for
+  example a signed-out one), is refused; the cached user ID is no longer
+  proof. A saved note that is not a child of the vault note's item is
+  refused instead of overwritten. Push and pull report these as `skipped` or
+  `error`; resolve exits 9. `vault resolve` prints a JSON result under
+  `--json`/`--agent`.
+- **`workflow archive` runs `zotio sync --strict`.** `--json` now prints
+  sync's NDJSON events instead of one summary object, the "Archived N
+  items" line is gone, and a single resource failure exits 1 instead of 13.
+  `--full` reaps rows deleted upstream like `sync --full`, and the archive
+  no longer stops at sync's 100-page default, so libraries over 10,000 items
+  complete again.
 
 ### Added
 
@@ -174,14 +280,58 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   manifest that sets `collection` anywhere is written as `schema_version:
   3`, which earlier releases refuse instead of creating unfiled items;
   manifests without it stay at version 2 and load and apply as before.
+- **`search --fulltext --scope`.** Searches synced PDF text inside one
+  collection, tag, query, item or saved search. The scope filter runs before
+  ranking and `--limit`, so a hit outside the scope never takes a result
+  slot.
+- **`items summarize --focus TERMS`.** Replaces the first-pages excerpt and
+  the page-ordered annotations with ranked PDF passages and annotations that
+  match the terms, within `--max-chars`. Each passage names its item and
+  attachment. An item with no synced PDF text reports `not_indexed`.
+- **`items bibliography --manuscript`.** Exports only the items a manuscript
+  cites, once each in first-citation order. `--follow-includes` also reads
+  `\input{}` and `\include{}` chapters, as in `items bibcheck`. An unknown or
+  ambiguous citekey, or a missing or cyclic include, writes nothing and
+  exits 11, naming the file and line.
+- **Duplicate attachment bytes.** `items audit --duplicate-attachment-bytes`
+  and the `library health --for all` finding `duplicate_attachment_bytes`
+  list stored attachments that share a Zotero MD5, split into same-item and
+  cross-item, with reclaimable bytes when known. Nothing is deleted.
+- **`library health --for all` flags linked PDFs.** The info finding
+  `nonportable_attachment` names PDFs stored as linked files, which other
+  devices and group members cannot open. Other presets are unchanged.
+- **`watch --workflow-on-change`.** Runs the workflow only after a complete
+  sync cycle that stored, rewrote or reaped rows. Unchanged and incomplete
+  cycles log a skip.
+- **`tail --workflow` passes the changed keys to the workflow.** Steps read
+  upserted and deleted keys through `${trigger.json:PATH}` or
+  `"stdin_trigger": "upsert_keys"` (for `--keys-from -`). The batch never
+  approves a write. The baseline poll and cycles over 500 events skip such
+  workflows, and `--resume` reuses the original batch. Older binaries refuse
+  the new checkpoint version.
+- **Workflow steps can select JSON fields from earlier steps.**
+  `${steps.NAME.json:PATH}` fills one argument, and `"stdin_select": "PATH"`
+  pipes the selected values (for example `findings[kind=missing_doi].item_key`)
+  into `--keys-from -`. A missing or wrong-typed selection fails the step,
+  and an empty one skips it. `workflow_submit` accepts `stdin_select`.
+- **`import discover --overwrite`.** Replaces an existing manifest at
+  `--out`; review edits in it are lost.
+- **`collections bundle` writes a completion record.** The package is
+  published as one generation, and `zotio-bundle.json`, written last, lists
+  each file's size and SHA-256. A failed run leaves the previous package
+  intact. The result lists replaced files under `replaced`.
+- **MCP `command_search` reports `writesFiles`.** The field marks commands
+  that write or delete local files.
 
 ### Fixed
 - **Ambiguous item creates keep their reconciliation evidence in the journal.**
   A lost response or write-token conflict now marks the create as possibly
   committed, so `journal undo` refuses to claim it reversed an unknown write.
 - **A connector attachment retry does not trash another upload's empty parent.**
-  The existing-attachment no-op leaves marked parents alone until the operator
-  can confirm that their uploads have finished.
+  An identical retry trashes an empty temporary parent only when it is more
+  than seven minutes old, its abstract is exactly the marker zotio writes,
+  and it has no child of any type at the moment of the trash. A younger
+  parent may belong to a live upload and stays.
 - **Sync clears a completed pass's resume cursor before advancing its version.**
   If either checkpoint fails, the next run does not skip earlier page results.
 - **Watch health webhooks send `new: []` when no findings are new.**
@@ -219,10 +369,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   unchecked key, which could be the real target item. Now only a key that
   carries this run's nonce is reported. Otherwise recovery uses
   `temp_parent_marker`.
-- **The provider cache no longer deletes a fresh entry during expiry
-  cleanup.** A read that found an expired file re-checks it before removal.
-  A value that another process stored in that window is returned, not
-  deleted.
+- **An expired cache entry is a miss, not a delete.** The response and
+  provider caches no longer remove expired files on read. The refetch that
+  follows replaces the entry atomically. Removal on read could delete a value
+  that another process had just stored. On Windows it could also leave stray
+  `.expired` files.
+- **Webhook, feedback and attachment upload errors no longer quote URLs.**
+  A failed `--deliver webhook:` POST (also from `tail` and `watch --health`),
+  `feedback --send` or attachment upload names only the endpoint or storage
+  origin. A cause that can quote a URL, such as a redirect with an
+  unparseable `Location`, is withheld. The warning for a rejected Zotero base
+  URL masks credentials in the URL.
+- **A second `zotio-mcp --transport http` on a busy address keeps the live
+  server's token.** The generated token file is written only after the bind
+  succeeds.
 - **Local reads and the MCP item and collection resources honour
   cancellation.** The store has context-aware `Get`, `List`, `Count` and
   `AnnotationsForItem`, and the generic local list/get path uses them.
@@ -230,6 +390,44 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `gh release download` for up to 60 minutes and needs all six `.mcpb`
   files. GitHub's release-by-tag view can lag the upload. On v0.27.0 it
   lagged for about 41 minutes, and the job failed on its first attempt.
+- **`annotations search --refresh` finds annotations by text, comment and
+  tags.** It returned nothing for every query. Live matching folds case,
+  accents, ligatures, curly quotes, dashes and formatting tags as Zotero
+  does, so `seance` finds `séance`. It has no stemming or operators. With
+  `--color` it no longer drops matches beyond the first 100 API hits.
+- **`import file` reads RIS with a byte order mark and wrapped lines.**
+  Untagged continuation lines join the previous title, journal or abstract.
+- **`items stale` excludes items with annotations.** Annotations are found
+  through the PDF or EPUB attachment.
+- **`library wrapped` "Most annotated" totals all of an item's
+  attachments.**
+- **`library prisma` strips terminal control characters from source names.**
+- **`items tags add/remove --batch` reports a malformed failure entry as
+  failed.** It used to count that item as applied.
+- **Batch creates no longer report a malformed failure entry as success.**
+  `collections create`, `items create`, `import file` and `items enrich`
+  read Zotero's batch response one failure entry at a time. An entry that
+  cannot be decoded marks that object as failed with an unknown outcome
+  (exit 13); before, one bad entry hid every failure and the run exited 0.
+- **`watch` logs a failed cycle once.** The nested sync no longer prints its
+  own `Error:` line and the full `zotio sync` usage block on every failed
+  cycle.
+- **A 412 write conflict says to review the change and re-run.** It used to
+  suggest `zotio sync`, which cannot fix it.
+- **`export --output` reports the real record count** for `--format json`
+  and single-item exports (it said 0). It notes on stderr when it replaced a
+  file.
+- **`profile save` reports when it replaces an existing profile.**
+- **`desktop wait` exits 9 when Zotero quits during startup** on a system
+  where the Zotero directories cannot be watched. It used to hang.
+- **`zotio doctor` reports the stable release as an update when you run a
+  release candidate of it.** The `--help` example now uses `--fail-on
+  stale`; `warn` is rejected.
+- **`zotio init` hides the pasted API key** when it reads from a terminal.
+- **`vault pull` errors start with `vault pull:`**, not `vault push:`.
+- **`--dry-run` and `workflow run` help match the behavior.** `--dry-run`
+  previews writes without sending them; read requests still run. A workflow
+  applies steps in order, and a failed step leaves earlier writes applied.
 
 ## [0.28.0] — 2026-09-24
 

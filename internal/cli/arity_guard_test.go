@@ -59,7 +59,7 @@ func TestArityGuardsRefuseSurplusBeforeRequests(t *testing.T) {
 			want := "unknown command \"stray\""
 			if tt.one {
 				args = []string{"K1", "K2"}
-				want = "accepts at most 1 arg(s), received 2"
+				want = "1 arg(s), received 2"
 			}
 			out, err := executeReadSingleKeyCmd(t, ctr, tt.new(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), args...)
 			if err == nil || !strings.Contains(err.Error(), want) {
@@ -67,18 +67,6 @@ func TestArityGuardsRefuseSurplusBeforeRequests(t *testing.T) {
 			}
 			if ctr.requests != 0 {
 				t.Errorf("%s with surplus args sent %d requests, want 0", tt.name, ctr.requests)
-			}
-			// MaximumNArgs must keep the old help path when no key is given.
-			switch tt.name {
-			case "collections items", "import doi", "items children", "searches materialize", "searches run", "vault resolve":
-				helpCtr := newReadSingleKeyCounter(t)
-				help, helpErr := executeReadSingleKeyCmd(t, helpCtr, tt.new(&rootFlags{dataSource: "live", noCache: true}))
-				if helpErr != nil || !strings.Contains(help, "Usage:") {
-					t.Fatalf("%s with no args: error = %v, output = %q; want help", tt.name, helpErr, help)
-				}
-				if helpCtr.requests != 0 {
-					t.Errorf("%s help sent %d requests, want 0", tt.name, helpCtr.requests)
-				}
 			}
 		})
 	}

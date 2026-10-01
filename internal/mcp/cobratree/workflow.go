@@ -21,10 +21,11 @@ type workflowSubmitSpec struct {
 }
 
 type workflowSubmitStep struct {
-	Name      string                  `json:"name,omitempty"`
-	Args      []string                `json:"args"`
-	StdinFrom string                  `json:"stdin_from,omitempty"`
-	When      *workflowSubmitStepWhen `json:"when,omitempty"`
+	Name        string                  `json:"name,omitempty"`
+	Args        []string                `json:"args"`
+	StdinFrom   string                  `json:"stdin_from,omitempty"`
+	StdinSelect string                  `json:"stdin_select,omitempty"`
+	When        *workflowSubmitStepWhen `json:"when,omitempty"`
 }
 
 type workflowSubmitStepWhen struct {
@@ -44,11 +45,12 @@ func RegisterWorkflowSubmit(s *server.MCPServer, rootFactory func() *cobra.Comma
 		mcplib.WithArray("steps", mcplib.Required(), mcplib.Description("Validated workflow steps."), mcplib.Items(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":    map[string]any{"type": "string", "description": "Mirrorable command path, such as items enrich."},
-				"flags":      map[string]any{"type": "object", "description": "Safe command flags by name.", "additionalProperties": true},
-				"args":       map[string]any{"type": "string", "description": "Positional arguments only."},
-				"name":       map[string]any{"type": "string", "description": "Optional step name."},
-				"stdin_from": map[string]any{"type": "string", "description": "Name of an earlier step whose output becomes stdin."},
+				"command":      map[string]any{"type": "string", "description": "Mirrorable command path, such as items enrich."},
+				"flags":        map[string]any{"type": "object", "description": "Safe command flags by name.", "additionalProperties": true},
+				"args":         map[string]any{"type": "string", "description": "Positional arguments only."},
+				"name":         map[string]any{"type": "string", "description": "Optional step name."},
+				"stdin_from":   map[string]any{"type": "string", "description": "Name of an earlier step whose output becomes stdin."},
+				"stdin_select": map[string]any{"type": "string", "description": "JSON selector over the stdin_from step's output, such as findings[kind=missing_doi].item_key; each selected value becomes one stdin line. Missing, malformed, or incompatible selections fail the step; no values skip it."},
 				"when": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -173,6 +175,10 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 		if err != nil {
 			return nil, workflowSubmitStepError(index, err.Error())
 		}
+		stdinSelect, err := workflowSubmitOptionalString(stepArgs, "stdin_select")
+		if err != nil {
+			return nil, workflowSubmitStepError(index, err.Error())
+		}
 		when, err := workflowSubmitWhen(stepArgs["when"])
 		if err != nil {
 			return nil, workflowSubmitStepError(index, err.Error())
@@ -191,10 +197,11 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 		}
 
 		steps = append(steps, workflowSubmitStep{
-			Name:      name,
-			Args:      argv,
-			StdinFrom: stdinFrom,
-			When:      when,
+			Name:        name,
+			Args:        argv,
+			StdinFrom:   stdinFrom,
+			StdinSelect: stdinSelect,
+			When:        when,
 		})
 	}
 	return steps, nil

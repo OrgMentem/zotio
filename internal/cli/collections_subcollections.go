@@ -18,11 +18,8 @@ func newCollectionsSubcollectionsCmd(flags *rootFlags) *cobra.Command {
 		// use a collection key placeholder, not a token.
 		Example:     "  zotio collections subcollections COLLECTIONKEY",
 		Annotations: map[string]string{"zotio:endpoint": "collections.subcollections", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/collections", "mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err

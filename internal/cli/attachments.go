@@ -615,10 +615,12 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	envelope := func() (io.ReadCloser, error) {
 		source, err := openVerifiedAttachmentSource(req)
 		if err != nil {
-			return nil, err
+			// Tagged, so a reopen on redirect that finds the file changed is
+			// reported as such rather than withheld as a transport cause.
+			return nil, &uploadSourceError{err: err}
 		}
 		return readerWithCloser{
-			Reader: io.MultiReader(strings.NewReader(prefix), source, strings.NewReader(suffix)),
+			Reader: uploadSourceReader{io.MultiReader(strings.NewReader(prefix), source, strings.NewReader(suffix))},
 			closer: source,
 		}, nil
 	}
@@ -644,14 +646,18 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		// *url.Error prints the request URL, and on a redirect the target URL;
-		// either carries the signed query that grants upload access. Keep the
-		// typed cause (timeouts, staleness refusals) and report only the origin.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			urlErr.URL = uploadURLOrigin(urlErr.URL)
+		// The local file failing mid-stream (it shrank, grew, or changed under
+		// its authorized digest) is this process's own text and names no URL,
+		// so it is reported as is: it tells the operator to rerun.
+		var sourceErr *uploadSourceError
+		if errors.As(err, &sourceErr) {
+			return fmt.Errorf("uploading file payload: %w", sourceErr)
 		}
-		return fmt.Errorf("uploading file payload: %w", err)
+		// Anything else came from the transport. *url.Error prints the request
+		// URL, and its cause can quote a redirect Location; both carry the
+		// signed query that grants upload access. Report only the origin and a
+		// URL-free cause, keeping the original error wrapped.
+		return outboundRequestError("uploading file payload", uploadURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -695,6 +701,25 @@ type readerWithCloser struct {
 }
 
 func (r readerWithCloser) Close() error { return r.closer.Close() }
+
+// uploadSourceError marks a failure reading the local upload body, so the
+// transport error that carries it can be told apart from one net/http built
+// from the signed storage URL.
+type uploadSourceError struct{ err error }
+
+func (e *uploadSourceError) Error() string { return e.err.Error() }
+func (e *uploadSourceError) Unwrap() error { return e.err }
+
+// uploadSourceReader tags every non-EOF read error as an uploadSourceError.
+type uploadSourceReader struct{ r io.Reader }
+
+func (r uploadSourceReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = &uploadSourceError{err: err}
+	}
+	return n, err
+}
 
 // verifiedUploadSource hashes exactly the authorized file bytes supplied for
 // one file body. It withholds one byte until that extent is complete and still
@@ -865,17 +890,6 @@ func uploadURLTrusted(u *url.URL) bool {
 	}
 	addr, err := netip.ParseAddr(host)
 	return err == nil && addr.IsLoopback()
-}
-
-// uploadURLOrigin reduces a storage URL to scheme://host. The path and query of
-// an authorized upload URL are bearer material, and cliutil.RedactURL only masks a
-// fixed set of credential parameter names, so nothing past the host survives.
-func uploadURLOrigin(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return "<redacted storage URL>"
-	}
-	return u.Scheme + "://" + u.Host
 }
 
 // classifyStoredUploadError maps the upload protocol's documented failure codes

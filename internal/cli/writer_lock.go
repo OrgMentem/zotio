@@ -243,10 +243,10 @@ const (
 // capability writers that do not use the shared --yes mutation gate. Keep this
 // narrow so normal readers stay free.
 var explicitInstallationWriterCommands = map[string]writerLockMode{
-	"auth set-token":   writerLockAlways,
-	"auth logout":      writerLockAlways,
-	"profile save":     writerLockAlways,
-	"profile delete":   writerLockAlways,
+	"auth set-token":   writerLockOnNotDryRun,
+	"auth logout":      writerLockOnNotDryRun,
+	"profile save":     writerLockOnNotDryRun,
+	"profile delete":   writerLockOnNotDryRun,
 	"init":             writerLockAlways,
 	"demo":             writerLockOnNotDryRun,
 	"tail":             writerLockAlways,

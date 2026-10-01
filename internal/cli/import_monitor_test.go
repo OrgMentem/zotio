@@ -249,9 +249,9 @@ func TestImportMonitorFreshOnRepeatedScheduledRun(t *testing.T) {
 	if err != nil || first.Emitted != 1 {
 		t.Fatalf("first run = %+v, %v", first, err)
 	}
-	second, err := runImportMonitorTestWithFlags(t, flags, args...)
-	if err != nil || second.Emitted != 2 || requests != 2 {
-		t.Fatalf("second run = %+v, requests=%d, err=%v; want the newly indexed work", second, requests, err)
+	second, err := runImportMonitorTestWithFlags(t, flags, append(args, "--overwrite")...)
+	if err != nil || second.Emitted != 2 || requests != 2 || !second.Replaced {
+		t.Fatalf("second run = %+v, requests=%d, err=%v; want the newly indexed work replacing the first manifest", second, requests, err)
 	}
 	manifest, err := readImportManifest(path, nil)
 	if err != nil || len(manifest.Entries) != 2 || manifest.Entries[0].Identifier != "10.5000/new" {

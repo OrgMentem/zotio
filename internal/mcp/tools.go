@@ -120,7 +120,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 
 	var results []json.RawMessage
 	if fulltext, _ := args["fulltext"].(bool); fulltext {
-		matches, searchErr := db.SearchFulltextContext(ctx, query, limit)
+		matches, searchErr := db.SearchFulltextContext(ctx, store.FulltextSearch{Query: query, Limit: limit})
 		if searchErr != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("full-text search failed: %v", searchErr)), nil
 		}

@@ -20,13 +20,10 @@ func newTagsGetCmd(flags *rootFlags) *cobra.Command {
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `tags get A B` used to read A and drop B on the
 		// floor: the request path is built from args[0] alone, and nothing
-		// reported the ignored names. Zero args still renders help, which
-		// MaximumNArgs allows and ExactArgs would not.
-		Args: cobra.MaximumNArgs(1),
+		// reported the ignored names. A missing name is a usage error, not a
+		// help request that exits 0.
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err

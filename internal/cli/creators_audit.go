@@ -130,7 +130,7 @@ no creator ORCID field.`,
 		Example: `  zotio creators audit
   zotio creators audit --scope collection:ABCD1234
   zotio creators audit --orcid --json`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, ok, err := runCreatorsAuditWithOptions(cmd.Context(), flags, flagScope, flagORCID, flagIncludeAmbiguous)
 			if err != nil {

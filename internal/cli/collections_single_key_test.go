@@ -130,23 +130,13 @@ func TestCollectionsSingleKeyCommandsRefuseMoreThanOneKey(t *testing.T) {
 			if err == nil {
 				t.Fatalf("collections %s accepted two keys (out=%q); it acts on the first and drops the rest without saying so", tc.name, out)
 			}
-			if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
+			if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
 				t.Errorf("error = %q, want the arity bound the neighbouring commands report", err.Error())
 			}
 			if ctr.requests != 0 {
 				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
 			}
 
-			// Zero args still renders help rather than erroring, which is why
-			// the bound is MaximumNArgs and not ExactArgs.
-			helpCtr := newCollectionsSingleKeyCounter(t)
-			helpOut, err := executeCollectionsSingleKeyCmd(t, helpCtr, tc.newCmd())
-			if err != nil {
-				t.Errorf("collections %s with no key = %v, want the help output", tc.name, err)
-			}
-			if !strings.Contains(helpOut, "Usage:") {
-				t.Errorf("collections %s with no key printed %q, want usage help", tc.name, helpOut)
-			}
 			// The single-key path still previews unchanged and makes no HTTP call.
 			singleCtr := newCollectionsSingleKeyCounter(t)
 			singleOut, err := executeCollectionsSingleKeyCmd(t, singleCtr, tc.newCmd(), tc.oneKey...)

@@ -672,8 +672,8 @@ func TestInstallationWriterLockCandidatesResolve(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"auth set-token", "auth logout", "profile save", "profile delete"} {
-		if modes[path] != writerLockAlways {
-			t.Errorf("%s writer mode = %d, want unconditional installation lock", path, modes[path])
+		if modes[path] != writerLockOnNotDryRun {
+			t.Errorf("%s writer mode = %d, want installation lock on every non-dry-run invocation", path, modes[path])
 		}
 	}
 

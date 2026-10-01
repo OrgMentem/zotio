@@ -69,6 +69,12 @@ The library gate catches bad references; `items bibcheck` catches the reverse �
       # --fail-on high gates on finding severity instead, and also flags incomplete citations
 ```
 
+To publish the bibliography the manuscript actually cites, export it with `--manuscript` instead of a scope. It uses the same parser and citekey resolution, keeps each item once in first-citation order, and writes nothing when a citekey is unknown or ambiguous: it names the file and line and exits 11. `--manuscript` and `--scope` cannot be combined (exit 2). Add `--follow-includes` to read chapters pulled in with `\input{…}` or `\include{…}`, exactly as bibcheck does; a missing or cyclic include also writes nothing and exits 11:
+
+```yaml
+      - run: zotio items bibliography --manuscript thesis.tex --follow-includes --format biblatex > references.bib
+```
+
 ![zotio items bibcheck resolving manuscript citekeys](../assets/demos/bibcheck.gif)
 
 ## Gate on drift from a committed snapshot
@@ -84,6 +90,9 @@ Because `verify` compares content hashes rather than Zotero version integers, an
 
 !!! tip "Systematic-review corpora"
     For a screening corpus, `zotio library prisma --scope collection:KEY` reports PRISMA 2020 identification-stage counts — records identified (broken down per source database), duplicate records removed, and records after deduplication — the numbers that drop straight into a flow diagram.
+
+!!! note "Attachment storage checks"
+    `--for all` also reports two attachment-storage findings from the local mirror, both at `info` severity, so a `--fail-on high` gate does not change. `nonportable_attachment` names each PDF child stored as a linked file: its bytes stay on one computer and other devices or group members see only the path. zotio does not upload the file; convert it to a stored file in Zotero desktop if others need it. `duplicate_attachment_bytes` groups stored attachments that share a Zotero-registered MD5, marks each group `same_parent` or `cross_parent`, and gives reclaimable bytes when Zotero reported the size. A shared MD5 is evidence, not proof, and zotio never deletes by hash. Run the same report alone with `zotio items audit --duplicate-attachment-bytes [--scope EXPR]`. No other preset runs these checks.
 
 ## Publish the badge
 

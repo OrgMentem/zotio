@@ -27,7 +27,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"zotio/internal/cache"
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
 )
@@ -688,9 +687,9 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 	}
 	const ttl = 5 * time.Minute
 	if time.Since(info.ModTime()) > ttl {
-		// A concurrent GET can publish a fresh response here at any moment;
-		// RemoveExpired deletes only an entry that is still expired.
-		cache.RemoveExpired(cacheFile, ttl)
+		// Expired is a miss, never a delete: the refetch that follows
+		// replaces the entry atomically, and a reader deleting by name could
+		// remove a fresh response a concurrent GET just published.
 		return nil, false
 	}
 	data, err := os.ReadFile(cacheFile)

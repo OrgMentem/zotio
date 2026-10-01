@@ -671,12 +671,4 @@ func TestItemsDeleteRefusesMoreThanOneKey(t *testing.T) {
 	if requests != 0 {
 		t.Errorf("requests = %d, want 0: a refused argument list must not delete anything", requests)
 	}
-
-	// Zero args still renders help rather than erroring, which is why the
-	// bound is MaximumNArgs and not ExactArgs.
-	help := newItemsDeleteCmd(&rootFlags{asJSON: true})
-	help.SilenceErrors, help.SilenceUsage = true, true
-	if err := runDeleteCmd(t, help, srv.URL); err != nil {
-		t.Errorf("items delete with no key = %v, want the help output", err)
-	}
 }

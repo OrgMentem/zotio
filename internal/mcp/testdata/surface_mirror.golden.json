@@ -1248,6 +1248,10 @@
           "description": "Required reviewable import manifest output path",
           "type": "string"
         },
+        "overwrite": {
+          "description": "Replace an existing manifest at --out; review edits in it are lost (default: false)",
+          "type": "boolean"
+        },
         "query": {
           "description": "Free-text topic search; with --author, match both",
           "type": "string"
@@ -1609,6 +1613,10 @@
     "description": "Audit locally synced items for missing metadata and PDFs",
     "inputSchema": {
       "properties": {
+        "duplicate-attachment-bytes": {
+          "description": "List groups of stored attachments that share a Zotero-registered MD5 (candidate duplicates; never deletes) (default: false)",
+          "type": "boolean"
+        },
         "limit": {
           "description": "Maximum number of items per category (0 = no limit) (default: 0)",
           "type": "number"
@@ -1696,12 +1704,23 @@
   },
   {
     "name": "items_bibliography",
-    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.",
+    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.\n\n--manuscript selects the items a manuscript cites instead of a scope. It reads\n.tex, .md, .markdown, and .qmd files with the items bibcheck parser and\nresolves each citation key against the synced Better BibTeX keys. Items appear\nonce, in first-citation order across the files. --follow-includes also reads\n.tex files pulled in by \\input{PATH} and \\include{PATH}, exactly as items\nbibcheck --follow-includes does. When any citation key is unknown or\nambiguous, or an include is missing or cyclic, nothing is rendered: the\ncommand names each problem with its file and line and exits 11.",
     "inputSchema": {
       "properties": {
+        "follow-includes": {
+          "description": "With --manuscript, also read .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11 (default: false)",
+          "type": "boolean"
+        },
         "format": {
           "description": "Output format: bib, csljson, bibtex, biblatex, or ris (default: bib)",
           "type": "string"
+        },
+        "manuscript": {
+          "description": "Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
@@ -2615,7 +2634,7 @@
   },
   {
     "name": "items_summarize",
-    "description": "Gather the highest-signal local context for an item (or every item in a\ncollection) into one bounded bundle — citation, abstract, your annotations, a\ncapped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.\n\nThis command never calls a model: it does the assembly and budgeting the host LLM\nis bad at, then hands off. Reads are local only. With --agent/--json it emits the\nstructured bundle; otherwise a readable Markdown brief you can paste into any LLM.",
+    "description": "Gather the highest-signal local context for an item (or every item in a\ncollection) into one bounded bundle — citation, abstract, your annotations, a\ncapped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.\n\nWith --focus TERMS, each item instead carries a \"focus\" section: the passages\nthat match TERMS in that item's indexed PDF text (one ranked snippet per\nattachment, within --max-chars) and in its annotations (within\n--max-annotations), each with its item and attachment key. Only the selected\nitems are searched, and no full PDF text is loaded. An item with no synced PDF\ntext says so (fulltext: not_indexed) rather than reporting \"no match\".\n\nThis command never calls a model: it does the assembly and budgeting the host LLM\nis bad at, then hands off. Reads are local only. With --agent/--json it emits the\nstructured bundle; otherwise a readable Markdown brief you can paste into any LLM.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -2626,12 +2645,16 @@
           "description": "Summarize every item in this collection key",
           "type": "string"
         },
+        "focus": {
+          "description": "Select ranked passages matching these terms from each item's indexed PDF text and annotations, instead of the first-pages excerpt",
+          "type": "string"
+        },
         "max-annotations": {
           "description": "Max annotations included per item (default: 40)",
           "type": "number"
         },
         "max-chars": {
-          "description": "Max characters of fulltext excerpt per item (default: 8000)",
+          "description": "Max characters of fulltext per item: the excerpt, or with --focus the matched PDF-text passages (default: 8000)",
           "type": "number"
         },
         "no-fulltext": {
@@ -4110,6 +4133,10 @@
               },
               "stdin_from": {
                 "description": "Name of an earlier step whose output becomes stdin.",
+                "type": "string"
+              },
+              "stdin_select": {
+                "description": "JSON selector over the stdin_from step's output, such as findings[kind=missing_doi].item_key; each selected value becomes one stdin line. Missing, malformed, or incompatible selections fail the step; no values skip it.",
                 "type": "string"
               },
               "when": {

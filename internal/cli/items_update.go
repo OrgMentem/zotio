@@ -34,14 +34,10 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 		// on the floor: the request path, the op id and the whole envelope are
 		// built from args[0] alone, and nothing reported the ignored keys. An
 		// update that reports one item as the whole result must not silently do
-		// less than it was asked. Zero args still renders help, which
-		// MaximumNArgs allows and ExactArgs would not.
-		Args: cobra.MaximumNArgs(1),
+		// less than it was asked, and a missing key is a usage error, not a help
+		// request that exits 0.
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-
 			// replacePathParam percent-encodes the key as a single path segment;
 			// pre-escaping here would double-encode it.
 			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])

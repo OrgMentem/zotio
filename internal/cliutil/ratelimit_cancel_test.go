@@ -152,10 +152,18 @@ func thRecvDone(t *testing.T, name string, done <-chan time.Time) time.Time {
 // Cancelling a waiter in the middle of the queue must compact only the
 // reservations queued behind it: earlier waiters keep their slot, later
 // waiters move forward exactly one interval in their original order, and the
-// woken followers then return at the compacted deadline instead of sleeping
-// until the slot they held before the cancellation.
+// followers are woken so they sleep to the compacted slot instead of the one
+// they held before the cancellation.
+//
+// The interval is one hour, so no reservation comes due while the test runs:
+// the queue snapshot cannot race a waiter returning on its own, and scheduler
+// delay cannot change which deadline a waiter observes. Compaction is checked
+// by slot values. Waking is checked by moving the followers' slots to one
+// interval from now behind the limiter's back, without waking them, and then
+// cancelling the front waiter: only a woken follower re-reads its slot and
+// returns now; one left asleep holds its hours-away timer.
 func TestAdaptiveLimiterWaitContextCancellationCompactsQueuedFollowers(t *testing.T) {
-	const rate = 2.0 // 500ms interval: wide margin between old and new deadlines
+	const rate = 1.0 / 3600
 	delay := time.Duration(float64(time.Second) / rate)
 	l := NewAdaptiveLimiter(rate)
 	l.Wait()
@@ -170,6 +178,8 @@ func TestAdaptiveLimiterWaitContextCancellationCompactsQueuedFollowers(t *testin
 		}
 	}
 
+	// b's WaitContext refunds its reservation before it returns, so the
+	// queue is final once b is done.
 	b.cancel()
 	thRecvDone(t, "b", b.done)
 
@@ -193,30 +203,22 @@ func TestAdaptiveLimiterWaitContextCancellationCompactsQueuedFollowers(t *testin
 		t.Errorf("slot d = %v after c's original slot, want c's original slot", slots[2].Sub(c.slot))
 	}
 
-	aDone := thRecvDone(t, "a", a.done)
-	cDone := thRecvDone(t, "c", c.done)
-	dDone := thRecvDone(t, "d", d.done)
-	if aDone.Before(a.slot) || cDone.Before(b.slot) || dDone.Before(c.slot) {
-		t.Errorf("a waiter returned before its compacted slot: a %v, c %v, d %v early",
-			a.slot.Sub(aDone), b.slot.Sub(cDone), c.slot.Sub(dDone))
-	}
-	// A follower that was not woken would sleep to its pre-cancellation slot,
-	// a full interval later than its compacted one.
-	if !cDone.Before(c.slot) {
-		t.Errorf("c returned %v after its compacted slot, at or past its original slot; follower was not woken", cDone.Sub(b.slot))
-	}
-	if !dDone.Before(d.slot) {
-		t.Errorf("d returned %v after its compacted slot, at or past its original slot; follower was not woken", dDone.Sub(c.slot))
-	}
+	// Followers re-read their slot only when woken. Cancelling a compacts c
+	// and d by one interval, to now, and must wake both.
+	l.mu.Lock()
+	soon := time.Now().Add(delay)
+	c.waiter.at = soon
+	d.waiter.at = soon
+	l.mu.Unlock()
+	a.cancel()
+	thRecvDone(t, "a", a.done)
+	thRecvDone(t, "c", c.done)
+	thRecvDone(t, "d", d.done)
 
 	l.mu.Lock()
 	leaked := len(l.waiters)
-	last := l.lastRequest
 	l.mu.Unlock()
 	if leaked != 0 {
 		t.Errorf("%d reservations remain queued after every waiter returned", leaked)
-	}
-	if !last.Equal(c.slot) {
-		t.Errorf("lastRequest is %v after d's compacted slot, want d's compacted slot", last.Sub(c.slot))
 	}
 }

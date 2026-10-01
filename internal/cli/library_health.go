@@ -310,6 +310,10 @@ func healthCheckRegistry() []healthCheck {
 		{kind: "broken_attachment_file", severity: sevCritical, run: runBrokenAttachmentFile},
 		// gate DOI-bearing items against CrossRef retraction notices.
 		{kind: "retracted_item", severity: sevCritical, run: runRetractedItem},
+		// Local-mirror attachment storage checks. Both sit below high, so a
+		// --fail-on high gate is unaffected by them; only `all` runs them.
+		{kind: "nonportable_attachment", severity: sevInfo, run: runNonportableAttachment},
+		{kind: duplicateAttachmentBytesKind, severity: sevInfo, run: runDuplicateAttachmentBytes},
 	}
 }
 
@@ -339,7 +343,7 @@ var healthPresets = map[string][]string{
 	"all": {
 		"citekey_conflict", "citekey_missing", "duplicate_candidates", "missing_citation",
 		"missing_doi", "missing_pdf", "missing_abstract", "missing_tags", "tag_drift",
-		"broken_attachment_file", "retracted_item",
+		"broken_attachment_file", "retracted_item", "nonportable_attachment", duplicateAttachmentBytesKind,
 	},
 }
 
@@ -401,6 +405,9 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			// the badge is already JSON, so refuse ambiguous output modes.
 			if flagBadge && flags.asJSON {
 				return usageErr(fmt.Errorf("--badge cannot be combined with --json"))
+			}
+			if flagRequireFresh < 0 {
+				return usageErr(fmt.Errorf("invalid --require-fresh %s: must be zero (disabled) or positive", flagRequireFresh))
 			}
 
 			preset := strings.ToLower(strings.TrimSpace(flagFor))
@@ -1141,6 +1148,68 @@ func brokenAttachmentFinding(a map[string]any, path, reason string, src FindingS
 	}
 }
 
+// runNonportableAttachment reports PDF children stored as linked_file. Their
+// bytes stay on one machine, so missing_pdf counts them as present while a
+// collaborator, another device, or a group member cannot open them. The
+// finding names the PARENT (the scope cohort's unit); the attachment key and
+// path are evidence. Nothing is uploaded: converting to a stored file uses the
+// user's Zotero or WebDAV storage, so that stays the user's explicit choice.
+func runNonportableAttachment(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
+	rows, err := queryNonportablePDFAttachments(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	group := ""
+	if ctx.flags != nil {
+		group = ctx.flags.group
+	}
+	text := "This PDF is a linked file: its bytes stay on the computer that linked it and do not sync. If others need it, convert it to a stored file in Zotero desktop (Tools > Manage Attachments > Convert Linked Files to Stored Files). That uses your Zotero or WebDAV storage quota; zotio does not upload it."
+	if group != "" {
+		text = "This group-library PDF is a linked file: other group members see only the path, not the file. If they need it, convert it to a stored file in Zotero desktop (Tools > Manage Attachments > Convert Linked Files to Stored Files). That uses the group's storage quota; zotio does not upload it."
+	}
+	findings := make([]Finding, 0, len(rows))
+	for _, r := range rows {
+		ev := map[string]any{
+			"attachment": sqlStringValue(r["key"]),
+			"parent":     sqlStringValue(r["parent"]),
+			"filename":   sqlStringValue(r["name"]),
+			"path":       sqlStringValue(r["path"]),
+			"link_mode":  "linked_file",
+		}
+		if group != "" {
+			ev["library"] = "group:" + group
+		}
+		findings = append(findings, Finding{
+			Kind:              "nonportable_attachment",
+			Severity:          sevInfo,
+			ItemKey:           sqlStringValue(r["parent"]),
+			Title:             sqlStringValue(r["title"]),
+			Evidence:          ev,
+			Source:            ctx.src,
+			RecommendedAction: &RecommendedAction{Text: text},
+		})
+	}
+	return findings, nil, nil
+}
+
+// runDuplicateAttachmentBytes reports stored attachments sharing a registered
+// MD5. Attachments whose parent is outside the scope are dropped BEFORE
+// grouping, so an out-of-scope copy neither forms a group nor inflates
+// reclaimable bytes.
+func runDuplicateAttachmentBytes(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
+	rows, err := queryStoredAttachmentsWithMD5(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	admit := func(parent string) bool { return ctx.scopeKeys == nil || ctx.scopeKeys[parent] }
+	groups := groupDuplicateAttachmentBytes(rows, admit)
+	findings := make([]Finding, 0, len(groups))
+	for _, g := range groups {
+		findings = append(findings, duplicateAttachmentBytesFinding(g, ctx.src))
+	}
+	return findings, nil, nil
+}
+
 func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	if !ctx.checkRetractions {
 		return nil, &healthSkip{
@@ -1599,6 +1668,12 @@ func formatFindingLine(f Finding) string {
 	switch f.Kind {
 	case "duplicate_candidates":
 		return fmt.Sprintf("%s %s=%q (%v items)", kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
+	case duplicateAttachmentBytesKind:
+		line := fmt.Sprintf("%s md5=%s %s (%v copies)", kind, sqlStringValue(f.Evidence["value"]), sqlStringValue(f.Evidence["class"]), f.Evidence["count"])
+		if b, ok := f.Evidence["reclaimable_bytes"]; ok {
+			line += fmt.Sprintf(", %v bytes reclaimable", b)
+		}
+		return line
 	case "tag_drift":
 		return fmt.Sprintf("%s %q <- %v (%v items)", kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
 	case "retracted_item":

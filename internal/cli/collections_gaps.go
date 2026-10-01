@@ -51,11 +51,8 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "gaps <collectionKey>",
 		Short:       "Find highly cited DOI references missing from a collection's library",
 		Annotations: map[string]string{"mcp:read-only": "true"},
-		Args:        cobra.MaximumNArgs(1),
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			if flagLimit < 0 {
 				return usageErr(fmt.Errorf("--limit must be >= 0"))
 			}

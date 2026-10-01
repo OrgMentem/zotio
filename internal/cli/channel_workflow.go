@@ -45,7 +45,10 @@ sync. Run 'zotio sync' directly to choose resources, --since, or concurrency.`,
   # Full resync, the same as zotio sync --full --strict
   zotio workflow archive --full`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			syncArgs := []string{"--strict"}
+			// Archive fetches to exhaustion, as it did before delegating:
+			// sync's default 100-page cap would fail every --full archive
+			// past that size and restart it from page zero on each retry.
+			syncArgs := []string{"--strict", "--max-pages", "0"}
 			if full {
 				syncArgs = append(syncArgs, "--full")
 			}

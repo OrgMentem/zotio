@@ -471,17 +471,36 @@ type FulltextSearchResult struct {
 	Snippet       string `json:"snippet"`
 }
 
+// FulltextSearch describes a search over synced attachment full text. Limit 0
+// means the default of 50; a negative Limit returns every match.
+//
+// ParentKeys restricts hits to attachments whose parent item is one of the
+// keys. nil means no filter; a non-nil empty slice matches nothing, so an
+// empty cohort yields an empty result. The filter runs in SQL before rank
+// ordering and LIMIT, so a hit outside the cohort never takes a place inside
+// the limit.
+type FulltextSearch struct {
+	Query      string
+	Limit      int
+	ParentKeys []string
+}
+
 // SearchFulltextContext searches only synced attachment full text and resolves
 // every hit to its parent bibliographic item. Unresolved and trashed parents are
-// excluded because they cannot produce an actionable library result.
-func (s *Store) SearchFulltextContext(ctx context.Context, query string, limit int) ([]FulltextSearchResult, error) {
+// excluded because they cannot produce an actionable library result. Hits are
+// ordered by FTS rank, then parent and attachment key, so equal ranks are
+// deterministic.
+func (s *Store) SearchFulltextContext(ctx context.Context, q FulltextSearch) ([]FulltextSearchResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	limit := q.Limit
 	if limit == 0 {
 		limit = 50
 	}
-	rows, err := s.queryWithBusyRetryContext(ctx, `
+	var sb strings.Builder
+	args := make([]any, 0, 3)
+	sb.WriteString(`
 SELECT
 	parent.id,
 	attachment.id,
@@ -501,9 +520,22 @@ WHERE resources_fts MATCH ?
 		SELECT 1 FROM resources trashed
 		WHERE trashed.resource_type = 'items-trash'
 			AND trashed.id = parent.id
-	)
-ORDER BY rank, parent.id, attachment.id
-LIMIT ?`, "content : ("+ftsMatchQuery(query)+")", limit)
+	)`)
+	args = append(args, "content : ("+ftsMatchQuery(q.Query)+")")
+	if q.ParentKeys != nil {
+		// One JSON-array parameter expanded by json_each keeps a large
+		// cohort under SQLite's bound-variable limit.
+		keys, err := json.Marshal(q.ParentKeys)
+		if err != nil {
+			return nil, err
+		}
+		sb.WriteString("\n\tAND parent.id IN (SELECT value FROM json_each(?))")
+		args = append(args, string(keys))
+	}
+	sb.WriteString("\nORDER BY rank, parent.id, attachment.id\nLIMIT ?")
+	args = append(args, limit)
+
+	rows, err := s.queryWithBusyRetryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -519,6 +551,46 @@ LIMIT ?`, "content : ("+ftsMatchQuery(query)+")", limit)
 		results = append(results, result)
 	}
 	return results, rows.Err()
+}
+
+// FulltextIndexedParentsContext reports which of parentKeys have at least one
+// child attachment whose synced full text is non-blank: the documents
+// SearchFulltextContext can match for that parent. A parent outside the
+// result has nothing to search, which a caller must not report as "searched,
+// no match". The text itself is not returned.
+func (s *Store) FulltextIndexedParentsContext(ctx context.Context, parentKeys []string) (map[string]bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	indexed := make(map[string]bool)
+	if len(parentKeys) == 0 {
+		return indexed, nil
+	}
+	keys, err := json.Marshal(parentKeys)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx, `
+SELECT DISTINCT attachment.parent_key
+FROM resources ft
+JOIN resources attachment
+	ON attachment.resource_type = 'items'
+	AND attachment.id = ft.id
+WHERE ft.resource_type = 'fulltext'
+	AND attachment.parent_key IN (SELECT value FROM json_each(?))
+	AND trim(COALESCE(json_extract(ft.data, '$.content'), '')) <> ''`, string(keys))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		indexed[key] = true
+	}
+	return indexed, rows.Err()
 }
 
 func truncateFulltextSnippet(snippet string) string {

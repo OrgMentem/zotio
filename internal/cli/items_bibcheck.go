@@ -105,10 +105,8 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
   zotio items bibcheck paper.tex chapter.md --json
   zotio items bibcheck chapter.qmd --fail-on high`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			if dryRunOK(flags) {
 				return nil
 			}
@@ -739,6 +737,81 @@ func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey ma
 	}
 	summary.Total = len(keys)
 	return keys, summary
+}
+
+// manuscriptCitationResolution is the outcome of resolving manuscript
+// citation occurrences to library items: the unambiguous item keys in
+// first-citation order, and every cited key that resolved to zero or several
+// items, with the file and line of its first citation.
+type manuscriptCitationResolution struct {
+	ItemKeys   []string
+	Unresolved []manuscriptUnresolvedCitation
+}
+
+type manuscriptUnresolvedCitation struct {
+	Key      bibcheckKeyResult
+	Location bibcheckLocation
+}
+
+// resolveManuscriptCitations resolves occurrences with the same unambiguous
+// citekey rules bibcheck reports: a key held by exactly one item resolves; a
+// key held by none is unknown; a key held by several is ambiguous.
+func resolveManuscriptCitations(occurrences []bibcheckOccurrence, items []citekeyItem) manuscriptCitationResolution {
+	byCiteKey := bibcheckItemsByCiteKey(items)
+	order, counts, locationsByCiteKey, _ := summarizeBibcheckOccurrences(occurrences)
+	keys, _ := buildBibcheckKeyResults(order, counts, byCiteKey)
+	var out manuscriptCitationResolution
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key.Status != "ok" {
+			var loc bibcheckLocation
+			if locations := locationsByCiteKey[key.CiteKey]; len(locations) > 0 {
+				loc = locations[0]
+			}
+			out.Unresolved = append(out.Unresolved, manuscriptUnresolvedCitation{Key: key, Location: loc})
+			continue
+		}
+		if !seen[key.ItemKey] {
+			seen[key.ItemKey] = true
+			out.ItemKeys = append(out.ItemKeys, key.ItemKey)
+		}
+	}
+	return out
+}
+
+// parseManuscriptFiles parses each manuscript in order with the bibcheck
+// parser, concatenating occurrences so first-citation order spans files.
+// With followIncludes, .tex files are walked through the bibcheck include
+// traversal, and its missing-include and cycle findings are returned.
+func parseManuscriptFiles(paths []string, followIncludes bool) ([]bibcheckOccurrence, []Finding, error) {
+	var tree *bibcheckIncludeWalker
+	if followIncludes {
+		walker, err := newBibcheckIncludeWalker(paths)
+		if err != nil {
+			return nil, nil, err
+		}
+		tree = walker
+	}
+	var occurrences []bibcheckOccurrence
+	for _, path := range paths {
+		if tree != nil && strings.ToLower(filepath.Ext(path)) == ".tex" {
+			parsed, err := tree.walkRoot(path)
+			if err != nil {
+				return nil, nil, err
+			}
+			occurrences = append(occurrences, parsed...)
+			continue
+		}
+		parsed, _, err := parseManuscriptCitationOccurrences(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		occurrences = append(occurrences, parsed...)
+	}
+	if tree == nil {
+		return occurrences, nil, nil
+	}
+	return occurrences, tree.findings, nil
 }
 
 // bibcheckCiteKeyCandidates flattens the citekey inventory to one candidate

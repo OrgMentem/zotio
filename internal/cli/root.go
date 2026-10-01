@@ -562,6 +562,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	// each library's execution then passes through the lock boundary on its own,
 	// which is what an installation lock means for a per-library store write.
 	installGroupFanout(rootCmd, flags)
+	installPositionalArgUsage(rootCmd)
 
 	return rootCmd
 }
@@ -606,6 +607,34 @@ func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
 		msg += fmt.Sprintf("\n\nDid you mean this?\n\t%s", strings.Join(suggestions, "\n\t"))
 	}
 	return usageErr(errors.New(msg))
+}
+
+// installPositionalArgUsage makes every positional-argument failure in the tree
+// a usage error (exit 2) that names the expected positionals.
+//
+// Cobra's validators (ExactArgs, MinimumNArgs, NoArgs, ...) return bare errors
+// such as "accepts 1 arg(s), received 0": ExitCode reads those as a generic
+// failure (1), and nothing says which argument was missing. Wrapping each
+// command's Args once, after the tree is complete, gives the CLI, the MCP
+// mirror and the workflow runner the same answer without a per-command helper.
+// Cobra validates Args before any PersistentPreRunE, so a refusal here runs no
+// hook and sends no request.
+//
+// Commands with nil Args stay nil: Find applies legacyArgs only to those, and
+// legacyArgs is what makes an unknown subcommand of the root an error.
+func installPositionalArgUsage(cmd *cobra.Command) {
+	if validate := cmd.Args; validate != nil {
+		cmd.Args = func(c *cobra.Command, args []string) error {
+			if err := validate(c, args); err != nil {
+				// One line: main sanitizes control bytes, newlines included.
+				return usageErr(fmt.Errorf("%w (usage: %s)", err, c.UseLine()))
+			}
+			return nil
+		}
+	}
+	for _, sub := range cmd.Commands() {
+		installPositionalArgUsage(sub)
+	}
 }
 
 func ExitCode(err error) int {

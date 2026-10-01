@@ -5,6 +5,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -308,7 +310,7 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	}
 	ips, err := publicOutboundIPLookup(ctx, host)
 	if err != nil {
-		return nil, err
+		return nil, &outboundDialRefusal{err: err}
 	}
 	var lastErr error
 	var dialer net.Dialer
@@ -322,8 +324,19 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, fmt.Errorf("host %q did not resolve to a dialable public address", host)
+	return nil, &outboundDialRefusal{err: fmt.Errorf("host %q did not resolve to a dialable public address", host)}
 }
+
+// outboundDialRefusal marks an error from publicDialContext's own host vetting.
+// Its text names only the host and resolved addresses, so outboundRequestError
+// keeps it when it rebuilds a redacted message. It is deliberately not a
+// net.Error: a policy refusal is not network unreachability, and the
+// offline/fallback classification (isNetworkError) must see only what the
+// wrapped cause already is.
+type outboundDialRefusal struct{ err error }
+
+func (e *outboundDialRefusal) Error() string { return e.err.Error() }
+func (e *outboundDialRefusal) Unwrap() error { return e.err }
 
 func outboundHostIsPrivate(host string) bool {
 	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
@@ -397,14 +410,7 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		// net/http strips only the password from the URL it reports; the path
-		// and query, where webhook endpoints usually carry their credential,
-		// would still reach stderr and every log that collects it.
-		var urlErr *neturl.Error
-		if errors.As(err, &urlErr) {
-			urlErr.URL = webhookOrigin(urlErr.URL)
-		}
-		return fmt.Errorf("posting to webhook: %w", err)
+		return outboundRequestError("posting to webhook", url, err)
 	}
 	defer resp.Body.Close()
 	return externalHTTPPostStatusError("webhook", resp)
@@ -421,6 +427,69 @@ func webhookOrigin(raw string) string {
 	}
 	return (&neturl.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
+
+// outboundRequestError reports a failed outbound request by the target's origin
+// and a cause that cannot quote a URL. Webhook and feedback endpoints carry
+// their credential in the URL, and net/http prints URLs in two places: the
+// *url.Error it returns names the request URL (with only the password
+// stripped), and some causes quote another URL, such as a redirect Location
+// that failed to parse. The message names only the origin and a cause from
+// urlFreeCause; the original error stays wrapped for errors.Is and errors.As,
+// so cancellation and timeouts stay detectable.
+func outboundRequestError(operation, target string, err error) error {
+	op, cause := "request", err
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) {
+		op, cause = urlErr.Op, urlErr.Err
+	}
+	return &redactedError{
+		msg: fmt.Sprintf("%s: %s %q: %s", operation, op, webhookOrigin(target), urlFreeCause(cause)),
+		err: err,
+	}
+}
+
+// urlFreeCause returns the text of a transport cause only when its type cannot
+// carry URL text: context ends, connection and DNS failures and dial-time host
+// refusals (whose messages name hosts and addresses), TLS failures, and
+// truncated responses. Any other cause is withheld, because net/http builds
+// some of them from server-supplied URLs that can echo the credential.
+func urlFreeCause(cause error) string {
+	if cause == nil {
+		return "request failed"
+	}
+	var nested *neturl.Error
+	if errors.As(cause, &nested) {
+		return outboundCauseWithheld
+	}
+	var (
+		netErr     net.Error
+		refusal    *outboundDialRefusal
+		certErr    *tls.CertificateVerificationError
+		recordErr  tls.RecordHeaderError
+		alertErr   tls.AlertError
+		unknownErr x509.UnknownAuthorityError
+		hostErr    x509.HostnameError
+		invalidErr x509.CertificateInvalidError
+	)
+	switch {
+	case errors.Is(cause, context.Canceled),
+		errors.Is(cause, context.DeadlineExceeded),
+		errors.Is(cause, io.EOF),
+		errors.Is(cause, io.ErrUnexpectedEOF),
+		errors.As(cause, &netErr),
+		errors.As(cause, &refusal),
+		errors.As(cause, &certErr),
+		errors.As(cause, &recordErr),
+		errors.As(cause, &alertErr),
+		errors.As(cause, &unknownErr),
+		errors.As(cause, &hostErr),
+		errors.As(cause, &invalidErr):
+		return cause.Error()
+	}
+	return outboundCauseWithheld
+}
+
+const outboundCauseWithheld = "request failed (cause withheld: it may quote a URL)"
 
 // externalHTTPPostStatusError accepts only a 2xx response. Both outbound POST
 // helpers install http.ErrUseLastResponse, so net/http hands back the 3xx

@@ -83,7 +83,8 @@ The curated feature set. `zotio which "<goal>"` resolves natural-language querie
 
 ### Agent & automation surface
 
-- **`items summarize`** — Assemble a bounded, provenance-tagged context bundle (citation, abstract, your annotations, capped fulltext excerpt) for an item or collection — never calls a model.
+- **`items summarize`** — Assemble a bounded, provenance-tagged context bundle (citation, abstract, your annotations, capped fulltext excerpt) for an item or collection — never calls a model. `--focus "TERMS"` swaps the first-pages excerpt and page-ordered annotations for the ranked passages that match, each with `item_key` and `attachment_key`; `focus.fulltext: not_indexed` means the item has no synced PDF text, which is not the same as `no_match`.
+- **`search QUERY --fulltext --scope EXPR`** — Search synced PDF text inside one cohort; the cohort filter runs before ranking and `--limit`. `--scope` without `--fulltext` is a usage error (exit 2).
 - **`export snapshot`** — Reproducible, resumable full-library JSONL export with a lockfile (key, version, content hash) — diff lockfiles to prove what changed between handoffs, and take one before any bulk write the journal cannot reverse.
 - **`watch`** — Periodic incremental syncs (`--interval`, `--once`); `--health` diffs library health between cycles and reports new findings to stdout or a webhook.
 - **`workflow run`** — Run a declarative multi-step spec (JSON) in-process with per-step status and continue-on-error — replaces brittle shell chains.
