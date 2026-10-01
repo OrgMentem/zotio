@@ -37,6 +37,30 @@ func openPrivateOutputFile(path string, flags int) (*os.File, error) {
 // replaced, so the published permissions are unchanged.
 const exportOutputFileMode = 0o600
 
+// exportFileResult reports an `export --output` run. Replaced says whether a
+// file already at Output was replaced; under --dry-run it says whether one
+// would be, and nothing was written.
+type exportFileResult struct {
+	Output   string `json:"output"`
+	Format   string `json:"format"`
+	Records  int    `json:"records"`
+	Replaced bool   `json:"replaced"`
+	DryRun   bool   `json:"dry_run,omitempty"`
+}
+
+func (r exportFileResult) message() string {
+	switch {
+	case r.DryRun && r.Replaced:
+		return fmt.Sprintf("Dry run: would export %d records to %s, replacing the existing file; nothing was written", r.Records, r.Output)
+	case r.DryRun:
+		return fmt.Sprintf("Dry run: would export %d records to new file %s; nothing was written", r.Records, r.Output)
+	case r.Replaced:
+		return fmt.Sprintf("Exported %d records to %s (replaced the existing file)", r.Records, r.Output)
+	default:
+		return fmt.Sprintf("Exported %d records to %s", r.Records, r.Output)
+	}
+}
+
 func writeExport(writer io.Writer, format string, data []byte, limit int) (int, error) {
 	switch format {
 	case "jsonl":
@@ -177,6 +201,7 @@ backwards-compatible resource exports.`,
 			}
 
 			var count int
+			var replaced bool
 			if outputFile == "" {
 				writer := bufio.NewWriter(cmd.OutOrStdout())
 				count, err = runExport(writer)
@@ -190,6 +215,18 @@ backwards-compatible resource exports.`,
 				if flushErr != nil {
 					return fmt.Errorf("flushing export: %w", flushErr)
 				}
+				return nil
+			}
+			if flags.dryRun {
+				// --dry-run still reads the source so the preview reports a real
+				// record count, but it creates no file: no output, no temporary
+				// and no <target>.lock sibling.
+				if replaced, err = checkAtomicOutputTarget(outputFile); err != nil {
+					return err
+				}
+				if count, err = runExport(bufio.NewWriter(io.Discard)); err != nil {
+					return err
+				}
 			} else {
 				lockPath, canonicalTarget, lockErr := outputWriterLockPath(outputFile)
 				if lockErr != nil {
@@ -198,6 +235,12 @@ backwards-compatible resource exports.`,
 				// The lock is taken before the first source read so a busy target
 				// costs no API traffic, and it covers the atomic publication.
 				if err := withPathWriterLock(cmd, lockPath, fmt.Sprintf("export to %q", canonicalTarget), func() error {
+					// Re-running an export to the same path is a normal scripted
+					// workflow, so an existing file is replaced, never refused; the
+					// result says so instead of hiding it.
+					if replaced, err = checkAtomicOutputTarget(outputFile); err != nil {
+						return err
+					}
 					// A file is published atomically: a failure leaves whatever
 					// artifact was already there instead of truncating it, and nothing
 					// is flushed into a temporary file that is about to be discarded.
@@ -216,9 +259,11 @@ backwards-compatible resource exports.`,
 					return err
 				}
 			}
-			if outputFile != "" && format == "jsonl" {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Exported %d records to %s\n", count, outputFile)
+			result := exportFileResult{Output: outputFile, Format: format, Records: count, Replaced: replaced, DryRun: flags.dryRun}
+			if flags.asJSON {
+				return printCommandJSON(cmd.OutOrStdout(), result, flags)
 			}
+			fmt.Fprintln(cmd.ErrOrStderr(), result.message())
 			return nil
 		},
 	}

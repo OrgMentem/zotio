@@ -66,7 +66,7 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 		t.Error("Search(hello) found no full-text rows")
 	}
 
-	if v, _, _ := db.StoredLibraryVersion("fulltext"); v != 3 {
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "fulltext"); v != 3 {
 		t.Errorf("fulltext cursor = %d, want 3", v)
 	}
 }

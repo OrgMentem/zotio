@@ -248,7 +248,7 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"profile save":     writerLockAlways,
 	"profile delete":   writerLockAlways,
 	"init":             writerLockAlways,
-	"demo":             writerLockAlways,
+	"demo":             writerLockOnNotDryRun,
 	"tail":             writerLockAlways,
 	"workflow archive": writerLockAlways,
 	"workflow run":     writerLockOnApply,
@@ -372,6 +372,9 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		// the other releaser, never runs. Validation is pure and idempotent, so
 		// cobra re-running it costs nothing. No production command defines a
 		// non-persistent PreRunE that could satisfy a required flag later.
+		// Positional Args need no pre-check here: Cobra runs ValidateArgs before
+		// any PersistentPreRunE (cobra command.go:968), so an Args failure
+		// returns before this hook can acquire anything.
 		if err := cmd.ValidateRequiredFlags(); err != nil {
 			return err
 		}

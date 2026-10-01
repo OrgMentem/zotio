@@ -53,59 +53,45 @@ func TestExtraContainsExactTokenBoundary(t *testing.T) {
 	}
 }
 
-func TestFindRowMatchesExact_CitekeyPrefixOverMatch(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "A", "data": `{"data":{"key":"A","itemType":"journalArticle","extra":"Citation Key: smith2023"}}`},
-		{"id": "B", "data": `{"data":{"key":"B","itemType":"journalArticle","extra":"Citation Key: smith2023a"}}`},
+// Every exact identifier branch must match on a token boundary, never on a
+// prefix, in both directions: the extra-field "Citation Key:", "PMID:", and
+// "arXiv:" tokens, the dedicated citationKey field, and archiveID (which
+// carries the "arXiv:" prefix inline rather than as a separate extra token).
+func TestFindRowMatchesExactRejectsPrefixOverMatch(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+		value string
+		query findItemsQuery
+		want  bool
+	}{
+		{"extra citekey exact", "extra", "Citation Key: smith2023", findItemsQuery{Citekey: "smith2023"}, true},
+		{"extra citekey longer stored", "extra", "Citation Key: smith2023a", findItemsQuery{Citekey: "smith2023"}, false},
+		{"extra pmid exact", "extra", "PMID: 123", findItemsQuery{PMID: "123"}, true},
+		{"extra pmid longer stored", "extra", "PMID: 12345", findItemsQuery{PMID: "123"}, false},
+		{"extra arxiv exact short", "extra", "arXiv: 2006.11", findItemsQuery{ArXiv: "2006.11"}, true},
+		{"extra arxiv longer stored", "extra", "arXiv: 2006.11239", findItemsQuery{ArXiv: "2006.11"}, false},
+		{"extra arxiv shorter stored", "extra", "arXiv: 2006.11", findItemsQuery{ArXiv: "2006.11239"}, false},
+		{"extra arxiv exact long", "extra", "arXiv: 2006.11239", findItemsQuery{ArXiv: "2006.11239"}, true},
+		{"extra arxiv alnum suffix", "extra", "arXiv: 2006.11abc", findItemsQuery{ArXiv: "2006.11"}, false},
+		{"extra arxiv url alnum suffix", "extra", "https://arxiv.org/abs/2006.11abc", findItemsQuery{ArXiv: "2006.11"}, false},
+		{"citationKey field exact", "citationKey", "smith2023", findItemsQuery{Citekey: "smith2023"}, true},
+		{"citationKey field longer stored", "citationKey", "smith2023a", findItemsQuery{Citekey: "smith2023"}, false},
+		{"citationKey field exact long", "citationKey", "smith2023a", findItemsQuery{Citekey: "smith2023a"}, true},
+		{"archiveID exact", "archiveID", "arXiv:2006.1100", findItemsQuery{ArXiv: "2006.1100"}, true},
+		{"archiveID longer stored", "archiveID", "arXiv:2006.11001", findItemsQuery{ArXiv: "2006.1100"}, false},
+		{"archiveID exact long", "archiveID", "arXiv:2006.11001", findItemsQuery{ArXiv: "2006.11001"}, true},
 	}
-	// Searching smith2023 must match only A, not B.
-	if !findRowMatchesExact(rows[0], findItemsQuery{Citekey: "smith2023"}) {
-		t.Fatal("row A (exact citekey) should match")
-	}
-	if findRowMatchesExact(rows[1], findItemsQuery{Citekey: "smith2023"}) {
-		t.Fatal("row B (smith2023a) must NOT match smith2023 — prefix over-match")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := map[string]any{"data": fmt.Sprintf(`{"data":{"key":"K","itemType":"journalArticle",%q:%q}}`, tc.field, tc.value)}
+			if got := findRowMatchesExact(row, tc.query); got != tc.want {
+				t.Fatalf("findRowMatchesExact(%s=%q, %+v) = %v, want %v", tc.field, tc.value, tc.query, got, tc.want)
+			}
+		})
 	}
 }
 
-func TestFindRowMatchesExact_PMIDPrefixOverMatch(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "C", "data": `{"data":{"key":"C","itemType":"journalArticle","extra":"PMID: 123"}}`},
-		{"id": "D", "data": `{"data":{"key":"D","itemType":"journalArticle","extra":"PMID: 12345"}}`},
-	}
-	if !findRowMatchesExact(rows[0], findItemsQuery{PMID: "123"}) {
-		t.Fatal("PMID 123 exact row should match")
-	}
-	if findRowMatchesExact(rows[1], findItemsQuery{PMID: "123"}) {
-		t.Fatal("PMID 12345 row must NOT match query 123 — prefix over-match")
-	}
-}
-
-func TestFindRowMatchesExact_ArXivPrefixOverMatch(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "E", "data": `{"data":{"key":"E","itemType":"journalArticle","extra":"arXiv: 2006.11"}}`},
-		{"id": "F", "data": `{"data":{"key":"F","itemType":"journalArticle","extra":"arXiv: 2006.11239"}}`},
-	}
-	if !findRowMatchesExact(rows[0], findItemsQuery{ArXiv: "2006.11"}) {
-		t.Fatal("arXiv 2006.11 exact row should match")
-	}
-	if findRowMatchesExact(rows[1], findItemsQuery{ArXiv: "2006.11"}) {
-		t.Fatal("arXiv 2006.11239 must NOT match query 2006.11 — prefix over-match")
-	}
-	// Reverse: searching the longer id should match only F.
-	if findRowMatchesExact(rows[0], findItemsQuery{ArXiv: "2006.11239"}) {
-		t.Fatal("arXiv 2006.11 must NOT match query 2006.11239")
-	}
-	if !findRowMatchesExact(rows[1], findItemsQuery{ArXiv: "2006.11239"}) {
-		t.Fatal("arXiv 2006.11239 exact row should match")
-	}
-
-	for _, extra := range []string{"arXiv: 2006.11abc", "https://arxiv.org/abs/2006.11abc"} {
-		row := map[string]any{"data": `{"data":{"extra":` + fmt.Sprintf("%q", extra) + `}}`}
-		if findRowMatchesExact(row, findItemsQuery{ArXiv: "2006.11"}) {
-			t.Fatalf("stored arXiv prefix %q matched 2006.11", extra)
-		}
-	}
-}
 func TestFindRowMatchesExact_ExtraIdentifierSpellings(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -168,41 +154,6 @@ func TestFindRowMatchesExact_ExtraIdentifierSpellings(t *testing.T) {
 				t.Fatalf("findRowMatchesExact(%q) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
-	}
-}
-
-// The dedicated citationKey field is a separate matcher branch from the
-// "Citation Key:" token in extra, which TestFindRowMatchesExact_CitekeyPrefixOverMatch
-// already covers. Boundary, not prefix, in both directions.
-func TestFindRowMatchesExact_CitationKeyFieldExact(t *testing.T) {
-	exact := map[string]any{"data": `{"data":{"key":"A","itemType":"journalArticle","citationKey":"smith2023"}}`}
-	longer := map[string]any{"data": `{"data":{"key":"B","itemType":"journalArticle","citationKey":"smith2023a"}}`}
-
-	if !findRowMatchesExact(exact, findItemsQuery{Citekey: "smith2023"}) {
-		t.Fatal("citationKey smith2023 should match query smith2023")
-	}
-	if findRowMatchesExact(longer, findItemsQuery{Citekey: "smith2023"}) {
-		t.Fatal("citationKey smith2023a must NOT match query smith2023 — prefix over-match")
-	}
-	if !findRowMatchesExact(longer, findItemsQuery{Citekey: "smith2023a"}) {
-		t.Fatal("citationKey smith2023a should match query smith2023a")
-	}
-}
-
-// archiveID is likewise its own branch, and it carries the "arXiv:" prefix inline
-// rather than as a separate extra token.
-func TestFindRowMatchesExact_ArchiveIDExact(t *testing.T) {
-	exact := map[string]any{"data": `{"data":{"key":"X","itemType":"journalArticle","archiveID":"arXiv:2006.1100"}}`}
-	longer := map[string]any{"data": `{"data":{"key":"Y","itemType":"journalArticle","archiveID":"arXiv:2006.11001"}}`}
-
-	if !findRowMatchesExact(exact, findItemsQuery{ArXiv: "2006.1100"}) {
-		t.Fatal("archiveID arXiv:2006.1100 should match query 2006.1100")
-	}
-	if findRowMatchesExact(longer, findItemsQuery{ArXiv: "2006.1100"}) {
-		t.Fatal("archiveID arXiv:2006.11001 must NOT match query 2006.1100 — prefix over-match")
-	}
-	if !findRowMatchesExact(longer, findItemsQuery{ArXiv: "2006.11001"}) {
-		t.Fatal("archiveID arXiv:2006.11001 should match query 2006.11001")
 	}
 }
 

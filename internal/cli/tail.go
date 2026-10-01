@@ -229,17 +229,14 @@ func tailKnownResources() []string {
 	}
 }
 
-// emitChanges polls one resource for changes since the stored tail cursor,
-// emits upsert/delete NDJSON events for the cycle, routes them to the deliver
-// sink, and advances the cursor. It returns the number of emitted events.
-// Tail is a deduplicated version-cursor change feed rather than a full
-// re-fetch each poll. The cursor is namespaced "tail:<resource>" in
+// emitChangesWithHook polls one resource for changes since the stored tail
+// cursor, emits upsert/delete NDJSON events for the cycle, routes them to the
+// deliver sink, and advances the cursor. It returns the number of emitted
+// events. Tail is a deduplicated version-cursor change feed rather than a
+// full re-fetch each poll. The cursor is namespaced "tail:<resource>" in
 // sync_state so it never collides with sync's own checkpoint.
-func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) (int, error) {
-	return emitChangesWithHook(ctx, c, db, resource, path, sink, w, nil)
-}
-
-// emitChangesWithHook runs a triggered workflow after delivery and before
+//
+// A non-nil afterDelivery runs a triggered workflow after delivery and before
 // saving the cursor. A failure holds the cursor for retry. A crash after the
 // hook completes can replay it, so triggers have at-least-once semantics.
 func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, afterDelivery func(emitted int) error) (int, error) {

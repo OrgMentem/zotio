@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io/fs"
@@ -306,7 +307,7 @@ func TestInitAPIKeyStepClearsLegacyHeader(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 
-	ok, report := runInitAPIKeyStep(cmd, &rootFlags{}, cfg)
+	ok, report := runInitAPIKeyStep(cmd, &rootFlags{}, bufio.NewReader(cmd.InOrStdin()), cfg)
 	if !ok || report.Status != "saved" {
 		t.Fatalf("runInitAPIKeyStep = (%t, %+v), want (true, status \"saved\")", ok, report)
 	}

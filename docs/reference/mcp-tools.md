@@ -16,4 +16,4 @@ The MCP surface contains three framework tools (`context`, `search`, `sql`), the
 | `sql` | Run read-only SQL against the synced local database. |
 | `command_search` | Discover CLI commands and fetch command-specific argument details. |
 | `command_run` | Execute a discovered CLI command through the same in-process guard used by the mirror. |
-| `workflow_submit` | Submit an inline, validated multi-step workflow to the transactional runner; previews unless `yes`. Each step is checked against the same per-command allowlist as `command_run`. |
+| `workflow_submit` | Submit an inline, validated multi-step workflow to the workflow runner; previews unless `yes`. Steps apply in order, and a failed step does not roll back earlier writes. Each step is checked against the same per-command allowlist as `command_run`. |

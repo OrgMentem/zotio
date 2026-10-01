@@ -177,7 +177,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items tags add":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items tags remove":        {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"items duplicates resolve": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
+	"items duplicates resolve": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"collections create":       {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"collections update":       {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"collections move":         {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
@@ -203,6 +203,22 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import pdf":           {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
 	"import targets":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	"import translators":   {Operation: "read", Requires: []string{preconditionDesktopConnector}},
+	// `import scan` classifies every PDF against the mirror; without one each
+	// DOI would read as new, so the triage it promises cannot be produced.
+	"import scan": {Requires: []string{preconditionSyncedStore}},
+	// `import resolve <dir>` runs the same classification, and a manifest
+	// built against an absent mirror marks every DOI create, so import apply
+	// would duplicate the library. Refreshing an existing manifest only
+	// re-queries metadata providers and needs no mirror. Preflight cannot
+	// tell the two apart, so the command enforces the directory route itself
+	// (see the zotio:preflight annotation in import_resolve.go).
+	"import resolve": {
+		Requires: []string{preconditionSyncedStore},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionSyncedStore}},
+			{Via: "manifest"},
+		},
+	},
 	// items new fetches /items/new from the Web API before either create route.
 	"items new":                connectorTemplateCreateCapability,
 	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},

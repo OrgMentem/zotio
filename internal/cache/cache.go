@@ -8,6 +8,7 @@
 package cache
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,9 +30,10 @@ func New(dir string, ttl time.Duration) *Store {
 	return &Store{Dir: dir, TTL: ttl}
 }
 
-// expiredCleanupProbe is a test seam invoked after Get observes an expired
-// entry and before it re-checks the file prior to removal. Tests use it to
-// publish a fresh value inside the Stat/Remove window deterministically.
+// expiredCleanupProbe is a test seam invoked after RemoveExpired has moved the
+// entry aside and before it judges and deletes it: the window in which a
+// check-then-remove cleanup would delete an entry a concurrent writer had just
+// published. Tests use it to publish inside that window deterministically.
 var expiredCleanupProbe func(path string)
 
 // Get retrieves a cached value. Returns nil if not found or expired.
@@ -42,33 +44,45 @@ func (s *Store) Get(key string) (json.RawMessage, bool) {
 		return nil, false
 	}
 	if time.Since(info.ModTime()) > s.TTL {
-		if expiredCleanupProbe != nil {
-			expiredCleanupProbe(path)
+		RemoveExpired(path, s.TTL)
+		// A concurrent Set may have published a fresh value meanwhile, and
+		// cleanup leaves that in place: serve it rather than miss.
+		if info, err = os.Stat(path); err != nil || time.Since(info.ModTime()) > s.TTL {
+			return nil, false
 		}
-		// Set replaces the file with an atomic rename, so a fresh value
-		// published between the Stat above and the Remove below has a
-		// different identity. Re-check before removing: never delete a file
-		// that is no longer the expired one observed above.
-		if fresh, err := os.Stat(path); err == nil {
-			if time.Since(fresh.ModTime()) <= s.TTL {
-				data, err := os.ReadFile(path)
-				if err != nil {
-					return nil, false
-				}
-				return json.RawMessage(data), true
-			}
-			if !fresh.ModTime().Equal(info.ModTime()) || fresh.Size() != info.Size() {
-				return nil, false
-			}
-		}
-		_ = os.Remove(path)
-		return nil, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
 	return json.RawMessage(data), true
+}
+
+// RemoveExpired deletes the cache entry at path if it is older than ttl. It
+// never deletes an entry younger than ttl, nor replaces one.
+//
+// Writers publish entries by atomic rename (cliutil.AtomicWriteFile), so a
+// fresh entry can replace path at any moment. Checking the file and then
+// removing it by name cannot be made safe against that: the rename can land
+// between the check and the remove, and the remove then deletes the fresh
+// entry. Instead the entry is first renamed to a private name, which is
+// atomic, and only the file actually moved is judged. An expired file is
+// deleted. A fresh one was published after the caller saw the entry expire,
+// so it is hard-linked back; the link fails rather than replace an entry
+// published since, and that newer entry is kept instead. On a filesystem
+// without hard links the fresh entry is dropped, which costs a refetch.
+func RemoveExpired(path string, ttl time.Duration) {
+	aside := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+rand.Text()+".expired")
+	if err := os.Rename(path, aside); err != nil {
+		return
+	}
+	if expiredCleanupProbe != nil {
+		expiredCleanupProbe(path)
+	}
+	if info, err := os.Stat(aside); err == nil && time.Since(info.ModTime()) <= ttl {
+		_ = os.Link(aside, path)
+	}
+	_ = os.Remove(aside)
 }
 
 // Set stores a value in the cache. It returns any filesystem error so callers

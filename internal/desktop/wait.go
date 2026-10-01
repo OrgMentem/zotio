@@ -106,6 +106,12 @@ func (o WaitOptions) withDefaults() WaitOptions {
 // re-check timer alone drives probes; filesystem events (a sync writes its
 // WAL constantly) do not add more.
 //
+// Without a watch (no directory to watch, or none could be watched) only
+// that re-check timer can wake Wait, so once a probe finds Zotero neither
+// starting nor busy, at the first probe or after a start that ended without
+// a connector, Wait returns the watch error, or ErrNoProfile when there was
+// nothing to watch.
+//
 // On cancellation Wait returns the last Status and context.Cause(ctx), so a
 // caller that set a deadline with context.WithTimeoutCause can tell a
 // timeout from an interrupt.
@@ -174,16 +180,25 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 			return false, nil
 		}
 	}
+	// unwatched reports why a wait without a watcher cannot go on: once
+	// Zotero is neither starting nor busy no timer runs, and only a
+	// filesystem event could announce a later start.
+	unwatched := func(st Status) error {
+		if watcher != nil || st.State == StateBusy || st.State == StateStarting {
+			return nil
+		}
+		if watchErr == nil {
+			return ErrNoProfile
+		}
+		return watchErr
+	}
 
 	st := probe(0)
 	if done, err := settled(st); done {
 		return st, err
 	}
-	if watcher == nil && st.State != StateBusy && st.State != StateStarting {
-		if watchErr == nil {
-			return st, ErrNoProfile
-		}
-		return st, watchErr
+	if err := unwatched(st); err != nil {
+		return st, err
 	}
 	if o.OnWatching != nil {
 		o.OnWatching()
@@ -240,8 +255,9 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 	}
 	reschedule()
 
-	// A nil watcher (nothing watchable, but Zotero already up) leaves the
-	// event cases blocked forever, which is what they should be.
+	// A nil watcher (nothing watchable, but Zotero starting or busy) leaves
+	// the event cases blocked forever: the re-check timer drives every probe,
+	// and unwatched ends the wait once Zotero is neither.
 	var events <-chan fsnotify.Event
 	var watchErrs <-chan error
 	if watcher != nil {
@@ -289,6 +305,9 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 			}
 			st = probe(pingTimeout)
 			if done, err := settled(st); done {
+				return st, err
+			}
+			if err := unwatched(st); err != nil {
 				return st, err
 			}
 			reschedule()

@@ -57,7 +57,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "export",
 		Short:       "Export annotations as markdown or JSON",
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagCollection != "" && flagTag != "" {
 				return usageErr(fmt.Errorf("use only one of --collection or --tag"))

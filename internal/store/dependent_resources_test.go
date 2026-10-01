@@ -50,17 +50,8 @@ func TestDependentResourceColumnsAndQueries(t *testing.T) {
 		t.Errorf("AN1 item_type = %q, want annotation", itemType)
 	}
 
-	// ItemsByType filters on the indexed column.
-	annotations, err := s.ItemsByType("annotation", 0)
-	if err != nil {
-		t.Fatalf("ItemsByType: %v", err)
-	}
-	if len(annotations) != 1 {
-		t.Fatalf("ItemsByType(annotation) = %d rows, want 1", len(annotations))
-	}
-
 	// AnnotationsForItem joins annotation -> attachment -> top item.
-	forTop, err := s.AnnotationsForItem("TOP1")
+	forTop, err := s.AnnotationsForItemContext(context.Background(), "TOP1")
 	if err != nil {
 		t.Fatalf("AnnotationsForItem: %v", err)
 	}
@@ -76,7 +67,7 @@ func TestDependentResourceColumnsAndQueries(t *testing.T) {
 	}
 
 	// An unrelated top item resolves no annotations.
-	none, err := s.AnnotationsForItem("OTHER")
+	none, err := s.AnnotationsForItemContext(context.Background(), "OTHER")
 	if err != nil {
 		t.Fatalf("AnnotationsForItem(OTHER): %v", err)
 	}
@@ -159,7 +150,7 @@ func TestUpsertKeyed(t *testing.T) {
 }
 
 // AnnotationsForItems returns the same rows as
-// per-item AnnotationsForItem but grouped, in a single query.
+// per-item AnnotationsForItemContext but grouped, in a single query.
 func TestAnnotationsForItems(t *testing.T) {
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -175,6 +166,9 @@ func TestAnnotationsForItems(t *testing.T) {
 		json.RawMessage(`{"key":"ATT2","version":1,"data":{"key":"ATT2","itemType":"attachment","parentItem":"TOP2","contentType":"application/pdf"}}`),
 		json.RawMessage(`{"key":"AN2","version":1,"data":{"key":"AN2","itemType":"annotation","parentItem":"ATT2"}}`),
 		json.RawMessage(`{"key":"AN3","version":1,"data":{"key":"AN3","itemType":"annotation","parentItem":"ATT2"}}`),
+		// An annotation whose attachment is not mirrored has no top-level item to
+		// group under, so it must not leak into any requested key's bundle.
+		json.RawMessage(`{"key":"AN_ORPHAN","version":1,"data":{"key":"AN_ORPHAN","itemType":"annotation","parentItem":"ATT_MISSING"}}`),
 	}
 	if _, _, err := s.UpsertBatch("items", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
@@ -192,6 +186,16 @@ func TestAnnotationsForItems(t *testing.T) {
 	}
 	if _, ok := grouped["OTHER"]; ok {
 		t.Errorf("OTHER should be absent, got %d", len(grouped["OTHER"]))
+	}
+	if len(grouped) != 2 {
+		t.Errorf("grouped keys = %d, want 2 (TOP1, TOP2): %v", len(grouped), grouped)
+	}
+	for key, rows := range grouped {
+		for _, row := range rows {
+			if bytes.Contains(row, []byte(`"AN_ORPHAN"`)) {
+				t.Errorf("orphan annotation leaked into %s: %s", key, row)
+			}
+		}
 	}
 
 	// Empty input returns an empty (non-nil) map.
@@ -242,7 +246,7 @@ func TestAnnotationsIgnoreTrashMirrorDuplicates(t *testing.T) {
 		t.Fatalf("UpsertKeyed trashed annotation: %v", err)
 	}
 
-	single, err := s.AnnotationsForItem("TOP1")
+	single, err := s.AnnotationsForItemContext(context.Background(), "TOP1")
 	if err != nil {
 		t.Fatalf("AnnotationsForItem: %v", err)
 	}
@@ -376,7 +380,9 @@ func TestAnnotationsForItemsChunksSQLiteVariables(t *testing.T) {
 	}
 	defer s.Close()
 
-	const itemCount = 1500
+	// Two full 500-key batches plus a one-key tail, so both the full-batch
+	// path and the clamp on the final partial batch are exercised.
+	const itemCount = 1001
 	items := make([]json.RawMessage, 0, itemCount*3)
 	keys := make([]string, 0, itemCount)
 	for i := range itemCount {

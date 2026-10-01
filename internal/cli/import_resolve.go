@@ -20,10 +20,15 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 
 	cmd := &cobra.Command{
-		Use:         "resolve <dir-or-manifest>",
-		Short:       "Resolve PDFs into an editable import manifest",
-		Args:        cobra.ExactArgs(1),
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Use:   "resolve <dir-or-manifest>",
+		Short: "Resolve PDFs into an editable import manifest",
+		Args:  cobra.ExactArgs(1),
+		// The capability registry declares synced_store for the directory
+		// route, but central preflight cannot tell a directory from a
+		// manifest path, and a manifest refresh needs no mirror. The
+		// directory route enforces the precondition in
+		// buildImportManifestFromDir with the same envelope and exit code.
+		Annotations: map[string]string{"mcp:read-only": "true", preflightAnnotationKey: preflightAnnotationSkip},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, resolveErr := resolveImportManifest(cmd, flags, args[0], flagLimit)
 			// A manifest is a durable input to import apply. If cancellation
@@ -58,17 +63,28 @@ func resolveImportManifest(cmd *cobra.Command, flags *rootFlags, arg string, lim
 
 // Reuse import scan classification while keeping absolute attachment paths in the manifest.
 func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string, limit int) (importManifest, error) {
+	// An absent or never-synced mirror reads as an empty library, so every
+	// DOI-bearing PDF would classify as a create and import apply would mint
+	// duplicates of items the library already holds.
+	synced, detail, err := checkSyncedStorePrecondition(cmd.Context(), flags, cmd, capabilityEntry{})
+	if err != nil {
+		return importManifest{}, err
+	}
+	if !synced {
+		return importManifest{}, emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "import resolve", preconditionSyncedStore, detail,
+			remediationFor(cmd.Context(), flags, preconditionSyncedStore))
+	}
 	db, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return importManifest{}, fmt.Errorf("opening local store: %w", err)
 	}
-	idx := libraryDOIIndex{byDOI: map[string]libItem{}}
-	if db != nil {
-		defer db.Close()
-		idx, err = buildLibraryDOIIndex(cmd.Context(), db)
-		if err != nil {
-			return importManifest{}, fmt.Errorf("indexing library DOIs: %w", err)
-		}
+	if db == nil {
+		return importManifest{}, preconditionErr(errors.New("local store disappeared after the synced_store check; run 'zotio sync' and retry"))
+	}
+	defer db.Close()
+	idx, err := buildLibraryDOIIndex(cmd.Context(), db)
+	if err != nil {
+		return importManifest{}, fmt.Errorf("indexing library DOIs: %w", err)
 	}
 
 	paths, err := listPDFs(dir, limit)

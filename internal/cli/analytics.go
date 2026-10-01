@@ -64,7 +64,7 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 					isKnownKind := analyticsResourceKinds[resourceType]
 					isKnownItemType := analyticsItemTypes[resourceType]
 					if !isKnownKind && !isKnownItemType {
-						return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
+						return unknownAnalyticsTypeErr(resourceType)
 					}
 					if isKnownKind && resourceType != "items" {
 						return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceType)
@@ -88,7 +88,7 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 						isKnownKind := analyticsResourceKinds[resourceType]
 						isKnownItemType := analyticsItemTypes[resourceType]
 						if !isKnownKind && !isKnownItemType {
-							return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
+							return unknownAnalyticsTypeErr(resourceType)
 						}
 						reportedType := resourceType
 						itemType := ""
@@ -280,9 +280,25 @@ func analyticsScopeForType(db *store.Store, requested string) (analyticsScope, e
 		}
 	}
 	if !analyticsItemTypes[requested] && !observed {
-		return analyticsScope{}, fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", requested)
+		return analyticsScope{}, unknownAnalyticsTypeErr(requested)
 	}
 	return analyticsScope{resourceType: "items", itemType: requested, rows: matched}, nil
+}
+
+// unknownAnalyticsTypeErr is a usage error that names every accepted --type
+// value, so a typo is fixable without reading the source.
+func unknownAnalyticsTypeErr(requested string) error {
+	return usageErr(fmt.Errorf("unknown analytics type %q; valid resource kinds: %s; valid item types: %s",
+		requested, strings.Join(sortedAnalyticsNames(analyticsResourceKinds), ", "), strings.Join(sortedAnalyticsNames(analyticsItemTypes), ", ")))
+}
+
+func sortedAnalyticsNames(set map[string]bool) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func validateAnalyticsGroupBy(field string) error {

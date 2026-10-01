@@ -10,16 +10,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"zotio/internal/cli"
+	"zotio/internal/cliutil"
 	mcptools "zotio/internal/mcp"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -64,7 +67,7 @@ func main() {
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
 	mcpAuthToken := flag.String("mcp-auth-token", "", "refuse bearer tokens on the command line; use ZOTIO_MCP_TOKEN or --mcp-auth-token-file")
-	mcpAuthTokenFile := flag.String("mcp-auth-token-file", "", "path to a file containing the bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
+	mcpAuthTokenFile := flag.String("mcp-auth-token-file", "", "path to a file containing the bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; if unset, a per-run token is generated and written to a 0600 file in the zotio state dir)")
 	allowUnauth := flag.Bool("allow-unauthenticated", false, "disable bearer-token auth for the http transport (NOT recommended; loopback is not a per-user boundary)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -114,7 +117,8 @@ func main() {
 		// Loopback is not a per-user boundary: a co-resident local user (or a
 		// non-browser local client)
 		// can reach the port. Require a bearer token by default (auto-generated
-		// and printed once) unless --allow-unauthenticated is passed.
+		// and handed over through a private file) unless --allow-unauthenticated
+		// is passed.
 		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *mcpAuthTokenFile, *allowUnauth)
 		if tokErr != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: cannot resolve auth token: %v\n", tokErr)
@@ -124,13 +128,9 @@ func main() {
 		if !isLoopbackHTTPAddr(*addr) { // Warn when the MCP HTTP surface is exposed off-host.
 			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it exposes typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
 		}
-		switch {
-		case authToken == "":
-			fmt.Fprintln(os.Stderr, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process or reachable host can invoke read+write tools.")
-		case tokGenerated:
-			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token. Generated one for this run (pin it via ZOTIO_MCP_TOKEN or --mcp-auth-token-file):\n  Authorization: Bearer %s\n", authToken)
-		default:
-			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token (source: %s).\n", tokSource)
+		if err := announceMCPAuth(os.Stderr, *addr, authToken, tokSource, tokGenerated); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: cannot hand over generated auth token: %v\n", err)
+			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "zotio-mcp serving MCP over streamable HTTP at %s\n", *addr)
 
@@ -367,4 +367,50 @@ func resolveMCPAuthToken(flagToken, tokenFile string, allowUnauth bool) (token, 
 		return "", "", false, err
 	}
 	return hex.EncodeToString(buf), "generated", true, nil
+}
+
+// announceMCPAuth logs how the HTTP transport authenticates. The log stream
+// reaches supervisors, collectors, and support bundles, so a generated token
+// never goes there: it is written to a private file and only the path is
+// logged.
+func announceMCPAuth(log io.Writer, addr, token, source string, generated bool) error {
+	switch {
+	case token == "":
+		fmt.Fprintln(log, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process or reachable host can invoke read+write tools.")
+	case generated:
+		path, err := writeGeneratedMCPToken(addr, token)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(log, "zotio-mcp: HTTP transport requires a bearer token. Generated one for this run and wrote it to %s (mode 0600); send its contents as \"Authorization: Bearer <token>\". Each start replaces it; pin a stable token via ZOTIO_MCP_TOKEN or --mcp-auth-token-file.\n", path)
+	default:
+		fmt.Fprintf(log, "zotio-mcp: HTTP transport requires a bearer token (source: %s).\n", source)
+	}
+	return nil
+}
+
+// writeGeneratedMCPToken stores a generated bearer token the way zotio stores
+// its other secrets: an atomically replaced 0600 file in a 0700 directory, here
+// the zotio state dir. The file name carries the bind address so two servers on
+// different ports do not overwrite each other's token. The trailing newline is
+// trimmed by resolveMCPAuthToken, so the file also works as
+// --mcp-auth-token-file.
+func writeGeneratedMCPToken(addr, token string) (string, error) {
+	dir, err := cliutil.KindDir(cliutil.PathKindState)
+	if err != nil {
+		return "", err
+	}
+	name := "mcp-http-token-" + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, addr)
+	path := filepath.Join(dir, name)
+	if err := cliutil.AtomicWritePrivateFile(path, []byte(token+"\n"), 0o600, 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
 }

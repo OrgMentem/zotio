@@ -32,6 +32,10 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 a configurable interval. It starts with an immediate sync, logs one concise
 status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.
 
+Each resource argument takes a name that sync --resources accepts, such as
+items or collections; with none, watch syncs the default set. An unknown name
+exits 2 before the first cycle.
+
 When --workflow <spec.json> is set, watch runs the workflow after every
 successful sync cycle. It previews unless this watch invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
@@ -40,6 +44,19 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if interval < 10*time.Second {
 				return usageErr(fmt.Errorf("--interval must be at least 10s"))
+			}
+			// Reject an unknown resource name once, before any cycle runs:
+			// watch forwards these to sync every interval, and a name sync
+			// cannot dispatch would otherwise fail every cycle. Same
+			// dispatch as syncResource: dependent schema resources first,
+			// then the flat resource registry that tail also validates against.
+			for _, resource := range args {
+				if _, dependent := dependentSchemaSyncResources[resource]; dependent {
+					continue
+				}
+				if _, err := syncResourcePath(resource); err != nil {
+					return usageErr(err)
+				}
 			}
 			if workflowPath != "" {
 				if _, err := readWorkflowRunSpec(workflowPath); err != nil {

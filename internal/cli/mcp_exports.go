@@ -49,12 +49,6 @@ func CommandOverrideCapability(path string) (operation string, requires []string
 	return entry.Operation, entry.Requires, entry.Destructive, true
 }
 
-// ActiveGroupID returns the numeric Zotero group ID scoping this process, or ""
-// for the personal library.
-func ActiveGroupID() string {
-	return activeGroupIDLocked()
-}
-
 // mcpSurface records that this process serves the MCP surface. It is a
 // process-level marker rather than an argument check at the facade because
 // the facade is not the only in-process executor: `workflow run` executes each

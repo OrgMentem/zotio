@@ -6,6 +6,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -266,7 +267,7 @@ func TestLibraryVersionIsPerPlane(t *testing.T) {
 		t.Fatalf("web cursor = %d err=%v, want 0 after the plane changed", v, err)
 	}
 	// Status reporting still sees the stored value and names its plane.
-	v, source, err := s.StoredLibraryVersion("items")
+	v, source, err := s.StoredLibraryVersionContext(context.Background(), "items")
 	if err != nil || v != 71 || source != local {
 		t.Fatalf("StoredLibraryVersion = %d, %q, %v; want 71 from the local plane", v, source, err)
 	}

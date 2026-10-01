@@ -30,9 +30,11 @@ func TestItemsStaleFiltersAndLimit(t *testing.T) {
 		child("NOTE", "note", "OLD", ""),
 		child("OTHER", "attachment", "NONPDF", "text/plain"),
 		child("PDFCHILD", "attachment", "PDF", "application/pdf"),
-		child("ANNOTCHILD", "annotation", "ANNOT", ""),
+		// Zotero annotations hang off an attachment, never the top-level item.
+		child("ANNOTEPUB", "attachment", "ANNOT", "application/epub+zip"),
+		child("ANNOTCHILD", "annotation", "ANNOTEPUB", ""),
 		child("BOTH_PDF", "attachment", "BOTH", "application/pdf"),
-		child("BOTH_ANNOT", "annotation", "BOTH", ""),
+		child("BOTH_ANNOT", "annotation", "BOTH_PDF", ""),
 	})
 	for _, tc := range []struct {
 		name          string

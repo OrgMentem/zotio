@@ -36,7 +36,12 @@ var (
 	guardedExternalTransports    sync.Map // map[*http.Transport]*http.Transport
 )
 
-// ParseDeliverSink parses a --deliver value. Supported schemes:
+// publicOutboundPreflightTimeout bounds DNS preflight for optional outbound
+// integrations. Dial-time resolution under the already-bounded HTTP request
+// stays authoritative; preflight only rejects private literals early.
+const publicOutboundPreflightTimeout = 5 * time.Second
+
+// ParseDeliverSinkWithContext parses a --deliver value. Supported schemes:
 //
 //	stdout          -> default, no redirection
 //	file:<path>     -> write output atomically to <path>
@@ -44,19 +49,9 @@ var (
 //
 // Returns an error for unknown schemes with a message naming the
 // supported set, so agents see a structured refusal rather than a
-// silent misroute.
-// publicOutboundPreflightTimeout bounds DNS preflight for optional outbound
-// integrations. Dial-time resolution under the already-bounded HTTP request
-// stays authoritative; preflight only rejects private literals early.
-const publicOutboundPreflightTimeout = 5 * time.Second
-
-func ParseDeliverSink(spec string) (DeliverSink, error) {
-	return ParseDeliverSinkWithContext(context.Background(), spec)
-}
-
-// ParseDeliverSinkWithContext parses a --deliver value with the caller's
-// context so a stalled webhook DNS lookup cannot block the command before it
-// runs, even after cancellation or --timeout.
+// silent misroute. The caller's context bounds webhook DNS preflight so a
+// stalled lookup cannot block the command before it runs, even after
+// cancellation or --timeout.
 func ParseDeliverSinkWithContext(ctx context.Context, spec string) (DeliverSink, error) {
 	if spec == "" || spec == "stdout" {
 		return DeliverSink{Scheme: "stdout"}, nil
@@ -402,10 +397,29 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// net/http strips only the password from the URL it reports; the path
+		// and query, where webhook endpoints usually carry their credential,
+		// would still reach stderr and every log that collects it.
+		var urlErr *neturl.Error
+		if errors.As(err, &urlErr) {
+			urlErr.URL = webhookOrigin(urlErr.URL)
+		}
 		return fmt.Errorf("posting to webhook: %w", err)
 	}
 	defer resp.Body.Close()
 	return externalHTTPPostStatusError("webhook", resp)
+}
+
+// webhookOrigin reduces a webhook URL to scheme://host[:port] for messages.
+// Webhook endpoints carry their bearer credential in the path (Slack, Discord)
+// or the query as often as in userinfo, so the origin is the only part that is
+// safe to print; it still tells the operator which endpoint failed.
+func webhookOrigin(raw string) string {
+	u, err := neturl.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "<unparseable webhook URL redacted>"
+	}
+	return (&neturl.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 // externalHTTPPostStatusError accepts only a 2xx response. Both outbound POST

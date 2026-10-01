@@ -168,8 +168,8 @@ type importPDFOptions struct {
 	// PDF that became its child (saveSession.js _updateItems). Empty files
 	// nothing.
 	SessionCollection string
-	// OnDuplicate is skip|attach|create; only consulted when Duplicate.Status
-	// is "duplicate".
+	// OnDuplicate is skip|attach|create; consulted whenever Duplicate matched
+	// an existing item (status "duplicate" or "attach_candidate").
 	OnDuplicate string
 	// Duplicate is import scan's classification of this file against the
 	// synced library, computed once per file before any connector call.

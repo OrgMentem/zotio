@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"zotio/internal/cliutil"
 	"zotio/internal/config"
 
 	"github.com/spf13/cobra"
@@ -103,6 +104,19 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("empty token on stdin"))
 			}
 
+			// --dry-run reports the target and writes nothing.
+			if flags.dryRun {
+				if flags.asJSON {
+					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"saved":       false,
+						"dry_run":     true,
+						"config_path": cfg.Path,
+					}, flags)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would save the token to %s; nothing written\n", cfg.Path)
+				return nil
+			}
+
 			// api_key auth: AuthHeader() reads the env-var-derived field, not
 			// AccessToken. Writing the token to AccessToken would persist the
 			// bytes but leave doctor reporting "not configured" — the slot the
@@ -130,11 +144,30 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		Short:   "Clear stored credentials",
+		Long:    "Clears the stored API key from the config file and removes the credentials file. --dry-run reports what would be cleared and writes nothing.",
 		Example: "  zotio auth logout",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
+			}
+
+			// --dry-run reports what would be cleared and writes nothing.
+			if flags.dryRun {
+				credentialsPath, err := cliutil.CredentialsFilePath()
+				if err != nil {
+					return configErr(fmt.Errorf("resolving credentials path: %w", err))
+				}
+				if flags.asJSON {
+					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"cleared":          false,
+						"dry_run":          true,
+						"config_path":      cfg.Path,
+						"credentials_path": credentialsPath,
+					}, flags)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would clear stored credentials in %s and remove %s; nothing written\n", cfg.Path, credentialsPath)
+				return nil
 			}
 
 			if err := cfg.ClearTokens(); err != nil {

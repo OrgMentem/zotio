@@ -44,7 +44,7 @@ func TestSyncResumeStateBindsCursorToRequestScope(t *testing.T) {
 	defer s.Close()
 
 	const scope = `{"plane":"https://api.zotero.org/users/1","mode":"incremental","since":42}`
-	if err := s.SaveSyncResumeState("items", "100", scope, 100); err != nil {
+	if err := s.SaveSyncResumeStateContext(context.Background(), "items", "100", scope, 100); err != nil {
 		t.Fatalf("SaveSyncResumeState: %v", err)
 	}
 	cursor, gotScope, syncedAt, count, err := s.GetSyncResumeState("items")
@@ -62,14 +62,14 @@ func TestSyncResumeStateBindsCursorToRequestScope(t *testing.T) {
 	if err != nil || cursor != "legacy" || gotScope != "" {
 		t.Fatalf("unqualified state = (%q, %q, %v), want a cursor without resumable provenance", cursor, gotScope, err)
 	}
-	if err := s.ClearSyncCursor("items"); err != nil {
+	if err := s.ClearSyncCursorContext(context.Background(), "items"); err != nil {
 		t.Fatalf("ClearSyncCursor: %v", err)
 	}
 	cursor, gotScope, _, _, err = s.GetSyncResumeState("items")
 	if err != nil || cursor != "" || gotScope != "" {
 		t.Fatalf("cleared state = (%q, %q, %v), want no cursor or scope", cursor, gotScope, err)
 	}
-	if err := s.SaveSyncResumeState("items", "200", "", 200); err == nil {
+	if err := s.SaveSyncResumeStateContext(context.Background(), "items", "200", "", 200); err == nil {
 		t.Fatal("SaveSyncResumeState accepted a cursor without request provenance")
 	}
 }
@@ -163,8 +163,8 @@ func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	if err := s.RestoreMirroredItem("ATOMIC1", restored); err != nil {
 		t.Fatalf("RestoreMirroredItem after dropping trigger: %v", err)
 	}
-	if got, err := s.Get("items", "ATOMIC1"); got == nil || err != nil {
-		t.Fatalf("live row should exist after successful restore: got=%s err=%v", got, err)
+	if got, err := s.Get("items", "ATOMIC1"); err != nil || got == nil || !strings.Contains(string(got), "RestoredAtomic") {
+		t.Fatalf("live row should carry the restored payload after successful restore: got=%s err=%v", got, err)
 	}
 	if got, err := s.Get("items-trash", "ATOMIC1"); got != nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("trash row should be gone after successful restore: got=%s err=%v", got, err)
@@ -174,33 +174,6 @@ func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	}
 	if cnt, _ := s.Count("items-trash"); cnt != 0 {
 		t.Fatalf("items-trash count after successful restore = %d, want 0", cnt)
-	}
-}
-
-func TestRestoreMirroredItem_HappyPathDoesNotNeedTrigger(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "data.db")
-	s, err := OpenWithContext(ctx, path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer s.Close()
-
-	trashRaw := json.RawMessage(`{"key":"HAPPY1","version":3,"data":{"key":"HAPPY1","itemType":"book","title":"HappyPath"}}`)
-	if _, err := s.UpsertKeyed("items-trash", []string{"HAPPY1"}, []json.RawMessage{trashRaw}); err != nil {
-		t.Fatalf("seed trash: %v", err)
-	}
-	restored := json.RawMessage(`{"key":"HAPPY1","data":{"key":"HAPPY1","itemType":"book","title":"HappyRestored"}}`)
-	if err := s.RestoreMirroredItem("HAPPY1", restored); err != nil {
-		t.Fatalf("RestoreMirroredItem: %v", err)
-	}
-	live, err := s.Get("items", "HAPPY1")
-	if err != nil || live == nil || !strings.Contains(string(live), "HappyRestored") {
-		t.Fatalf("live row after restore: %v, err=%v", string(live), err)
-	}
-	trash, err := s.Get("items-trash", "HAPPY1")
-	if trash != nil || !errors.Is(err, ErrNotFound) {
-		t.Fatalf("trash row should be reaped: got=%s err=%v", trash, err)
 	}
 }
 
@@ -922,7 +895,7 @@ func TestClearResourceVersions(t *testing.T) {
 		t.Fatalf("pre-clear collections count = %d, want 1", cnt)
 	}
 
-	if err := s.ClearResourceVersions("items"); err != nil {
+	if err := s.ClearResourceVersionsContext(context.Background(), "items"); err != nil {
 		t.Fatalf("ClearResourceVersions: %v", err)
 	}
 

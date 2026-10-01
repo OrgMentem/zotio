@@ -89,7 +89,7 @@ func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run <file.json>",
-		Short: "Preview or transactionally apply a declarative workflow",
+		Short: "Preview or apply a declarative multi-step workflow",
 		Long: `Runs a declarative workflow spec in process. By default, mutating steps
 are previewed with --dry-run while read-only steps run normally.
 
@@ -100,9 +100,12 @@ can pipe an earlier step's raw output with "stdin_from", and "when" can run a
 step only when an earlier step is ok, failed, or skipped. In preview mode,
 substituted step outputs are preview outputs.
 
-Pass --yes once to apply the whole workflow. Every mutation from that run shares
-one journal run ID. If an applied workflow is interrupted, continue it with
---yes --resume; completed steps are skipped from its checkpoint sidecar.`,
+Pass --yes once to apply the whole workflow. Steps apply in order, and every
+mutation from that run shares one journal run ID (zotio journal list --workflow
+<run-id>). There is no rollback: if a step fails, writes from earlier steps
+stay applied. The run stops at the first failed step unless the spec sets
+"continue_on_error". A failed or interrupted applied run keeps its checkpoint
+sidecar; continue it with --yes --resume, which skips the completed steps.`,
 		Example: `  zotio workflow run workflow.json
   zotio workflow run workflow.json --var PROJECT=demo
   zotio workflow run workflow.json --yes

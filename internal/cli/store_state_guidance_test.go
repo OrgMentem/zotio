@@ -18,12 +18,6 @@ import (
 // local command that opens the store owes the same two behaviors.
 func TestStoreStateGuidance(t *testing.T) {
 	commands := map[string]func(t *testing.T) *cobra.Command{
-		"import scan": func(t *testing.T) *cobra.Command {
-			t.Helper()
-			cmd := newImportScanCmd(&rootFlags{})
-			cmd.SetArgs([]string{t.TempDir()})
-			return cmd
-		},
 		"items summarize": func(t *testing.T) *cobra.Command {
 			t.Helper()
 			return newItemsSummarizeCmd(&rootFlags{})

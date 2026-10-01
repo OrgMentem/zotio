@@ -208,10 +208,9 @@ func rankWhich(index []whichEntry, query string, limit int) []whichMatch {
 	qTokens := strings.Fields(q)
 
 	scored := make([]whichMatch, 0, len(index))
-	for i, e := range index {
+	for _, e := range index {
 		score := whichScoreEntry(e, q, qTokens)
 		scored = append(scored, whichMatch{Entry: e, Score: score})
-		_ = i
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {

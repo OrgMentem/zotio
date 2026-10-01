@@ -725,11 +725,20 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	// lastField is the text field the preceding tag line set, so an untagged
+	// continuation line extends that value instead of being dropped.
+	lastField := ""
 	for scanner.Scan() {
-		tag, value, ok := parseRISLine(scanner.Text())
+		line := scanner.Text()
+		tag, value, ok := parseRISLine(line)
 		if !ok {
+			if text := strings.TrimSpace(line); text != "" && current != nil && lastField != "" {
+				prev, _ := current[lastField].(string)
+				setImportString(current, lastField, prev+" "+text)
+			}
 			continue
 		}
+		lastField = ""
 		if tag == "TY" {
 			flush()
 			current = map[string]any{"itemType": risItemType(value)}
@@ -744,7 +753,7 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 		}
 		switch tag {
 		case "TI", "T1":
-			setImportString(current, "title", value)
+			lastField = "title"
 		case "AU", "A1":
 			creator := parseImportCreator(value)
 			if len(creator) > 1 {
@@ -753,13 +762,16 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 		case "PY", "Y1":
 			setImportString(current, "date", risDate(value))
 		case "JO", "JF", "T2":
-			setImportString(current, "publicationTitle", value)
+			lastField = "publicationTitle"
 		case "DO":
 			setImportString(current, "DOI", value)
 		case "AB", "N2":
-			setImportString(current, "abstractNote", value)
+			lastField = "abstractNote"
 		case "UR":
 			setImportString(current, "url", value)
+		}
+		if lastField != "" {
+			setImportString(current, lastField, value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -769,16 +781,26 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 	return items, nil
 }
 
+// parseRISLine splits a RIS tag line ("TI  - value") into tag and value. A
+// line whose first two characters are not a tag followed by the "-" (or ":")
+// separator is not a tag line: it is a wrapped continuation of the previous
+// value, and reading its first two letters as a tag would let prose such as
+// "type ..." or "error ..." start or end a record.
 func parseRISLine(line string) (string, string, bool) {
+	line = strings.TrimPrefix(line, "\ufeff")
 	line = strings.TrimSpace(strings.TrimPrefix(line, "@"))
 	if len(line) < 2 {
 		return "", "", false
 	}
-	tag := strings.ToUpper(strings.TrimSpace(line[:2]))
-	if tag == "" {
+	tag := strings.ToUpper(line[:2])
+	first, second := tag[0], tag[1]
+	if first < 'A' || first > 'Z' || (second < 'A' || second > 'Z') && (second < '0' || second > '9') {
 		return "", "", false
 	}
 	value := strings.TrimSpace(line[2:])
+	if value != "" && value[0] != '-' && value[0] != ':' {
+		return "", "", false
+	}
 	value = strings.TrimSpace(strings.TrimPrefix(value, "-"))
 	value = strings.TrimSpace(strings.TrimPrefix(value, ":"))
 	return tag, value, true

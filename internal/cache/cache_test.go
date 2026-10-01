@@ -5,6 +5,7 @@ package cache
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -45,11 +46,14 @@ func TestStoreGetRespectsTTL(t *testing.T) {
 	if _, err := os.Stat(store.path(key)); !os.IsNotExist(err) {
 		t.Fatalf("expired cache entry still exists, stat error = %v", err)
 	}
+	if names := ccDirNames(t, store.Dir); len(names) != 0 {
+		t.Fatalf("expiry cleanup left files behind: %v", names)
+	}
 }
 
-// A Set that lands between Get's expiry check and its cleanup remove must
-// survive: Get observed an expired file, but the path now holds a fresh
-// publication from a concurrent request. Deleting it would turn one slow
+// A Set that lands after Get's cleanup has judged the entry expired and before
+// it removes it must survive: the path now holds a fresh publication from a
+// concurrent request. A check-then-remove cleanup deletes it, turning one slow
 // reader into a lost refresh and an avoidable upstream refetch.
 func TestStoreGetKeepsConcurrentFreshWrite(t *testing.T) {
 	store := New(t.TempDir(), time.Minute)
@@ -79,4 +83,64 @@ func TestStoreGetKeepsConcurrentFreshWrite(t *testing.T) {
 	if _, err := os.Stat(store.path(key)); err != nil {
 		t.Fatalf("fresh cache entry was deleted by expiry cleanup: %v", err)
 	}
+}
+
+// RemoveExpired judges the file it actually moved, not the caller's earlier
+// observation, so an entry that is fresh by then is never lost: it goes back,
+// unless an even newer entry was published meanwhile, which it must not
+// replace.
+func TestRemoveExpiredNeverDropsAFreshEntry(t *testing.T) {
+	cases := []struct {
+		name    string
+		publish string // published at the path while the entry is moved aside
+		want    string
+	}{
+		{name: "fresh entry is put back", want: `{"v":1}`},
+		{name: "newer entry is not replaced", publish: `{"v":2}`, want: `{"v":2}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "entry.json")
+			if err := os.WriteFile(path, []byte(`{"v":1}`), 0o600); err != nil {
+				t.Fatalf("seed entry: %v", err)
+			}
+			old := expiredCleanupProbe
+			expiredCleanupProbe = func(string) {
+				if tc.publish == "" {
+					return
+				}
+				if err := os.WriteFile(path, []byte(tc.publish), 0o600); err != nil {
+					t.Errorf("concurrent publish: %v", err)
+				}
+			}
+			t.Cleanup(func() { expiredCleanupProbe = old })
+
+			RemoveExpired(path, time.Minute)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("fresh entry lost by expiry cleanup: %v", err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("entry = %s, want %s", data, tc.want)
+			}
+			if names := ccDirNames(t, dir); len(names) != 1 {
+				t.Fatalf("expiry cleanup left files behind: %v", names)
+			}
+		})
+	}
+}
+
+func ccDirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read cache dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }

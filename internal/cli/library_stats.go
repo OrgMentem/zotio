@@ -246,9 +246,9 @@ SELECT
 FROM resources i
 LEFT JOIN resources a ON
 	a.resource_type='items'
-	AND json_extract(a.data,'$.data.itemType')='attachment'
+	AND a.parent_key=i.id
+	AND a.item_type='attachment'
 	AND json_extract(a.data,'$.data.contentType')='application/pdf'
-	AND json_extract(a.data,'$.data.parentItem')=i.id
 WHERE i.resource_type='items'
 	AND json_extract(i.data,'$.data.itemType') IN (
 		'journalArticle','book','bookSection','conferencePaper','report','thesis','preprint','manuscript','document'

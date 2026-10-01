@@ -5,9 +5,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +22,8 @@ import (
 
 // FeedbackEntry is one line in the local feedback ledger. Every run of
 // the feedback command appends one entry; upstream POST is a separate,
-// optional step.
+// optional step that sends the same entry unchanged. AgentID is set only
+// from the explicit --agent-id flag, never from the ambient environment.
 type FeedbackEntry struct {
 	Text      string    `json:"text"`
 	CLI       string    `json:"cli"`
@@ -56,6 +59,12 @@ func feedbackEndpoint() (string, error) {
 	if endpoint == "" {
 		return "", nil
 	}
+	// validateExternalHTTPURL quotes an unparseable URL in its error, and
+	// feedback receivers often carry their credential in the path or query,
+	// so reject a malformed value without echoing it.
+	if _, err := url.Parse(endpoint); err != nil {
+		return "", errors.New("not a valid URL")
+	}
 	// feedback sends may contain
 	// private CLI context, so only HTTPS public endpoints are accepted.
 	if err := validateExternalHTTPURL(endpoint, true); err != nil {
@@ -82,17 +91,17 @@ func appendFeedback(entry FeedbackEntry) error {
 	return json.NewEncoder(f).Encode(entry)
 }
 
-func postFeedback(url string, entry FeedbackEntry) error {
+func postFeedback(endpoint string, entry FeedbackEntry) error {
 	// keep direct helper calls as
 	// constrained as feedbackEndpoint().
-	if err := validateExternalHTTPURL(url, true); err != nil {
+	if err := validateExternalHTTPURL(endpoint, true); err != nil {
 		return err
 	}
 	body, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building feedback request: %w", err)
 	}
@@ -106,6 +115,13 @@ func postFeedback(url string, entry FeedbackEntry) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// net/http strips only the password from the URL it reports; the
+		// path and query, where receivers carry their credential, would
+		// otherwise reach stderr and the JSON result.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			urlErr.URL = webhookOrigin(urlErr.URL)
+		}
 		return fmt.Errorf("posting feedback: %w", err)
 	}
 	defer resp.Body.Close()
@@ -115,6 +131,7 @@ func postFeedback(url string, entry FeedbackEntry) error {
 func newFeedbackCmd(flags *rootFlags) *cobra.Command {
 	var useStdin bool
 	var send bool
+	var agentID string
 	cmd := &cobra.Command{
 		Use:   "feedback [text]",
 		Short: "Record feedback about this CLI (local by default; upstream opt-in)",
@@ -122,6 +139,17 @@ func newFeedbackCmd(flags *rootFlags) *cobra.Command {
 When ` + "`ZOTERO_FEEDBACK_ENDPOINT`" + ` is set and either --send is
 passed or ` + "`ZOTERO_FEEDBACK_AUTO_SEND=true`" + `, the entry is
 POSTed as JSON after the local write.
+
+The entry, stored locally and POSTed unchanged, holds exactly these
+fields: text, cli ("zotio"), version, timestamp (UTC), and agent_id
+only when --agent-id is passed. No environment variables, config,
+credentials, or library data are added.
+
+--send makes delivery required. If the endpoint is unset or unusable
+the command exits 10; if the POST fails it exits 5. The local entry is
+kept in both cases. An automatic send (ZOTERO_FEEDBACK_AUTO_SEND) stays
+best-effort: a failure is a warning and the command exits 0. Results
+and errors name only the endpoint's scheme and host.
 
 Write what surprised you or tripped you up, not a bug report. The
 loop is: agent notices friction -> one invocation -> captured -> the
@@ -151,7 +179,7 @@ maintainer sees it.`,
 				Text:      text,
 				CLI:       "zotio",
 				Version:   version,
-				AgentID:   os.Getenv("AGENT_ID"),
+				AgentID:   strings.TrimSpace(agentID),
 				Timestamp: time.Now().UTC(),
 			}
 			if err := withInstallationWriterLock(cmd, flags, "feedback", func() error {
@@ -161,30 +189,45 @@ maintainer sees it.`,
 			}
 
 			upstreamResult := map[string]any{"sent": false}
+			var upstreamErr error
 			if send || feedbackAutoSend() {
 				endpoint, endpointErr := feedbackEndpoint()
-				if endpointErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: feedback upstream POST disabled: %v\n", endpointErr)
-					upstreamResult["error"] = endpointErr.Error()
-				} else if endpoint != "" {
+				switch {
+				case endpointErr != nil:
+					upstreamErr = configErr(fmt.Errorf("feedback recorded locally but not sent: ZOTERO_FEEDBACK_ENDPOINT is unusable: %w", endpointErr))
+				case endpoint == "":
+					if send {
+						upstreamErr = configErr(errors.New("feedback recorded locally but not sent: --send requires ZOTERO_FEEDBACK_ENDPOINT set to a public https:// URL"))
+					}
+				default:
 					if err := postFeedback(endpoint, entry); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: feedback upstream POST failed: %v\n", err)
-						upstreamResult["sent"] = false
-						upstreamResult["error"] = err.Error()
+						upstreamErr = apiErr(fmt.Errorf("feedback recorded locally but upstream POST failed: %w", err))
 					} else {
 						upstreamResult["sent"] = true
-						upstreamResult["endpoint"] = endpoint
+						upstreamResult["endpoint"] = webhookOrigin(endpoint)
+					}
+				}
+				if upstreamErr != nil {
+					upstreamResult["error"] = upstreamErr.Error()
+					// Only an explicit --send is a required delivery; the
+					// ambient auto-send stays a best-effort warning.
+					if !send {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", upstreamErr)
+						upstreamErr = nil
 					}
 				}
 			}
 
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"recorded":  true,
 					"truncated": truncated,
 					"upstream":  upstreamResult,
 					"entry":     entry,
-				}, flags)
+				}, flags); err != nil {
+					return err
+				}
+				return upstreamErr
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "feedback recorded locally (%d chars%s)\n", len(text), func() string {
 				if truncated {
@@ -195,11 +238,12 @@ maintainer sees it.`,
 			if sent, _ := upstreamResult["sent"].(bool); sent {
 				fmt.Fprintf(cmd.OutOrStdout(), "upstream POST: %v\n", upstreamResult["endpoint"])
 			}
-			return nil
+			return upstreamErr
 		},
 	}
 	cmd.Flags().BoolVar(&useStdin, "stdin", false, "Read feedback body from stdin rather than arguments")
-	cmd.Flags().BoolVar(&send, "send", false, "POST to the configured feedback endpoint in addition to local write")
+	cmd.Flags().BoolVar(&send, "send", false, "POST to the configured feedback endpoint in addition to local write; exits non-zero if the POST does not happen")
+	cmd.Flags().StringVar(&agentID, "agent-id", "", "Identifier to record (and send) as agent_id; omitted unless passed")
 
 	cmd.AddCommand(newFeedbackListCmd(flags))
 	return cmd

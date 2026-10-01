@@ -52,33 +52,15 @@ func withAtomicOutputFile(target string, mode os.FileMode, produce func(io.Write
 	if target == "" {
 		return fmt.Errorf("atomic output requires a target path")
 	}
-	if err := checkAtomicOutputTarget(target); err != nil {
+	if _, err := checkAtomicOutputTarget(target); err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(target)
 	// The temporary file must share the target's directory or the final rename
 	// crosses a filesystem boundary and fails with EXDEV.
-	tmp, err := os.CreateTemp(dir, atomicOutputTempPattern)
+	tmpPath, err := stageAtomicOutput(filepath.Dir(target), mode, produce)
 	if err != nil {
-		return fmt.Errorf("creating temporary output in %s: %w", dir, err)
-	}
-	tmpPath := tmp.Name()
-
-	// Set the published mode before any bytes exist, so the artifact is never
-	// briefly readable under a more permissive mode than the caller asked for.
-	if err := tmp.Chmod(mode); err != nil {
-		return abortAtomicOutput(tmp, tmpPath, fmt.Errorf("setting permissions on temporary output: %w", err))
-	}
-
-	if err := produce(tmp); err != nil {
-		// The caller's error is the primary failure and must survive: cleanup
-		// problems are not allowed to mask why the export actually failed.
-		return abortAtomicOutput(tmp, tmpPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("closing temporary output: %w", err)
+		return err
 	}
 	if err := os.Rename(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
@@ -87,26 +69,57 @@ func withAtomicOutputFile(target string, mode os.FileMode, produce func(io.Write
 	return nil
 }
 
+// stageAtomicOutput writes a complete, closed temporary file in dir and returns
+// its path; the caller renames it into place or removes it. On any failure the
+// temporary file is already gone and the returned error is produce's own when
+// produce failed.
+func stageAtomicOutput(dir string, mode os.FileMode, produce func(io.Writer) error) (string, error) {
+	tmp, err := os.CreateTemp(dir, atomicOutputTempPattern)
+	if err != nil {
+		return "", fmt.Errorf("creating temporary output in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+
+	// Set the published mode before any bytes exist, so the artifact is never
+	// briefly readable under a more permissive mode than the caller asked for.
+	if err := tmp.Chmod(mode); err != nil {
+		return "", abortAtomicOutput(tmp, tmpPath, fmt.Errorf("setting permissions on temporary output: %w", err))
+	}
+
+	if err := produce(tmp); err != nil {
+		// The caller's error is the primary failure and must survive: cleanup
+		// problems are not allowed to mask why the export actually failed.
+		return "", abortAtomicOutput(tmp, tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("closing temporary output: %w", err)
+	}
+	return tmpPath, nil
+}
+
 // checkAtomicOutputTarget refuses to publish over anything but an absent path
-// or a regular file. os.Lstat, not os.Stat, so a symlink is seen as a symlink
+// or a regular file, and reports whether a regular file is already there, so
+// callers can say that a publication replaced (or, under --dry-run, would
+// replace) it. os.Lstat, not os.Stat, so a symlink is seen as a symlink
 // instead of as whatever it points at.
-func checkAtomicOutputTarget(target string) error {
+func checkAtomicOutputTarget(target string) (exists bool, err error) {
 	info, err := os.Lstat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("inspecting output path %s: %w", target, err)
+		return false, fmt.Errorf("inspecting output path %s: %w", target, err)
 	}
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
-		return fmt.Errorf("refusing to publish over symlink %s: pass the file it points to instead", target)
+		return false, fmt.Errorf("refusing to publish over symlink %s: pass the file it points to instead", target)
 	case info.Mode().IsRegular():
-		return nil
+		return true, nil
 	case info.IsDir():
-		return fmt.Errorf("refusing to publish over directory %s", target)
+		return false, fmt.Errorf("refusing to publish over directory %s", target)
 	default:
-		return fmt.Errorf("refusing to publish over non-regular file %s (mode %s)", target, info.Mode())
+		return false, fmt.Errorf("refusing to publish over non-regular file %s (mode %s)", target, info.Mode())
 	}
 }
 

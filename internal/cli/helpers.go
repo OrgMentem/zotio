@@ -387,12 +387,15 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
 			"\n      Run 'zotio doctor' to check writability."))
 	}
-	// a 412 on a write means the item's version changed since it was read —
-	// common when reads come from the local API/store but writes go to the Web API
-	// and the desktop hasn't synced. Point at sync rather than a generic error.
+	// a 412 on a write means the object's version changed on the Web API between
+	// the read that supplied the precondition and the write. Guarded writes read
+	// that version from the write plane (GetFromWriteBaseWithVersionContext) or
+	// take it from the operator's explicit "version", never from the local API
+	// or store, so a local sync cannot fix it. Re-running re-reads the version.
 	if strings.Contains(msg, "HTTP 412") {
-		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the item changed since it was read (version conflict)."+
-			"\n      Run 'zotio sync' to refresh local state, then retry."))
+		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the object changed on the Zotero Web API after this command read its version (version conflict)."+
+			"\n      Review the concurrent change, then re-run the command; it re-reads the current version from the Web API."+
+			"\n      If you supplied an explicit \"version\", replace it with the object's current Web API version."))
 	}
 	// classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
@@ -1412,8 +1415,7 @@ func formatCellValue(v any) string {
 			return ""
 		}
 		// If array contains objects, format each as a summary line
-		if obj, isObj := val[0].(map[string]any); isObj {
-			_ = obj
+		if _, isObj := val[0].(map[string]any); isObj {
 			return formatObjectArray(val)
 		}
 		// Flatten simple arrays into comma-separated string

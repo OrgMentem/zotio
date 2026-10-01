@@ -141,7 +141,7 @@ func TestDBPathUsesNumericZoteroGroup(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("ZOTERO_DATA_DIR", dataDir)
 
-	// Group scope lives in the cli package (read via cli.ActiveGroupID()), populated only via the exported
+	// Group scope lives in the cli package, populated only via the exported
 	// cli.ApplyGroupScopeFromEnv initializer now that dbPath() no longer reads
 	// ZOTERO_GROUP itself; each case restores it via cli.SnapshotGlobals() so the cases don't leak
 	// group scope into each other.

@@ -194,8 +194,17 @@ func TestAnalyticsTypeFiltersItemsAndRejectsUnknown(t *testing.T) {
 	if scope.resourceType != "items" || scope.itemType != "journalArticle" {
 		t.Fatalf("scope = %+v, want items filtered to journalArticle", scope)
 	}
-	if _, err := analyticsScopeForType(db, "bogusType"); err == nil || !strings.Contains(err.Error(), "unknown analytics type") {
+	_, err = analyticsScopeForType(db, "bogusType")
+	if err == nil || !strings.Contains(err.Error(), "unknown analytics type") {
 		t.Fatalf("bogusType error = %v, want unknown analytics type", err)
+	}
+	// A wrong --type is operator input, so it exits as a usage error and
+	// names the accepted values instead of leaving the next try to guesswork.
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("bogusType exit code = %d, want 2 (usage)", got)
+	}
+	if !strings.Contains(err.Error(), "journalArticle") || !strings.Contains(err.Error(), "collections") {
+		t.Fatalf("bogusType error = %q, want the valid item types and resource kinds listed", err)
 	}
 }
 

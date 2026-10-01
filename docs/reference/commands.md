@@ -31,7 +31,7 @@ These flags are available on every command.
 | `--csv` | `bool` | `false` | Output as CSV (table and array responses) |
 | `--data-source` | `string` | `auto` | Data source for read commands: auto (live with local fallback), live (API only), local (synced data only) |
 | `--deliver` | `string` |  | Route output to a sink: stdout (default), file:<path>, webhook:<url> |
-| `--dry-run` | `bool` | `false` | Show request without sending |
+| `--dry-run` | `bool` | `false` | Preview writes without sending them; read requests still run |
 | `--group` | `string` |  | Operate on a Zotero group library by numeric group ID, or 'all' to fan one read/diagnostic out across the personal library and every accessible group (default: personal library) |
 | `--human-friendly` | `bool` | `false` | Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win) |
 | `--idempotent` | `bool` | `false` | Treat already-existing create results as a successful no-op |
@@ -151,7 +151,9 @@ With the local store (the default), matching uses the full-text index:
 word stems match ("trust" finds "trusted"), "quoted phrases" match
 exactly, and AND, OR, NOT and parentheses combine terms. Results are
 ranked by relevance and include the key and title of the item the
-annotation belongs to. --refresh searches live through the Zotero API.
+annotation belongs to. --refresh searches live through the Zotero API:
+each word or "quoted phrase" must appear, in any letter case, in the
+annotation's text, comment or tags; stems and operators do not apply.
 
 ```
 zotio annotations search <query> [flags]
@@ -224,8 +226,10 @@ accept the cloud upload.
 All routes are retry-safe. Stored files reconcile by filename and registered
 MD5, and linked files by absolute path. The connector route reconciles on
 content hash alone, because Zotero names the stored file after the parent item
-rather than after your file: an identical retry no-ops, and a run interrupted
-before the move is resumed rather than duplicated. Two limits are worth knowing:
+rather than after your file: an identical retry no-ops, a run interrupted
+before the move is resumed rather than duplicated, and an empty temporary parent
+left by a run interrupted after the move is trashed by an identical retry once
+it is more than seven minutes old. Two limits are worth knowing:
 a retry issued before Zotero has registered the hash can still add a second
 copy, and two simultaneous runs against one item can both add one.
 
@@ -251,6 +255,8 @@ zotio auth
 ### `zotio auth logout`
 
 Clear stored credentials
+
+Clears the stored API key from the config file and removes the credentials file. --dry-run reports what would be cleared and writes nothing.
 
 ```
 zotio auth logout
@@ -352,6 +358,12 @@ Write a local research package for a collection
 Assemble a self-contained research package from the local store for a
 collection: synthesis context, annotations, and compact bibliography. This command
 never writes to Zotero; run sync first if local data is missing.
+
+Re-running into the same --out replaces the package; the result names every
+existing file it replaced. zotio-bundle.json is written last and lists each
+file's size and SHA-256: the package is complete only while that file is
+present and matches. With --dry-run nothing is written; the result lists the
+files that would be written and replaced.
 
 ```
 zotio collections bundle <collectionKey> [flags]
@@ -901,7 +913,7 @@ Examples:
 ```bash
 zotio doctor
   zotio doctor --json
-  zotio doctor --fail-on warn
+  zotio doctor --fail-on stale
 ```
 
 | Flag | Type | Default | Description |
@@ -1009,6 +1021,17 @@ When `ZOTERO_FEEDBACK_ENDPOINT` is set and either --send is
 passed or `ZOTERO_FEEDBACK_AUTO_SEND=true`, the entry is
 POSTed as JSON after the local write.
 
+The entry, stored locally and POSTed unchanged, holds exactly these
+fields: text, cli ("zotio"), version, timestamp (UTC), and agent_id
+only when --agent-id is passed. No environment variables, config,
+credentials, or library data are added.
+
+--send makes delivery required. If the endpoint is unset or unusable
+the command exits 10; if the POST fails it exits 5. The local entry is
+kept in both cases. An automatic send (ZOTERO_FEEDBACK_AUTO_SEND) stays
+best-effort: a failure is a warning and the command exits 0. Results
+and errors name only the endpoint's scheme and host.
+
 Write what surprised you or tripped you up, not a bug report. The
 loop is: agent notices friction -> one invocation -> captured -> the
 maintainer sees it.
@@ -1019,7 +1042,8 @@ zotio feedback [text] [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--send` | `bool` | `false` | POST to the configured feedback endpoint in addition to local write |
+| `--agent-id` | `string` |  | Identifier to record (and send) as agent_id; omitted unless passed |
+| `--send` | `bool` | `false` | POST to the configured feedback endpoint in addition to local write; exits non-zero if the POST does not happen |
 | `--stdin` | `bool` | `false` | Read feedback body from stdin rather than arguments |
 
 ### `zotio feedback list`
@@ -1197,6 +1221,7 @@ zotio import discover [flags]
 | `--limit` | `int` | `25` | Maximum manifest entries to emit |
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
 | `--out` | `string` |  | Path to write the reviewable import manifest |
+| `--overwrite` | `bool` | `false` | Replace an existing manifest at --out; review edits in it are lost |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (required) |
 
 ### `zotio import doi`
@@ -1461,9 +1486,10 @@ Guided first-run setup using doctor, auth, sync, and health checks
 Guided first-run setup for Zotero automation.
 
 Checks the local Zotero API, stores an API key when one is provided interactively,
-runs the first local sync when the store is missing or empty, finishes with the quick
+offers the first local sync when the store is missing or empty, finishes with the quick
 library-health preset, and offers an opt-in daily check for public zotio releases.
 The check sends only a GitHub releases request and no identifying payload.
+Without a terminal prompt (--no-input or --agent), the first sync runs only with --yes.
 
 ```
 zotio init [flags]
@@ -2541,6 +2567,9 @@ zotio profile
 
 Remove a profile
 
+Removes a saved profile. Requires --yes; --dry-run reports what would be
+removed and writes nothing.
+
 ```
 zotio profile delete <name>
 ```
@@ -2573,7 +2602,12 @@ Save the current invocation's non-default flags as a named profile
 
 Captures every flag explicitly set on the invocation and stores
 them under <name>. To update an existing profile, run save again; the
-entry is replaced.
+entry is replaced, and the output says so ("replaced": true in JSON).
+
+Approval flags (--yes, --allow-destructive, --allow-zotero-cloud) are never
+saved: pass them on the command line of each command that writes. A saved
+--max-changes applies only when it is stricter than the default cap (500, or
+50 under --agent). --dry-run previews the save and writes nothing.
 
 To avoid creating empty profiles, at least one non-default flag must be
 present (other than --profile and --config).
@@ -3388,6 +3422,10 @@ Watch keeps the local store fresh by running incremental sync cycles on
 a configurable interval. It starts with an immediate sync, logs one concise
 status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.
 
+Each resource argument takes a name that sync --resources accepts, such as
+items or collections; with none, watch syncs the default set. An unknown name
+exits 2 before the first cycle.
+
 When --workflow <spec.json> is set, watch runs the workflow after every
 successful sync cycle. It previews unless this watch invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
@@ -3445,11 +3483,12 @@ zotio workflow
 
 ### `zotio workflow archive`
 
-Sync all resources to local store for offline access and search
+Run zotio sync --strict over the default resources
 
-Archive fetches all syncable resources from the API and stores them in a
-local SQLite database. Supports incremental sync (only new data since last run)
-and full resync. After archiving, use 'search' for instant full-text search.
+Archive runs 'zotio sync --strict' over the default sync resources. It
+uses the same code, JSON events, and exit codes as sync, so any resource that
+fails to sync makes it exit non-zero. --full and --db mean what they mean for
+sync. Run 'zotio sync' directly to choose resources, --since, or concurrency.
 
 ```
 zotio workflow archive [flags]
@@ -3458,21 +3497,21 @@ zotio workflow archive [flags]
 Examples:
 
 ```bash
-# Archive all resources
+# Incremental sync of the default resources; a failed resource exits non-zero
   zotio workflow archive
 
-  # Full re-archive (ignore previous sync state)
+  # Full resync, the same as zotio sync --full --strict
   zotio workflow archive --full
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
-| `--full` | `bool` | `false` | Full re-archive (ignore previous sync state) |
+| `--full` | `bool` | `false` | Full resync, as sync --full: ignore the stored checkpoint and per-row versions |
 
 ### `zotio workflow run`
 
-Preview or transactionally apply a declarative workflow
+Preview or apply a declarative multi-step workflow
 
 Runs a declarative workflow spec in process. By default, mutating steps
 are previewed with --dry-run while read-only steps run normally.
@@ -3484,9 +3523,12 @@ can pipe an earlier step's raw output with "stdin_from", and "when" can run a
 step only when an earlier step is ok, failed, or skipped. In preview mode,
 substituted step outputs are preview outputs.
 
-Pass --yes once to apply the whole workflow. Every mutation from that run shares
-one journal run ID. If an applied workflow is interrupted, continue it with
---yes --resume; completed steps are skipped from its checkpoint sidecar.
+Pass --yes once to apply the whole workflow. Steps apply in order, and every
+mutation from that run shares one journal run ID (zotio journal list --workflow
+<run-id>). There is no rollback: if a step fails, writes from earlier steps
+stay applied. The run stops at the first failed step unless the spec sets
+"continue_on_error". A failed or interrupted applied run keeps its checkpoint
+sidecar; continue it with --yes --resume, which skips the completed steps.
 
 ```
 zotio workflow run <file.json> [flags]

@@ -176,14 +176,17 @@ func UpgradeHint(executable, releaseURL string) string {
 	return releaseURL
 }
 
+// compareVersion orders release versions by numeric core segments, then by
+// SemVer pre-release precedence: 1.2.3-rc.1 < 1.2.3. Build metadata is ignored.
 func compareVersion(left, right string) int {
-	parse := func(value string) []string {
+	parse := func(value string) (core []string, pre string) {
 		value = strings.TrimPrefix(value, "v")
-		value = strings.SplitN(value, "-", 2)[0]
 		value = strings.SplitN(value, "+", 2)[0]
-		return strings.Split(value, ".")
+		value, pre, _ = strings.Cut(value, "-")
+		return strings.Split(value, "."), pre
 	}
-	a, b := parse(left), parse(right)
+	a, aPre := parse(left)
+	b, bPre := parse(right)
 	for i := range max(len(a), len(b)) {
 		var leftRaw, rightRaw string
 		if i < len(a) {
@@ -200,6 +203,48 @@ func compareVersion(left, right string) int {
 		if leftPart > rightPart {
 			return 1
 		}
+	}
+	return comparePrerelease(aPre, bPre)
+}
+
+// comparePrerelease applies SemVer 2.0.0 §11 precedence to pre-release tags.
+// An empty tag is a release and outranks any pre-release of the same core.
+func comparePrerelease(left, right string) int {
+	switch {
+	case left == right:
+		return 0
+	case left == "":
+		return 1
+	case right == "":
+		return -1
+	}
+	a, b := strings.Split(left, "."), strings.Split(right, ".")
+	for i := range min(len(a), len(b)) {
+		leftNum, leftErr := strconv.ParseUint(a[i], 10, 64)
+		rightNum, rightErr := strconv.ParseUint(b[i], 10, 64)
+		switch {
+		case leftErr == nil && rightErr == nil:
+			if leftNum != rightNum {
+				if leftNum < rightNum {
+					return -1
+				}
+				return 1
+			}
+		case leftErr == nil:
+			return -1
+		case rightErr == nil:
+			return 1
+		default:
+			if c := strings.Compare(a[i], b[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
 	}
 	return 0
 }

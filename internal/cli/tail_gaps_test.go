@@ -82,7 +82,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 
 	// Baseline poll: no cursor yet -> full set as upserts, no deletions.
 	var buf bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil); err != nil {
 		t.Fatalf("baseline emitChanges: %v", err)
 	}
 	events := ndjsonEvents(t, buf.String())
@@ -99,13 +99,13 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 	if !gotKeys["A"] || !gotKeys["B"] {
 		t.Errorf("baseline keys = %v, want A and B", gotKeys)
 	}
-	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 10 {
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 10 {
 		t.Errorf("cursor after baseline = %d, want 10", v)
 	}
 
 	// Delta poll: since=10 -> one upsert (A) plus one delete (B).
 	buf.Reset()
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil); err != nil {
 		t.Fatalf("delta emitChanges: %v", err)
 	}
 	events = ndjsonEvents(t, buf.String())
@@ -132,7 +132,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 	if upserts != 1 || deletes != 1 {
 		t.Errorf("delta: upserts=%d deletes=%d, want 1 and 1", upserts, deletes)
 	}
-	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 12 {
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 12 {
 		t.Errorf("cursor after delta = %d, want 12", v)
 	}
 }
@@ -166,7 +166,7 @@ func TestEmitChanges_DeletionFetchCancellationDoesNotEmitOrAdvanceCursor(t *test
 	var buf bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		_, err := emitChanges(ctx, c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+		_, err := emitChangesWithHook(ctx, c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 		done <- err
 	}()
 	select {
@@ -183,7 +183,7 @@ func TestEmitChanges_DeletionFetchCancellationDoesNotEmitOrAdvanceCursor(t *test
 	case <-time.After(time.Second):
 		t.Fatal("emitChanges did not return after deletion fetch cancellation")
 	}
-	if got, _, _ := db.StoredLibraryVersion("tail:items"); got != 10 {
+	if got, _, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); got != 10 {
 		t.Errorf("cursor = %d, want unchanged 10", got)
 	}
 	if buf.Len() != 0 {
@@ -216,7 +216,7 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	var buf bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf, nil); err != nil {
 		t.Fatalf("emitChanges: %v", err)
 	}
 	if len(received) != 1 {
@@ -251,10 +251,10 @@ func TestEmitChanges_WebhookFailureRetainsCursor(t *testing.T) {
 	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	var buf bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err == nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf, nil); err == nil {
 		t.Fatal("emitChanges succeeded despite webhook delivery failure")
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 0 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 0 {
 		t.Fatalf("tail cursor = %d, %v; want unchanged 0", got, err)
 	}
 }
@@ -272,7 +272,7 @@ func TestEmitChangesFileSinkCreatesNestedParentDirs(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "nested", "private", "events.ndjson")
 
 	var buf bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "file", Target: target}, &buf); err != nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "file", Target: target}, &buf, nil); err != nil {
 		t.Fatalf("emitChanges: %v", err)
 	}
 

@@ -192,13 +192,29 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		return "failed", nil, err
 	}
 	if existing != "" {
-		return "no_op", map[string]any{
+		detail := map[string]any{
 			"attachment_key": existing,
 			"item_key":       existing,
 			"parent_key":     req.ParentKey,
 			"via":            "connector",
 			"note":           "an attachment with identical content is already on this item",
-		}, nil
+		}
+		// A run killed between its move and its trash leaves exactly this
+		// state: the file on the target and an empty temporary parent. The
+		// retry lands here, so this is where that parent is cleaned up.
+		reaped, reapErr := reapAbandonedTemporaryParents(routeCtx, flags, webClient, req.ParentKey, time.Now())
+		if len(reaped) > 0 {
+			detail["temp_parents_trashed"] = reaped
+		}
+		if reapErr != nil {
+			// The requested content is already on the target, so a cleanup
+			// failure is litter to report, not a reason to fail the command.
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: %s already holds this content, but an abandoned temporary parent could not be cleaned up: %v\n"+
+					"         search Zotero for %q and delete any such item that has no file\n",
+				req.ParentKey, reapErr, connectorTempParentPrefix)
+		}
+		return "no_op", detail, nil
 	}
 
 	out, err := runConnectorReparent(routeCtx, cmd, flags, webClient, req)
@@ -308,8 +324,14 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 		// nonce before giving up, or the operator is told a create failed while
 		// a temporary parent sits in their library.
 		out.TempParentKey = tempParentKeyAfterCreateError(ctx, flags, res, nonce, req.ParentKey)
-		if out.TempParentKey != "" || res.Session != "" {
+		if out.TempParentKey != "" || (res.Session != "" && res.ConnectorError == "") {
 			return out, fmt.Errorf("temporary parent %q was created but the route could not continue: %w",
+				sanitizeForTerminal(out.TempTitle), createErr)
+		}
+		if res.Session != "" {
+			// The create route could not settle whether SaveItems landed, and
+			// the marker lookup found nothing yet either.
+			return out, fmt.Errorf("temporary parent %q may have been created but could not be confirmed, so the route stopped: %w",
 				sanitizeForTerminal(out.TempTitle), createErr)
 		}
 		return out, fmt.Errorf("creating temporary parent via connector: %w", createErr)
@@ -1493,7 +1515,7 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 	}
 	c.NoCache = true
 
-	candidates, err := markedTemporaryParents(c, targetKey)
+	candidates, err := markedTemporaryParents(c, targetKey, time.Time{})
 	if err != nil {
 		return "", "", err
 	}
@@ -1526,8 +1548,10 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 }
 
 // markedTemporaryParents lists recent items carrying this route's marker for one
-// target, whatever run wrote them.
-func markedTemporaryParents(c *client.Client, targetKey string) ([]string, error) {
+// target, whatever run wrote them. A non-zero addedBefore keeps only items whose
+// dateAdded is strictly earlier; a missing or unparseable dateAdded then fails
+// closed, because nothing proves such an item is old.
+func markedTemporaryParents(c *client.Client, targetKey string, addedBefore time.Time) ([]string, error) {
 	var keys []string
 	for start := 0; start < 500; start += connectorChildrenPageSize {
 		data, err := c.Get("/items/top", map[string]string{
@@ -1545,6 +1569,7 @@ func markedTemporaryParents(c *client.Client, targetKey string) ([]string, error
 				ItemType     string `json:"itemType"`
 				AbstractNote string `json:"abstractNote"`
 				Deleted      int    `json:"deleted"`
+				DateAdded    string `json:"dateAdded"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(data, &rows); err != nil {
@@ -1557,6 +1582,12 @@ func markedTemporaryParents(c *client.Client, targetKey string) ([]string, error
 			if !markerIdentifies(row.Data.ItemType, row.Data.AbstractNote, targetKey, "") {
 				continue
 			}
+			if !addedBefore.IsZero() {
+				added, err := time.Parse(time.RFC3339, strings.TrimSpace(row.Data.DateAdded))
+				if err != nil || !added.Before(addedBefore) {
+					continue
+				}
+			}
 			if zoteroItemKeyRE.MatchString(row.Key) {
 				keys = append(keys, row.Key)
 			}
@@ -1566,4 +1597,62 @@ func markedTemporaryParents(c *client.Client, targetKey string) ([]string, error
 		}
 	}
 	return keys, nil
+}
+
+// connectorTempParentAbandonedAfter is how old a marked temporary parent must be
+// before a later run may treat it as abandoned. Every run that could still put a
+// file under it is bounded by connectorReparentRouteTimeout, which starts before
+// the parent is created; recentItemClockSkew covers a desktop clock behind this
+// one. Past both, no live run can own the parent.
+const connectorTempParentAbandonedAfter = connectorReparentRouteTimeout + recentItemClockSkew
+
+// reapAbandonedTemporaryParents trashes the temporary parents for targetKey that
+// a dead run left behind with nothing in them. A run killed between its move and
+// its trash leaves exactly that, and nothing else will ever remove it: the retry
+// finds the file already on the target and has no other reason to look.
+//
+// Each condition is proof, not heuristic, and all must hold:
+//   - the marker zotio writes, naming this target, on a "document" item, so
+//     zotio created it for this destination;
+//   - added longer ago than connectorTempParentAbandonedAfter, so no live run
+//     owns it. Without this a concurrent run's parent, empty for the moment
+//     between its create and its file save, would be trashed under it;
+//   - no live child of any type on either plane, so trashing it strands no
+//     file and discards nothing anyone added.
+//
+// The trash itself goes through trashTemporaryParent, which re-checks the marker
+// and the attachment children on the write plane and is reversible.
+func reapAbandonedTemporaryParents(ctx context.Context, flags *rootFlags, webClient *client.Client, targetKey string, now time.Time) ([]string, error) {
+	local, err := localClientForRoute(ctx, flags)
+	if err != nil {
+		return nil, err
+	}
+	local.NoCache = true
+	candidates, err := markedTemporaryParents(local, targetKey, now.Add(-connectorTempParentAbandonedAfter))
+	if err != nil {
+		return nil, err
+	}
+	var trashed []string
+	for _, key := range candidates {
+		empty := true
+		for _, plane := range []*client.Client{local, webClient} {
+			rows, err := allChildRows(plane, key)
+			if err != nil {
+				return trashed, fmt.Errorf("reading children of abandoned temporary parent %s: %w", key, err)
+			}
+			for _, row := range rows {
+				if row.Data.Deleted == 0 {
+					empty = false
+				}
+			}
+		}
+		if !empty {
+			continue
+		}
+		if _, err := trashTemporaryParent(ctx, webClient, key, "", targetKey); err != nil {
+			return trashed, fmt.Errorf("trashing abandoned temporary parent %s: %w", key, err)
+		}
+		trashed = append(trashed, key)
+	}
+	return trashed, nil
 }

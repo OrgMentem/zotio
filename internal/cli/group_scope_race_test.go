@@ -33,8 +33,8 @@ func TestApplyGroupScopeFromEnvDoesNotClobberActiveScope(t *testing.T) {
 	if err := ApplyGroupScopeFromEnv(); err != nil {
 		t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want nil", err)
 	}
-	if got := ActiveGroupID(); got != "99999" {
-		t.Fatalf("ActiveGroupID() = %q, want %q (must not clobber active scope)", got, "99999")
+	if got := activeGroupIDLocked(); got != "99999" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q (must not clobber active scope)", got, "99999")
 	}
 	if path, err := DefaultDBPath("zotio"); err != nil {
 		t.Fatalf("DefaultDBPath error = %v", err)
@@ -48,8 +48,8 @@ func TestApplyGroupScopeFromEnvDoesNotClobberActiveScope(t *testing.T) {
 	if err := ApplyGroupScopeFromEnv(); err != nil {
 		t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want nil", err)
 	}
-	if got := ActiveGroupID(); got != "22222" {
-		t.Fatalf("ActiveGroupID() = %q, want %q after unset", got, "22222")
+	if got := activeGroupIDLocked(); got != "22222" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q after unset", got, "22222")
 	}
 
 	// Empty env is a no-op and must not clear an active scope.
@@ -58,8 +58,8 @@ func TestApplyGroupScopeFromEnvDoesNotClobberActiveScope(t *testing.T) {
 	if err := ApplyGroupScopeFromEnv(); err != nil {
 		t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want nil", err)
 	}
-	if got := ActiveGroupID(); got != "33333" {
-		t.Fatalf("ActiveGroupID() = %q, want %q (empty env must not clobber)", got, "33333")
+	if got := activeGroupIDLocked(); got != "33333" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q (empty env must not clobber)", got, "33333")
 	}
 
 	// Malformed env is rejected when no scope is active.
@@ -68,8 +68,8 @@ func TestApplyGroupScopeFromEnvDoesNotClobberActiveScope(t *testing.T) {
 	if err := ApplyGroupScopeFromEnv(); err == nil {
 		t.Fatal("ApplyGroupScopeFromEnv() error = nil, want rejection for non-numeric ZOTERO_GROUP")
 	}
-	if got := ActiveGroupID(); got != "" {
-		t.Fatalf("ActiveGroupID() = %q, want %q after rejected env (empty pre-state)", got, "")
+	if got := activeGroupIDLocked(); got != "" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q after rejected env (empty pre-state)", got, "")
 	}
 	// Baseline contract: when a scope is already active and ZOTERO_GROUP is
 	// malformed, the call is a no-op and returns nil — the active scope
@@ -82,8 +82,8 @@ func TestApplyGroupScopeFromEnvDoesNotClobberActiveScope(t *testing.T) {
 	if err := ApplyGroupScopeFromEnv(); err != nil {
 		t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want nil (baseline: active scope suppresses env validation)", err)
 	}
-	if got := ActiveGroupID(); got != "44444" {
-		t.Fatalf("ActiveGroupID() = %q, want %q after malformed env with active scope (must preserve prior scope)", got, "44444")
+	if got := activeGroupIDLocked(); got != "44444" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q after malformed env with active scope (must preserve prior scope)", got, "44444")
 	}
 }
 
@@ -162,16 +162,16 @@ func TestActiveGroupIDIsRaceFreeAgainstConcurrentGroupScopeWrites(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				id := ActiveGroupID()
+				id := activeGroupIDLocked()
 				if id != "" && id != "11111" && id != "22222" {
 					select {
-					case errCh <- "ActiveGroupID()=" + id + " not in allowed set":
+					case errCh <- "activeGroupIDLocked()=" + id + " not in allowed set":
 					default:
 					}
 				}
 				if isTorn(id) {
 					select {
-					case errCh <- "ActiveGroupID()=" + id + " is torn value":
+					case errCh <- "activeGroupIDLocked()=" + id + " is torn value":
 					default:
 					}
 				}
@@ -338,8 +338,8 @@ func TestApplyGroupScopeFromEnvConcurrentNoClobber(t *testing.T) {
 		}()
 		wg.Wait()
 
-		if got := ActiveGroupID(); got != "22222" {
-			t.Fatalf("iteration %d: ActiveGroupID()=%q, want 22222 (explicit setter must win regardless of ordering)", i, got)
+		if got := activeGroupIDLocked(); got != "22222" {
+			t.Fatalf("iteration %d: activeGroupIDLocked()=%q, want 22222 (explicit setter must win regardless of ordering)", i, got)
 		}
 	}
 }

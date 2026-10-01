@@ -88,7 +88,7 @@ The curated feature set. `zotio which "<goal>"` resolves natural-language querie
 - **`watch`** — Periodic incremental syncs (`--interval`, `--once`); `--health` diffs library health between cycles and reports new findings to stdout or a webhook.
 - **`workflow run`** — Run a declarative multi-step spec (JSON) in-process with per-step status and continue-on-error — replaces brittle shell chains.
 - **`desktop status` / `desktop wait`** — Is Zotero desktop running, and does its connector accept imports (`connector_reachable`)? `wait` blocks on filesystem events, not a poll, until the connector answers (exit 0); it exits 15 when Zotero is open and its connector has not answered for 60s (`unresponsive`, or `connector_off` if nothing listens); a single silent check is only `busy`, and 14 at `--timeout`.
-- **`init`** — Guided first run (detect Zotero, check the local API and explain how to enable it, set key, first sync, health check); agent-safe under `--no-input` (unmet steps exit 9 with a step report).
+- **`init`** — Guided first run (detect Zotero, check the local API and explain how to enable it, set key, first sync, health check); agent-safe under `--no-input` (unmet steps exit 9 with a step report; the first sync runs only with `--yes`).
 
 ### Reading workflow
 
@@ -210,7 +210,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
   ```bash
   zotio collections list --agent --select key,data.name,data.parentCollection
   ```
-- **Previewable** — `--dry-run` shows the request without sending
+- **Previewable** — `--dry-run` prints each write request instead of sending it; read requests still run
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 - **Non-interactive** — never prompts; input still arrives as each command's documented flags, positional arguments (`collections export <key>`, `workflow run <spec>`), or stdin
 - **Explicit retries** — use `--idempotent` only when an already-existing create should count as success, and `--ignore-missing` only when a missing delete target should count as success
@@ -256,7 +256,7 @@ Every command accepts `--deliver <sink>`. The output goes to the named sink in a
 | `file:<path>` | Atomically write output to `<path>` (tmp + rename) |
 | `webhook:<url>` | POST the output body to the URL (`application/json` or `application/x-ndjson` when `--compact`) |
 
-Unknown schemes are refused with a structured error naming the supported set. A webhook failure does **not** fail the command — it logs a warning with the URL and HTTP status on stderr while the exit status stays whatever the command itself earned, so check stderr when delivery matters.
+Unknown schemes are refused with a structured error naming the supported set. A webhook failure does **not** fail the command — it logs a warning with the webhook's origin (scheme and host only; the path and query often hold the credential) and the HTTP status on stderr while the exit status stays whatever the command itself earned, so check stderr when delivery matters.
 
 ## Named Profiles
 
@@ -270,7 +270,7 @@ zotio profile show briefing
 zotio profile delete briefing --yes
 ```
 
-Explicit flags always win over profile values; profile values win over defaults. `agent-context` lists all available profiles under `available_profiles` so introspecting agents discover them at runtime.
+Explicit flags always win over profile values; profile values win over defaults. Approval flags (`--yes`, `--allow-destructive`, `--allow-zotero-cloud`) are never saved to or applied from a profile: pass them on the command line of each command that writes. A profile's `--max-changes` applies only when it is stricter than the default cap. `agent-context` lists all available profiles under `available_profiles` so introspecting agents discover them at runtime.
 
 ## Exit Codes
 

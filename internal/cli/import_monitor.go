@@ -116,7 +116,7 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 			"  zotio import monitor --query \"bayesian inference\" --author A5023888391 --since 2026-09-01 --out feed.json\n" +
 			"  zotio import resolve new-works.json > reviewed.json && zotio import apply reviewed.json",
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(authorInputs) == 0 && strings.TrimSpace(query) == "" {
 				return usageErr(fmt.Errorf("at least one of --author or --query is required"))

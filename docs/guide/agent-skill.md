@@ -34,6 +34,6 @@ zotio tags audit fix --agent --yes   # apply the merge
 
 - Reads are safe and keyless. Writes preview by default; `--agent` does **not** auto-apply them.
 - `--max-changes` caps how many operations a single mutation may apply (lower under `--agent`).
-- `--dry-run` shows the request without sending it.
+- `--dry-run` prints each write request instead of sending it; read requests still run.
 
 See [Safe-by-default writes](../concepts/write-safety.md) for the full mutation contract and the [command reference](../reference/commands.md) for every flag.

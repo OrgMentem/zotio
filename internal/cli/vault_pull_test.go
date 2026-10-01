@@ -149,7 +149,7 @@ func TestApplyPulledRegion(t *testing.T) {
 
 func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"version":2,"data":{"note":"<p>remote changed</p>"}}`))
+		_, _ = w.Write([]byte(`{"version":2,"data":{"itemType":"note","parentItem":"ITEMKEY1","note":"<p>remote changed</p>"}}`))
 	}))
 	t.Cleanup(srv.Close)
 	c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
@@ -159,6 +159,7 @@ func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 	note := &pushNote{
 		path:      filepath.Join(outDir, "cite.md"),
 		citekey:   "cite",
+		itemKey:   "ITEMKEY1",
 		hasRegion: true,
 		region:    "local changed",
 		state: pushState{
@@ -166,7 +167,7 @@ func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 			SourceHash: sha256hex("baseline"),
 		},
 	}
-	result := pullOne(c, outDir, note, &rootFlags{dryRun: true}, true)
+	result := pullOne(c, outDir, "", note, &rootFlags{dryRun: true}, true)
 	if result.Status != "would conflict" {
 		t.Fatalf("dry-run conflict status = %q (%s), want would conflict", result.Status, result.Note)
 	}
@@ -194,7 +195,7 @@ func TestVaultPullPreviewsWithoutWriting(t *testing.T) {
 			remoteHTML := markdownToNoteHTML("cite1", "remote updated notes")
 			respBody, err := json.Marshal(map[string]any{
 				"version": 6,
-				"data":    map[string]string{"note": remoteHTML},
+				"data":    map[string]string{"itemType": "note", "parentItem": "K1", "note": remoteHTML},
 			})
 			if err != nil {
 				t.Fatalf("marshal fixture response: %v", err)
@@ -219,7 +220,7 @@ func TestVaultPullPreviewsWithoutWriting(t *testing.T) {
 				return notePath, before
 			}
 			runVaultPreviewWithoutWriting(t, "pull", tc.name, tc.flags, newVaultPullCmd,
-				respBody, writeFixture, "would pull")
+				map[string][]byte{"/users/0/items/NOTEKEY1": respBody}, writeFixture, "would pull")
 		})
 	}
 }

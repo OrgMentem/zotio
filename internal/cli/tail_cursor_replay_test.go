@@ -65,12 +65,12 @@ func TestTailWebhookFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 	sink := DeliverSink{Scheme: "webhook", Target: hook.URL}
 
 	var first bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", sink, &first); err == nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", sink, &first, nil); err == nil {
 		t.Fatal("emitChanges succeeded despite webhook delivery failure")
 	} else if !strings.Contains(err.Error(), "delivering webhook") {
 		t.Fatalf("error = %q, want it to name the webhook delivery failure", err.Error())
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 6 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 6 {
 		t.Fatalf("tail cursor = %d, %v; want unchanged 6", got, err)
 	}
 	if len(bodies) != 0 {
@@ -83,7 +83,7 @@ func TestTailWebhookFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 
 	failWebhook = false
 	var second bytes.Buffer
-	n, err := emitChanges(context.Background(), c, db, "items", "/items", sink, &second)
+	n, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", sink, &second, nil)
 	if err != nil {
 		t.Fatalf("replay emitChanges: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestTailWebhookFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 	if len(replayed) != 1 || replayed[0]["event"] != "upsert" || replayed[0]["key"] != "Z" {
 		t.Fatalf("replayed webhook body = %q, want the upsert Z offered again", bodies[0])
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 7 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 7 {
 		t.Fatalf("tail cursor = %d, %v; want 7 after the batch was delivered", got, err)
 	}
 }
@@ -139,10 +139,10 @@ func TestTailFileFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 	sink := DeliverSink{Scheme: "file", Target: target}
 
 	var first bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", sink, &first); err == nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", sink, &first, nil); err == nil {
 		t.Fatal("emitChanges succeeded despite the blocked delivery file")
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 6 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 6 {
 		t.Fatalf("tail cursor = %d, %v; want unchanged 6", got, err)
 	}
 
@@ -150,7 +150,7 @@ func TestTailFileFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 		t.Fatalf("removing blocker file: %v", err)
 	}
 	var second bytes.Buffer
-	if _, err := emitChanges(context.Background(), c, db, "items", "/items", sink, &second); err != nil {
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", sink, &second, nil); err != nil {
 		t.Fatalf("replay emitChanges: %v", err)
 	}
 	if len(sinces) != 2 || sinces[0] != "6" || sinces[1] != "6" {
@@ -164,7 +164,7 @@ func TestTailFileFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 	if len(fileEvents) != 1 || fileEvents[0]["event"] != "upsert" || fileEvents[0]["key"] != "F" {
 		t.Fatalf("delivery file = %q, want the upsert F offered again", data)
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 9 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 9 {
 		t.Fatalf("tail cursor = %d, %v; want 9 after the batch was delivered", got, err)
 	}
 }
@@ -203,7 +203,7 @@ func TestEmitChangesWithHook_RunsTriggerBeforeCursorSave(t *testing.T) {
 	hook := func(emitted int) error {
 		hookRuns++
 		emittedAtHook = emitted
-		v, _, err := db.StoredLibraryVersion("tail:items")
+		v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items")
 		if err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ func TestEmitChangesWithHook_RunsTriggerBeforeCursorSave(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "workflow failed") {
 		t.Fatalf("first trigger error = %v, want workflow failure", err)
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 6 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 6 {
 		t.Fatalf("tail cursor after failed trigger = %d, %v; want 6", got, err)
 	}
 	out.Reset()
@@ -239,7 +239,7 @@ func TestEmitChangesWithHook_RunsTriggerBeforeCursorSave(t *testing.T) {
 	if cursorAtHook != 6 {
 		t.Errorf("cursor during trigger = %d, want 6: the trigger must run before the cursor advances", cursorAtHook)
 	}
-	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 7 {
+	if got, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || got != 7 {
 		t.Fatalf("tail cursor = %d, %v; want 7 after the trigger returned", got, err)
 	}
 	events := ndjsonEvents(t, out.String())

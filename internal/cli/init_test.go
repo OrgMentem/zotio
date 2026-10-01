@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -128,7 +129,7 @@ func TestInitUpdateCheckConsentDefaultsToYes(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	ok, step := runInitUpdateCheckStep(cmd, cfg)
+	ok, step := runInitUpdateCheckStep(cmd, bufio.NewReader(cmd.InOrStdin()), cfg)
 	if !ok || step.Step != initStepUpdates || step.Status != "enabled" {
 		t.Fatalf("update step = %+v, want enabled", step)
 	}

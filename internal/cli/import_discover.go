@@ -32,10 +32,15 @@ type importDiscoverSummary struct {
 	Sources                 []referenceSourceSummary `json:"sources"`
 }
 
+// importDiscoverReport is the command result. Replaced says an existing
+// manifest at Out was replaced (only possible with --overwrite); under
+// --dry-run it says one would be, and nothing was written.
 type importDiscoverReport struct {
-	Scope   string                `json:"scope"`
-	Out     string                `json:"out"`
-	Summary importDiscoverSummary `json:"summary"`
+	Scope    string                `json:"scope"`
+	Out      string                `json:"out"`
+	Replaced bool                  `json:"replaced"`
+	DryRun   bool                  `json:"dry_run,omitempty"`
+	Summary  importDiscoverSummary `json:"summary"`
 }
 
 type referenceSourceItem struct {
@@ -89,12 +94,13 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 	var flagMinCount int
 	var flagDirection string
 	var flagCollection string
+	var flagOverwrite bool
 
 	cmd := &cobra.Command{
 		Use:         "discover",
 		Short:       "Discover missing references and write a reviewable import manifest",
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(flagScope) == "" {
 				return usageErr(fmt.Errorf("--scope is required"))
@@ -113,7 +119,18 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolving manifest output: %w", err)
 			}
-			return withPathWriterLock(cmd, lockPath, "import discover", func() error {
+			run := func() error {
+				// The manifest is the operator's review surface: import apply
+				// executes whatever create/skip choices it holds, so replacing an
+				// existing one can silently discard reviewed edits. Refuse before
+				// any provider request unless the operator opted in.
+				exists, err := checkAtomicOutputTarget(canonicalTarget)
+				if err != nil {
+					return fmt.Errorf("writing manifest: %w", err)
+				}
+				if exists && !flagOverwrite {
+					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --out", flagOut))
+				}
 				manifest, report, err := buildImportDiscoverManifestWithDirection(
 					cmd.Context(),
 					flags,
@@ -127,15 +144,28 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 					return err
 				}
 				manifest.Collection = strings.TrimSpace(flagCollection)
-				if err := withAtomicOutputFile(canonicalTarget, 0o600, func(w io.Writer) error {
-					return writeImportManifest(w, manifest)
-				}); err != nil {
-					return fmt.Errorf("writing manifest: %w", err)
+				report.Replaced = exists
+				report.DryRun = flags.dryRun
+				if !flags.dryRun {
+					if err := withAtomicOutputFile(canonicalTarget, 0o600, func(w io.Writer) error {
+						return writeImportManifest(w, manifest)
+					}); err != nil {
+						return fmt.Errorf("writing manifest: %w", err)
+					}
 				}
 				if flags.asJSON {
 					return printCommandJSON(cmd.OutOrStdout(), report, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
+				switch {
+				case flags.dryRun && exists:
+					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s, replacing the existing manifest and any review edits in it; nothing was written\n", report.Summary.Entries, flagOut)
+				case flags.dryRun:
+					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s; nothing was written\n", report.Summary.Entries, flagOut)
+				case exists:
+					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s (replaced the existing manifest)\n", report.Summary.Entries, flagOut)
+				default:
+					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Summary: items scanned=%d; references seen=%d; unique cited DOIs=%d; candidates=%d; already in library=%d; title duplicates=%d\n",
 					report.Summary.ItemsScanned,
 					report.Summary.ReferencesSeen,
@@ -145,7 +175,12 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 					report.Summary.SkippedTitleDuplicate,
 				)
 				return nil
-			})
+			}
+			// --dry-run creates nothing, not even the <out>.lock sibling.
+			if flags.dryRun {
+				return run()
+			}
+			return withPathWriterLock(cmd, lockPath, "import discover", run)
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageRequired)
@@ -154,6 +189,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagMinCount, "min-count", 2, "Minimum number of source items citing a DOI")
 	cmd.Flags().StringVar(&flagDirection, "direction", importDiscoverDirectionBackward, "Citation chase direction: backward, forward, or both")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Default destination collection key recorded in the manifest for created items")
+	cmd.Flags().BoolVar(&flagOverwrite, "overwrite", false, "Replace an existing manifest at --out; review edits in it are lost")
 	_ = cmd.MarkFlagRequired("scope")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
@@ -223,7 +259,9 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 	}
 
 	httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
-	providerCache := newProviderJSONCache(flags.noCache)
+	// --dry-run leaves no local state behind, so it bypasses the provider
+	// cache the way the API client bypasses its response cache.
+	providerCache := newProviderJSONCache(flags.noCache || flags.dryRun)
 	agg, err := buildReferenceAggregateForDirections(ctx, httpClient, sourceItems, directions, referenceFetchOptions{IncludeCrossRef: true, CountUniquePerSource: true, Cache: providerCache})
 	if err != nil {
 		return importManifest{}, importDiscoverReport{}, err

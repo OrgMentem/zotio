@@ -63,7 +63,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "wrapped",
 		Short:       "Show a local year-in-review for your Zotero library",
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagYear < 1 || flagYear > 9999 {
 				return usageErr(fmt.Errorf("--year must be between 1 and 9999"))

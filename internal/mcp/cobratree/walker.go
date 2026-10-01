@@ -47,11 +47,25 @@ func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 			// as a raw flag escape hatch.
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw CLI flags are rejected.")))
 		}
-		if isMCPReadOnly(cmd) {
-			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
-		}
+		options = append(options, mirrorHintOptions(cmd)...)
 		s.AddTool(mcplib.NewTool(toolName, options...), safeInProcessHandler(rootFactory, path, allowedFlags))
 	})
+}
+
+// mirrorHintOptions returns the MCP behavior hints for one mirrored command.
+// readOnlyHint=true is reserved for commands that change nothing at all: a
+// read-only command that writes local files (WritesFilesAnnotation) is
+// advertised as a possibly destructive tool, which is also the MCP default
+// for unannotated mutating commands.
+func mirrorHintOptions(cmd *cobra.Command) []mcplib.ToolOption {
+	switch {
+	case writesFiles(cmd):
+		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(false), mcplib.WithDestructiveHintAnnotation(true)}
+	case isMCPReadOnly(cmd):
+		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false)}
+	default:
+		return nil
+	}
 }
 
 func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string)) {

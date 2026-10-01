@@ -86,12 +86,14 @@ review the preview carefully before applying.`,
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				env, runErr := runMutation(cmd.Context(), flags, "items.duplicates.resolve", nil)
-				renderErr := renderMutation(cmd, flags, env, itemsDuplicatesResolveSingleLine)
-				if renderErr != nil {
-					return renderErr
-				}
-				return runErr
+				// Merges are planned from the mirror, so a missing mirror is
+				// not "no duplicates": it is a library nobody inspected.
+				// Preflight refuses this through the registry's synced_store
+				// precondition; this is the same refusal for a run that
+				// reaches RunE without it.
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "items duplicates resolve",
+					preconditionSyncedStore, "local store not found; duplicate resolution plans its merges from the synced mirror",
+					preconditionRemediation(preconditionSyncedStore))
 			}
 			defer rawDB.Close()
 
@@ -162,11 +164,23 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 		if err != nil {
 			return nil, err
 		}
-		master, ok := duplicateResolveMaster(items, plannedDupes)
+		// A trashed copy takes no part in a merge, as target or as source: it
+		// can outscore the live copy on completeness, and merging onto it then
+		// trashes the only live record. What is left must still be a pair.
+		live := make([]duplicateResolveItem, 0, len(items))
+		for _, item := range items {
+			if !item.Deleted {
+				live = append(live, item)
+			}
+		}
+		if len(live) < 2 {
+			continue
+		}
+		master, ok := duplicateResolveMaster(live, plannedDupes)
 		if !ok {
 			continue
 		}
-		for _, item := range items {
+		for _, item := range live {
 			if item.Key == master.Key {
 				continue
 			}
@@ -212,12 +226,11 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 	return ops, nil
 }
 
-// duplicateResolveSurfacePartialWarnings makes a half-applied merge visible in
-// this run's own output, not just the journal: applyDuplicateResolve reports
-// such an op as "applied" (so Summary.Applied > 0 and the run gets journaled),
-// so the summary counts alone would otherwise read as a clean success.
-// renderMutation always prints env.Warnings, in both --json and human mode,
-// before the summary — so this is never silent.
+// duplicateResolveSurfacePartialWarnings repeats each half-applied merge's
+// message as a run warning. The per-item reason carries it, but the single-pair
+// summary line (itemsDuplicatesResolveSingleLine) prints counts only, and
+// renderMutation prints env.Warnings in both --json and human mode, so a
+// duplicate that is still live is never left to a conflict count alone.
 func duplicateResolveSurfacePartialWarnings(env *mutation.Envelope, ops []mutation.Op) {
 	if env.Result == nil {
 		return
@@ -232,8 +245,13 @@ func duplicateResolveSurfacePartialWarnings(env *mutation.Envelope, ops []mutati
 		return
 	}
 	for _, item := range env.Result.Items {
-		if partial[item.OpID] {
-			env.Warnings = append(env.Warnings, fmt.Sprintf("%v", item.Reason))
+		if !partial[item.OpID] {
+			continue
+		}
+		if detail, ok := item.Reason.(map[string]any); ok {
+			if message, ok := detail["message"].(string); ok {
+				env.Warnings = append(env.Warnings, message)
+			}
 		}
 	}
 }
@@ -316,6 +334,18 @@ func duplicateResolveItemsForKeys(db localQueryStore, keys []string, pdfByParent
 		if err != nil {
 			return nil, err
 		}
+		// Trashing through zotio (mirrorTrashedItem) adds a trash row but
+		// keeps the live row until the next sync, so the payload alone can
+		// read as live while the trash mirror already says otherwise.
+		if !item.Deleted {
+			_, trashErr := db.Get("items-trash", key)
+			switch {
+			case trashErr == nil:
+				item.Deleted = true
+			case !errors.Is(trashErr, store.ErrNotFound):
+				return nil, fmt.Errorf("reading trash state of duplicate item %s: %w", key, trashErr)
+			}
+		}
 		items = append(items, item)
 	}
 	return items, nil
@@ -391,9 +421,7 @@ func duplicateResolveChanges(master, dup duplicateResolveItem) []mutation.Change
 	if len(missingTags) > 0 {
 		changes = append(changes, mutation.Change{Field: "tags", Add: duplicateResolveTagNames(missingTags)})
 	}
-	if !dup.Deleted {
-		changes = append(changes, mutation.Change{Field: "deleted", Add: 1})
-	}
+	changes = append(changes, mutation.Change{Field: "deleted", Add: 1})
 	return changes
 }
 
@@ -427,6 +455,13 @@ func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string, kindSlot 
 		return "failed", err.Error(), err
 	}
 
+	// The plan came from the mirror, which can lag the trash; the write plane
+	// decides. Merging onto a trashed target and then trashing the duplicate
+	// would leave no live copy of the item at all.
+	if master.Deleted {
+		return "conflict", fmt.Sprintf("merge target %s is in the trash, so nothing was written and %s stays live; run `zotio sync`, then preview again", masterKey, dupKey), nil
+	}
+
 	nextCollections, missingCollections := duplicateResolveUnionStrings(master.Collections, dup.Collections)
 	nextTags, missingTags := duplicateResolveUnionTags(master.Tags, dup.Tags)
 	if len(missingCollections) == 0 && len(missingTags) == 0 && dup.Deleted {
@@ -457,20 +492,22 @@ func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string, kindSlot 
 				// Nothing committed: report the clean failure exactly as before.
 				return status, reason, patchErr
 			}
-			// Half-applied: the merge target already committed, so this run
-			// made a real change and must land in the journal (Applied >= 1)
-			// even though the duplicate is still live. Reporting "applied"
-			// is what makes that happen; the flipped Kind (persisted to the
-			// journal) and this reason (surfaced in live output via
-			// duplicateResolveSurfacePartialWarnings and in Rows()) are what
-			// keep the half-state from being silent. The next resolve run
-			// naturally retries just the trash: the union merge is already
-			// idempotent, so nothing here is re-applied incorrectly.
+			// Half-applied: the merge target committed and the duplicate is
+			// still live, which is neither a clean merge nor nothing. The op
+			// is a conflict, so the run is not ok and exits non-zero;
+			// "committed" keeps it in the journal with this evidence, and the
+			// flipped Kind marks it there as a partial merge. Re-running
+			// resolve retries only the trash: the union merge is idempotent.
 			*kindSlot = duplicateResolveMergePartialKind
-			return "applied", fmt.Sprintf(
-				"merge target %s updated (collections/tags merged), but trashing duplicate %s failed (%s): %v",
-				masterKey, dupKey, status, reason,
-			), nil
+			return "conflict", map[string]any{
+				"committed":    true,
+				"merge_target": masterKey,
+				"duplicate":    dupKey,
+				"message": fmt.Sprintf(
+					"merge target %s updated (collections/tags merged), but trashing duplicate %s failed (%s): %v; %s is still live, and re-running resolve retries only the trash",
+					masterKey, dupKey, status, reason, dupKey,
+				),
+			}, nil
 		}
 	}
 	return "applied", nil, nil

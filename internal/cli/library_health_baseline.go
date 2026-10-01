@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -128,6 +129,24 @@ func writeHealthReportFile(path string, report healthReport) error {
 	}
 	data = append(data, '\n')
 	return cliutil.AtomicWriteFile(path, data, 0o600, 0o755)
+}
+
+// previewDryRunFileWrite is the --dry-run stand-in for publishing a named
+// output file (the health baseline and report, the schema drift baseline): it
+// reports the target and whether a real run would replace what is already
+// there, and writes nothing. Lstat, so an existing symlink counts as an entry
+// the real write would replace or write through.
+func previewDryRunFileWrite(w io.Writer, what, path string) error {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		fmt.Fprintf(w, "Dry run: would write %s to %s, replacing the existing file; nothing was written\n", what, path)
+	case errors.Is(err, os.ErrNotExist):
+		fmt.Fprintf(w, "Dry run: would write %s to new file %s; nothing was written\n", what, path)
+	default:
+		return fmt.Errorf("inspecting %s path %s: %w", what, path, err)
+	}
+	return nil
 }
 
 // baseline identity helpers reuse watch --health finding keys.

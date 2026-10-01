@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"zotio/internal/cache"
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
 )
@@ -685,8 +686,11 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 	if err != nil {
 		return nil, false
 	}
-	if time.Since(info.ModTime()) > 5*time.Minute {
-		removeExpiredCacheEntry(cacheFile, info)
+	const ttl = 5 * time.Minute
+	if time.Since(info.ModTime()) > ttl {
+		// A concurrent GET can publish a fresh response here at any moment;
+		// RemoveExpired deletes only an entry that is still expired.
+		cache.RemoveExpired(cacheFile, ttl)
 		return nil, false
 	}
 	data, err := os.ReadFile(cacheFile)
@@ -704,23 +708,6 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	return body, true
-}
-
-// removeExpiredCacheEntry deletes cacheFile only when it still holds the expired
-// entry described by observed. A concurrent GET publishes a fresh response by
-// atomic rename, which carries a new modification time, so an entry whose mtime
-// no longer matches is a fresh publication that must survive this cleanup, not
-// the expired entry this caller observed. Deleting by key alone would drop that
-// fresh response and force a needless re-fetch.
-func removeExpiredCacheEntry(cacheFile string, observed os.FileInfo) {
-	current, err := os.Stat(cacheFile)
-	if err != nil {
-		return
-	}
-	if !current.ModTime().Equal(observed.ModTime()) {
-		return
-	}
-	_ = os.Remove(cacheFile)
 }
 
 // cacheGenerationToken is the snapshot a GET takes before it looks at the
@@ -1495,7 +1482,7 @@ func sanitizeClientBaseURL(raw string) string {
 	}
 	// reject hostile base URL
 	// overrides before any API traffic is routed to an attacker-controlled host.
-	fmt.Fprintf(os.Stderr, "warning: ignoring untrusted Zotero base URL %q; using %s\n", raw, defaultZoteroBaseURL)
+	fmt.Fprintf(os.Stderr, "warning: ignoring untrusted Zotero base URL %q; using %s\n", cliutil.RedactURL(raw), defaultZoteroBaseURL)
 	return defaultZoteroBaseURL
 }
 
@@ -1840,7 +1827,6 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			queryPrinted = true
 		}
 	}
-	_ = queryPrinted
 	if body != nil {
 		var pretty json.RawMessage
 		if json.Unmarshal(body, &pretty) == nil {
@@ -1869,21 +1855,12 @@ func (c *Client) authHeader() (string, error) {
 		return "", nil
 	}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
-		if err := c.refreshAccessToken(); err != nil {
-			return "", err
-		}
+		// zotio authenticates with an API key (Zotero-API-Key header), not OAuth2.
+		// There is no OAuth refresh endpoint to call here, so fail loudly instead of
+		// silently letting a stale token cause an unexplained 401.
+		return "", fmt.Errorf("token refresh is not supported: zotio uses API-key auth (set ZOTERO_API_KEY)")
 	}
 	return c.Config.AuthHeader(), nil
-}
-
-func (c *Client) refreshAccessToken() error {
-	if c.Config == nil || c.Config.RefreshToken == "" {
-		return nil
-	}
-	// zotio authenticates with an API key (Zotero-API-Key header), not OAuth2.
-	// There is no OAuth refresh endpoint to call here, so fail loudly instead of
-	// silently letting a stale token cause an unexplained 401.
-	return fmt.Errorf("token refresh is not supported: zotio uses API-key auth (set ZOTERO_API_KEY)")
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from

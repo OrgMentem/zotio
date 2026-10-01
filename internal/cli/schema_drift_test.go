@@ -467,7 +467,7 @@ func seedDeepSchemaCache(t *testing.T, dbPath, version string, fields, creatorTy
 		if _, err := db.UpsertKeyed(resource, ids, rows); err != nil {
 			t.Fatalf("seed %s: %v", resource, err)
 		}
-		if err := db.SaveZoteroSchemaVersion(resource, version); err != nil {
+		if err := db.SaveZoteroSchemaVersionContext(context.Background(), resource, version); err != nil {
 			t.Fatalf("seed %s version: %v", resource, err)
 		}
 	}

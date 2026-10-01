@@ -264,7 +264,11 @@ func (t deliverTee) Write(p []byte) (int, error) {
 func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) {
 	if shouldDeliverCapturedOutput(commandErr, spool) {
 		if err := Deliver(ctx, sink, spool, compact); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", sink.Scheme, sink.Target, err)
+			target := sink.Target
+			if sink.Scheme == "webhook" {
+				target = webhookOrigin(target)
+			}
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", sink.Scheme, target, err)
 		}
 	}
 }
@@ -309,8 +313,9 @@ func isCobraUsageError(err error) bool {
 }
 
 // applySelectedProfile resolves a selected profile and overlays its values once.
-// Writer-lock eligibility depends on profile-provided dry-run, confirmation, and
-// command flags, so lock wrappers call this before deciding whether to acquire.
+// Writer-lock eligibility depends on profile-provided dry-run and command
+// flags (never approval flags; see profileApprovalFlags), so lock wrappers call
+// this before deciding whether to acquire.
 func applySelectedProfile(cmd *cobra.Command, flags *rootFlags) error {
 	if flags == nil || flags.profileApplied {
 		return nil
@@ -332,11 +337,7 @@ func applySelectedProfile(cmd *cobra.Command, flags *rootFlags) error {
 		return err
 	}
 	if profile == nil {
-		available := ListProfileNames()
-		if len(available) == 0 {
-			return fmt.Errorf("profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.profileName, cmd.Root().Name())
-		}
-		return fmt.Errorf("profile %q not found; available: %s", flags.profileName, strings.Join(available, ", "))
+		return profileNotFound(cmd, flags, flags.profileName, ListProfileNames())
 	}
 	if err := ApplyProfileToFlags(cmd, profile); err != nil {
 		return err
@@ -385,7 +386,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRequestTimeout, "Request timeout")
-	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
+	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview writes without sending them; read requests still run")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
@@ -501,14 +502,14 @@ See README.md or the bundled SKILL.md for recipes.`,
 		case "auto", "live", "local":
 			// valid
 		default:
-			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
+			return usageErr(fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource))
 		}
 		// validate connector write-route selector.
 		switch flags.via {
 		case "auto", "connector", "web":
 			// valid
 		default:
-			return fmt.Errorf("invalid --via value %q: must be auto, connector, or web", flags.via)
+			return usageErr(fmt.Errorf("invalid --via value %q: must be auto, connector, or web", flags.via))
 		}
 		// Registry-driven preflight: refuse loudly (exit 9, precondition_unmet)
 		// when the running command declares a precondition the environment does

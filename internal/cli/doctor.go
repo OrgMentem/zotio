@@ -45,68 +45,6 @@ func isLocalZoteroAPI(baseURL string) bool {
 	}
 }
 
-const unparseableBaseURLPlaceholder = "<unparseable base URL redacted>"
-
-func redactURL(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return unparseableBaseURLPlaceholder
-	}
-	redacted := false
-	redactedUserinfo := false
-	if parsed.User != nil && parsed.User.String() != "" {
-		parsed.User = url.User("***")
-		redacted = true
-		redactedUserinfo = true
-	}
-	if parsed.RawQuery != "" {
-		if rawQuery, ok := redactSensitiveURLQuery(parsed.RawQuery); ok {
-			parsed.RawQuery = rawQuery
-			redacted = true
-		}
-	}
-	if !redacted {
-		return raw
-	}
-	out := parsed.String()
-	if redactedUserinfo {
-		out = strings.Replace(out, "%2A%2A%2A@", "***@", 1)
-	}
-	return out
-}
-
-func redactSensitiveURLQuery(rawQuery string) (string, bool) {
-	parts := strings.Split(rawQuery, "&")
-	redacted := false
-	for i, part := range parts {
-		key := part
-		if eq := strings.IndexByte(part, '='); eq >= 0 {
-			key = part[:eq]
-		}
-		decodedKey, err := url.QueryUnescape(key)
-		if err != nil {
-			decodedKey = key
-		}
-		if sensitiveURLQueryKey(decodedKey) {
-			parts[i] = key + "=***"
-			redacted = true
-		}
-	}
-	if !redacted {
-		return rawQuery, false
-	}
-	return strings.Join(parts, "&"), true
-}
-
-func sensitiveURLQueryKey(key string) bool {
-	switch strings.ToLower(key) {
-	case "token", "key", "api_key", "apikey", "secret", "password", "auth":
-		return true
-	default:
-		return false
-	}
-}
-
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -167,7 +105,7 @@ When [updates].check is enabled, doctor also checks zotio's public GitHub
 releases feed at most once a day.`,
 		Example: `  zotio doctor
   zotio doctor --json
-  zotio doctor --fail-on warn`,
+  zotio doctor --fail-on stale`,
 		// Diagnostics/setup: never gated by registry preflight preconditions.
 		Annotations: map[string]string{"zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -183,7 +121,7 @@ releases feed at most once a day.`,
 				report["config"] = fmt.Sprintf("error: %s", err)
 			} else {
 				report["config"] = "ok"
-				redactedBaseURL = redactURL(cfg.BaseURL)
+				redactedBaseURL = cliutil.RedactURL(cfg.BaseURL)
 				report["config_path"] = cfg.Path
 				report["base_url"] = redactedBaseURL
 			}

@@ -3,13 +3,9 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
-	"time"
 
 	"zotio/internal/store"
 
@@ -29,257 +25,44 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// newWorkflowArchiveCmd runs `sync --strict` over the default resources.
+// It builds a fresh sync command, as watch does each cycle, so archive and
+// sync share one fetch path, one JSON event stream, and one exit policy.
 func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command {
 	var dbFlag string
 	var full bool
 
 	cmd := &cobra.Command{
 		Use:   "archive",
-		Short: "Sync all resources to local store for offline access and search",
-		Long: `Archive fetches all syncable resources from the API and stores them in a
-local SQLite database. Supports incremental sync (only new data since last run)
-and full resync. After archiving, use 'search' for instant full-text search.`,
-		Example: `  # Archive all resources
+		Short: "Run zotio sync --strict over the default resources",
+		Long: `Archive runs 'zotio sync --strict' over the default sync resources. It
+uses the same code, JSON events, and exit codes as sync, so any resource that
+fails to sync makes it exit non-zero. --full and --db mean what they mean for
+sync. Run 'zotio sync' directly to choose resources, --since, or concurrency.`,
+		Example: `  # Incremental sync of the default resources; a failed resource exits non-zero
   zotio workflow archive
 
-  # Full re-archive (ignore previous sync state)
+  # Full resync, the same as zotio sync --full --strict
   zotio workflow archive --full`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := flags.newClient()
-			if err != nil {
-				return err
+			syncArgs := []string{"--strict"}
+			if full {
+				syncArgs = append(syncArgs, "--full")
 			}
-			c.NoCache = true
-
-			// The mirror path is a local, resolved on every invocation and
-			// never written back into dbFlag: see resolveDBPath.
-			dbPath, err := resolveDBPath(dbFlag, "zotio")
-			if err != nil {
-				return err
+			if dbFlag != "" {
+				syncArgs = append(syncArgs, "--db", dbFlag)
 			}
-			s, err := store.OpenWithContext(cmd.Context(), dbPath)
-			if err != nil {
-				return fmt.Errorf("opening store: %w", err)
-			}
-			defer s.Close()
-
-			// top-level alias endpoints fold
-			// into canonical items/collections storage; archiving them separately
-			// creates redundant fetches and stale-looking status rows.
-			resources := []string{"collections", "items", "items-trash", "schema", "schema-creator-fields", "schema-item-fields", "searches", "tags"}
-			totalSynced := 0
-			var failures []string
-			var accessWarnings []string
-
-			for _, resource := range resources {
-				start := 0
-				checkpointCount := 0
-				if !full {
-					existing, _, existingCount, stateErr := s.GetSyncState(resource)
-					if stateErr != nil {
-						detail := fmt.Sprintf("%s: reading sync state: %v", resource, stateErr)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						continue
-					}
-					if existing != "" {
-						if offset, err := strconv.Atoi(existing); err == nil && offset >= 0 {
-							start = offset
-							checkpointCount = existingCount
-						}
-					}
-				}
-
-				const pageSize = 100
-				params := map[string]string{
-					"limit": strconv.Itoa(pageSize),
-					"start": strconv.Itoa(start),
-				}
-				path, pathErr := syncResourcePath(resource)
-				if pathErr != nil {
-					detail := fmt.Sprintf("%s: resolving endpoint: %v", resource, pathErr)
-					failures = append(failures, detail)
-					fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-					continue
-				}
-				fetchClient := c
-				if isSchemaSyncResource(resource) {
-					// Schema resources are global endpoints. Keep this mapping and
-					// prefix stripping aligned with sync.go's source of truth.
-					fetchClient = c.CloneForRead(stripLibraryPrefix(c.BaseURL))
-				}
-				count := 0
-				resourceIncomplete := false
-				var previousPage json.RawMessage
-				for {
-					data, fetchErr := fetchClient.Get(path, params)
-					if fetchErr != nil {
-						if ctxErr := cmd.Context().Err(); ctxErr != nil {
-							return ctxErr
-						}
-						if warning, ok := isSyncAccessWarning(fetchErr); ok {
-							detail := fmt.Sprintf("%s: access denied (%s)", resource, warning.Reason)
-							accessWarnings = append(accessWarnings, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s\n", detail)
-						} else {
-							detail := fmt.Sprintf("%s: fetching: %v", resource, fetchErr)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						}
-						break
-					}
-
-					trimmed := bytes.TrimSpace(data)
-					if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') {
-						// A 200 with a null/scalar body (for example `null`) is not an
-						// empty page: unmarshalling it into a slice succeeds with
-						// length zero, which would clear the cursor and report the
-						// resource complete while later items remain unfetched.
-						// Retain the current cursor so the window is retryable.
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: unexpected response shape %q", resource, string(trimmed))
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-					if trimmed[0] == '{' {
-						// Some schema endpoints return one object. A malformed
-						// response is an incomplete archive, not a singleton.
-						var singleton map[string]json.RawMessage
-						if err := json.Unmarshal(data, &singleton); err != nil || singleton == nil {
-							resourceIncomplete = true
-							parseErr := err
-							if parseErr == nil {
-								parseErr = fmt.Errorf("unexpected null object")
-							}
-							detail := fmt.Sprintf("%s: parsing response: %v", resource, parseErr)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-							break
-						}
-						if err := s.Upsert(resource, resource+"-singleton", data); err != nil {
-							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: storing singleton: %v", resource, err)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-							break
-						}
-						count++
-						checkpointCount++
-						if err := s.SaveSyncState(resource, "", checkpointCount); err != nil {
-							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						}
-						break
-					}
-					var items []json.RawMessage
-					if err := json.Unmarshal(data, &items); err != nil {
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: parsing response: %v", resource, err)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-					if len(items) == 0 {
-						if err := s.SaveSyncState(resource, "", checkpointCount); err != nil {
-							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						}
-						break
-					}
-					if previousPage != nil && bytes.Equal(data, previousPage) {
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: pagination did not advance", resource)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-					previousPage = data
-
-					stored, unresolved, err := s.UpsertBatch(resource, items)
-					if err != nil {
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: storing page: %v", resource, err)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-					count += stored
-					checkpointCount += stored
-					if unresolved > 0 {
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: %d row(s) had no stable primary key", resource, unresolved)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-
-					start += len(items)
-					nextCursor := ""
-					if len(items) == pageSize {
-						nextCursor = strconv.Itoa(start)
-					}
-					if err := s.SaveSyncState(resource, nextCursor, checkpointCount); err != nil {
-						resourceIncomplete = true
-						detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
-						failures = append(failures, detail)
-						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-						break
-					}
-					if nextCursor == "" {
-						break
-					}
-					params["start"] = nextCursor
-				}
-
-				totalSynced += count
-				if resourceIncomplete {
-					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: incomplete after %d items\n", resource, count)
-				} else {
-					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)
-				}
-			}
-
-			status := "complete"
-			if len(failures) > 0 {
-				status = "incomplete"
-			} else if len(accessWarnings) > 0 {
-				status = "complete_with_access_warnings"
-			}
-			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				if err := enc.Encode(map[string]any{
-					"status":           status,
-					"resources_synced": len(resources),
-					"total_items":      totalSynced,
-					"store_path":       dbPath,
-					"access_warnings":  accessWarnings,
-					"failures":         failures,
-					"timestamp":        time.Now().UTC().Format(time.RFC3339),
-				}); err != nil {
-					return err
-				}
-			} else if len(failures) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "Archive incomplete: %d items stored across %d resources to %s\n", totalSynced, len(resources), dbPath)
-			} else if len(accessWarnings) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "Archive completed with %d access warnings: %d items across %d resources to %s\n", len(accessWarnings), totalSynced, len(resources), dbPath)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "Archived %d items across %d resources to %s\n", totalSynced, len(resources), dbPath)
-			}
-			if len(failures) > 0 {
-				return degradedErr(fmt.Errorf("archive incomplete: %s", strings.Join(failures, "; ")))
-			}
-			return nil
+			syncCmd := newSyncCmd(flags)
+			syncCmd.SilenceErrors, syncCmd.SilenceUsage = true, true
+			syncCmd.SetArgs(syncArgs)
+			syncCmd.SetOut(cmd.OutOrStdout())
+			syncCmd.SetErr(cmd.ErrOrStderr())
+			return syncCmd.ExecuteContext(cmd.Context())
 		},
 	}
 
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
-	cmd.Flags().BoolVar(&full, "full", false, "Full re-archive (ignore previous sync state)")
+	cmd.Flags().BoolVar(&full, "full", false, "Full resync, as sync --full: ignore the stored checkpoint and per-row versions")
 
 	return cmd
 }

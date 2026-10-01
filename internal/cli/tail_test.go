@@ -48,7 +48,7 @@ func TestEmitChanges_MalformedPageDoesNotAdvanceCursor(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("emitChanges with malformed body: want error, got nil")
 	}
@@ -59,7 +59,7 @@ func TestEmitChanges_MalformedPageDoesNotAdvanceCursor(t *testing.T) {
 		t.Errorf("writer got %q, want empty on malformed page", buf.String())
 	}
 	// Cursor must remain at 10; advancing to 11 would skip the unseen changes.
-	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 10 || src != srv.URL {
+	if v, src, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 10 || src != srv.URL {
 		t.Errorf("cursor after malformed page = (%d,%q), want (10,%q)", v, src, srv.URL)
 	}
 }
@@ -80,11 +80,11 @@ func TestEmitChanges_SingletonEnvelopeDoesNotAdvanceCursor(t *testing.T) {
 	c.NoCache = true
 
 	var buf bytes.Buffer
-	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("singleton envelope: want error, got nil")
 	}
-	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 0 {
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 0 {
 		t.Errorf("cursor after singleton = %d, want 0 (unchanged)", v)
 	}
 }
@@ -109,7 +109,7 @@ func TestEmitChanges_EmptyPageAdvancesCursor(t *testing.T) {
 	c.NoCache = true
 
 	var buf bytes.Buffer
-	n, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	n, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err != nil {
 		t.Fatalf("empty page: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestEmitChanges_EmptyPageAdvancesCursor(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("empty page wrote %q, want empty", buf.String())
 	}
-	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 7 || src != srv.URL {
+	if v, src, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 7 || src != srv.URL {
 		t.Errorf("cursor after empty page = (%d,%q), want (7,%q)", v, src, srv.URL)
 	}
 }
@@ -149,14 +149,14 @@ func TestEmitChanges_MalformedDeletionsDoesNotAdvanceCursor(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("malformed deletions: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "decoding deletions") {
 		t.Errorf("error = %q, want to mention decoding deletions", err.Error())
 	}
-	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 10 || src != srv.URL {
+	if v, src, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 10 || src != srv.URL {
 		t.Errorf("cursor after malformed deletions = (%d,%q), want (10,%q)", v, src, srv.URL)
 	}
 }
@@ -228,14 +228,14 @@ func TestEmitChanges_UnsupportedDeletionsStillAdvancesCursor(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	emitted, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	emitted, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err != nil {
 		t.Fatalf("unsupported /deleted must not fail the poll: %v", err)
 	}
 	if emitted != 1 {
 		t.Errorf("emitted = %d, want the upsert still delivered", emitted)
 	}
-	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 12 {
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 12 {
 		t.Fatalf("cursor = %d, want 12: an unimplemented /deleted must not wedge the feed", v)
 	}
 }
@@ -269,14 +269,14 @@ func TestEmitChanges_DeletionsFetchFailureRetainsCursor(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	emitted, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	emitted, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err != nil {
 		t.Fatalf("a recoverable deletions failure must not kill the tail: %v", err)
 	}
 	if emitted != 1 {
 		t.Errorf("emitted = %d, want the upsert still delivered", emitted)
 	}
-	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 10 || src != srv.URL {
+	if v, src, _ := db.StoredLibraryVersionContext(context.Background(), "tail:items"); v != 10 || src != srv.URL {
 		t.Fatalf("cursor = (%d,%q), want (10,%q): unread deletions must be retried, not skipped", v, src, srv.URL)
 	}
 }
@@ -471,7 +471,7 @@ func TestEmitChanges_CursorReadErrorFailsBeforeFetch(t *testing.T) {
 	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
 	c.NoCache = true
 	var buf bytes.Buffer
-	_, err = emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err = emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("emitChanges with unreadable cursor: want error, got nil")
 	}
@@ -490,7 +490,7 @@ func TestEmitChanges_CursorReadErrorFailsBeforeFetch(t *testing.T) {
 		t.Fatalf("reopening store: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if v, _, err := reopened.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+	if v, _, err := reopened.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || v != 6 {
 		t.Errorf("cursor after failed read = %d, %v; want unchanged 6", v, err)
 	}
 }
@@ -529,7 +529,7 @@ func TestEmitChanges_MalformedObjectHoldsCursorForRetry(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("emitChanges with scalar page element: want error, got nil")
 	}
@@ -539,13 +539,13 @@ func TestEmitChanges_MalformedObjectHoldsCursorForRetry(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("writer got %q, want empty: the valid sibling must not deliver ahead of the faulty window", buf.String())
 	}
-	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || v != 6 {
 		t.Errorf("cursor after malformed object = %d, %v; want unchanged 6", v, err)
 	}
 
 	faulty = false
 	buf.Reset()
-	n, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	n, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err != nil {
 		t.Fatalf("replay emitChanges: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestEmitChanges_MalformedObjectHoldsCursorForRetry(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("replay delivered %d events, want 2", len(events))
 	}
-	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 7 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || v != 7 {
 		t.Errorf("cursor after replay = %d, %v; want 7", v, err)
 	}
 }
@@ -589,14 +589,14 @@ func TestEmitChanges_IdentitylessObjectHoldsCursor(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err == nil {
 		t.Fatal("emitChanges with identityless object: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "missing resource identity") {
 		t.Errorf("error = %q, want it to name the missing identity", err.Error())
 	}
-	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:items"); err != nil || v != 6 {
 		t.Errorf("cursor after identityless object = %d, %v; want unchanged 6", v, err)
 	}
 }
@@ -620,7 +620,7 @@ func TestEmitChanges_TagObjectDelivers(t *testing.T) {
 	db := tailTestStore(t)
 
 	var buf bytes.Buffer
-	n, err := emitChanges(context.Background(), c, db, "tags", "/tags", DeliverSink{Scheme: "stdout"}, &buf)
+	n, err := emitChangesWithHook(context.Background(), c, db, "tags", "/tags", DeliverSink{Scheme: "stdout"}, &buf, nil)
 	if err != nil {
 		t.Fatalf("tag page: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestEmitChanges_TagObjectDelivers(t *testing.T) {
 	if len(events) != 1 || events[0]["event"] != "upsert" {
 		t.Fatalf("tag events = %q, want one upsert", buf.String())
 	}
-	if v, _, err := db.StoredLibraryVersion("tail:tags"); err != nil || v != 3 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "tail:tags"); err != nil || v != 3 {
 		t.Errorf("cursor after tag page = %d, %v; want 3", v, err)
 	}
 }

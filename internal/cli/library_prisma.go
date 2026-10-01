@@ -306,7 +306,7 @@ func printLibraryPrisma(cmd *cobra.Command, report libraryPrismaReport) error {
 		return sources[i].source < sources[j].source
 	})
 	for _, source := range sources {
-		fmt.Fprintf(w, "  %s: %d\n", source.source, source.count)
+		fmt.Fprintf(w, "  %s: %d\n", sanitizeForTerminal(source.source), source.count)
 	}
 	detector := report.By
 	if detector == "all" {

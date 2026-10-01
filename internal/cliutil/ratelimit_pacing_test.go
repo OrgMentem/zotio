@@ -1,11 +1,12 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // AdaptiveLimiter.Wait must reserve a distinct wake time for each concurrent
-// caller. Assert that completions are spread out by roughly (N-1)*delay rather
-// than collapsing into a single delay window.
+// caller, one interval after the previous reservation. Assert that every
+// completion, not just the last, respects its slot.
 
 package cliutil
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -14,35 +15,45 @@ import (
 func TestAdaptiveLimiterWaitConcurrentPacing(t *testing.T) {
 	const rate = 200.0 // 5ms spacing
 	const n = 8
+	delay := time.Duration(float64(time.Second) / rate)
 	l := NewAdaptiveLimiter(rate)
 	l.Wait() // prime: lastRequest := now, so the burst below must pace off it
+	l.mu.Lock()
+	primed := l.lastRequest
+	l.mu.Unlock()
 
 	var wg sync.WaitGroup
-	offsets := make([]time.Duration, n)
-	start := time.Now()
-	for i := 0; i < n; i++ {
+	completions := make([]time.Time, n)
+	for i := range n {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
 			l.Wait()
-			offsets[idx] = time.Since(start)
-		}(i)
+			completions[i] = time.Now()
+		}()
 	}
-	wg.Wait()
+	allDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Wait calls did not all return")
+	}
 
-	var maxOff time.Duration
-	for _, off := range offsets {
-		if off > maxOff {
-			maxOff = off
+	// Reservations are strictly increasing, at least one interval apart, and
+	// a caller never returns before its slot (timers do not fire early). So
+	// by the k-th completion (0-based) k+1 callers hold distinct slots, the
+	// latest at least (k+1) intervals after priming. This is a lower bound
+	// only, so scheduler delay cannot flake it; any burst of two or more
+	// callers inside one interval violates it.
+	slices.SortFunc(completions, func(a, b time.Time) int { return a.Compare(b) })
+	for k, at := range completions {
+		if want := time.Duration(k+1) * delay; at.Sub(primed) < want {
+			t.Errorf("completion %d at %v after priming, want >= %v (callers shared a slot)", k, at.Sub(primed), want)
 		}
-	}
-	delay := time.Duration(float64(time.Second) / rate) // 5ms
-	// With proper pacing the last caller wakes ~(n)*delay after priming; use a
-	// loose lower bound so scheduler jitter cannot flake the test. The buggy
-	// version completed the whole burst within ~one delay.
-	wantMin := time.Duration(float64(n-1) * float64(delay) * 0.6)
-	if maxOff < wantMin {
-		t.Errorf("concurrent Wait did not pace: max completion offset %v < %v (race regression)", maxOff, wantMin)
 	}
 }
 

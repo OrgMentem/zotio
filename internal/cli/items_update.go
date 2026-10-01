@@ -123,7 +123,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 					if writeClient == nil {
 						return "failed", "no write client", fmt.Errorf("no write client")
 					}
-					return applyItemsUpdateWithContext(cmd.Context(), writeClient, pathCopy, bodyCopy, &applyErr, flags)
+					return applyItemsUpdateWithContext(cmd.Context(), writeClient, pathCopy, bodyCopy, &applyErr)
 				},
 			}}
 			env, runErr := runMutation(cmd.Context(), flags, "items.update", ops)
@@ -187,7 +187,7 @@ func itemsUpdateChanges(body map[string]any) []mutation.Change {
 // concurrent edit between plan and apply is detected. 412/428 maps to
 // "conflict" via classifyWriteError (called inside the helpers) rather than
 // a generic "failed".
-func applyItemsUpdateWithContext(ctx context.Context, c *client.Client, path string, body map[string]any, applyErr *error, flags *rootFlags) (string, any, error) {
+func applyItemsUpdateWithContext(ctx context.Context, c *client.Client, path string, body map[string]any, applyErr *error) (string, any, error) {
 	if c == nil {
 		err := fmt.Errorf("no write client")
 		if applyErr != nil {
@@ -198,7 +198,6 @@ func applyItemsUpdateWithContext(ctx context.Context, c *client.Client, path str
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_ = flags
 	if v, hasVersion := body["version"]; hasVersion {
 		ver := mutationExpectedVersion(v)
 		payload := make(map[string]any, len(body))

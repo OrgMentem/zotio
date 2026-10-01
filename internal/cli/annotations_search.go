@@ -28,7 +28,9 @@ With the local store (the default), matching uses the full-text index:
 word stems match ("trust" finds "trusted"), "quoted phrases" match
 exactly, and AND, OR, NOT and parentheses combine terms. Results are
 ranked by relevance and include the key and title of the item the
-annotation belongs to. --refresh searches live through the Zotero API.`,
+annotation belongs to. --refresh searches live through the Zotero API:
+each word or "quoted phrase" must appear, in any letter case, in the
+annotation's text, comment or tags; stems and operators do not apply.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -139,20 +141,29 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 			if err != nil {
 				return err
 			}
-			fetchLimit := fetchLimitForAnnotationSearch(flagLimit, flagColor)
-			if scoped {
-				// The limit applies after the scope filter, so fetch every
-				// match; a capped fetch would drop in-scope hits.
-				fetchLimit = 0
-			}
+			// Zotero's default quick-search mode (titleCreatorYear) never looks
+			// at annotation text, so search every field and keep only the
+			// annotations whose own text, comment or tags match: "everything"
+			// also returns annotations whose attachment's full text matches.
+			// --scope, --color and the own-field match all filter client-side
+			// before --limit, so fetch every hit; a capped fetch would drop
+			// matches that sit past the cap.
 			items, err := fetchZoteroItems(c, "/items", map[string]string{
 				"itemType": "annotation",
 				"q":        query,
-			}, fetchLimit)
+				"qmode":    "everything",
+			}, 0)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			annotations := annotationSummariesFromItems(items)
+			terms := annotationQueryTerms(query)
+			own := items[:0]
+			for _, item := range items {
+				if annotationMatchesTerms(item, terms) {
+					own = append(own, item)
+				}
+			}
+			annotations := annotationSummariesFromItems(own)
 			var attachmentParent map[string]string
 			if scoped {
 				attachmentParent, err = fetchAttachmentParents(c, annotations)
@@ -242,17 +253,57 @@ func annotationColorSpellings(requested string) []string {
 	return []string{requested}
 }
 
-func fetchLimitForAnnotationSearch(limit int, color string) int {
-	if strings.TrimSpace(color) == "" {
-		return limit
+// annotationQueryTerms splits a query the way Zotero's quick search does:
+// "quoted phrases" stay whole and other text splits on whitespace. Terms are
+// lower-cased for case-insensitive matching.
+func annotationQueryTerms(query string) []string {
+	var terms []string
+	for i, part := range strings.Split(query, `"`) {
+		if i%2 == 1 {
+			if phrase := strings.ToLower(strings.TrimSpace(part)); phrase != "" {
+				terms = append(terms, phrase)
+			}
+			continue
+		}
+		for _, word := range strings.Fields(part) {
+			terms = append(terms, strings.ToLower(word))
+		}
 	}
-	if limit <= 0 {
-		return 0
+	return terms
+}
+
+// annotationMatchesTerms reports whether every term occurs in the
+// annotation's own text, comment or one of its tags, the annotation fields
+// Zotero's quick search matches.
+func annotationMatchesTerms(item map[string]any, terms []string) bool {
+	fields := []string{
+		strings.ToLower(zoteroString(item, "annotationText")),
+		strings.ToLower(zoteroString(item, "annotationComment")),
 	}
-	if limit < 100 {
-		return 100
+	data := zoteroData(item)
+	if data == nil {
+		data = item
 	}
-	return limit
+	tags, _ := data["tags"].([]any)
+	for _, raw := range tags {
+		tag, _ := raw.(map[string]any)
+		if name, _ := tag["tag"].(string); name != "" {
+			fields = append(fields, strings.ToLower(name))
+		}
+	}
+	for _, term := range terms {
+		found := false
+		for _, field := range fields {
+			if strings.Contains(field, term) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func annotationColorMatches(actual, requested string) bool {

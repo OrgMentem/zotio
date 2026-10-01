@@ -458,7 +458,7 @@ Once registered (above), the MCP server exposes a **command-orchestration facade
 zotio collections list                       # human table (JSON when piped)
 zotio collections list --json                # JSON for scripting and agents
 zotio collections list --json --select id,name,status   # only the fields you need
-zotio collections list --dry-run             # show the request without sending
+zotio collections list --dry-run             # writes are previewed, never sent; reads like this one still run
 zotio collections list --agent               # JSON + compact + non-interactive + no color
 ```
 

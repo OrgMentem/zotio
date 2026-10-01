@@ -51,8 +51,8 @@ The machine-readable registry every command is classified against — read vs. w
 | `import monitor` | read |  |  | `synced_store` |
 | `import pdf` | write | `desktop_connector` |  | `desktop_connector` |
 | `import pmid` | write | `web_api` |  | `web_api_key` |
-| `import resolve` | read |  |  |  |
-| `import scan` | read |  |  |  |
+| `import resolve` | read |  |  | `synced_store` |
+| `import scan` | read |  |  | `synced_store` |
 | `import targets` | read |  |  | `desktop_connector` |
 | `import translators` | read |  |  | `desktop_connector` |
 | `import url` | write | `web_api` |  | `web_api_key` |
@@ -70,7 +70,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items create` | write | `web_api` |  | `web_api_key` |
 | `items delete` | write | `web_api` | yes | `web_api_key` |
 | `items duplicates` | read |  |  | `synced_store` |
-| `items duplicates resolve` | write | `web_api` | yes | `web_api_key` |
+| `items duplicates resolve` | write | `web_api` | yes | `synced_store`, `web_api_key` |
 | `items enrich` | write | `web_api` |  | `web_api_key` |
 | `items file` | read |  |  | `live_local_api` |
 | `items find` | read |  |  |  |

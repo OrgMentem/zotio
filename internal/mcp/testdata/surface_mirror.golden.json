@@ -91,7 +91,7 @@
   },
   {
     "name": "attachments_add",
-    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, and a run interrupted\nbefore the move is resumed rather than duplicated. Two limits are worth knowing:\na retry issued before Zotero has registered the hash can still add a second\ncopy, and two simultaneous runs against one item can both add one.\n\nBy default this previews the planned attachment; apply with --yes.",
+    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, a run interrupted\nbefore the move is resumed rather than duplicated, and an empty temporary parent\nleft by a run interrupted after the move is trashed by an identical retry once\nit is more than seven minutes old. Two limits are worth knowing:\na retry issued before Zotero has registered the hash can still add a second\ncopy, and two simultaneous runs against one item can both add one.\n\nBy default this previews the planned attachment; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -115,7 +115,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -163,7 +163,7 @@
   },
   {
     "name": "collections_bundle",
-    "description": "Assemble a self-contained research package from the local store for a\ncollection: synthesis context, annotations, and compact bibliography. This command\nnever writes to Zotero; run sync first if local data is missing.",
+    "description": "Assemble a self-contained research package from the local store for a\ncollection: synthesis context, annotations, and compact bibliography. This command\nnever writes to Zotero; run sync first if local data is missing.\n\nRe-running into the same --out replaces the package; the result names every\nexisting file it replaced. zotio-bundle.json is written last and lists each\nfile's size and SHA-256: the package is complete only while that file is\npresent and matches. With --dry-run nothing is written; the result lists the\nfiles that would be written and replaced.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -199,7 +199,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -253,7 +253,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -405,7 +405,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -527,7 +527,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -608,7 +608,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "map": {
@@ -661,7 +661,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "from": {
@@ -738,7 +738,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "limit": {
@@ -867,7 +867,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "input": {
@@ -927,7 +927,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -985,7 +985,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1038,6 +1038,10 @@
           "description": "Path to write the reviewable import manifest",
           "type": "string"
         },
+        "overwrite": {
+          "description": "Replace an existing manifest at --out; review edits in it are lost (default: false)",
+          "type": "boolean"
+        },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (required)",
           "type": "string"
@@ -1080,7 +1084,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1138,7 +1142,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "format": {
@@ -1196,7 +1200,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1287,7 +1291,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -1341,7 +1345,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1462,7 +1466,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1492,7 +1496,7 @@
   },
   {
     "name": "init",
-    "description": "Guided first-run setup for Zotero automation.\n\nChecks the local Zotero API, stores an API key when one is provided interactively,\nruns the first local sync when the store is missing or empty, finishes with the quick\nlibrary-health preset, and offers an opt-in daily check for public zotio releases.\nThe check sends only a GitHub releases request and no identifying payload.",
+    "description": "Guided first-run setup for Zotero automation.\n\nChecks the local Zotero API, stores an API key when one is provided interactively,\noffers the first local sync when the store is missing or empty, finishes with the quick\nlibrary-health preset, and offers an opt-in daily check for public zotio releases.\nThe check sends only a GitHub releases request and no identifying payload.\nWithout a terminal prompt (--no-input or --agent), the first sync runs only with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1508,7 +1512,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "launch": {
@@ -1558,7 +1562,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -1802,7 +1806,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "items": {
@@ -1856,7 +1860,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -1916,7 +1920,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -1970,7 +1974,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "email": {
@@ -2240,7 +2244,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "from": {
@@ -2302,7 +2306,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "field": {
@@ -2381,7 +2385,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "launch": {
@@ -2441,7 +2445,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "limit": {
@@ -2523,7 +2527,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -2687,7 +2691,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -2762,7 +2766,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -2905,7 +2909,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "extra": {
@@ -3009,7 +3013,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -3193,7 +3197,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -3239,7 +3243,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -3285,7 +3289,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -3454,7 +3458,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -3538,7 +3542,7 @@
           "type": "string"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "full": {
@@ -3621,7 +3625,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keys-from": {
@@ -3725,7 +3729,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "from": {
@@ -3815,7 +3819,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -3861,7 +3865,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -3907,7 +3911,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "keep-remote": {
@@ -3969,7 +3973,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "format": {
@@ -4015,7 +4019,7 @@
   },
   {
     "name": "workflow_archive",
-    "description": "Archive fetches all syncable resources from the API and stores them in a\nlocal SQLite database. Supports incremental sync (only new data since last run)\nand full resync. After archiving, use 'search' for instant full-text search.",
+    "description": "Archive runs 'zotio sync --strict' over the default sync resources. It\nuses the same code, JSON events, and exit codes as sync, so any resource that\nfails to sync makes it exit non-zero. --full and --db mean what they mean for\nsync. Run 'zotio sync' directly to choose resources, --since, or concurrency.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -4035,11 +4039,11 @@
           "type": "string"
         },
         "dry-run": {
-          "description": "Show request without sending (default: false)",
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "full": {
-          "description": "Full re-archive (ignore previous sync state) (default: false)",
+          "description": "Full resync, as sync --full: ignore the stored checkpoint and per-row versions (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -4075,7 +4079,7 @@
   },
   {
     "name": "workflow_submit",
-    "description": "Submit an inline multi-step workflow executed by zotio's transactional runner — previews unless yes; one approval, one journal run id; steps validated per-command exactly like command_run.",
+    "description": "Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; one approval, one journal run id; steps apply in order and a failed step does not roll back earlier writes; steps validated per-command exactly like command_run.",
     "inputSchema": {
       "properties": {
         "continue_on_error": {

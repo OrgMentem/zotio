@@ -48,49 +48,6 @@ func TestIsLocalZoteroAPI(t *testing.T) {
 	}
 }
 
-func TestRedactURL(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{
-			name: "userinfo and query token",
-			raw:  "https://u:sekret@example.com/api?token=abc&x=1",
-			want: "https://***@example.com/api?token=***&x=1",
-		},
-		{
-			name: "plain local URL",
-			raw:  "http://localhost:23119/api/users/0",
-			want: "http://localhost:23119/api/users/0",
-		},
-		{
-			name: "bare userinfo",
-			raw:  "https://sekret@api.zotero.org/users/123",
-			want: "https://***@api.zotero.org/users/123",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := redactURL(tt.raw); got != tt.want {
-				t.Fatalf("redactURL(%q): want %q, got %q", tt.raw, tt.want, got)
-			}
-		})
-	}
-}
-
-func TestRedactURLFailsClosedOnUnparseableInput(t *testing.T) {
-	const raw = "http://[::1/api/users/0?token=abc"
-	got := redactURL(raw)
-	if got != unparseableBaseURLPlaceholder {
-		t.Fatalf("redactURL(%q): want fixed placeholder %q, got %q", raw, unparseableBaseURLPlaceholder, got)
-	}
-	if strings.Contains(got, "token=abc") || strings.Contains(got, raw) {
-		t.Fatalf("redactURL(%q) leaked the unparseable input: %q", raw, got)
-	}
-}
-
 func TestDoctorReportRedactsBaseURL(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTIO_DEMO", "0")
@@ -173,6 +130,9 @@ func TestDoctorUpdateRows(t *testing.T) {
 	}
 	if got := updateReport(context.Background(), enabled, newChecker(), "1.2.2", "/opt/homebrew/bin/zotio"); got != "WARN 1.2.3 available — brew upgrade zotio" {
 		t.Fatalf("behind row = %q", got)
+	}
+	if got := updateReport(context.Background(), enabled, newChecker(), "v1.2.3-rc.1", ""); !strings.HasPrefix(got, "WARN 1.2.3 available") {
+		t.Fatalf("release-candidate row = %q, want the stable release reported as available", got)
 	}
 	if got := updateReport(context.Background(), enabled, nil, "dev", ""); got != "INFO skipped (development build)" {
 		t.Fatalf("development row = %q", got)

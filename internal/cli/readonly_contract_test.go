@@ -19,6 +19,12 @@
 // a reason. It fails in both directions, so the allowlist cannot quietly grow
 // stale as commands change.
 //
+// The MCP spec's readOnlyHint means "does not modify its environment", which is
+// stricter than the in-repo meaning below. A readOnlyWriters command therefore
+// also carries the production annotation mcp:writes-files=true, which the MCP
+// surfaces read to advertise readOnlyHint=false and destructiveHint=true. The
+// test requires the annotation and the allowlist to name the same commands.
+//
 // Limits worth knowing: reachability through interface methods and function
 // values is not resolved, so a pass is strong evidence rather than proof.
 
@@ -39,18 +45,18 @@ import (
 // marked read-only. Each entry says why. "Read-only" here means "does not change
 // the user's library or durable state they did not name" — producing the export
 // or report the command exists to produce, at a path the user supplied, counts
-// as read-only.
+// as read-only. Every entry carries mcp:writes-files=true, and no other
+// read-only command does.
 var readOnlyWriters = map[string]string{
 	"newAnnotationsExportCmd": "writes the annotations export to the path the user passes",
 	"newCollectionsBundleCmd": "writes the bundle directory the user passes",
 	"newCollectionsExportCmd": "writes the collections export to the path the user passes",
-	"newDemoCmd":              "creates and cleans up its own sandbox directory",
+	"newDemoCmd":              "seeds its sandbox demo.db, and --reset deletes it",
 	"newExportSnapshotCmd":    "writes the user's snapshot plus its own adjacent lock and checkpoint artifacts",
 	"newImportDiscoverCmd":    "writes the discovery report to the path the user passes",
 	"newImportMonitorCmd":     "writes the monitor manifest to the path the user passes",
 	"newLibraryHealthCmd":     "writes the baseline and report to paths the user passes",
 	"newLibraryWrappedCmd":    "writes the wrapped card to the path the user passes",
-	"newTailCmd":              "builds and dispatches the command tree; the reachable sinks belong to the commands it runs, which carry their own annotations",
 
 	// Known exception, not a settled one. `schema drift` writes
 	// ~/.local/share/zotio/schema-baseline.json unconditionally on first run
@@ -61,6 +67,13 @@ var readOnlyWriters = map[string]string{
 	// baseline for real. Deciding whether a preview should capture a baseline is
 	// a product call; until it is made, this entry documents the gap.
 	"newSchemaDriftCmd": "writes the schema baseline to a default path; see the note above, this exception is unresolved",
+}
+
+// readOnlyDispatchers reach write sinks only through the commands they build
+// and run, which carry their own annotations. They write no file themselves,
+// so they do not carry mcp:writes-files.
+var readOnlyDispatchers = map[string]string{
+	"newTailCmd": "builds and dispatches the command tree; the reachable sinks belong to the commands it runs, which carry their own annotations",
 }
 
 // clientMutators are the *client.Client methods that reach the dry-run gate.
@@ -96,10 +109,11 @@ type cliPackage struct {
 }
 
 type readOnlyCmd struct {
-	ctor string
-	use  string
-	file string
-	run  *ast.FuncLit
+	ctor        string
+	use         string
+	file        string
+	run         *ast.FuncLit
+	writesFiles bool
 }
 
 type writeSink struct {
@@ -167,7 +181,13 @@ func (p *cliPackage) readOnlyCommands() []readOnlyCmd {
 				if annos["mcp:read-only"] != "true" {
 					return true
 				}
-				out = append(out, readOnlyCmd{ctor: fn.Name.Name, use: use, file: file, run: runEBody(lit)})
+				out = append(out, readOnlyCmd{
+					ctor:        fn.Name.Name,
+					use:         use,
+					file:        file,
+					run:         runEBody(lit),
+					writesFiles: annos["mcp:writes-files"] == "true",
+				})
 				return true
 			})
 		}
@@ -365,26 +385,44 @@ func TestReadOnlyCommandsReachNoWriteSink(t *testing.T) {
 	claimed := map[string]bool{}
 	for _, c := range cmds {
 		sinks := p.sinksFrom(c)
-		reason, allowed := readOnlyWriters[c.ctor]
-		if allowed {
+		reason, writer := readOnlyWriters[c.ctor]
+		dispatchReason, dispatcher := readOnlyDispatchers[c.ctor]
+		if writer || dispatcher {
 			claimed[c.ctor] = true
 		}
 		switch {
-		case len(sinks) > 0 && !allowed:
+		case len(sinks) > 0 && !writer && !dispatcher:
 			t.Errorf("%s (%q, %s) is annotated mcp:read-only=true but reaches %d write sink(s):\n%s\n"+
 				"  A read-only command is exempt from --dry-run injection in workflow previews and is\n"+
 				"  offered to MCP agents as safe. Either stop the write, drop the annotation, or add\n"+
-				"  %s to readOnlyWriters with the reason it is legitimate.",
+				"  %s to readOnlyWriters with the reason it is legitimate and annotate it\n"+
+				"  mcp:writes-files=true.",
 				c.ctor, c.use, c.file, len(sinks), formatSinks(sinks), c.ctor)
-		case len(sinks) == 0 && allowed:
+		case len(sinks) == 0 && writer:
 			t.Errorf("%s no longer reaches any write sink, so readOnlyWriters[%q] (%s) is stale; drop the entry",
 				c.ctor, c.ctor, reason)
+		case len(sinks) == 0 && dispatcher:
+			t.Errorf("%s no longer reaches any write sink, so readOnlyDispatchers[%q] (%s) is stale; drop the entry",
+				c.ctor, c.ctor, dispatchReason)
+		}
+		switch {
+		case writer && !c.writesFiles:
+			t.Errorf("%s (%q, %s) is in readOnlyWriters but lacks mcp:writes-files=true, so MCP advertises it\n"+
+				"  readOnlyHint=true while it writes files; add the annotation", c.ctor, c.use, c.file)
+		case !writer && c.writesFiles:
+			t.Errorf("%s (%q, %s) is annotated mcp:writes-files=true but is not in readOnlyWriters; add it with\n"+
+				"  the reason, or drop the annotation if it no longer writes files", c.ctor, c.use, c.file)
 		}
 	}
 
 	for ctor := range readOnlyWriters {
 		if !claimed[ctor] {
 			t.Errorf("readOnlyWriters names %s, which is not a read-only command in this package", ctor)
+		}
+	}
+	for ctor := range readOnlyDispatchers {
+		if !claimed[ctor] {
+			t.Errorf("readOnlyDispatchers names %s, which is not a read-only command in this package", ctor)
 		}
 	}
 }

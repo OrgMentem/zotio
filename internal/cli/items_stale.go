@@ -82,19 +82,22 @@ func queryStaleItems(db localQueryStore, days int, noPDF, noAnnotations bool, li
 
 	applyNoPDF := noPDF || (!noPDF && !noAnnotations)
 	applyNoAnnotations := noAnnotations || (!noPDF && !noAnnotations)
+	// Children are joined on the indexed parent_key column, which the store
+	// fills from parentItem for both nested and flat payloads. Annotations hang
+	// off attachments, not the top-level item, so they need the attachment hop.
 	if applyNoPDF {
 		conditions = append(conditions, `NOT EXISTS (
 	SELECT 1 FROM resources a WHERE a.resource_type='items'
-		AND json_extract(a.data,'$.data.itemType')='attachment'
+		AND a.parent_key=i.id
+		AND a.item_type='attachment'
 		AND json_extract(a.data,'$.data.contentType')='application/pdf'
-		AND json_extract(a.data,'$.data.parentItem')=i.id
 )`)
 	}
 	if applyNoAnnotations {
 		conditions = append(conditions, `NOT EXISTS (
-	SELECT 1 FROM resources a WHERE a.resource_type='items'
-		AND json_extract(a.data,'$.data.itemType')='annotation'
-		AND json_extract(a.data,'$.data.parentItem')=i.id
+	SELECT 1 FROM resources att
+	JOIN resources a ON a.resource_type='items' AND a.parent_key=att.id AND a.item_type='annotation'
+	WHERE att.resource_type='items' AND att.parent_key=i.id
 )`)
 	}
 

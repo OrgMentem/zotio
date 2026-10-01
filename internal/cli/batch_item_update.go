@@ -57,6 +57,10 @@ type batchItemUpdater struct {
 	// not the batch envelope at all. Every object in that chunk has an unknown
 	// outcome.
 	unattributable map[int]bool
+	// malformed marks an object whose `failed` entry is not a {code, message}
+	// object. Zotero rejected it in some way, so its outcome is unknown; it
+	// must never fall through to "applied".
+	malformed map[int]bool
 
 	// err aggregates whatever the command should return as its own error.
 	err error
@@ -72,6 +76,7 @@ func newBatchItemUpdater(c *client.Client, path, operation string, objects []map
 		failed:         make(map[int]batchWriteFailure),
 		transport:      make(map[int]error),
 		unattributable: make(map[int]bool),
+		malformed:      make(map[int]bool),
 	}
 }
 
@@ -126,6 +131,9 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 		}
 		return "failed", detail, nil
 	}
+	if b.malformed[index] {
+		return "failed", "batch response carried a malformed failure entry for this item; its outcome is unknown", nil
+	}
 	if b.unattributable[start] {
 		// The response named an index this request cannot own, so the absence
 		// of a failure for this object proves nothing. Reporting "applied"
@@ -156,12 +164,24 @@ func (b *batchItemUpdater) send(start int) {
 		}
 		return
 	}
-	resp := decodeBatchWriteResponse(data)
+	// Decode each failed entry on its own. Decoding the map in one call drops
+	// every failure when any entry is malformed, which would report the
+	// rejected objects applied.
+	var envelope struct {
+		Failed map[string]json.RawMessage `json:"failed"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		b.unattributable[start] = true
+		if b.err == nil {
+			b.err = fmt.Errorf("%s: batch response failed map could not be decoded: %w; the outcome of the %d item(s) in that request is unknown", b.operation, err, end-start)
+		}
+		return
+	}
 	// checkBatchEnvelope already proved the union of claimed indices covers the
 	// chunk, so this loop only distributes failures. The range guard stays as
 	// defence in depth: a response that contradicts the verified envelope
 	// must fail the chunk, never poison the failure map.
-	for index, failure := range resp.Failed {
+	for index, raw := range envelope.Failed {
 		offset, convErr := strconv.Atoi(index)
 		// Compare inside the chunk: start+offset would overflow for an
 		// offset near MaxInt and wrap past this bound.
@@ -169,6 +189,14 @@ func (b *batchItemUpdater) send(start int) {
 			b.unattributable[start] = true
 			if b.err == nil {
 				b.err = fmt.Errorf("%s: batch response reported unattributable index %q; the outcome of the %d item(s) in that request is unknown", b.operation, index, end-start)
+			}
+			continue
+		}
+		var failure batchWriteFailure
+		if decodeErr := json.Unmarshal(raw, &failure); decodeErr != nil || failure.Code == 0 {
+			b.malformed[start+offset] = true
+			if b.err == nil {
+				b.err = fmt.Errorf("%s: batch response reported a malformed failure for index %q; that item's outcome is unknown", b.operation, index)
 			}
 			continue
 		}
@@ -242,8 +270,8 @@ func checkBatchEnvelope(data []byte, want int) error {
 }
 
 // Err returns a request-level failure that the engine's generic "mutation
-// incomplete" cannot express: a transport failure, or a response whose
-// indices could not be attributed.
+// incomplete" cannot express: a transport failure, a response whose indices
+// could not be attributed, or a failed entry too malformed to read.
 //
 // Per-object rejections are deliberately NOT aggregated here. Each one is
 // already reported as that item's own status and carries the server's own

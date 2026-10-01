@@ -56,7 +56,7 @@ func TestInitFirstRunSyncsEmptyLibraryEndToEnd(t *testing.T) {
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 	t.Setenv("ZOTERO_API_KEY", "FIXTURE-init-api-key")
 
-	flags := &rootFlags{noInput: true, timeout: 5 * time.Second}
+	flags := &rootFlags{noInput: true, yes: true, timeout: 5 * time.Second}
 	cmd := &cobra.Command{Use: "init"}
 	cmd.SetContext(context.Background())
 	var stdout, stderr bytes.Buffer
@@ -99,7 +99,7 @@ func TestInitFirstRunSyncsEmptyLibraryEndToEnd(t *testing.T) {
 		t.Fatalf("open synced store: %v", err)
 	}
 	defer db.Close()
-	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 1 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "items"); err != nil || v != 1 {
 		t.Fatalf("stored items version = %d (err %v), want 1", v, err)
 	}
 }

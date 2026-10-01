@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 const (
@@ -395,7 +396,7 @@ The broken-attachment and retraction checks are live checks that need Zotero
 desktop or CrossRef network access respectively; pass --verify-files and/or
 --check-retractions to run them. When a gate-relevant check can't run because
 its precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// the badge is already JSON, so refuse ambiguous output modes.
 			if flagBadge && flags.asJSON {
@@ -459,13 +460,16 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
+			// badge CI must fail loudly before a local sync exists.
+			notSyncedBadge := func(detail string) error {
+				if err := printHealthBadge(cmd, healthBadge{SchemaVersion: 1, Label: flagBadgeLabel, Message: "not synced", Color: "lightgrey"}); err != nil {
+					return err
+				}
+				return preconditionErr(fmt.Errorf("library health: %s; run 'zotio sync' first", detail))
+			}
 			if rawDB == nil {
-				// badge CI must fail loudly before a local sync exists.
 				if flagBadge {
-					if err := printHealthBadge(cmd, healthBadge{SchemaVersion: 1, Label: flagBadgeLabel, Message: "not synced", Color: "lightgrey"}); err != nil {
-						return err
-					}
-					return preconditionErr(fmt.Errorf("library health: local store is not synced; run 'zotio sync' first"))
+					return notSyncedBadge("local store is not synced")
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
@@ -477,6 +481,19 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if _, lastSynced, _, e := db.GetSyncState("items"); e == nil && !lastSynced.IsZero() {
 				ls := lastSynced
 				syncedAt = &ls
+			}
+			// The synced_store preflight accepts a store with ANY synced
+			// resource, but every check reads items. With items never synced
+			// the checks run over zero items and a gate passes an uninspected
+			// library, so a gated or badge run refuses (exit 9) instead.
+			// --require-fresh keeps its own never-synced verdict (exit 12).
+			if syncedAt == nil && flagRequireFresh == 0 && (flagBadge || failOn != "" || failOnNew != "") {
+				const detail = "the local store has never synced items, so there is nothing to inspect"
+				if flagBadge {
+					return notSyncedBadge(detail)
+				}
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionSyncedStore, detail,
+					remediationFor(cmd.Context(), flags, preconditionSyncedStore))
 			}
 			ctx := &healthContext{
 				src:              FindingSource{Kind: "local", SyncedAt: syncedAt},
@@ -513,11 +530,16 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			// before any baseline read and held through both publications, so
 			// concurrent baseline/report writers serialize instead of replacing
 			// each other's valid artifact. Read-only runs name no sidecar and
-			// stay lock-free.
+			// stay lock-free, and so does --dry-run: it publishes nothing, and
+			// the lock is itself a file beside the target.
 			report.baselineGate = failOnNew
-			lockPaths, _, lockErr := outputLockSetForTargets([]string{writeBaselinePath, reportPath})
-			if lockErr != nil {
-				return fmt.Errorf("resolving output path: %w", lockErr)
+			var lockPaths []string
+			if !flags.dryRun {
+				var lockErr error
+				lockPaths, _, lockErr = outputLockSetForTargets([]string{writeBaselinePath, reportPath})
+				if lockErr != nil {
+					return fmt.Errorf("resolving output path: %w", lockErr)
+				}
 			}
 			baselineAndReport := func() error {
 				// apply baseline diff before any output mode or report sidecar is rendered.
@@ -525,6 +547,19 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 					if err := applyHealthBaseline(&report, baselinePath); err != nil {
 						return err
 					}
+				}
+				if flags.dryRun {
+					if writeBaselinePath != "" {
+						if err := previewDryRunFileWrite(cmd.ErrOrStderr(), "the health baseline", writeBaselinePath); err != nil {
+							return err
+						}
+					}
+					if reportPath != "" {
+						if err := previewDryRunFileWrite(cmd.ErrOrStderr(), "the health report", reportPath); err != nil {
+							return err
+						}
+					}
+					return nil
 				}
 				if writeBaselinePath != "" {
 					if err := writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report)); err != nil {
@@ -636,7 +671,10 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
 	sortHealthFindings(report.allFindings)
 	sortHealthFindings(report.Findings)
-	report.RemediationPlan = buildHealthRemediationPlan(report.Findings)
+	// --limit caps only the findings listed. The plan is built from the full
+	// set, like Summary and the baseline, so its Keys cover every counted item
+	// and piping them to --keys-from does not silently under-scope a repair.
+	report.RemediationPlan = buildHealthRemediationPlan(report.allFindings)
 
 	if failOn != "" {
 		gate := &healthGate{FailOn: failOn}
@@ -972,7 +1010,7 @@ func runBrokenAttachmentFileWithClient(db localQueryStore, ctx *healthContext, c
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
 			Precondition: "live_local_api",
-			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is not it (%s).", redactURL(c.BaseURL)),
+			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is not it (%s).", cliutil.RedactURL(c.BaseURL)),
 			Remediation: []healthRemediation{
 				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run with a local API base"},
 			},

@@ -49,7 +49,7 @@ func TestSyncResourceVersionBasedIncremental(t *testing.T) {
 	if sinceSeen[0] != "" {
 		t.Errorf("first sync sent since=%q, want empty (no checkpoint yet)", sinceSeen[0])
 	}
-	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 100 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "items"); err != nil || v != 100 {
 		t.Fatalf("stored library version = %d (err %v), want 100", v, err)
 	}
 
@@ -106,7 +106,7 @@ func TestSyncResourceDiscardsForeignPlaneCheckpoint(t *testing.T) {
 	}
 	// The new plane's much smaller version must replace the old one, not lose to
 	// the monotonic guard.
-	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 71 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "items"); err != nil || v != 71 {
 		t.Fatalf("stored version = %d (err %v), want 71 from the current plane", v, err)
 	}
 }
@@ -310,7 +310,7 @@ func TestSyncConvergesPlaneWithoutVersionHeader(t *testing.T) {
 	if changed {
 		t.Fatal("plane still reads as changed after a full pass: every sync would re-wipe stored row versions")
 	}
-	if _, source, serr := db.StoredLibraryVersion("items"); serr != nil || source != client.Plane() {
+	if _, source, serr := db.StoredLibraryVersionContext(context.Background(), "items"); serr != nil || source != client.Plane() {
 		t.Fatalf("cursor_source = %q (err %v), want the plane that just synced", source, serr)
 	}
 }
@@ -385,7 +385,7 @@ func TestSyncUsesBodyVersionWhenHeaderIsMissing(t *testing.T) {
 	if res := syncResource(context.Background(), client, db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("first sync error: %v", res.Err)
 	}
-	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 19 {
+	if v, _, err := db.StoredLibraryVersionContext(context.Background(), "items"); err != nil || v != 19 {
 		t.Fatalf("stored library version = %d (err %v), want page maximum 19", v, err)
 	}
 
@@ -880,11 +880,11 @@ func TestSyncDependentSchemaRefusesStaleItemTypePrerequisite(t *testing.T) {
 		db.Close()
 		t.Fatalf("seed dependent row: %v", err)
 	}
-	if err := db.SaveZoteroSchemaVersion("schema", "100"); err != nil {
+	if err := db.SaveZoteroSchemaVersionContext(context.Background(), "schema", "100"); err != nil {
 		db.Close()
 		t.Fatalf("seed schema version: %v", err)
 	}
-	if err := db.SaveZoteroSchemaVersion("schema-item-type-fields", "100"); err != nil {
+	if err := db.SaveZoteroSchemaVersionContext(context.Background(), "schema-item-type-fields", "100"); err != nil {
 		db.Close()
 		t.Fatalf("seed dependent version: %v", err)
 	}
@@ -974,11 +974,11 @@ func TestSyncDependentSchemaPartialFanoutIsDegradedAndRetried(t *testing.T) {
 		db.Close()
 		t.Fatalf("seed item types: %v", err)
 	}
-	if err := db.SaveZoteroSchemaVersion("schema", "100"); err != nil {
+	if err := db.SaveZoteroSchemaVersionContext(context.Background(), "schema", "100"); err != nil {
 		db.Close()
 		t.Fatalf("seed schema version: %v", err)
 	}
-	if err := db.SaveZoteroSchemaVersion("schema-item-type-fields", "99"); err != nil {
+	if err := db.SaveZoteroSchemaVersionContext(context.Background(), "schema-item-type-fields", "99"); err != nil {
 		db.Close()
 		t.Fatalf("seed old dependent checkpoint: %v", err)
 	}

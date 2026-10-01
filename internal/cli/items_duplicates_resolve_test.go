@@ -311,12 +311,11 @@ func duplicateResolveBodyHasTag(body map[string]any, want string) bool {
 	return false
 }
 
-// TestDuplicatesResolvePartialFailureIsJournaled covers the review-flagged
-// gap: applyDuplicateResolve's merge-target PATCH succeeds, then the
-// duplicate-trash PATCH fails. That is a real, committed write to the merge
-// target — it must land in the journal (Applied >= 1), and both the run's own
-// output and the journal must make the half-applied state (target updated,
-// duplicate NOT trashed) unmistakable rather than reading as a clean success.
+// TestDuplicatesResolvePartialFailureIsJournaled covers a half-applied merge:
+// applyDuplicateResolve's merge-target PATCH succeeds, then the
+// duplicate-trash PATCH fails. The committed target write must land in the
+// journal, and the run must fail — ok=false, a conflict, a non-zero exit — so
+// automation cannot read a duplicate that is still live as a finished merge.
 func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
@@ -340,31 +339,35 @@ func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 	// rootFlags{} defaults MaxChanges to 0, which EffectiveMaxChanges/CheckGates
 	// treats as a cap of zero (not "use the default"); -1 opts into the
 	// package default cap instead.
-	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
+	env, _, runErr := dupExecResolve(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
 
-	// The merge target's write actually landed: the op is reported "applied"
-	// (not "failed") precisely so the engine counts it and the run gets
-	// journaled — see applyDuplicateResolve's half-applied branch.
-	if !env.OK || env.Mode != "apply" || env.Result == nil {
-		t.Fatalf("env = %+v, want a successful apply run", env)
+	if runErr == nil || ExitCode(runErr) == 0 {
+		t.Fatalf("err = %v, want a non-zero exit for a half-applied merge", runErr)
 	}
-	if env.Result.Summary.Applied != 1 || env.Result.Summary.Failed != 0 {
-		t.Fatalf("summary = %+v, want Applied=1 Failed=0", env.Result.Summary)
+	if env.OK || env.Mode != "apply" || env.Result == nil {
+		t.Fatalf("env = %+v, want an apply run that is not ok", env)
 	}
-	if len(env.Result.Items) != 1 || env.Result.Items[0].Status != "applied" {
-		t.Fatalf("items = %+v, want one applied item", env.Result.Items)
+	if env.Result.Summary.Conflicts != 1 || env.Result.Summary.Applied != 0 {
+		t.Fatalf("summary = %+v, want Conflicts=1 Applied=0", env.Result.Summary)
+	}
+	if len(env.Result.Items) != 1 || env.Result.Items[0].Status != "conflict" {
+		t.Fatalf("items = %+v, want one conflict", env.Result.Items)
 	}
 
-	// The failure output must name which sub-write failed and that the
-	// target update already landed.
-	reason := fmt.Sprint(env.Result.Items[0].Reason)
-	for _, want := range []string{"K1", "K2", "trash"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("result reason = %q, want it to mention %q", reason, want)
+	// The reason must say the target write landed, which sub-write failed,
+	// and that the duplicate is still live.
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["committed"] != true || reason["merge_target"] != "K1" || reason["duplicate"] != "K2" {
+		t.Fatalf("result reason = %#v, want committed evidence naming K1 and K2", env.Result.Items[0].Reason)
+	}
+	message, _ := reason["message"].(string)
+	for _, want := range []string{"K1", "K2", "trash", "still live"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("result message = %q, want it to mention %q", message, want)
 		}
 	}
-	if len(env.Warnings) != 1 || env.Warnings[0] != reason {
-		t.Fatalf("warnings = %+v, want the same half-applied detail surfaced as a warning", env.Warnings)
+	if len(env.Warnings) != 1 || env.Warnings[0] != message {
+		t.Fatalf("warnings = %+v, want the half-applied message surfaced as a warning", env.Warnings)
 	}
 
 	// Both PATCHes were attempted exactly once: the target update committed,
@@ -390,14 +393,17 @@ func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 		t.Fatalf("journal entries = %d, want exactly 1", len(entries))
 	}
 	entry := entries[0]
-	if entry.Summary.Applied != 1 {
-		t.Fatalf("journal entry summary = %+v, want Applied=1", entry.Summary)
+	if entry.OK || entry.Summary.Conflicts != 1 {
+		t.Fatalf("journal entry ok=%v summary=%+v, want a failed run with Conflicts=1", entry.OK, entry.Summary)
 	}
-	if len(entry.Ops) != 1 || entry.Ops[0].Status != "applied" || entry.Ops[0].Key != "K2" {
-		t.Fatalf("journal ops = %+v, want one applied op for K2", entry.Ops)
+	if len(entry.Ops) != 1 || entry.Ops[0].Status != "conflict" || entry.Ops[0].Key != "K2" {
+		t.Fatalf("journal ops = %+v, want one conflict op for K2", entry.Ops)
 	}
 	if entry.Ops[0].Kind != duplicateResolveMergePartialKind {
 		t.Fatalf("journal op kind = %q, want %q so `journal show` marks the half-applied state", entry.Ops[0].Kind, duplicateResolveMergePartialKind)
+	}
+	if journaled, ok := entry.Ops[0].Reason.(map[string]any); !ok || journaled["committed"] != true || journaled["merge_target"] != "K1" {
+		t.Fatalf("journal reason = %#v, want the committed merge-target evidence", entry.Ops[0].Reason)
 	}
 }
 

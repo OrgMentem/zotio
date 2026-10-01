@@ -7,10 +7,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"zotio/internal/config"
 	"zotio/internal/store"
@@ -23,7 +25,8 @@ const (
 	initStepUpdates  = "updates"
 	initStepHealth   = "health"
 
-	initLocalAPIRemediation = "open Zotero → Settings → Advanced → 'Allow other applications…'"
+	initLocalAPIRemediation    = "open Zotero → Settings → Advanced → 'Allow other applications…'"
+	initSyncConsentRemediation = "rerun zotio init --yes to approve the first sync, or run zotio sync"
 )
 
 type initStepReport struct {
@@ -57,9 +60,10 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 		Long: `Guided first-run setup for Zotero automation.
 
 Checks the local Zotero API, stores an API key when one is provided interactively,
-runs the first local sync when the store is missing or empty, finishes with the quick
+offers the first local sync when the store is missing or empty, finishes with the quick
 library-health preset, and offers an opt-in daily check for public zotio releases.
-The check sends only a GitHub releases request and no identifying payload.`,
+The check sends only a GitHub releases request and no identifying payload.
+Without a terminal prompt (--no-input or --agent), the first sync runs only with --yes.`,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "false", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -85,6 +89,9 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 		},
 	}
 	setupRequired := false
+	// One reader for every prompt: separate bufio.Readers on the same stdin
+	// would each buffer ahead and swallow the answers meant for later prompts.
+	in := bufio.NewReader(cmd.InOrStdin())
 
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -94,7 +101,7 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 	}
 
 	if cfg.Updates == nil && !flags.noInput && !flags.agent && cfg.Path != "" {
-		updatesOK, updatesStep := runInitUpdateCheckStep(cmd, cfg)
+		updatesOK, updatesStep := runInitUpdateCheckStep(cmd, in, cfg)
 		report.Steps = append(report.Steps, updatesStep)
 		if !updatesOK {
 			report.OK = false
@@ -107,13 +114,13 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 		setupRequired = true
 	}
 
-	keyOK, keyStep := runInitAPIKeyStep(cmd, flags, cfg)
+	keyOK, keyStep := runInitAPIKeyStep(cmd, flags, in, cfg)
 	report.Steps = append(report.Steps, keyStep)
 	if !keyOK {
 		setupRequired = true
 	}
 
-	syncOK, syncStep, syncResources, syncErr := runInitSyncStep(cmd, flags, localOK)
+	syncOK, syncStep, syncResources, syncErr := runInitSyncStep(cmd, flags, in, localOK)
 	report.Steps = append(report.Steps, syncStep)
 	report.Sync = syncResources
 	if syncErr != nil {
@@ -143,27 +150,41 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 	return report, nil
 }
 
-func runInitUpdateCheckStep(cmd *cobra.Command, cfg *config.Config) (bool, initStepReport) {
+func runInitUpdateCheckStep(cmd *cobra.Command, in *bufio.Reader, cfg *config.Config) (bool, initStepReport) {
 	const question = "Check for zotio updates once a day? Queries GitHub releases only; nothing else is sent. [Y/n]: "
 
-	reader := bufio.NewReader(cmd.InOrStdin())
+	yes, answered, err := promptInitYesNo(cmd, in, question)
+	switch {
+	case err != nil:
+		return false, initStepReport{Step: initStepUpdates, OK: false, Status: "read_error", Detail: err.Error()}
+	case !answered:
+		return true, initStepReport{Step: initStepUpdates, OK: true, Status: "skipped"}
+	case !yes:
+		return true, initStepReport{Step: initStepUpdates, OK: true, Status: "disabled"}
+	}
+	if err := cfg.SetUpdateChecksEnabled(true); err != nil {
+		return false, initStepReport{Step: initStepUpdates, OK: false, Status: "save_error", Detail: err.Error()}
+	}
+	return true, initStepReport{Step: initStepUpdates, OK: true, Status: "enabled"}
+}
+
+// Ask a [Y/n] question until the answer parses and report (yes, answered).
+// An empty line means yes; end of input before any answer reports answered=false.
+func promptInitYesNo(cmd *cobra.Command, in *bufio.Reader, question string) (bool, bool, error) {
 	for {
 		fmt.Fprint(cmd.OutOrStdout(), question)
-		answer, err := reader.ReadString('\n')
+		answer, err := in.ReadString('\n')
 		if err != nil && err != io.EOF {
-			return false, initStepReport{Step: initStepUpdates, OK: false, Status: "read_error", Detail: err.Error()}
+			return false, false, err
 		}
 		if err == io.EOF && answer == "" {
-			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "skipped"}
+			return false, false, nil
 		}
 		switch strings.ToLower(strings.TrimSpace(answer)) {
 		case "", "y", "yes":
-			if err := cfg.SetUpdateChecksEnabled(true); err != nil {
-				return false, initStepReport{Step: initStepUpdates, OK: false, Status: "save_error", Detail: err.Error()}
-			}
-			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "enabled"}
+			return true, true, nil
 		case "n", "no":
-			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "disabled"}
+			return false, true, nil
 		default:
 			fmt.Fprintln(cmd.OutOrStdout(), "Please answer yes or no.")
 		}
@@ -202,7 +223,7 @@ func runEnsureLiveForInit(cmd *cobra.Command, flags *rootFlags) error {
 }
 
 // Store prompted API keys through the same Config.SaveCredential path as auth set-token.
-func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config) (bool, initStepReport) {
+func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, in *bufio.Reader, cfg *config.Config) (bool, initStepReport) {
 	if cfg.AuthHeader() != "" {
 		return true, initStepReport{Step: initStepAPIKey, OK: true, Status: "configured"}
 	}
@@ -215,9 +236,8 @@ func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config)
 	fmt.Fprintln(out, "Zotero reads work through the local API without a key; writes need a Zotero Web API key.")
 	fmt.Fprintln(out, "Create one at https://www.zotero.org/settings/keys and paste it here.")
 	fmt.Fprint(out, "API key: ")
-	reader := bufio.NewReader(cmd.InOrStdin())
-	token, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
+	token, err := readInitSecret(cmd, in)
+	if err != nil {
 		return false, initStepReport{Step: initStepAPIKey, OK: false, Status: "read_error", Remediation: remediation, Detail: err.Error()}
 	}
 	token = strings.TrimSpace(token)
@@ -230,8 +250,24 @@ func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config)
 	return true, initStepReport{Step: initStepAPIKey, OK: true, Status: "saved"}
 }
 
-// Detect empty local stores and run the syncResource core path for first syncs.
-func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, localAPIOK bool) (bool, initStepReport, []initSyncResourceReport, error) {
+// Read one secret line with terminal echo off when stdin is a terminal, so a
+// pasted API key never lands on screen or in scrollback. Piped input is read
+// as a plain line.
+func readInitSecret(cmd *cobra.Command, in *bufio.Reader) (string, error) {
+	if f, ok := cmd.InOrStdin().(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		secret, err := term.ReadPassword(int(f.Fd()))
+		fmt.Fprintln(cmd.OutOrStdout())
+		return string(secret), err
+	}
+	line, err := in.ReadString('\n')
+	if err == io.EOF {
+		err = nil
+	}
+	return line, err
+}
+
+// Detect empty local stores and, with consent, run the syncResource core path for first syncs.
+func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, in *bufio.Reader, localAPIOK bool) (bool, initStepReport, []initSyncResourceReport, error) {
 	empty, err := localStoreNeedsFirstSync(cmd, "zotio")
 	if err != nil {
 		return false, initStepReport{Step: initStepSync, OK: false, Status: "store_error", Detail: err.Error()}, nil, nil
@@ -241,6 +277,19 @@ func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, localAPIOK bool) (boo
 	}
 	if !localAPIOK {
 		return false, initStepReport{Step: initStepSync, OK: false, Status: "blocked", Remediation: initLocalAPIRemediation}, nil, nil
+	}
+	if !flags.yes {
+		// Non-interactive is not approval: without a prompt, only --yes runs the sync.
+		if flags.noInput || flags.agent {
+			return false, initStepReport{Step: initStepSync, OK: false, Status: "consent_required", Remediation: initSyncConsentRemediation}, nil, nil
+		}
+		yes, _, err := promptInitYesNo(cmd, in, "Run the first sync now? Copies your Zotero library into the local store. [Y/n]: ")
+		if err != nil {
+			return false, initStepReport{Step: initStepSync, OK: false, Status: "read_error", Remediation: initSyncConsentRemediation, Detail: err.Error()}, nil, nil
+		}
+		if !yes {
+			return false, initStepReport{Step: initStepSync, OK: false, Status: "declined", Remediation: initSyncConsentRemediation}, nil, nil
+		}
 	}
 
 	resources, syncErr := runInitialSync(cmd, flags)
@@ -287,7 +336,7 @@ func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceRep
 	resources := defaultSyncResources()
 	reports := make([]initSyncResourceReport, 0, len(resources))
 	started := time.Now()
-	fmt.Fprintln(cmd.ErrOrStderr(), "Running first sync...")
+	fmt.Fprintf(cmd.ErrOrStderr(), "Running first sync of %d resources into %s...\n", len(resources), dbPath)
 	savedHumanFriendly := humanFriendly
 	humanFriendly = true
 	defer func() { humanFriendly = savedHumanFriendly }()
@@ -343,7 +392,8 @@ func runInitHealthStep(cmd *cobra.Command, flags *rootFlags) (bool, initStepRepo
 		return false, initStepReport{Step: initStepHealth, OK: false, Status: "failed", Detail: err.Error()}, "", nil
 	}
 	verdict := initHealthVerdict(report)
-	return true, initStepReport{Step: initStepHealth, OK: true, Status: verdict}, verdict, nil
+	// The verdict travels once, in initReport.HealthVerdict; the step only records that it ran.
+	return true, initStepReport{Step: initStepHealth, OK: true, Status: "checked"}, verdict, nil
 }
 
 // Keep init's finale to the requested one-line health verdict.

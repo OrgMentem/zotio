@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/config"
 
 	"github.com/spf13/cobra"
@@ -283,7 +284,7 @@ func checkLiveLocalAPIPrecondition(_ context.Context, flags *rootFlags, _ *cobra
 	if cfg == nil || !isLocalZoteroAPI(cfg.BaseURL) {
 		base := ""
 		if cfg != nil {
-			base = redactURL(cfg.BaseURL)
+			base = cliutil.RedactURL(cfg.BaseURL)
 		}
 		return false, fmt.Sprintf("configured base URL %q is not the Zotero desktop local API", base), nil
 	}

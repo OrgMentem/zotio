@@ -250,6 +250,19 @@ func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey st
 			reason["message"] = fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", display, err)
 			return "applied", reason, nil
 		}
+		if res.Via == "connector" && res.Session != "" && res.ConnectorError != "" && res.WebKey == "" {
+			// SaveItems errored and its outcome could not be confirmed either
+			// way. Same convention as the batch connector create: a committed
+			// conflict keeps the session evidence in the journal, so neither a
+			// rerun nor journal undo treats the write as never having happened.
+			return "conflict", map[string]any{
+				"via": "connector", "committed": true,
+				"session":         res.Session,
+				"connector_key":   res.ConnKey,
+				"connector_error": res.ConnectorError,
+				"message":         fmt.Sprintf("connector SaveItems reported an error in session %s and whether the item was created could not be confirmed: %v; inspect Zotero before retrying, do not blindly re-create", res.Session, err),
+			}, err
+		}
 		return "failed", nil, err
 	}
 	return "applied", itemCreateAppliedReason(res.Via, createdItemKeyOf(res)), nil
@@ -328,7 +341,17 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 				}, fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w", saveErr)
 			}
 			recovered, matched, lookupErr := confirmConnectorCreate(ctx, flags, item, createdAfter)
-			if lookupErr != nil || recovered == "" {
+			if lookupErr != nil {
+				// The lookup never finished, so nothing proves the save did not
+				// land. Reporting saveErr alone would read as a clean failure and
+				// a retry would mint a duplicate; keep the session evidence and
+				// refuse the retry instead.
+				return itemCreateResult{
+					Via: "connector", Session: sessionID, ConnKey: connectorKey,
+					CreatedAfter: createdAfter, ConnectorError: saveErr.Error(),
+				}, fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w (confirming the create failed: %s)", saveErr, lookupErr.Error())
+			}
+			if recovered == "" {
 				if matched > 1 {
 					return itemCreateResult{}, fmt.Errorf("connector reported %w, and %d recently added items share this title, so whether it was created is unresolved; check the library before retrying", saveErr, matched)
 				}

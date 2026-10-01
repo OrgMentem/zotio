@@ -158,26 +158,85 @@ func TestLibraryJSONArrayRetainsItemCapBelowByteLimit(t *testing.T) {
 	}
 }
 
-func TestLibraryJSONOversizedObjectPreservesShapeAndProvenance(t *testing.T) {
-	got, err := LibraryJSON(map[string]any{
-		"title":       strings.Repeat("t", MaxBytes),
-		"annotations": []string{strings.Repeat("a", MaxBytes)},
-		"related":     []string{strings.Repeat("r", MaxBytes)},
-	})
+// An oversized object keeps every top-level key and each value's JSON type
+// (strings stay strings, arrays stay arrays) while the values themselves are
+// shortened to prefixes, and the root carries the truncation metadata a
+// consumer needs to know the nested values are incomplete.
+func TestLibraryJSONOversizedObjectKeepsKeysAndValueTypesWithTruncationMetadata(t *testing.T) {
+	title := strings.Repeat("t", MaxBytes)
+	annotation := strings.Repeat("a", MaxBytes)
+	related := strings.Repeat("r", MaxBytes)
+	input := map[string]any{
+		"title":       title,
+		"annotations": []string{annotation},
+		"related":     []string{related},
+	}
+	original, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LibraryJSON(input)
 	if err != nil {
 		t.Fatalf("LibraryJSON: %v", err)
 	}
 	if len(got) > MaxBytes || !json.Valid([]byte(got)) {
 		t.Fatalf("bounded object bytes = %d, valid = %v", len(got), json.Valid([]byte(got)))
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(got), &envelope); err != nil {
+
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(got), &keys); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"title", "annotations", "related", "_zotio_provenance", "_zotio_truncated"} {
-		if _, ok := envelope[key]; !ok {
+	for _, key := range []string{"title", "annotations", "related", "_zotio_provenance", "_zotio_truncated", "_zotio_original_bytes", "_zotio_max_bytes"} {
+		if _, ok := keys[key]; !ok {
 			t.Fatalf("oversized object lost %q: %s", key, got)
 		}
+	}
+
+	// Strict typed decode: a value whose JSON type changed (for example an
+	// array collapsed into a preview string) fails to unmarshal here.
+	var envelope struct {
+		Title         string         `json:"title"`
+		Annotations   []string       `json:"annotations"`
+		Related       []string       `json:"related"`
+		Provenance    map[string]any `json:"_zotio_provenance"`
+		Truncated     bool           `json:"_zotio_truncated"`
+		OriginalBytes int            `json:"_zotio_original_bytes"`
+		MaxBytes      int            `json:"_zotio_max_bytes"`
+	}
+	if err := json.Unmarshal([]byte(got), &envelope); err != nil {
+		t.Fatalf("oversized object changed a value's JSON type: %v: %s", err, got)
+	}
+	if len(envelope.Title) >= len(title) || !strings.HasPrefix(title, envelope.Title) {
+		t.Errorf("title = %d bytes, want a strict prefix of the %d-byte original", len(envelope.Title), len(title))
+	}
+	for name, pair := range map[string]struct {
+		values   []string
+		original string
+	}{
+		"annotations": {envelope.Annotations, annotation},
+		"related":     {envelope.Related, related},
+	} {
+		if len(pair.values) > 1 {
+			t.Errorf("%s has %d elements, want at most the 1 original element", name, len(pair.values))
+		}
+		for _, v := range pair.values {
+			if len(v) >= len(pair.original) || !strings.HasPrefix(pair.original, v) {
+				t.Errorf("%s element = %d bytes, want a strict prefix of the %d-byte original", name, len(v), len(pair.original))
+			}
+		}
+	}
+	if envelope.Provenance["trust"] != "untrusted_data" {
+		t.Errorf("_zotio_provenance.trust = %v, want untrusted_data", envelope.Provenance["trust"])
+	}
+	if !envelope.Truncated {
+		t.Error("_zotio_truncated = false, want true")
+	}
+	if envelope.OriginalBytes != len(original) {
+		t.Errorf("_zotio_original_bytes = %d, want %d", envelope.OriginalBytes, len(original))
+	}
+	if envelope.MaxBytes != MaxBytes {
+		t.Errorf("_zotio_max_bytes = %d, want %d", envelope.MaxBytes, MaxBytes)
 	}
 }
 

@@ -238,36 +238,28 @@ func longestDayStreak(sortedDays []string) *libraryWrappedStreak {
 
 // queryLibraryWrappedMostAnnotated finds the item whose PDFs collected the
 // most annotations this year. Zotero nests annotation -> attachment -> item,
-// so the attachment hop is resolved explicitly.
+// so annotations are rolled up through the attachment to the owning item
+// before ranking; an item with several PDFs counts all of them. Annotations
+// on a standalone attachment keep the attachment itself as the pick.
 func queryLibraryWrappedMostAnnotated(db localQueryStore, year int) (*libraryWrappedItemPick, error) {
 	rows, err := db.QueryRaw(`
-SELECT json_extract(a.data,'$.data.parentItem') AS parent, COUNT(*) AS count
+SELECT COALESCE(NULLIF(att.parent_key,''), a.parent_key) AS item, COUNT(*) AS count
 FROM resources a
+LEFT JOIN resources att ON att.resource_type='items' AND att.id=a.parent_key
 WHERE a.resource_type='items'
-	AND COALESCE(NULLIF(a.item_type,''), json_extract(a.data,'$.data.itemType'), '') = 'annotation'
+	AND a.item_type='annotation'
 	AND SUBSTR(COALESCE(json_extract(a.data,'$.data.dateAdded'),''), 1, 4) = ?
-	AND NULLIF(TRIM(json_extract(a.data,'$.data.parentItem')),'') IS NOT NULL
-GROUP BY parent
-ORDER BY count DESC, parent ASC
+	AND COALESCE(a.parent_key,'') <> ''
+GROUP BY item
+ORDER BY count DESC, item ASC
 LIMIT 1`, fmt.Sprintf("%04d", year))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	attachmentKey := sqlStringValue(rows[0]["parent"])
+	itemKey := sqlStringValue(rows[0]["item"])
 	count := sqlIntValue(rows[0]["count"])
-	if attachmentKey == "" || count == 0 {
+	if itemKey == "" || count == 0 {
 		return nil, nil
-	}
-
-	// attachment -> owning item (annotations on standalone attachments keep
-	// the attachment itself as the pick)
-	itemKey := attachmentKey
-	if parentRows, err := db.QueryRaw(`
-SELECT COALESCE(NULLIF(TRIM(json_extract(data,'$.data.parentItem')),''), id) AS item
-FROM resources WHERE resource_type='items' AND id = ?`, attachmentKey); err == nil && len(parentRows) > 0 {
-		if v := sqlStringValue(parentRows[0]["item"]); v != "" {
-			itemKey = v
-		}
 	}
 
 	titleRows, err := db.QueryRaw(`

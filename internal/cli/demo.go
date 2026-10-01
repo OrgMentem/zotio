@@ -65,6 +65,16 @@ type demoReport struct {
 	Commands []string `json:"commands"`
 }
 
+// demoDryRunReport is the --dry-run result of `zotio demo`: the sandbox a run
+// would use, the files --reset would delete, and whether the run would seed.
+// Producing it creates, replaces, and deletes nothing.
+type demoDryRunReport struct {
+	DryRun      bool     `json:"dry_run"`
+	DBPath      string   `json:"db_path"`
+	WouldDelete []string `json:"would_delete"`
+	WouldSeed   bool     `json:"would_seed"`
+}
+
 // demoTourCommands are the copy-pasteable commands printed after seeding.
 // Each pins both demo mode and the local data source so a running Zotero
 // desktop cannot satisfy an automatic fallback.
@@ -97,7 +107,7 @@ store. Set ZOTIO_DEMO=1 and pass --data-source local to keep reads inside it.
 Without that flag, the default auto source can query a running Zotero desktop.
 No Zotero desktop and no API key are required for local demo reads.`,
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"mcp:read-only": "true", "zotio:preflight": "skip"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// force demo routing on for this process so any
 			// indirect store/config resolution during seeding can never touch
@@ -108,6 +118,17 @@ No Zotero desktop and no API key are required for local demo reads.`,
 			dbPath, err := demoDBPath("zotio")
 			if err != nil {
 				return err
+			}
+			if flags.dryRun {
+				report, err := previewDemo(cmd.Context(), dbPath, reset)
+				if err != nil {
+					return err
+				}
+				if flags.asJSON || flags.agent {
+					return printJSONFiltered(cmd.OutOrStdout(), report, flags)
+				}
+				printDemoDryRun(cmd, report)
+				return nil
 			}
 			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 				return fmt.Errorf("creating sandbox directory: %w", err)
@@ -216,15 +237,67 @@ WHERE resource_type = 'items'
 	return sqlIntValue(rows[0]["count"]), nil
 }
 
-// removeSandboxFiles deletes demo.db and its SQLite sidecar files (-wal, -shm)
-// so a subsequent seed starts from a clean database.
+// demoSandboxFiles are demo.db and its SQLite sidecars (-wal, -shm): the files
+// --reset deletes so a subsequent seed starts from a clean database.
+func demoSandboxFiles(dbPath string) []string {
+	return []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
+}
+
 func removeSandboxFiles(dbPath string) error {
-	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+	for _, p := range demoSandboxFiles(dbPath) {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// previewDemo answers what `zotio demo` would do without doing it: no sandbox
+// directory is created, nothing is deleted, and an existing sandbox is only
+// opened read-only to see whether it already holds the sample library.
+func previewDemo(ctx context.Context, dbPath string, reset bool) (demoDryRunReport, error) {
+	report := demoDryRunReport{DryRun: true, DBPath: dbPath, WouldDelete: []string{}}
+	if reset {
+		for _, p := range demoSandboxFiles(dbPath) {
+			if _, err := os.Lstat(p); err == nil {
+				report.WouldDelete = append(report.WouldDelete, p)
+			} else if !os.IsNotExist(err) {
+				return report, fmt.Errorf("inspecting sandbox: %w", err)
+			}
+		}
+		report.WouldSeed = true
+		return report, nil
+	}
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		report.WouldSeed = true
+		return report, nil
+	} else if err != nil {
+		return report, fmt.Errorf("inspecting sandbox: %w", err)
+	}
+	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath)
+	if err != nil {
+		return report, fmt.Errorf("opening sandbox: %w", err)
+	}
+	defer db.Close()
+	count, err := topLevelItemCount(localQueryStore{db})
+	if err != nil {
+		return report, err
+	}
+	report.WouldSeed = count == 0
+	return report, nil
+}
+
+func printDemoDryRun(cmd *cobra.Command, report demoDryRunReport) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Dry run: no files were created or deleted.")
+	for _, p := range report.WouldDelete {
+		fmt.Fprintf(out, "Would delete: %s\n", p)
+	}
+	if report.WouldSeed {
+		fmt.Fprintf(out, "Would seed the demo library at %s\n", report.DBPath)
+	} else {
+		fmt.Fprintf(out, "The demo library at %s is already seeded; a run would leave it unchanged.\n", report.DBPath)
+	}
 }
 
 func printDemoTour(cmd *cobra.Command, report demoReport) {

@@ -970,6 +970,10 @@ func TestScopeAdoptersShareOneGrammar(t *testing.T) {
 			if !strings.Contains(err.Error(), `unknown scope type "bogus"`) {
 				t.Fatalf("error = %q, want parseScopeSpec's message", err.Error())
 			}
+			// Every adopter names the accepted arms, so a typo is fixable.
+			if !strings.Contains(err.Error(), "collection:KEY") || !strings.Contains(err.Error(), "saved-search:KEY") {
+				t.Fatalf("error = %q, want the valid scope arms listed", err.Error())
+			}
 		})
 	}
 }

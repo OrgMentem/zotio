@@ -6,408 +6,84 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
+
 	"zotio/internal/store"
 )
 
-func TestWorkflowArchive_FetchFailureRetainsCursorAndReportsIncomplete(t *testing.T) {
+// wwRunWorkflowArchive runs `workflow archive` against a fake read API that
+// answers every GET with an empty page, except paths that failPath matches,
+// which fail with 503.
+func wwRunWorkflowArchive(t *testing.T, failPath string, args ...string) error {
+	t.Helper()
+	syncTestWithHumanFriendly(t, false)
 	fastRetryBackoff(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
-		if resource == "items" {
+		if failPath != "" && r.URL.Path == failPath {
 			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[]"))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	return cmd.Execute()
+}
+
+// A full archive is a full sync: a row the read plane no longer lists is
+// reaped from the mirror. The separate archive loop never swept, so a
+// deleted item outlived every archive.
+func TestWorkflowArchiveFullReapsRowsDeletedUpstream(t *testing.T) {
+	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "archive.db")
-	db, err := store.OpenWithContext(context.Background(), dbPath)
+	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if err := db.SaveSyncState("items", "PREVIOUS", 3); err != nil {
-		_ = db.Close()
-		t.Fatalf("seed sync state: %v", err)
+	gone := json.RawMessage(`{"key":"GONE0001","version":1,"data":{"key":"GONE0001","version":1,"itemType":"book","title":"Deleted upstream"}}`)
+	if err := db.UpsertContext(ctx, "items", "GONE0001", gone); err != nil {
+		t.Fatalf("seed item: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close seeded store: %v", err)
 	}
 
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath})
-
-	err = cmd.Execute()
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("archive error = %v, exit=%d; want degraded non-zero error", err, ExitCode(err))
-	}
-	var result struct {
-		Status   string   `json:"status"`
-		Failures []string `json:"failures"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("decode archive result %q: %v", out.String(), err)
-	}
-	if result.Status != "incomplete" || len(result.Failures) == 0 {
-		t.Fatalf("archive result = %+v, want incomplete result with failures", result)
-	}
-	if strings.Contains(out.String(), "Archived ") {
-		t.Fatalf("archive reported success after failure: %s", out.String())
+	if err := wwRunWorkflowArchive(t, "", "--full", "--db", dbPath); err != nil {
+		t.Fatalf("workflow archive --full: %v", err)
 	}
 
-	db, err = store.OpenWithContext(context.Background(), dbPath)
+	db, err = store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
 	defer db.Close()
-	cursor, _, _, err := db.GetSyncState("items")
-	if err != nil || cursor != "PREVIOUS" {
-		t.Fatalf("items cursor = %q, %v; want unchanged PREVIOUS", cursor, err)
+	if n, err := db.CountContext(ctx, "items"); err != nil || n != 0 {
+		t.Fatalf("items after a full archive of an empty library = %d, %v; want 0", n, err)
 	}
 }
 
-func TestWorkflowArchiveCancellationStopsResourceLoop(t *testing.T) {
-	started := make(chan struct{})
-	var startedOnce sync.Once
-	var mu sync.Mutex
-	var resources []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
-		mu.Lock()
-		resources = append(resources, resource)
-		mu.Unlock()
-		if resource == "collections" {
-			startedOnce.Do(func() { close(started) })
-			<-r.Context().Done()
-			return
-		}
-		_, _ = w.Write([]byte("[]"))
-	}))
-	defer srv.Close()
-
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cmd := newWorkflowArchiveCmd(&rootFlags{ctx: ctx, asJSON: true, noCache: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db")})
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.ExecuteContext(ctx) }()
-	select {
-	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("archive did not begin fetching collections")
-	}
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("archive error = %v, want context cancellation", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("archive did not stop after context cancellation")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if got, want := strings.Join(resources, ","), "collections"; got != want {
-		t.Fatalf("fetched resources = %q, want %q", got, want)
-	}
-}
-
-func TestWorkflowArchive_ClientTimeoutMarksResourceIncompleteAndContinues(t *testing.T) {
-	collectionStarted := make(chan struct{})
-	var closeOnce sync.Once
-	var itemsRequested atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
-		if resource == "collections" {
-			// The client retries the timed-out request, hitting this branch more
-			// than once; closing an already-closed channel panics net/http's
-			// per-connection goroutine (recovered, so the suite still reports
-			// PASS, but it logs a real panic on every run).
-			closeOnce.Do(func() { close(collectionStarted) })
-			<-r.Context().Done()
-			return
-		}
-		if resource == "items" {
-			itemsRequested.Store(true)
-		}
-		_, _ = w.Write([]byte("[]"))
-	}))
-	defer srv.Close()
-
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true, timeout: 20 * time.Millisecond})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db")})
-
-	err := cmd.ExecuteContext(context.Background())
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("archive error = %v, exit=%d; want incomplete archive error", err, ExitCode(err))
-	}
-	select {
-	case <-collectionStarted:
-	default:
-		t.Fatal("collections request did not begin")
-	}
-	if !itemsRequested.Load() {
-		t.Fatal("archive stopped after HTTP client timeout, want later items request")
-	}
-	var result struct {
-		Status   string   `json:"status"`
-		Failures []string `json:"failures"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("decode archive result %q: %v", out.String(), err)
-	}
-	if result.Status != "incomplete" || len(result.Failures) == 0 {
-		t.Fatalf("archive result = %+v, want incomplete result with failures", result)
-	}
-}
-
-func TestWorkflowArchivePaginatesWithStartAndUsesZoteroKeys(t *testing.T) {
-	var itemStarts []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
-		if resource != "items" {
-			_, _ = w.Write([]byte("[]"))
-			return
-		}
-		start := r.URL.Query().Get("start")
-		itemStarts = append(itemStarts, start)
-		switch start {
-		case "0":
-			items := make([]map[string]any, 0, 100)
-			for i := range 100 {
-				items = append(items, map[string]any{
-					"key":  fmt.Sprintf("ITEM-%03d", i),
-					"data": map[string]any{"itemType": "book", "title": fmt.Sprintf("Item %d", i)},
-				})
-			}
-			_ = json.NewEncoder(w).Encode(items)
-		case "100":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{
-				"key":  "ITEM-100",
-				"data": map[string]any{"itemType": "book", "title": "Item 100"},
-			}})
-		default:
-			http.Error(w, "unexpected pagination offset", http.StatusBadRequest)
-		}
-	}))
-	defer srv.Close()
-
+// Archive keeps its contract that a resource which fails to sync fails the
+// run, even when the other resources sync: plain incremental sync exits 0
+// there, so archive must run it with --strict.
+func TestWorkflowArchiveFailsWhenAnyResourceFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "archive.db")
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath, "--full"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("archive: %v; stderr=%s", err, errOut.String())
+	err := wwRunWorkflowArchive(t, "/users/0/items", "--db", dbPath)
+	if err == nil {
+		t.Fatal("workflow archive succeeded although the items resource failed")
 	}
-	if got, want := strings.Join(itemStarts, ","), "0,100"; got != want {
-		t.Fatalf("items pagination starts = %q, want %q", got, want)
-	}
-
-	db, err := store.OpenWithContext(context.Background(), dbPath)
-	if err != nil {
-		t.Fatalf("open archive store: %v", err)
-	}
-	defer db.Close()
-	if item, err := db.Get("items", "ITEM-100"); err != nil || item == nil {
-		t.Fatalf("get item by Zotero key: item=%s, err=%v", item, err)
-	}
-	if item, err := db.Get("items", "items-100"); item != nil || !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("synthetic item ID read = (%s, %v), want (nil, ErrNotFound)", item, err)
-	}
-}
-
-func TestWorkflowArchive_UsesCanonicalResourceEndpoints(t *testing.T) {
-	wantPaths := map[string]struct{}{
-		"/users/0/collections": {},
-		"/users/0/items":       {},
-		"/users/0/items/trash": {},
-		"/itemTypes":           {},
-		"/creatorFields":       {},
-		"/itemFields":          {},
-		"/users/0/searches":    {},
-		"/users/0/tags":        {},
-	}
-	seenPaths := make(map[string]struct{}, len(wantPaths))
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := wantPaths[r.URL.Path]; !ok {
-			http.Error(w, "unexpected endpoint", http.StatusNotFound)
-			return
-		}
-		seenPaths[r.URL.Path] = struct{}{}
-		_, _ = w.Write([]byte("[]"))
-	}))
-	defer srv.Close()
-
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db"), "--full"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("archive: %v; stderr=%s", err, errOut.String())
-	}
-	var result struct {
-		Status   string   `json:"status"`
-		Failures []string `json:"failures"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("decode archive result %q: %v", out.String(), err)
-	}
-	if result.Status != "complete" || len(result.Failures) != 0 {
-		t.Fatalf("archive result = %+v, want complete with no failures", result)
-	}
-	if len(seenPaths) != len(wantPaths) {
-		t.Fatalf("archive endpoints = %v, want exactly %v", seenPaths, wantPaths)
-	}
-	for path := range wantPaths {
-		if _, ok := seenPaths[path]; !ok {
-			t.Errorf("archive did not fetch canonical endpoint %s", path)
-		}
-	}
-}
-
-// A 200 with a null body after a full page must not clear the cursor or
-// report complete: the resource stays incomplete at the failed window so a
-// repaired rerun resumes from that offset.
-func TestWorkflowArchive_NullPageRetainsCursorAndReportsIncomplete(t *testing.T) {
-	fastRetryBackoff(t)
-	var repaired atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
-		if resource != "items" {
-			_, _ = w.Write([]byte("[]"))
-			return
-		}
-		switch r.URL.Query().Get("start") {
-		case "0", "":
-			items := make([]map[string]any, 0, 100)
-			for i := range 100 {
-				items = append(items, map[string]any{
-					"key":  fmt.Sprintf("NULL-%03d", i),
-					"data": map[string]any{"itemType": "book", "title": fmt.Sprintf("Null %d", i)},
-				})
-			}
-			_ = json.NewEncoder(w).Encode(items)
-		case "100":
-			if repaired.Load() {
-				_ = json.NewEncoder(w).Encode([]map[string]any{{
-					"key":  "NULL-100",
-					"data": map[string]any{"itemType": "book", "title": "Null 100"},
-				}})
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte("null"))
-		default:
-			http.Error(w, "unexpected pagination offset", http.StatusBadRequest)
-		}
-	}))
-	defer srv.Close()
-
-	dbPath := filepath.Join(t.TempDir(), "archive.db")
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	runArchive := func() (string, error) {
-		cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
-		cmd.SilenceErrors, cmd.SilenceUsage = true, true
-		var out, errOut bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&errOut)
-		cmd.SetArgs([]string{"--db", dbPath})
-		err := cmd.Execute()
-		return out.String(), err
-	}
-
-	out, err := runArchive()
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("archive with null page error = %v, exit=%d; want degraded 13", err, ExitCode(err))
-	}
-	var result struct {
-		Status   string   `json:"status"`
-		Failures []string `json:"failures"`
-	}
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("decode archive result %q: %v", out, err)
-	}
-	if result.Status != "incomplete" || len(result.Failures) == 0 {
-		t.Fatalf("archive result = %+v, want incomplete with failures", result)
-	}
-	if strings.Contains(out, "Archived ") {
-		t.Fatalf("archive reported success after null page: %s", out)
-	}
-
-	db, err := store.OpenWithContext(context.Background(), dbPath)
-	if err != nil {
-		t.Fatalf("reopen store: %v", err)
-	}
-	cursor, _, _, err := db.GetSyncState("items")
-	if err != nil {
-		_ = db.Close()
-		t.Fatalf("read items cursor: %v", err)
-	}
-	if cursor != "100" {
-		_ = db.Close()
-		t.Fatalf("items cursor = %q, want %q (start of null window)", cursor, "100")
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
-	repaired.Store(true)
-	out, err = runArchive()
-	if err != nil {
-		t.Fatalf("repaired archive: %v; out=%s", err, out)
-	}
-	var repairedResult struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(out), &repairedResult); err != nil {
-		t.Fatalf("decode repaired result %q: %v", out, err)
-	}
-	if repairedResult.Status != "complete" {
-		t.Fatalf("repaired archive status = %q, want complete", repairedResult.Status)
-	}
-	db, err = store.OpenWithContext(context.Background(), dbPath)
-	if err != nil {
-		t.Fatalf("reopen repaired store: %v", err)
-	}
-	defer db.Close()
-	if item, err := db.Get("items", "NULL-100"); err != nil || item == nil {
-		t.Fatalf("get repaired item: item=%s, err=%v", item, err)
+	if !strings.Contains(err.Error(), "items") {
+		t.Fatalf("workflow archive error = %q, want it to name the failed items resource", err.Error())
 	}
 }

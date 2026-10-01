@@ -56,6 +56,7 @@ func commandSearchHandler(rootFactory func() *cobra.Command) server.ToolHandlerF
 				Operation:   operation,
 				Requires:    requires,
 				Destructive: destructive,
+				WritesFiles: writesFiles(cmd),
 				Flags:       []orchestrationFlagDetail{},
 			}
 			visitSafeMirrorFlags(cmd, func(flag *pflag.Flag) {
@@ -144,6 +145,9 @@ type orchestrationCommandSummary struct {
 	Operation   string   `json:"operation"`
 	Requires    []string `json:"requires,omitempty"`
 	Destructive bool     `json:"destructive"`
+	// WritesFiles reports WritesFilesAnnotation: the command may create,
+	// replace, or delete local files even when its operation is "read".
+	WritesFiles bool `json:"writesFiles,omitempty"`
 }
 
 type orchestrationCommandDetail struct {
@@ -153,6 +157,7 @@ type orchestrationCommandDetail struct {
 	Operation   string                    `json:"operation"`
 	Requires    []string                  `json:"requires,omitempty"`
 	Destructive bool                      `json:"destructive"`
+	WritesFiles bool                      `json:"writesFiles,omitempty"`
 	Flags       []orchestrationFlagDetail `json:"flags"`
 }
 
@@ -184,6 +189,7 @@ func listMirrorableCommandsWithContext(ctx context.Context, rootFactory func() *
 			Operation:   operation,
 			Requires:    requires,
 			Destructive: destructive,
+			WritesFiles: writesFiles(cmd),
 		})
 	})
 	return out, nil

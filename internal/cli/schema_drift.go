@@ -83,7 +83,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 
   # Re-baseline to the current schema
   zotio schema drift --update`,
-		Annotations: map[string]string{"mcp:read-only": "true", "mcp:hidden": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true", "mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Schema endpoints are global; newSchemaClient strips the library prefix.
 			c, err := newSchemaClient(flags)
@@ -126,6 +126,14 @@ shared across libraries because the schema is global to the Zotero install.`,
 			// Write through the resolved target, not a symlink at the named
 			// path: atomic rename over that link would leave its referent stale.
 			baselineFile := path
+			// --dry-run computes and reports the drift but never publishes the
+			// baseline; it names the file a real run would create or replace.
+			publish := func(snap schemaSnapshot) error {
+				if flags.dryRun {
+					return previewDryRunFileWrite(cmd.ErrOrStderr(), "the schema baseline", path)
+				}
+				return saveSchemaBaseline(baselineFile, snap)
+			}
 			run := func() error {
 				itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
 				if err != nil {
@@ -148,7 +156,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 					if err != nil {
 						return classifySchemaSnapshotError(cmd, flags, err)
 					}
-					if err := saveSchemaBaseline(baselineFile, live); err != nil {
+					if err := publish(live); err != nil {
 						return err
 					}
 					return renderSchemaDrift(cmd, flags, true, nil, path, live)
@@ -194,13 +202,15 @@ shared across libraries because the schema is global to the Zotero install.`,
 				}
 				deltas := diffSnapshots(base, live)
 				if update {
-					if err := saveSchemaBaseline(baselineFile, live); err != nil {
+					if err := publish(live); err != nil {
 						return err
 					}
 				}
 				return renderSchemaDrift(cmd, flags, false, deltas, path, live)
 			}
-			if !wantsWrite {
+			// A dry run publishes nothing, so it stays lock-free like a pure
+			// comparison: the lock is itself a file beside the baseline.
+			if !wantsWrite || flags.dryRun {
 				return run()
 			}
 			// The baseline is a named output in the collision namespace
@@ -561,11 +571,13 @@ func saveSchemaBaseline(path string, snap schemaSnapshot) error {
 
 // renderSchemaDrift prints the result for both human and --json output. The
 // delivered content is a pure function of the snapshots (no timestamps), so the
-// same schema state yields the same output on repeated runs.
+// same schema state yields the same output on repeated runs. captured says the
+// run found no baseline and took live as the first one; under --dry-run that
+// baseline was not written, so it is not reported as captured.
 func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, deltas []schemaDelta, path string, live schemaSnapshot) error {
 	if flags.asJSON {
-		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-			"baseline_captured": captured,
+		payload := map[string]any{
+			"baseline_captured": captured && !flags.dryRun,
 			"drift":             len(deltas) > 0,
 			"deltas":            deltas,
 			"baseline_path":     path,
@@ -573,18 +585,28 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 			"item_types":        len(live.ItemTypes),
 			"item_fields":       len(live.ItemFields),
 			"creator_fields":    len(live.CreatorFields),
-		}, flags)
+		}
+		if flags.dryRun {
+			payload["dry_run"] = true
+		}
+		return printJSONFiltered(cmd.OutOrStdout(), payload, flags)
 	}
 
 	w := cmd.OutOrStdout()
 	if captured {
-		fmt.Fprintf(w, "Schema baseline captured: %s\n", path)
+		if flags.dryRun {
+			fmt.Fprintf(w, "No schema baseline at %s; dry run captured nothing\n", path)
+		} else {
+			fmt.Fprintf(w, "Schema baseline captured: %s\n", path)
+		}
 		fmt.Fprintf(w, "  %d item types, %d item fields, %d creator fields", len(live.ItemTypes), len(live.ItemFields), len(live.CreatorFields))
 		if live.SchemaVersion != "" {
 			fmt.Fprintf(w, " (Zotero-Schema-Version %s)", live.SchemaVersion)
 		}
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Re-run after upgrading Zotero to see what changed.")
+		if !flags.dryRun {
+			fmt.Fprintln(w, "Re-run after upgrading Zotero to see what changed.")
+		}
 		return nil
 	}
 	if len(deltas) == 0 {

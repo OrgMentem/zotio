@@ -245,8 +245,7 @@ func (s *Store) Close() error {
 // read statements (SELECT, WITH-form SELECT, PRAGMA, EXPLAIN) and refuse
 // anything else so a DELETE/UPDATE/INSERT ... RETURNING cannot slip a write
 // through the read path that bypasses the single-writer lock. Writes belong
-// in Exec/ExecContext/ExecWrite. Multi-statement auxiliary work belongs in
-// WithWriteTx, which holds the same lock across the whole transaction.
+// in Exec/ExecContext/ExecWrite.
 type GuardedDB struct {
 	s *Store
 }
@@ -276,7 +275,7 @@ func (g *GuardedDB) ExecContext(ctx context.Context, query string, args ...any) 
 // Query runs a read through the store's busy-retry path. Only read
 // statements (SELECT, WITH, PRAGMA, EXPLAIN) are accepted; anything else is
 // refused so a write cannot slip through the read path past the
-// single-writer lock — use ExecWrite or WithWriteTx for those.
+// single-writer lock — use ExecWrite for those.
 func (g *GuardedDB) Query(query string, args ...any) (*sql.Rows, error) {
 	if err := validateGuardedRead(query); err != nil {
 		return nil, err
@@ -335,7 +334,7 @@ func validateGuardedRead(query string) error {
 			break
 		}
 	}
-	return fmt.Errorf("store: GuardedDB read methods accept only SELECT, WITH, PRAGMA and EXPLAIN statements; use ExecWrite or WithWriteTx for writes")
+	return fmt.Errorf("store: GuardedDB read methods accept only SELECT, WITH, PRAGMA and EXPLAIN statements; use ExecWrite for writes")
 }
 
 // stripGuardedReadPrefix removes the leading whitespace, statement
@@ -403,40 +402,6 @@ func (s *Store) acquireWrite(ctx context.Context) (release func(), err error) {
 			backoff *= 2
 		}
 	}
-}
-
-// WithWriteTx runs fn inside a single SQLite transaction holding the
-// store's write serialization lock. It is the guarded path for auxiliary
-// multi-statement mutations that cannot fit in one ExecWrite: the whole
-// callback holds writeMu, the transaction opens with BeginTx so SQLite
-// waits honour ctx, and a cancelled context rolls everything back instead
-// of committing a half-written batch.
-//
-// It has no production caller and is not re-entrant: fn must not call back
-// into ExecWrite, WithWriteTx, or any other path that acquires the write
-// lock, because the lock is already held and the inner call would poll until
-// ctx dies instead of failing fast.
-func (s *Store) WithWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	release, err := s.acquireWrite(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := fn(tx); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // ExecWrite runs a write statement under the store's write serialization lock,
@@ -1689,14 +1654,9 @@ func (s *Store) SchemaItemTypeCreatorTypes(itemType string) (json.RawMessage, er
 	return s.Get("schema-item-type-creator-types", itemType)
 }
 
-// SaveZoteroSchemaVersion records the Zotero-Schema-Version used to populate a
-// schema resource. The checkpoint advances only after the resource rows land.
-func (s *Store) SaveZoteroSchemaVersion(resourceType, version string) error {
-	return s.SaveZoteroSchemaVersionContext(context.Background(), resourceType, version)
-}
-
-// SaveZoteroSchemaVersionContext records the Zotero-Schema-Version honouring
-// cancellation while waiting on the SQLite write.
+// SaveZoteroSchemaVersionContext records the Zotero-Schema-Version used to
+// populate a schema resource, honouring cancellation while waiting on the
+// SQLite write. The checkpoint advances only after the resource rows land.
 func (s *Store) SaveZoteroSchemaVersionContext(ctx context.Context, resourceType, version string) error {
 	release, err := s.acquireWrite(ctx)
 	if err != nil {
@@ -1838,44 +1798,11 @@ func (s *Store) SearchByTypeContext(ctx context.Context, query, resourceType str
 	return results, rows.Err()
 }
 
-// ItemsByType returns the stored payloads of all items with the given
-// itemType (e.g. "annotation", "attachment"). limit <= 0 means no limit.
-// backs local-first annotation listing.
-func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, error) {
-	query := `SELECT data FROM resources WHERE item_type = ?`
-	args := []any{itemType}
-	if limit > 0 {
-		query += ` LIMIT ?`
-		args = append(args, limit)
-	}
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []json.RawMessage
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		results = append(results, json.RawMessage(data))
-	}
-	return results, rows.Err()
-}
-
-// AnnotationsForItem returns every annotation whose attachment parent's own
-// parent is topItemKey. Zotero nests annotations under attachments under the
-// top-level item, so this joins annotation -> attachment -> top item.
-// backs local-first annotation export/timeline.
-func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error) {
-	return s.AnnotationsForItemContext(context.Background(), topItemKey)
-}
-
-// AnnotationsForItemContext is AnnotationsForItem bound to a request context,
-// so a cancelled item-bundle read stops the annotation join instead of
-// running it to completion.
+// AnnotationsForItemContext returns every annotation whose attachment parent's
+// own parent is topItemKey. Zotero nests annotations under attachments under
+// the top-level item, so this joins annotation -> attachment -> top item. It is
+// bound to a request context, so a cancelled item-bundle read stops the
+// annotation join instead of running it to completion.
 func (s *Store) AnnotationsForItemContext(ctx context.Context, topItemKey string) ([]json.RawMessage, error) {
 	// Both aliases are pinned to resource_type 'items'. Ids are unique only
 	// WITHIN a resource_type (see the composite primary key), and
@@ -1906,8 +1833,8 @@ func (s *Store) AnnotationsForItemContext(ctx context.Context, topItemKey string
 
 // AnnotationsForItems returns annotations grouped by their top-level item key
 // for every key in topItemKeys. It batches the lookup to stay below SQLite's
-// variable limit while still avoiding a per-item AnnotationsForItem query. Keys
-// with no annotations are simply absent from the returned map.
+// variable limit while still avoiding a per-item AnnotationsForItemContext
+// query. Keys with no annotations are simply absent from the returned map.
 func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.RawMessage, error) {
 	out := make(map[string][]json.RawMessage, len(topItemKeys))
 	if len(topItemKeys) == 0 {
@@ -1927,7 +1854,7 @@ func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.Raw
 			args[i] = k
 		}
 		// Pinned to resource_type 'items' on both aliases, for the reason given
-		// on AnnotationsForItem.
+		// on AnnotationsForItemContext.
 		//
 		// #nosec G202 -- placeholder count is dynamic but values are safe questions marks
 		rows, err := s.db.Query(
@@ -2197,7 +2124,7 @@ func (s *Store) UpsertBatchContext(ctx context.Context, resourceType string, ite
 }
 
 // SaveSyncState records an unqualified sync outcome. Callers that persist a
-// resumable Zotero cursor must use SaveSyncResumeState instead.
+// resumable Zotero cursor must use SaveSyncResumeStateContext instead.
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 	return s.saveSyncStateContext(context.Background(), resourceType, cursor, "", count)
 }
@@ -2208,14 +2135,9 @@ func (s *Store) SaveSyncStateContext(ctx context.Context, resourceType, cursor s
 	return s.saveSyncStateContext(ctx, resourceType, cursor, "", count)
 }
 
-// SaveSyncResumeState records a pagination cursor and its exact request scope
-// in one statement. A cleared cursor also clears its scope.
-func (s *Store) SaveSyncResumeState(resourceType, cursor, scope string, count int) error {
-	return s.SaveSyncResumeStateContext(context.Background(), resourceType, cursor, scope, count)
-}
-
 // SaveSyncResumeStateContext records a pagination cursor and its exact
-// request scope honouring cancellation while waiting on the SQLite write.
+// request scope in one statement, honouring cancellation while waiting on the
+// SQLite write. A cleared cursor also clears its scope.
 func (s *Store) SaveSyncResumeStateContext(ctx context.Context, resourceType, cursor, scope string, count int) error {
 	if cursor != "" && scope == "" {
 		return fmt.Errorf("sync cursor for %s requires request provenance", resourceType)
@@ -2247,14 +2169,9 @@ func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, 
 	return err
 }
 
-// ClearSyncCursor invalidates pagination state without claiming that a sync
-// pass ran. It is used for scope changes, --full, and --latest-only.
-func (s *Store) ClearSyncCursor(resourceType string) error {
-	return s.ClearSyncCursorContext(context.Background(), resourceType)
-}
-
-// ClearSyncCursorContext invalidates pagination state honouring cancellation
-// while waiting on the SQLite write.
+// ClearSyncCursorContext invalidates pagination state without claiming that a
+// sync pass ran, honouring cancellation while waiting on the SQLite write. It
+// is used for scope changes, --full, and --latest-only.
 func (s *Store) ClearSyncCursorContext(ctx context.Context, resourceType string) error {
 	release, err := s.acquireWrite(ctx)
 	if err != nil {
@@ -2688,14 +2605,10 @@ func (s *Store) GetLibraryVersion(resourceType, source string) (int, error) {
 	return int(v.Int64), nil
 }
 
-// StoredLibraryVersion returns the recorded checkpoint and the plane that issued
-// it, without filtering by plane. For status reporting only — a sync decision
-// must use GetLibraryVersion so a foreign cursor is never replayed as `since`.
-func (s *Store) StoredLibraryVersion(resourceType string) (int, string, error) {
-	return s.StoredLibraryVersionContext(context.Background(), resourceType)
-}
-
-// StoredLibraryVersionContext is StoredLibraryVersion bound to a request context.
+// StoredLibraryVersionContext returns the recorded checkpoint and the plane
+// that issued it, without filtering by plane. For status reporting only — a
+// sync decision must use GetLibraryVersion so a foreign cursor is never
+// replayed as `since`.
 func (s *Store) StoredLibraryVersionContext(ctx context.Context, resourceType string) (int, string, error) {
 	var v sql.NullInt64
 	var source sql.NullString
@@ -2731,8 +2644,9 @@ func (s *Store) PlaneChanged(resourceType, source string) (bool, error) {
 	return stored.String != source, nil
 }
 
-// ClearResourceVersions strips the stored Zotero object version from every row of
-// a resource type.
+// ClearResourceVersionsContext strips the stored Zotero object version from
+// every row of a resource type, honouring cancellation while waiting on the
+// SQLite write.
 //
 // Required when the read plane changes. Row upserts are version-monotonic, which
 // is correct within one plane but not across planes: a row carrying a web-API
@@ -2741,12 +2655,6 @@ func (s *Store) PlaneChanged(resourceType, source string) (bool, error) {
 // The stored number is meaningless for the new plane, so removing it lets the
 // guard's null branch accept the fresh data — the same reasoning by which
 // write-through drops the version from rows it replays.
-func (s *Store) ClearResourceVersions(resourceType string) error {
-	return s.ClearResourceVersionsContext(context.Background(), resourceType)
-}
-
-// ClearResourceVersionsContext strips stored object versions honouring
-// cancellation while waiting on the SQLite write.
 func (s *Store) ClearResourceVersionsContext(ctx context.Context, resourceType string) error {
 	release, err := s.acquireWrite(ctx)
 	if err != nil {
@@ -2763,8 +2671,8 @@ func (s *Store) ClearResourceVersionsContext(ctx context.Context, resourceType s
 	return err
 }
 
-// (ExecWrite lives next to DB/WithWriteTx above so the whole guarded write
-// surface reads in one place.)
+// (ExecWrite lives next to DB above so the whole guarded write surface reads
+// in one place.)
 
 // Query executes a raw SQL query and returns the rows.
 // Used by workflow commands that need custom queries against the local store.

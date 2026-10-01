@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 // --- shared --scope adoption ---
@@ -832,7 +833,7 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 func runVerifyAttachmentFilesWithClient(cmd *cobra.Command, db localQueryStore, flags *rootFlags, c *client.Client, limit int, sel scopeSelection) error {
 	if !isLocalZoteroAPI(c.BaseURL) {
 		return refuseVerifyAttachmentFiles(cmd, flags,
-			fmt.Sprintf("configured base URL %q is not the Zotero desktop local API", redactURL(c.BaseURL)))
+			fmt.Sprintf("configured base URL %q is not the Zotero desktop local API", cliutil.RedactURL(c.BaseURL)))
 	}
 	probePath := brokenAttachmentProbe()
 	if _, probeErr := c.ProbeGet(probePath); probeErr != nil {

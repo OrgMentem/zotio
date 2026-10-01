@@ -479,122 +479,115 @@ func versionGet404Handler(t *testing.T, key string, deleteIssued *bool) http.Han
 	}
 }
 
-// ADR-0007: a deletion marker proves this installation already applied the
-// permanent delete. A write-plane 404 must therefore be an idempotent no-op,
-// not the same failure used for an unknown key.
-func TestItemsDeletePermanent404UsesRealStoreDeletionMarker(t *testing.T) {
-	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
-	t.Setenv("ZOTERO_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("ZOTIO_DEMO", "0")
-	savedGroup := activeGroupIDLocked()
-	setActiveGroupID("")
-	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+// ADR-0007: a write-plane 404 on a permanent delete is decided by the real
+// store. A deletion marker proves this installation already applied the
+// delete, so the 404 is an idempotent no-op (not the failure used for an
+// unknown key). The inverse window — a live read-plane row with no marker —
+// must remain a failure and must preserve that mirror evidence. Neither path
+// may issue the DELETE.
+func TestItemsDeletePermanent404HonorsRealStoreDeletionMarkers(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		key        string
+		seed       string
+		reap       bool
+		wantMarker bool
+		check      func(t *testing.T, db *store.Store, out []byte, err error)
+	}{
+		{
+			name:       "deletion marker is an idempotent no-op",
+			key:        "PURGED404",
+			seed:       `{"key":"PURGED404","version":1,"data":{"key":"PURGED404","itemType":"book","title":"Gone"}}`,
+			reap:       true,
+			wantMarker: true,
+			check: func(t *testing.T, _ *store.Store, out []byte, err error) {
+				if err != nil {
+					t.Fatalf("repeat permanent delete with a real deletion marker: %v", err)
+				}
+				var env mutation.Envelope
+				if decodeErr := json.Unmarshal(out, &env); decodeErr != nil {
+					t.Fatalf("decode envelope: %v\noutput: %s", decodeErr, out)
+				}
+				if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "no_op" {
+					t.Fatalf("result = %+v, want one no_op", env.Result)
+				}
+				reason, ok := env.Result.Items[0].Reason.(map[string]any)
+				if !ok || reason["code"] != "already_deleted" {
+					t.Fatalf("reason = %#v, want code already_deleted", env.Result.Items[0].Reason)
+				}
+			},
+		},
+		{
+			name: "mirrored-only lag stays a failure",
+			key:  "MIRROR404",
+			seed: `{"key":"MIRROR404","data":{"key":"MIRROR404","itemType":"book","title":"Waiting for Zotero sync"}}`,
+			check: func(t *testing.T, db *store.Store, _ []byte, err error) {
+				if err == nil {
+					t.Fatal("permanent delete reported success for a mirrored item absent from the write plane")
+				}
+				if ExitCode(err) != 3 || !strings.Contains(err.Error(), "mirrored on this machine") || !strings.Contains(err.Error(), "nothing was deleted") {
+					t.Fatalf("error = %v (exit %d), want mirrored-only propagation failure", err, ExitCode(err))
+				}
+				if _, getErr := db.Get("items", "MIRROR404"); getErr != nil {
+					t.Fatalf("mirrored-only row was removed after the failed delete: %v", getErr)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+			t.Setenv("ZOTERO_HOME", "")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("ZOTIO_DEMO", "0")
+			savedGroup := activeGroupIDLocked()
+			setActiveGroupID("")
+			t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
-	dbPath := helpersTestDefaultDBPath(t, "zotio")
-	db, err := store.OpenWithContext(t.Context(), dbPath)
-	if err != nil {
-		t.Fatalf("open real store: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.UpsertKeyed("items", []string{"PURGED404"}, []json.RawMessage{
-		json.RawMessage(`{"key":"PURGED404","version":1,"data":{"key":"PURGED404","itemType":"book","title":"Gone"}}`),
-	}); err != nil {
-		t.Fatalf("seed mirrored item: %v", err)
-	}
-	if err := db.ReapMirroredItem("PURGED404"); err != nil {
-		t.Fatalf("seed permanent-delete marker: %v", err)
-	}
+			db, err := store.OpenWithContext(t.Context(), helpersTestDefaultDBPath(t, "zotio"))
+			if err != nil {
+				t.Fatalf("open real store: %v", err)
+			}
+			defer db.Close()
+			if _, err := db.UpsertKeyed("items", []string{tt.key}, []json.RawMessage{json.RawMessage(tt.seed)}); err != nil {
+				t.Fatalf("seed mirrored item: %v", err)
+			}
+			if tt.reap {
+				if err := db.ReapMirroredItem(tt.key); err != nil {
+					t.Fatalf("seed permanent-delete marker: %v", err)
+				}
+			}
 
-	previousMirror := mirrorWriteThrough
-	mirrorWriteThrough = applyMirrorWriteThrough
-	t.Cleanup(func() { mirrorWriteThrough = previousMirror })
+			previousMirror := mirrorWriteThrough
+			mirrorWriteThrough = applyMirrorWriteThrough
+			t.Cleanup(func() { mirrorWriteThrough = previousMirror })
 
-	deleteIssued := false
-	srv := httptest.NewServer(versionGet404Handler(t, "PURGED404", &deleteIssued))
-	defer srv.Close()
+			deleteIssued := false
+			srv := httptest.NewServer(versionGet404Handler(t, tt.key, &deleteIssued))
+			defer srv.Close()
 
-	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	env, err := deletesTestRunJSON(t, cmd, srv.URL, "--permanent", "PURGED404")
-	if err != nil {
-		t.Fatalf("repeat permanent delete with a real deletion marker: %v", err)
-	}
-	if deleteIssued {
-		t.Fatal("issued DELETE after the write-plane version read reported the item absent")
-	}
-	if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "no_op" {
-		t.Fatalf("result = %+v, want one no_op", env.Result)
-	}
-	reason, ok := env.Result.Items[0].Reason.(map[string]any)
-	if !ok || reason["code"] != "already_deleted" {
-		t.Fatalf("reason = %#v, want code already_deleted", env.Result.Items[0].Reason)
-	}
-	for _, resource := range []string{"items", "items-trash"} {
-		marked, markerErr := db.PendingDeletion(resource, "PURGED404")
-		if markerErr != nil {
-			t.Fatalf("read %s deletion marker: %v", resource, markerErr)
-		}
-		if !marked {
-			t.Fatalf("%s deletion marker was removed by the idempotent no-op", resource)
-		}
-	}
-}
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--permanent", tt.key})
+			runErr := cmd.Execute()
 
-// ADR-0007's inverse window has a live read-plane row with no deletion marker.
-// A write-plane 404 must remain a failure and must preserve that mirror evidence.
-func TestItemsDeletePermanent404ReportsRealStoreMirroredOnlyLag(t *testing.T) {
-	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
-	t.Setenv("ZOTERO_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("ZOTIO_DEMO", "0")
-	savedGroup := activeGroupIDLocked()
-	setActiveGroupID("")
-	t.Cleanup(func() { setActiveGroupID(savedGroup) })
-
-	dbPath := helpersTestDefaultDBPath(t, "zotio")
-	db, err := store.OpenWithContext(t.Context(), dbPath)
-	if err != nil {
-		t.Fatalf("open real store: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.UpsertKeyed("items", []string{"MIRROR404"}, []json.RawMessage{
-		json.RawMessage(`{"key":"MIRROR404","data":{"key":"MIRROR404","itemType":"book","title":"Waiting for Zotero sync"}}`),
-	}); err != nil {
-		t.Fatalf("seed mirrored-only item: %v", err)
-	}
-
-	previousMirror := mirrorWriteThrough
-	mirrorWriteThrough = applyMirrorWriteThrough
-	t.Cleanup(func() { mirrorWriteThrough = previousMirror })
-
-	deleteIssued := false
-	srv := httptest.NewServer(versionGet404Handler(t, "MIRROR404", &deleteIssued))
-	defer srv.Close()
-
-	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	err = runDeleteCmd(t, cmd, srv.URL, "--permanent", "MIRROR404")
-	if err == nil {
-		t.Fatal("permanent delete reported success for a mirrored item absent from the write plane")
-	}
-	if ExitCode(err) != 3 || !strings.Contains(err.Error(), "mirrored on this machine") || !strings.Contains(err.Error(), "nothing was deleted") {
-		t.Fatalf("error = %v (exit %d), want mirrored-only propagation failure", err, ExitCode(err))
-	}
-	if deleteIssued {
-		t.Fatal("issued DELETE after the write-plane version read reported the item absent")
-	}
-	if _, getErr := db.Get("items", "MIRROR404"); getErr != nil {
-		t.Fatalf("mirrored-only row was removed after the failed delete: %v", getErr)
-	}
-	for _, resource := range []string{"items", "items-trash"} {
-		marked, markerErr := db.PendingDeletion(resource, "MIRROR404")
-		if markerErr != nil {
-			t.Fatalf("read %s deletion marker: %v", resource, markerErr)
-		}
-		if marked {
-			t.Fatalf("failed delete wrote a false %s deletion marker", resource)
-		}
+			if deleteIssued {
+				t.Fatal("issued DELETE after the write-plane version read reported the item absent")
+			}
+			tt.check(t, db, out.Bytes(), runErr)
+			for _, resource := range []string{"items", "items-trash"} {
+				marked, markerErr := db.PendingDeletion(resource, tt.key)
+				if markerErr != nil {
+					t.Fatalf("read %s deletion marker: %v", resource, markerErr)
+				}
+				if marked != tt.wantMarker {
+					t.Fatalf("%s deletion marker = %v, want %v (an idempotent no-op must keep it; a failed delete must not write one)", resource, marked, tt.wantMarker)
+				}
+			}
+		})
 	}
 }
 

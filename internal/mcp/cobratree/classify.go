@@ -12,11 +12,20 @@ const (
 	HiddenAnnotation = "mcp:hidden"
 	// ReadOnlyAnnotation, when set on a Cobra command to "true"/"1"/"yes",
 	// causes the runtime walker to register the resulting MCP tool with
-	// readOnlyHint=true. Use for novel CLI commands that don't mutate
-	// external state — read-only API queries, local cache reads, etc.
+	// readOnlyHint=true, unless WritesFilesAnnotation is also set. Use for
+	// novel CLI commands that don't mutate external state — read-only API
+	// queries, local cache reads, etc.
 	// Without it, hosts like Claude Desktop default to "could write or
 	// delete" and demand permission per call.
 	ReadOnlyAnnotation = "mcp:read-only"
+	// WritesFilesAnnotation, when set to "true"/"1"/"yes", marks a command
+	// that may create, replace, or delete local files: an output path the
+	// user names, a baseline, or the demo sandbox. ReadOnlyAnnotation keeps
+	// its in-repo meaning (the command does not change the library), but the
+	// MCP spec's readOnlyHint means "does not modify its environment", so a
+	// file writer is never advertised readOnlyHint=true and is advertised
+	// destructiveHint=true because it can replace or delete an existing file.
+	WritesFilesAnnotation = "mcp:writes-files"
 )
 
 type commandKind int
@@ -93,6 +102,10 @@ func isMCPHidden(cmd *cobra.Command) bool {
 
 func isMCPReadOnly(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func writesFiles(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, WritesFilesAnnotation)
 }
 
 func annotationIsTrue(cmd *cobra.Command, key string) bool {

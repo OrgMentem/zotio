@@ -90,8 +90,10 @@ accept the cloud upload.
 All routes are retry-safe. Stored files reconcile by filename and registered
 MD5, and linked files by absolute path. The connector route reconciles on
 content hash alone, because Zotero names the stored file after the parent item
-rather than after your file: an identical retry no-ops, and a run interrupted
-before the move is resumed rather than duplicated. Two limits are worth knowing:
+rather than after your file: an identical retry no-ops, a run interrupted
+before the move is resumed rather than duplicated, and an empty temporary parent
+left by a run interrupted after the move is trashed by an identical retry once
+it is more than seven minutes old. Two limits are worth knowing:
 a retry issued before Zotero has registered the hash can still add a second
 copy, and two simultaneous runs against one item can both add one.
 
@@ -642,6 +644,13 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
+		// *url.Error prints the request URL, and on a redirect the target URL;
+		// either carries the signed query that grants upload access. Keep the
+		// typed cause (timeouts, staleness refusals) and report only the origin.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			urlErr.URL = uploadURLOrigin(urlErr.URL)
+		}
 		return fmt.Errorf("uploading file payload: %w", err)
 	}
 	defer resp.Body.Close()
@@ -856,6 +865,17 @@ func uploadURLTrusted(u *url.URL) bool {
 	}
 	addr, err := netip.ParseAddr(host)
 	return err == nil && addr.IsLoopback()
+}
+
+// uploadURLOrigin reduces a storage URL to scheme://host. The path and query of
+// an authorized upload URL are bearer material, and cliutil.RedactURL only masks a
+// fixed set of credential parameter names, so nothing past the host survives.
+func uploadURLOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<redacted storage URL>"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // classifyStoredUploadError maps the upload protocol's documented failure codes

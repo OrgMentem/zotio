@@ -27,7 +27,7 @@ func TestImportResolveDirectoryBuildsManifest(t *testing.T) {
 
 	srv := importResolveCrossRefWorkServer(t, "Resolved DOI Title", "10.1234/demo")
 	withBase(t, &enrichCrossRefBase, srv.URL)
-	t.Setenv("HOME", t.TempDir())
+	iprSeedSyncedLibrary(t)
 
 	flags := &rootFlags{timeout: 5 * time.Second}
 	cmd := newImportResolveCmd(flags)
@@ -83,7 +83,7 @@ func TestImportResolveUnidentifiedEntryExplainsItself(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scan001.pdf"), []byte("no identifier here"), 0o600); err != nil {
 		t.Fatalf("write pdf: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	iprSeedSyncedLibrary(t)
 
 	flags := &rootFlags{timeout: 5 * time.Second}
 	cmd := newImportResolveCmd(flags)
@@ -220,7 +220,7 @@ func TestImportManifestFanoutPreservesSequentialOrderAndReportsErrors(t *testing
 	}))
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichCrossRefBase, srv.URL)
-	t.Setenv("HOME", t.TempDir())
+	iprSeedSyncedLibrary(t)
 
 	paths, err := listPDFs(dir, 0)
 	if err != nil {
@@ -324,7 +324,7 @@ func TestImportResolveCancellationWritesNoPartialManifest(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichCrossRefBase, srv.URL)
-	t.Setenv("HOME", t.TempDir())
+	iprSeedSyncedLibrary(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	flags := &rootFlags{timeout: 30 * time.Second}

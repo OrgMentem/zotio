@@ -369,15 +369,19 @@ func TestProfileValuesDetermineWriterLockEligibility(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     []string
+		args     []string // explicit command-line flags
 		profile  map[string]string
 		wantBusy bool
 		wantRun  bool
 	}{
-		{name: "dry run preview", path: []string{"items", "new"}, profile: map[string]string{"dry-run": "true"}, wantRun: true},
+		// The profile's dry-run outranks an explicit --yes for lock eligibility.
+		{name: "dry run preview", path: []string{"items", "new"}, args: []string{"--yes"}, profile: map[string]string{"dry-run": "true"}, wantRun: true},
 		// items new is on the shared gate now: no --yes means no write, no lock.
 		{name: "ungated preview", path: []string{"items", "new"}, profile: map[string]string{}, wantRun: true},
-		{name: "live writer", path: []string{"items", "new"}, profile: map[string]string{"yes": "true"}, wantBusy: true},
-		{name: "yes gated apply", path: []string{"items", "create"}, profile: map[string]string{"yes": "true"}, wantBusy: true},
+		// A stored approval is never applied, so it cannot make a writer.
+		{name: "stored yes ignored", path: []string{"items", "new"}, profile: map[string]string{"yes": "true"}, wantRun: true},
+		{name: "live writer", path: []string{"items", "new"}, args: []string{"--yes"}, profile: map[string]string{}, wantBusy: true},
+		{name: "yes gated apply", path: []string{"items", "create"}, args: []string{"--yes"}, profile: map[string]string{}, wantBusy: true},
 		{name: "orcid sidecar", path: []string{"creators", "audit"}, profile: map[string]string{"orcid": "true"}, wantBusy: true},
 	}
 	for _, tt := range tests {
@@ -409,7 +413,8 @@ func TestProfileValuesDetermineWriterLockEligibility(t *testing.T) {
 				return nil
 			})
 			root.SilenceErrors, root.SilenceUsage = true, true
-			root.SetArgs(append([]string{"--profile", "writer-lock"}, tt.path...))
+			args := append([]string{"--profile", "writer-lock"}, tt.args...)
+			root.SetArgs(append(args, tt.path...))
 			err := root.ExecuteContext(context.Background())
 			if tt.wantBusy {
 				if ExitCode(err) != 9 {
@@ -436,7 +441,8 @@ func TestProfileValuesDetermineWriterLockEligibility(t *testing.T) {
 func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
 	for _, tc := range []struct {
 		profile map[string]string
-		// wantHeld records whether the profile should make the command acquire
+		args    []string // explicit command-line flags
+		// wantHeld records whether the invocation should make the command acquire
 		// the installation lock at all. Without it, the {} and {dry-run} cases
 		// never acquire (items new is writerLockOnApply, which requires an apply
 		// mode), so the post-run probe would succeed no matter what the release
@@ -445,9 +451,9 @@ func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
 	}{
 		{profile: map[string]string{}, wantHeld: false},
 		{profile: map[string]string{"dry-run": "true"}, wantHeld: false},
-		{profile: map[string]string{"yes": "true"}, wantHeld: true},
+		{profile: map[string]string{}, args: []string{"--yes"}, wantHeld: true},
 	} {
-		t.Run(fmt.Sprint(tc.profile), func(t *testing.T) {
+		t.Run(fmt.Sprint(tc.profile, tc.args), func(t *testing.T) {
 			useWriterLockTestHome(t)
 			saveWriterLockTestProfile(t, tc.profile)
 			handlerErr := errors.New("handler failed")
@@ -467,7 +473,8 @@ func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
 				return handlerErr
 			})
 			root.SilenceErrors, root.SilenceUsage = true, true
-			root.SetArgs([]string{"--profile", "writer-lock", "items", "new"})
+			args := append([]string{"--profile", "writer-lock"}, tc.args...)
+			root.SetArgs(append(args, "items", "new"))
 			if err := root.ExecuteContext(context.Background()); !errors.Is(err, handlerErr) {
 				t.Fatalf("writer handler error = %v, want %v", err, handlerErr)
 			}

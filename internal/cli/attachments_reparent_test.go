@@ -60,6 +60,19 @@ type reparentFake struct {
 	// which is what a lost reply after a successful commit looks like.
 	saveAttachmentStatus int
 
+	// addedAt overrides the dateAdded every marked item reports (RFC 3339).
+	// Empty means now. Guarded by mu, because a crash test ages the items
+	// between runs to model the time a retry comes after.
+	addedAt string
+	// movedChildMD5, when set, makes the target list every attachment the
+	// route moved off the temporary parent, carrying this hash, as Zotero
+	// would after the re-parent PATCH.
+	movedChildMD5 string
+	// crashAfterMove, when set, cancels the route on its first read of the
+	// temporary parent after the move, which is the read that begins the
+	// trash. It fires once, modelling a process killed at that boundary.
+	crashAfterMove context.CancelFunc
+
 	// childDetached and childTrashed make the fake model what a re-parent and a
 	// trash actually do to the temporary parent's child list. Without them the
 	// fake reported the attachment as a live child forever, including after the
@@ -241,7 +254,7 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
-		added := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+		added := f.markedAddedAt()
 		rows := []map[string]any{{
 			"key":       f.tempParentKey,
 			"version":   f.version,
@@ -391,6 +404,20 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				}})
 				return
 			}
+			if f.movedChildMD5 != "" {
+				f.mu.Lock()
+				rows := []map[string]any{}
+				for _, k := range f.attachChildren {
+					if f.childDetached[k] {
+						rows = append(rows, map[string]any{"key": k, "version": f.version, "data": map[string]any{
+							"key": k, "itemType": "attachment", "md5": f.movedChildMD5, "parentItem": "TARGET01",
+						}})
+					}
+				}
+				f.mu.Unlock()
+				_ = json.NewEncoder(w).Encode(rows)
+				return
+			}
 			if f.childrenOfTarget == nil {
 				_, _ = w.Write([]byte(`[]`))
 				return
@@ -434,6 +461,11 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				f.record("web.trash:" + path)
 			}
 			w.WriteHeader(http.StatusNoContent)
+			return
+
+		case r.Method == http.MethodGet && path == f.tempParentKey && f.takeCrashAfterMove():
+			f.record("crash")
+			<-r.Context().Done()
 			return
 
 		case r.Method == http.MethodGet && f.blockUntilCancelled:
@@ -533,6 +565,35 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func (f *reparentFake) markedAddedAt() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.addedAt != "" {
+		return f.addedAt
+	}
+	return time.Now().UTC().Format("2006-01-02T15:04:05Z")
+}
+
+func (f *reparentFake) setMarkedAddedAt(at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addedAt = at.UTC().Format("2006-01-02T15:04:05Z")
+}
+
+// takeCrashAfterMove fires the crash hook once, and only after the move.
+func (f *reparentFake) takeCrashAfterMove() bool {
+	f.mu.Lock()
+	cancel := f.crashAfterMove
+	if cancel == nil || len(f.childDetached) == 0 {
+		f.mu.Unlock()
+		return false
+	}
+	f.crashAfterMove = nil
+	f.mu.Unlock()
+	cancel()
+	return true
 }
 
 func (f *reparentFake) currentTitle() string {

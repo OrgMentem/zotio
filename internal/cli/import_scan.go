@@ -113,8 +113,13 @@ or text-only PDFs may report "unidentified".`,
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				// Without a mirror every DOI would read as "new", which is
+				// the opposite of the duplicate triage the caller asked for.
+				// Central preflight refuses this through the capability
+				// registry; this covers callers that bypass it.
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "import scan", preconditionSyncedStore,
+					"no synced local library to classify PDFs against",
+					remediationFor(cmd.Context(), flags, preconditionSyncedStore))
 			}
 			if err := db.DB().PingContext(cmd.Context()); err != nil {
 				_ = db.Close()

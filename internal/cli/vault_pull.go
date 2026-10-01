@@ -72,6 +72,8 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 		return err
 	}
 	c.DryRun = false // pull gates the local write on preview; remote reads must be live
+	// Resolved after the write client, which may cache the personal user ID.
+	targetLib := vaultLibraryID(flags)
 
 	// Classify every note once, caching whatever getNote() returned per note
 	// in remotes. The apply pass below reuses that cache instead of
@@ -82,7 +84,7 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 	results := make([]pushResult, 0, len(notes))
 	for i, n := range notes {
 		remotes[i] = &remoteNoteState{}
-		results = append(results, pullOne(c, outDir, n, flags, true, remotes[i]))
+		results = append(results, pullOne(c, outDir, targetLib, n, flags, true, remotes[i]))
 	}
 	if !preview {
 		// Gate on the writes this run actually plans (pulls and conflict
@@ -111,7 +113,7 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 				// These are the only statuses that reach a write below;
 				// apply against the exact remote state classified above,
 				// not a second fetch.
-				applied = append(applied, pullOne(c, outDir, n, flags, false, remotes[i]))
+				applied = append(applied, pullOne(c, outDir, targetLib, n, flags, false, remotes[i]))
 			default:
 				// Nothing to apply differently: reuse the classify result
 				// verbatim rather than re-fetching a note that will not be
@@ -139,12 +141,17 @@ type remoteNoteState struct {
 // call that finds remote.fetched already true reuses remote.ver/remote.html
 // instead of issuing another GET, so a note is fetched from Zotero at most
 // once per run and the apply pass can never diverge from what was gated.
-func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, preview bool, remote ...*remoteNoteState) pushResult {
+func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *rootFlags, preview bool, remote ...*remoteNoteState) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
 	if n.state.NoteKey == "" {
 		res.Status = "skipped"
 		res.Note = "never pushed; nothing to pull"
+		return res
+	}
+	if why := vaultLibraryMismatch(n, targetLib); why != "" {
+		res.Status = "skipped"
+		res.Note = why
 		return res
 	}
 	if !n.hasRegion {
@@ -164,7 +171,7 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, pre
 		liveVer, liveHTML = rs.ver, rs.html
 	} else {
 		var err error
-		liveVer, liveHTML, err = getNote(c, n.state.NoteKey)
+		liveVer, liveHTML, err = getNote(c, n.state.NoteKey, n.itemKey)
 		if err != nil {
 			if apiStatus(err) == 404 {
 				res.Status = "remote_deleted"

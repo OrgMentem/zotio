@@ -41,9 +41,14 @@ func TestClassifyAPIErrorAuthNotMisclassified(t *testing.T) {
 }
 
 func TestClassifyAPIErrorVersionConflict(t *testing.T) {
-	got := classifyAPIError(fmt.Errorf("PATCH /items/A returned HTTP 412: Precondition Failed"), &rootFlags{}).Error()
-	if !strings.Contains(got, "version conflict") || !strings.Contains(got, "sync") {
-		t.Errorf("412 -> expected version-conflict/sync hint, got: %s", got)
+	got := classifyAPIError(fmt.Errorf("PATCH /items/A returned HTTP 412: Precondition Failed"), &rootFlags{})
+	if code := ExitCode(got); code != ExitCode(apiErr(fmt.Errorf("x"))) {
+		t.Errorf("412 exit code = %d, want the API error code", code)
+	}
+	// Writes take their precondition from the Web API, so a local sync cannot
+	// resolve a 412; sending the operator there is a dead end.
+	if strings.Contains(got.Error(), "zotio sync") {
+		t.Errorf("412 hint points at a local sync that cannot refresh the write version: %s", got)
 	}
 }
 func TestGuardedPatchReconcilesLostCommittedResponse(t *testing.T) {

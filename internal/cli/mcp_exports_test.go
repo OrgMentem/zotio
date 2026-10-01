@@ -23,8 +23,8 @@ func TestApplyGroupScopeFromEnvRefusesTheFanoutSentinel(t *testing.T) {
 	if err == nil {
 		t.Fatal("ApplyGroupScopeFromEnv() error = nil, want ZOTERO_GROUP=all refused: the MCP handlers cannot fan out")
 	}
-	if got := ActiveGroupID(); got != "" {
-		t.Fatalf("ActiveGroupID() = %q, want %q after a rejected value", got, "")
+	if got := activeGroupIDLocked(); got != "" {
+		t.Fatalf("activeGroupIDLocked() = %q, want %q after a rejected value", got, "")
 	}
 	// The refusal has to say what the value means and what to do instead;
 	// "expected a numeric Zotero group ID" alone reads as "malformed" about a

@@ -583,75 +583,60 @@ func TestWriteBaseForRead(t *testing.T) {
 		}
 	})
 
-	t.Run("resolver error fails without fallback", func(t *testing.T) {
-		var readHits int32
-		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&readHits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"version":1}`))
-		}))
-		defer readSrv.Close()
+	// A failed resolution must surface as an error from both entry points and
+	// never degrade into reading the version from the local read plane.
+	failures := []struct {
+		name    string
+		resolve func(context.Context) (string, error)
+		wantErr []string
+	}{
+		{
+			name: "resolver error fails without fallback",
+			resolve: func(context.Context) (string, error) {
+				return "", fmt.Errorf("keys/current returned HTTP 401: expired key")
+			},
+			wantErr: []string{"could not resolve Zotero Web API write base", "expired key"},
+		},
+		{
+			name:    "resolver empty base fails without fallback",
+			resolve: func(context.Context) (string, error) { return "", nil },
+			wantErr: []string{"could not resolve the Zotero Web API write base", "refusing to take a write precondition from the local read plane"},
+		},
+	}
+	for _, tc := range failures {
+		t.Run(tc.name, func(t *testing.T) {
+			var readHits int32
+			readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&readHits, 1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"version":1}`))
+			}))
+			defer readSrv.Close()
 
-		c := clientTestNewClient(t, readSrv.URL)
-		c.NoCache = true
-		c.WriteBaseURL = ""
-		resolverErr := fmt.Errorf("keys/current returned HTTP 401: expired key")
-		c.ResolveWriteBase = func(context.Context) (string, error) { return "", resolverErr }
+			c := clientTestNewClient(t, readSrv.URL)
+			c.NoCache = true
+			c.WriteBaseURL = ""
+			c.ResolveWriteBase = tc.resolve
 
-		_, err := c.writeBaseForRead(context.Background())
-		if err == nil {
-			t.Fatal("writeBaseForRead err = nil, want error")
-		}
-		if !strings.Contains(err.Error(), "could not resolve Zotero Web API write base") {
-			t.Fatalf("writeBaseForRead err = %q, want write base prefix", err.Error())
-		}
-		if !strings.Contains(err.Error(), "expired key") {
-			t.Fatalf("writeBaseForRead err = %q, want underlying cause", err.Error())
-		}
+			_, err := c.writeBaseForRead(context.Background())
+			ccAssertErrContains(t, "writeBaseForRead", err, tc.wantErr)
+			_, _, err = c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+			ccAssertErrContains(t, "GetFromWriteBaseWithVersionContext", err, tc.wantErr)
+			if n := atomic.LoadInt32(&readHits); n != 0 {
+				t.Fatalf("read plane hits = %d, want %d", n, 0)
+			}
+		})
+	}
+}
 
-		_, _, err = c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
-		if err == nil {
-			t.Fatal("GetFromWriteBaseWithVersionContext err = nil, want error")
+func ccAssertErrContains(t *testing.T, call string, err error, want []string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s err = nil, want error", call)
+	}
+	for _, s := range want {
+		if !strings.Contains(err.Error(), s) {
+			t.Fatalf("%s err = %q, want it to contain %q", call, err.Error(), s)
 		}
-		if !strings.Contains(err.Error(), "could not resolve Zotero Web API write base") {
-			t.Fatalf("GetFromWriteBaseWithVersionContext err = %q, want write base prefix", err.Error())
-		}
-		if n := atomic.LoadInt32(&readHits); n != 0 {
-			t.Fatalf("read plane hits = %d, want %d", n, 0)
-		}
-	})
-
-	t.Run("resolver empty base fails without fallback", func(t *testing.T) {
-		var readHits int32
-		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&readHits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"version":1}`))
-		}))
-		defer readSrv.Close()
-
-		c := clientTestNewClient(t, readSrv.URL)
-		c.NoCache = true
-		c.WriteBaseURL = ""
-		c.ResolveWriteBase = func(context.Context) (string, error) { return "", nil }
-
-		_, err := c.writeBaseForRead(context.Background())
-		if err == nil {
-			t.Fatal("writeBaseForRead err = nil, want error")
-		}
-		if !strings.Contains(err.Error(), "could not resolve the Zotero Web API write base") {
-			t.Fatalf("writeBaseForRead err = %q, want empty-base message", err.Error())
-		}
-		if !strings.Contains(err.Error(), "refusing to take a write precondition from the local read plane") {
-			t.Fatalf("writeBaseForRead err = %q, want local-plane refusal", err.Error())
-		}
-
-		_, _, err = c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
-		if err == nil {
-			t.Fatal("GetFromWriteBaseWithVersionContext err = nil, want error")
-		}
-		if n := atomic.LoadInt32(&readHits); n != 0 {
-			t.Fatalf("read plane hits = %d, want %d", n, 0)
-		}
-	})
+	}
 }

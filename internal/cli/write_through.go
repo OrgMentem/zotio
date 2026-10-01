@@ -240,7 +240,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 // sees, and upsertGenericResourceTx's version-monotonic guard accepts any
 // incoming row over a version-less one -- so the first sync that lists the item
 // replaces this row with the server's authoritative copy. That is the same
-// property Store.ClearResourceVersions relies on, and the reason
+// property Store.ClearResourceVersionsContext relies on, and the reason
 // dropStaleItemVersion strips the version from every other replayed row.
 // dateAdded, dateModified and meta are server-assigned; they stay absent rather
 // than being fabricated from this machine's clock, so a local read reports what

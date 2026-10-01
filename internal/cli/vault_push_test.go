@@ -142,7 +142,7 @@ func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/items/"+noteKey:
 			w.Header().Set("Last-Modified-Version", "7")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"key": noteKey, "version": 7, "data": map[string]any{"note": desiredHTML},
+				"key": noteKey, "version": 7, "data": map[string]any{"itemType": "note", "parentItem": parentKey, "note": desiredHTML},
 			})
 		default:
 			http.NotFound(w, r)
@@ -429,12 +429,12 @@ func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
 }
 
 // runVaultPreviewWithoutWriting is the shared harness behind the vault
-// push/pull preview gates: it serves the given fixture response while
-// recording any non-GET request as a write violation, runs one vault
+// push/pull preview gates: it serves each fixture response at its URL path
+// while recording any non-GET request as a write violation, runs one vault
 // direction's command in preview, and asserts the shared safety invariant —
 // no Zotero write request, a dry_run report counting one countsKey note, the
 // vault file left byte-for-byte unchanged, and no conflict artifact written.
-func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags rootFlags, newCmd func(*rootFlags) *cobra.Command, respBody []byte, writeFixture func(t *testing.T, outDir string) (notePath string, before []byte), countsKey string) {
+func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags rootFlags, newCmd func(*rootFlags) *cobra.Command, responses map[string][]byte, writeFixture func(t *testing.T, outDir string) (notePath string, before []byte), countsKey string) {
 	t.Helper()
 	var violation string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -443,8 +443,14 @@ func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags
 			http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
 			return
 		}
+		body, ok := responses[r.URL.Path]
+		if !ok {
+			t.Errorf("unexpected GET %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(respBody)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -520,8 +526,10 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 				}
 				return notePath, before
 			}
-			runVaultPreviewWithoutWriting(t, "push", tc.name, tc.flags, newVaultPushCmd,
-				[]byte(`{"NOTEKEY1":5}`), writeFixture, "would update")
+			runVaultPreviewWithoutWriting(t, "push", tc.name, tc.flags, newVaultPushCmd, map[string][]byte{
+				"/users/0/items":          []byte(`{"NOTEKEY1":5}`),
+				"/users/0/items/NOTEKEY1": []byte(`{"version":5,"data":{"itemType":"note","parentItem":"K1","note":"<p>remote</p>"}}`),
+			}, writeFixture, "would update")
 		})
 	}
 }
@@ -585,7 +593,7 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 				}
 				w.Header().Set("Last-Modified-Version", "7")
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+				_, _ = w.Write([]byte(`{"version":7,"data":{"itemType":"note","parentItem":"K1","note":"<p>live</p>"}}`))
 			}))
 			t.Cleanup(srv.Close)
 			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -630,7 +638,7 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 			case http.MethodGet:
 				w.Header().Set("Last-Modified-Version", "7")
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+				_, _ = w.Write([]byte(`{"version":7,"data":{"itemType":"note","parentItem":"K1","note":"<p>live</p>"}}`))
 			case http.MethodPatch:
 				patched = true
 			default:
@@ -770,7 +778,7 @@ func TestVaultResolvePreviewPerformsLiveRead(t *testing.T) {
 				}
 				w.Header().Set("Last-Modified-Version", "7")
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+				_, _ = w.Write([]byte(`{"version":7,"data":{"itemType":"note","parentItem":"K1","note":"<p>live</p>"}}`))
 			}))
 			t.Cleanup(srv.Close)
 			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -858,7 +866,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 	}
 
 	noteBody := func(ver int, html string) string {
-		b, _ := json.Marshal(map[string]any{"version": ver, "data": map[string]string{"note": html}})
+		b, _ := json.Marshal(map[string]any{"version": ver, "data": map[string]string{"itemType": "note", "parentItem": itemKey, "note": html}})
 		return string(b)
 	}
 

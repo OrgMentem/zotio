@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 func newExportSnapshotCmd(flags *rootFlags) *cobra.Command {
@@ -42,7 +44,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
   zotio export snapshot collection:ABCD1234 --format ris --output coll.ris
   zotio export snapshot --format csljson --output library.json --resume`,
 		Args:        cobra.MaximumNArgs(1),
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scopeArg := "library"
 			if len(args) > 0 {
@@ -59,6 +61,9 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			}
 			if strings.TrimSpace(outputFile) == "" {
 				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .manifest.json sidecar)"))
+			}
+			if flags.dryRun {
+				return previewExportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume, format)
 			}
 
 			lockPath, _, err := outputWriterLockPath(outputFile)
@@ -84,34 +89,10 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 }
 
 func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, resume bool, format string) error {
-	c, err := flags.newClient()
+	checkpointFile := outputFile + ".checkpoint.json"
+	c, resumable, resumeCheckpoint, err := resolveSnapshotResume(flags, checkpointFile, path, params, pageSize, limit, resume, format)
 	if err != nil {
 		return err
-	}
-	if format != "jsonl" {
-		params["format"] = "json"
-		params["include"] = "data," + format
-	}
-
-	checkpointFile := outputFile + ".checkpoint.json"
-	source := exportReadSource(c, flags.profileName)
-	expectedScope := exportCheckpointScope(source, path, params, normalizedExportPageSize(pageSize), limit)
-	// Append only when every request and library identity field matches.
-	// Reject legacy or foreign incomplete checkpoints before opening the output.
-	resumable := false
-	var resumeCheckpoint exportCheckpoint
-	if resume {
-		cp, exists, cpErr := readExportCheckpointStatus(checkpointFile)
-		if cpErr != nil {
-			return fmt.Errorf("export checkpoint %q is corrupt: %w; remove it or rerun without --resume (existing output left intact)", checkpointFile, cpErr)
-		}
-		if exists && !cp.Done {
-			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope || checkpointFormat(cp) != format {
-				return fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
-			}
-			resumable = true
-			resumeCheckpoint = cp
-		}
 	}
 	if format != "jsonl" {
 		return exportTranslatorSnapshot(cmd, flags, c, outputFile, path, params, scopeLabel, pageSize, limit, checkpointFile, resumable, format)
@@ -208,6 +189,93 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 		"content_sha256": lf.ContentSHA256,
 	})
 	return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
+}
+
+// resolveSnapshotResume builds the client, sets the translator request
+// parameters, and decides whether --resume continues an incomplete
+// checkpoint. It only reads, so a run and its --dry-run preview share it and
+// reach the same answer.
+func resolveSnapshotResume(flags *rootFlags, checkpointFile, path string, params map[string]string, pageSize, limit int, resume bool, format string) (*client.Client, bool, exportCheckpoint, error) {
+	c, err := flags.newClient()
+	if err != nil {
+		return nil, false, exportCheckpoint{}, err
+	}
+	if format != "jsonl" {
+		params["format"] = "json"
+		params["include"] = "data," + format
+	}
+	if !resume {
+		return c, false, exportCheckpoint{}, nil
+	}
+	source := exportReadSource(c, flags.profileName)
+	expectedScope := exportCheckpointScope(source, path, params, normalizedExportPageSize(pageSize), limit)
+	// Append only when every request and library identity field matches.
+	// Reject legacy or foreign incomplete checkpoints before opening the output.
+	cp, exists, cpErr := readExportCheckpointStatus(checkpointFile)
+	if cpErr != nil {
+		return nil, false, exportCheckpoint{}, fmt.Errorf("export checkpoint %q is corrupt: %w; remove it or rerun without --resume (existing output left intact)", checkpointFile, cpErr)
+	}
+	if !exists || cp.Done {
+		return c, false, exportCheckpoint{}, nil
+	}
+	if cp.Path != path || cp.Source != source || cp.Scope != expectedScope || checkpointFormat(cp) != format {
+		return nil, false, exportCheckpoint{}, fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
+	}
+	return c, true, cp, nil
+}
+
+// previewExportSnapshot is `export snapshot --dry-run`: it reports the files a
+// run would write, replace, and delete, and whether --resume would continue,
+// without taking the output lock, fetching, or touching any file.
+func previewExportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, resume bool, format string) error {
+	checkpointFile := outputFile + ".checkpoint.json"
+	manifestPath := outputFile + ".manifest.json"
+	_, resumable, _, err := resolveSnapshotResume(flags, checkpointFile, path, params, pageSize, limit, resume, format)
+	if err != nil {
+		return err
+	}
+	// The run removes its checkpoint sidecars: at the start when it does not
+	// resume, and on success either way.
+	sidecars := []string{checkpointFile}
+	if format != "jsonl" {
+		sidecars = append(sidecars, checkpointFile+".items.jsonl")
+	}
+	wouldReplace, err := existingSnapshotPaths(outputFile, manifestPath)
+	if err != nil {
+		return err
+	}
+	wouldDelete, err := existingSnapshotPaths(sidecars...)
+	if err != nil {
+		return err
+	}
+	report, err := json.Marshal(map[string]any{
+		"dry_run":       true,
+		"scope":         scopeLabel,
+		"format":        format,
+		"output":        outputFile,
+		"manifest":      manifestPath,
+		"resume":        resumable,
+		"would_replace": wouldReplace,
+		"would_delete":  wouldDelete,
+	})
+	if err != nil {
+		return err
+	}
+	return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
+}
+
+// existingSnapshotPaths returns the paths that exist, in order. Any stat error
+// other than absence is returned so a preview never under-reports a target.
+func existingSnapshotPaths(paths ...string) ([]string, error) {
+	out := []string{}
+	for _, p := range paths {
+		if _, err := os.Lstat(p); err == nil {
+			out = append(out, p)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("inspecting %q: %w", p, err)
+		}
+	}
+	return out, nil
 }
 
 // canonicalOutputPath provides one lock identity for equivalent output paths.

@@ -75,7 +75,7 @@ func parseScopeSpec(expr string) (scopeSpec, error) {
 
 	scopeType, value, ok := strings.Cut(expr, ":")
 	if !ok {
-		return scopeSpec{}, fmt.Errorf("unknown scope type %q", expr)
+		return scopeSpec{}, unknownScopeTypeErr(expr)
 	}
 
 	scopeType = strings.TrimSpace(scopeType)
@@ -87,8 +87,14 @@ func parseScopeSpec(expr string) (scopeSpec, error) {
 		}
 		return scopeSpec{Type: scopeType, Value: value}, nil
 	default:
-		return scopeSpec{}, fmt.Errorf("unknown scope type %q", scopeType)
+		return scopeSpec{}, unknownScopeTypeErr(scopeType)
 	}
+}
+
+// unknownScopeTypeErr names the accepted arms from the one canonical help
+// string, so every --scope consumer reports the same vocabulary.
+func unknownScopeTypeErr(got string) error {
+	return fmt.Errorf("unknown scope type %q; valid: %s", got, strings.TrimPrefix(scopeFlagUsage, "Item cohort: "))
 }
 
 // describes a resolved local item cohort plus any unmet live precondition.
