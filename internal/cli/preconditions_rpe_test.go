@@ -188,6 +188,9 @@ func TestRpeSummarizeMissingInputRemainsUsageError(t *testing.T) {
 	if ExitCode(err) != 2 || err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v (exit %d), want usage error %q", err, ExitCode(err), want)
 	}
+	if !strings.Contains(err.Error(), "(usage: zotio items summarize") {
+		t.Fatalf("error = %q, want the command use line", err.Error())
+	}
 	if out.Len() != 0 {
 		t.Fatalf("output = %q, want no store refusal", out.String())
 	}

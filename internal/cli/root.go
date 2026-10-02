@@ -626,8 +626,7 @@ func installPositionalArgUsage(cmd *cobra.Command) {
 	if validate := cmd.Args; validate != nil {
 		cmd.Args = func(c *cobra.Command, args []string) error {
 			if err := validate(c, args); err != nil {
-				// One line: main sanitizes control bytes, newlines included.
-				return usageErr(fmt.Errorf("%w (usage: %s)", err, c.UseLine()))
+				return positionalArgUsageErr(c, err)
 			}
 			return nil
 		}
@@ -635,6 +634,11 @@ func installPositionalArgUsage(cmd *cobra.Command) {
 	for _, sub := range cmd.Commands() {
 		installPositionalArgUsage(sub)
 	}
+}
+
+func positionalArgUsageErr(cmd *cobra.Command, err error) error {
+	// One line: main sanitizes control bytes, newlines included.
+	return usageErr(fmt.Errorf("%w (usage: %s)", err, cmd.UseLine()))
 }
 
 func ExitCode(err error) int {

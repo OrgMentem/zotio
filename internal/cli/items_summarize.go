@@ -151,7 +151,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && strings.TrimSpace(flagCollection) == "" && strings.TrimSpace(flagScope) == "" {
-				return usageErr(errors.New("missing <itemKey>: pass an item key, --collection <key>, or --scope <spec>"))
+				return positionalArgUsageErr(cmd, errors.New("missing <itemKey>: pass an item key, --collection <key>, or --scope <spec>"))
 			}
 			if cmd.Flags().Changed("focus") && strings.TrimSpace(flagFocus) == "" {
 				return usageErr(errors.New("--focus needs search terms"))

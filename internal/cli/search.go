@@ -242,14 +242,12 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			// must still meet its live prerequisite before that early return.
 			if _, statErr := os.Stat(dbPath); statErr != nil && os.IsNotExist(statErr) {
 				if scope.Type == "saved-search" {
-					c, detail, scopeErr := savedSearchLiveClient(cmd.Context(), flags)
+					result, scopeErr := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, scope)
 					if scopeErr != nil {
 						return scopeErr
 					}
-					if c == nil {
-						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "search", scopeResult{
-							Expr: scopeExpr, Precondition: preconditionLiveLocalAPI, PreconditionDetail: detail,
-						})
+					if result.Precondition != "" {
+						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "search", result)
 					}
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "No local mirror for this library. Run 'zotio sync' to populate it.\n")

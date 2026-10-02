@@ -221,10 +221,9 @@ func resolveScopeLive(ctx context.Context, flags *rootFlags, db localQueryStore,
 		return result, err
 	}
 	if flags == nil {
-		// No rootFlags reach an MCP resource. It still needs the request
-		// context and the --timeout default: without them the probe and the
-		// paged read ignore cancellation and wait on a stalled desktop forever.
-		flags = &rootFlags{ctx: ctx, timeout: defaultRequestTimeout}
+		// Native MCP reads share the active library with the mirror path.
+		// Preserve that group as well as the request context and timeout.
+		flags = &rootFlags{ctx: ctx, timeout: defaultRequestTimeout, group: activeGroupIDLocked()}
 	}
 	c, detail, err := savedSearchLiveClient(ctx, flags)
 	if err != nil {

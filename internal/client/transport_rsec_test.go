@@ -5,9 +5,11 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -57,5 +59,43 @@ func TestRsecTransportRedactionPreservesCancellation(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "abc") || strings.Contains(err.Error(), "sekret") {
 		t.Fatalf("cancellation error leaked credentials: %v", err)
+	}
+}
+
+func TestRsecDryRunRedactsURLCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c := New(&config.Config{BaseURL: "http://u:sekret@localhost:12345/api/users/0?token=abc"}, time.Second, 0)
+	c.DryRun = true
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = w.Close()
+		_ = r.Close()
+	})
+	_, _, requestErr := c.Delete("/items/1")
+	os.Stderr = oldStderr
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestErr != nil {
+		t.Fatalf("dry-run: %v", requestErr)
+	}
+	stderr := string(out)
+	for _, secret := range []string{"sekret", "token=abc"} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("dry-run leaked %q: %s", secret, stderr)
+		}
+	}
+	if !strings.Contains(stderr, "DELETE http://***@localhost:12345/api/users/0?token=***") {
+		t.Fatalf("dry-run omitted redacted method and URL: %s", stderr)
 	}
 }

@@ -285,15 +285,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   collection, tag, query, item or saved search. The scope filter runs before
   ranking and `--limit`, so a hit outside the scope never takes a result
   slot. A `saved-search:` scope refuses (exit 9) when Zotero desktop is not
-  reachable, even when no mirror exists. The MCP `search` tool takes the same
-  `scope` with `fulltext`.
+  reachable or its local API is off, even when no mirror exists. The MCP
+  `search` tool takes the same `scope` with `fulltext`.
 - **`items summarize --focus TERMS`.** Replaces the first-pages excerpt and
   the page-ordered annotations with ranked PDF passages and annotations that
   match the terms. `--max-chars` caps the PDF passages and `--max-annotations`
   caps the number of annotations. Each passage names its item and
   attachment. An item with no synced PDF text reports `not_indexed`.
 - **`items bibliography --manuscript`.** Exports only the items a manuscript
-  cites, once each in first-citation order, in every format. `--follow-includes`
+  cites, once each. CSL-JSON, BibTeX, BibLaTeX and RIS keep first-citation
+  order; the default `bib` format follows the CSL style's sort. `--follow-includes`
   also reads `\input{}` and `\include{}` chapters at the place they appear, as
   in `items bibcheck`. An unknown or ambiguous citekey, or a missing or cyclic
   include, writes nothing and exits 11, naming the file and line. The route
@@ -387,10 +388,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   endpoint or storage origin. A cause that can quote a URL, such as a
   redirect with an unparseable `Location`, is withheld, and a malformed
   webhook URL is refused without echoing it. Connection errors from the
-  Zotero API, such as `doctor`'s `api: unreachable`, mask credentials and
-  query tokens in the URL. `auth set-token KEY` refuses the positional key
-  without printing it. The warning for a rejected Zotero base URL masks
-  credentials in the URL.
+  Zotero API, such as `doctor`'s `api: unreachable`, and `--dry-run` request
+  previews mask credentials and query tokens in the URL. `auth set-token KEY`
+  refuses the positional key without printing it. The warning for a rejected
+  Zotero base URL masks credentials in the URL.
+- **MCP saved-search scopes read the `ZOTERO_GROUP` library.** With
+  `zotio-mcp` scoped to a group, a `saved-search:` scope in
+  `zotero://health/{scope}` (and in the new `search` scope) read the
+  personal library's saved search while checking the group's mirror.
 - **`tail tags` events carry the tag name.** Every tag upsert used to report
   the key `<nil>`, so a `--workflow` trigger batch merged all changed tags into
   one entry.
