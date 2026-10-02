@@ -72,6 +72,7 @@ type incrementalReapOutcome struct {
 	membersRefreshed  int
 	membersSkipped    int
 	requests          int
+	incomplete        bool
 }
 
 // reconcileIncrementalSync reaps upstream deletions an incremental pass
@@ -112,7 +113,7 @@ func reconcileIncrementalSync(ctx context.Context, c syncHTTPClient, db *store.S
 	if inSet["items"] && clean["items"] {
 		refreshReapedCollectionMembers(ctx, c, db, confirmedCollections, probes, &out)
 	} else {
-		incrementalReapWarn(ctx, "items",
+		out.warn(ctx, "items",
 			"an erased collection was reaped but items did not sync, so member links still name it; run `zotio sync` (which includes items) to refresh them")
 	}
 	return out
@@ -127,7 +128,7 @@ func sweepIncrementalResource(ctx context.Context, c syncHTTPClient, db *store.S
 	storeResource := canonicalStoreResource(resource)
 	path, err := syncResourcePath(resource)
 	if err != nil {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not reconcile deleted %s rows: %v", resource, err))
+		out.warn(ctx, resource, fmt.Sprintf("could not reconcile deleted %s rows: %v", resource, err))
 		return
 	}
 	seen, complete := fetchPlaneKeySet(ctx, syncClientForResource(c, resource), path, resource, out)
@@ -137,7 +138,7 @@ func sweepIncrementalResource(ctx context.Context, c syncHTTPClient, db *store.S
 	}
 	reaped, err := db.SweepMissingContext(ctx, storeResource, seen)
 	if err != nil {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not reap deleted %s rows: %v; kept them", storeResource, err))
+		out.warn(ctx, resource, fmt.Sprintf("could not reap deleted %s rows: %v; kept them", storeResource, err))
 		return
 	}
 	switch resource {
@@ -159,12 +160,12 @@ func sweepIncrementalResource(ctx context.Context, c syncHTTPClient, db *store.S
 func sweepIncrementalCollections(ctx context.Context, c syncHTTPClient, db *store.Store, out *incrementalReapOutcome) ([]string, *reapProbes) {
 	path, err := syncResourcePath("collections")
 	if err != nil {
-		incrementalReapWarn(ctx, "collections", fmt.Sprintf("could not reconcile deleted collections rows: %v", err))
+		out.warn(ctx, "collections", fmt.Sprintf("could not reconcile deleted collections rows: %v", err))
 		return nil, nil
 	}
 	before, err := db.ResourceIDs("collections")
 	if err != nil {
-		incrementalReapWarn(ctx, "collections", fmt.Sprintf("could not read mirrored collections rows: %v; kept them", err))
+		out.warn(ctx, "collections", fmt.Sprintf("could not read mirrored collections rows: %v; kept them", err))
 		return nil, nil
 	}
 	seen, complete := fetchPlaneKeySet(ctx, syncClientForResource(c, "collections"), path, "collections", out)
@@ -187,7 +188,7 @@ func sweepIncrementalCollections(ctx context.Context, c syncHTTPClient, db *stor
 	}
 	reaped, err := db.SweepMissingContext(ctx, "collections", seen)
 	if err != nil {
-		incrementalReapWarn(ctx, "collections", fmt.Sprintf("could not reap deleted collections rows: %v; kept them", err))
+		out.warn(ctx, "collections", fmt.Sprintf("could not reap deleted collections rows: %v; kept them", err))
 		return nil, nil
 	}
 	out.collectionsReaped += reaped
@@ -216,23 +217,23 @@ func fetchPlaneKeySet(ctx context.Context, c syncHTTPClient, path, resource stri
 	// this skips only test doubles.
 	headerClient, ok := c.(syncHeaderHTTPClient)
 	if !ok {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not list %s keys: header reads unsupported; kept mirror rows (run `zotio sync --full` to reap)", resource))
+		out.warn(ctx, resource, fmt.Sprintf("could not list %s keys: header reads unsupported; kept mirror rows (run `zotio sync --full` to reap)", resource))
 		return nil, false
 	}
 	data, totalHeader, err := headerClient.GetWithHeaderContext(ctx, path, params, "Total-Results")
 	out.requests++
 	if err != nil {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not list %s keys: %v; kept mirror rows (run `zotio sync --full` to reap)", resource, err))
+		out.warn(ctx, resource, fmt.Sprintf("could not list %s keys: %v; kept mirror rows (run `zotio sync --full` to reap)", resource, err))
 		return nil, false
 	}
 	keys, ok := parsePlaneKeySet(data)
 	if !ok {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not parse %s key listing; kept mirror rows (run `zotio sync --full` to reap)", resource))
+		out.warn(ctx, resource, fmt.Sprintf("could not parse %s key listing; kept mirror rows (run `zotio sync --full` to reap)", resource))
 		return nil, false
 	}
 	n, perr := strconv.Atoi(strings.TrimSpace(totalHeader))
 	if perr != nil || n != len(keys) {
-		incrementalReapWarn(ctx, resource, fmt.Sprintf("could not list %s keys: Total-Results %q does not match %d keys sent; kept mirror rows", resource, strings.TrimSpace(totalHeader), len(keys)))
+		out.warn(ctx, resource, fmt.Sprintf("could not list %s keys: Total-Results %q does not match %d keys sent; kept mirror rows", resource, strings.TrimSpace(totalHeader), len(keys)))
 		return nil, false
 	}
 	seen = make(map[string]bool, len(keys))
@@ -301,7 +302,7 @@ func classifyAbsentCollections(ctx context.Context, c syncHTTPClient, db *store.
 	if err != nil {
 		// The trash-row guard is lost; lifecycle arbitration in the normal
 		// upsert path is the backstop, same as any sync pass.
-		incrementalReapWarn(ctx, "items", fmt.Sprintf("could not read trashed items listing a deleted collection: %v", err))
+		out.warn(ctx, "items", fmt.Sprintf("could not read trashed items listing a deleted collection: %v", err))
 	}
 	for _, k := range guarded {
 		probes.inTrash[k] = true
@@ -348,7 +349,7 @@ func classifyAbsentCollections(ctx context.Context, c syncHTTPClient, db *store.
 		}
 		members, merr := db.KeysWithCollections(ctx, "items", []string{id})
 		if merr != nil {
-			incrementalReapWarn(ctx, "collections", fmt.Sprintf("could not find items listing deleted collection %s: %v; kept it", id, merr))
+			out.warn(ctx, "collections", fmt.Sprintf("could not find items listing deleted collection %s: %v; kept it", id, merr))
 			spared = append(spared, id)
 			continue
 		}
@@ -394,7 +395,7 @@ func classifyAbsentCollections(ctx context.Context, c syncHTTPClient, db *store.
 		// links are touched without confirmation.
 	}
 	if fetchFailed > 0 {
-		incrementalReapWarn(ctx, "collections", fmt.Sprintf("could not probe %d collection(s) absent from the listing (first error: %v); kept them for the next sync", fetchFailed, firstFetchErr))
+		out.warn(ctx, "collections", fmt.Sprintf("could not probe %d collection(s) absent from the listing (first error: %v); kept them for the next sync", fetchFailed, firstFetchErr))
 	}
 	return confirmed, spared, probes
 }
@@ -446,7 +447,7 @@ const reapMemberBatchSize = 50
 func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *store.Store, reaped []string, probes *reapProbes, out *incrementalReapOutcome) {
 	members, err := db.KeysWithCollections(ctx, "items", reaped)
 	if err != nil {
-		incrementalReapWarn(ctx, "items", fmt.Sprintf("could not find items listing an erased collection: %v; member links still name it until `zotio sync --full`", err))
+		out.warn(ctx, "items", fmt.Sprintf("could not find items listing an erased collection: %v; member links still name it until `zotio sync --full`", err))
 		return
 	}
 	if probes == nil {
@@ -454,7 +455,7 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 	}
 	guarded, err := db.KeysWithCollections(ctx, "items-trash", reaped)
 	if err != nil {
-		incrementalReapWarn(ctx, "items", fmt.Sprintf("could not read trashed items listing an erased collection: %v", err))
+		out.warn(ctx, "items", fmt.Sprintf("could not read trashed items listing an erased collection: %v", err))
 	} else {
 		for _, k := range guarded {
 			probes.inTrash[k] = true
@@ -588,16 +589,16 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 		upsertRefetches(batch)
 	}
 	if failed > 0 {
-		incrementalReapWarn(ctx, "items", fmt.Sprintf("could not refresh %d item(s) that listed an erased collection (first error: %v); run `zotio sync --full` to reconcile", failed, firstErr))
+		out.warn(ctx, "items", fmt.Sprintf("could not refresh %d item(s) that listed an erased collection (first error: %v); run `zotio sync --full` to reconcile", failed, firstErr))
 	} else if out.membersRefreshed > 0 && humanFriendly {
 		fmt.Fprintf(os.Stderr, "  refreshed %d item(s) that listed an erased collection\n", out.membersRefreshed)
 	}
 }
 
-// incrementalReapWarn reports a reconciliation problem without failing the
-// sync: the incremental passes already succeeded, and this repair is
-// best-effort on top. Same two channels every other sync warning uses.
-func incrementalReapWarn(ctx context.Context, resource, message string) {
+// warn records an incomplete reconciliation without changing sync's warning
+// output or exit policy.
+func (out *incrementalReapOutcome) warn(ctx context.Context, resource, message string) {
+	out.incomplete = true
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", message)
 		return

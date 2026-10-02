@@ -137,6 +137,13 @@ var capabilityOverrides = map[string]capabilityEntry{
 			{Via: "live", Requires: []string{preconditionLiveLocalAPI}},
 		},
 	},
+	// Manuscript selection reads synced citation keys; scope selection does not.
+	"items bibliography": {
+		Routes: []capabilityRoute{
+			{Via: "default"},
+			{Via: "manuscript", Requires: []string{preconditionSyncedStore}},
+		},
+	},
 	// Reads backed by the synced local store.
 	"library health": {Requires: []string{preconditionSyncedStore}},
 	"library stats":  {Requires: []string{preconditionSyncedStore}},

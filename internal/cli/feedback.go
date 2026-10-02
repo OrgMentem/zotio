@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,12 +57,6 @@ func feedbackEndpoint() (string, error) {
 	endpoint := strings.TrimSpace(os.Getenv("ZOTERO_FEEDBACK_ENDPOINT"))
 	if endpoint == "" {
 		return "", nil
-	}
-	// validateExternalHTTPURL quotes an unparseable URL in its error, and
-	// feedback receivers often carry their credential in the path or query,
-	// so reject a malformed value without echoing it.
-	if _, err := url.Parse(endpoint); err != nil {
-		return "", errors.New("not a valid URL")
 	}
 	// feedback sends may contain
 	// private CLI context, so only HTTPS public endpoints are accepted.

@@ -266,6 +266,9 @@ type bibcheckIncludeWalker struct {
 	seenFinding map[bibcheckSeenFinding]bool
 	includes    []bibcheckInclude
 	findings    []Finding
+	// sourceOrder interleaves citations with includes for bibliography selection.
+	// Bibcheck retains its root-first report order.
+	sourceOrder bool
 }
 
 type bibcheckSeenFinding struct {
@@ -334,11 +337,25 @@ func (w *bibcheckIncludeWalker) label(abs, display string) string {
 
 func (w *bibcheckIncludeWalker) walk(path, pathAbs, content, rootDir, rootAbsDir string, visited map[string]bool, stack map[string]string) []bibcheckOccurrence {
 	var out []bibcheckOccurrence
-	if !w.cited[pathAbs] {
-		w.cited[pathAbs] = true
+	cite := !w.cited[pathAbs]
+	w.cited[pathAbs] = true
+	citationStart, citationLine := 0, 0
+	appendCitations := func(end int) {
+		if cite && w.sourceOrder {
+			occurrences := parseLatexCitationOccurrences(path, content[citationStart:end])
+			for i := range occurrences {
+				occurrences[i].Line += citationLine
+			}
+			out = append(out, occurrences...)
+			citationLine += strings.Count(content[citationStart:end], "\n")
+			citationStart = end
+		}
+	}
+	if cite && !w.sourceOrder {
 		out = parseLatexCitationOccurrences(path, content)
 	}
 	for _, inc := range latexIncludeTargets(content) {
+		appendCitations(inc.offset)
 		target := strings.TrimSpace(inc.path)
 		if filepath.Ext(target) == "" {
 			target += ".tex"
@@ -373,6 +390,7 @@ func (w *bibcheckIncludeWalker) walk(path, pathAbs, content, rootDir, rootAbsDir
 		out = append(out, w.walk(display, abs, string(data), rootDir, rootAbsDir, visited, stack)...)
 		delete(stack, abs)
 	}
+	appendCitations(len(content))
 	return out
 }
 
@@ -403,8 +421,9 @@ func bibcheckIncludeFinding(kind, title, file string, line int, target string) F
 }
 
 type latexInclude struct {
-	path string
-	line int
+	path   string
+	line   int
+	offset int
 }
 
 // Environments whose body TeX reads as literal text: an \input inside one is
@@ -420,17 +439,22 @@ func latexIncludeTargets(content string) []latexInclude {
 	lines := lineStartOffsets(text)
 	var out []latexInclude
 	for _, m := range latexIncludeRE.FindAllStringSubmatchIndex(text, -1) {
-		out = append(out, latexInclude{path: text[m[2]:m[3]], line: lineNumberForOffset(lines, m[0])})
+		out = append(out, latexInclude{path: text[m[2]:m[3]], line: lineNumberForOffset(lines, m[0]), offset: m[0]})
 	}
 	return out
 }
 
-// latexIncludeSearchText drops comments and literal environment bodies from
-// content, keeping every newline so line numbers are unchanged.
+// latexIncludeSearchText masks comments and literal environment bodies from
+// content, preserving byte offsets and line numbers.
 func latexIncludeSearchText(content string) string {
 	var b strings.Builder
 	b.Grow(len(content))
 	literalEnd := ""
+	mask := func(n int) {
+		for range n {
+			b.WriteByte(' ')
+		}
+	}
 	for i, line := range strings.Split(content, "\n") {
 		if i > 0 {
 			b.WriteByte('\n')
@@ -439,8 +463,10 @@ func latexIncludeSearchText(content string) string {
 			if literalEnd != "" {
 				end := strings.Index(line, literalEnd)
 				if end < 0 {
+					mask(len(line))
 					break
 				}
+				mask(end + len(literalEnd))
 				line = line[end+len(literalEnd):]
 				literalEnd = ""
 				continue
@@ -449,10 +475,12 @@ func latexIncludeSearchText(content string) string {
 			loc := latexLiteralBeginRE.FindStringSubmatchIndex(code)
 			if loc == nil {
 				b.WriteString(code)
+				mask(len(line) - len(code))
 				break
 			}
 			b.WriteString(code[:loc[0]])
 			literalEnd = `\end{` + code[loc[2]:loc[3]] + `}`
+			mask(loc[1] - loc[0])
 			// code is a prefix of line, so the offsets carry over; a % after
 			// the \begin is literal text, not a comment.
 			line = line[loc[1]:]
@@ -791,6 +819,7 @@ func parseManuscriptFiles(paths []string, followIncludes bool) ([]bibcheckOccurr
 			return nil, nil, err
 		}
 		tree = walker
+		tree.sourceOrder = true
 	}
 	var occurrences []bibcheckOccurrence
 	for _, path := range paths {

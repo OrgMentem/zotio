@@ -335,10 +335,14 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		// without identity would otherwise emit a null-key event and advance
 		// the cursor past a window that can never be recovered, so fail the
 		// poll and hold the cursor instead.
-		if id := store.ExtractResourceID(resource, obj); id == "" {
+		key := store.ExtractResourceID(resource, obj)
+		if key == "" {
 			return 0, fmt.Errorf("tail %s: decoding change object %d: missing resource identity", resource, i)
 		}
-		key := fmt.Sprintf("%v", store.LookupFieldValue(obj, "key"))
+		if resource == "tags" {
+			// /deleted identifies tags by name, not the mirror's name/type ID.
+			key = fmt.Sprintf("%v", store.LookupFieldValue(obj, "tag"))
+		}
 		event := map[string]any{
 			"event":     "upsert",
 			"resource":  resource,

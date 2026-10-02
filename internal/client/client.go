@@ -31,6 +31,26 @@ import (
 	"zotio/internal/config"
 )
 
+// transportError preserves the original error chain while hiding credentials
+// in the request URL printed by net/http.
+type transportError struct {
+	msg string
+	err error
+}
+
+func (e *transportError) Error() string { return e.msg }
+func (e *transportError) Unwrap() error { return e.err }
+
+func redactTransportError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = cliutil.RedactURL(urlErr.URL)
+	return &transportError{msg: redacted.Error(), err: err}
+}
+
 const (
 	maxZoteroResponseBytes = 64 << 20
 	defaultZoteroBaseURL   = "http://localhost:23119/api/users/0"
@@ -1321,7 +1341,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				}
 				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
 			}
-			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
+			lastErr = fmt.Errorf("%s %s: %w", method, path, redactTransportError(err))
 			if isMutatingMethod(method) {
 				ambiguousFailures = append(ambiguousFailures, lastErr)
 			}

@@ -82,7 +82,12 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 		Use:     "set-token --stdin",
 		Short:   "Save an API token to the config file",
 		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin",
-		Args:    cobra.NoArgs,
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("refusing token on command line; pipe it with --stdin")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {

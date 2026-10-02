@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -142,8 +143,8 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 		// operation="other" and the conservative `--group all` gate refuses to
 		// fan a plain search across libraries, which is the one read a
 		// multi-library user reaches for first. mcp:hidden stays: the MCP
-		// surface exposes search through the command facade, not as a mirrored
-		// tool.
+		// surface exposes search through the native framework tool, not the
+		// command facade or a mirrored tool.
 		Annotations: map[string]string{"mcp:hidden": "true", "mcp:read-only": "true"},
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -158,12 +159,15 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			// every hit to a parent item; cross-resource search also returns
 			// collections, tags and searches, which have no item membership.
 			scopeExpr := strings.TrimSpace(flagScope)
+			var scope scopeSpec
 			if scopeExpr != "" {
 				if !fulltextOnly {
 					return usageErr(fmt.Errorf("--scope requires --fulltext: only full-text search resolves every hit to an item"))
 				}
-				if _, err := parseScopeSpec(scopeExpr); err != nil {
-					return usageErr(err)
+				var scopeErr error
+				scope, scopeErr = parseScopeSpec(scopeExpr)
+				if scopeErr != nil {
+					return usageErr(scopeErr)
 				}
 			}
 			// Zotero item full-text search is GET /items
@@ -234,9 +238,20 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			// as a side effect of being read — and `--group all` fans this
 			// command across every accessible group, so one search would leave
 			// an empty data-group-<id>.db behind for each of them. A missing
-			// mirror is an empty local answer, the shape analytics and workflow
-			// status already report, not a file to create.
+			// mirror returns an empty local answer, but a saved-search scope
+			// must still meet its live prerequisite before that early return.
 			if _, statErr := os.Stat(dbPath); statErr != nil && os.IsNotExist(statErr) {
+				if scope.Type == "saved-search" {
+					c, detail, scopeErr := savedSearchLiveClient(cmd.Context(), flags)
+					if scopeErr != nil {
+						return scopeErr
+					}
+					if c == nil {
+						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "search", scopeResult{
+							Expr: scopeExpr, Precondition: preconditionLiveLocalAPI, PreconditionDetail: detail,
+						})
+					}
+				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "No local mirror for this library. Run 'zotio sync' to populate it.\n")
 				return outputSearchResults(cmd, flags, make([]json.RawMessage, 0), limit,
 					DataProvenance{Source: "local", Reason: reason, ResourceType: provenanceResource, Scoped: true})
@@ -306,6 +321,32 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary+"; requires --fulltext")
 
 	return cmd
+}
+
+// ResolveFulltextSearchScope resolves the CLI's item-cohort grammar for native
+// MCP search. Nil keys mean unrestricted; an empty non-nil slice means no
+// members. Saved searches use the same live prerequisite and freshness checks
+// as CLI scope consumers. The caller must supply its library's open mirror.
+func ResolveFulltextSearchScope(ctx context.Context, db *store.Store, expr string) ([]string, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, nil
+	}
+	spec, err := parseScopeSpec(expr)
+	if err != nil {
+		return nil, usageErr(err)
+	}
+	result, err := resolveScopeLive(ctx, nil, localQueryStore{Store: db}, spec)
+	if err != nil {
+		return nil, err
+	}
+	if result.Precondition != "" {
+		return nil, scopePreconditionErr(ctx, nil, nil, "search", result)
+	}
+	if result.All {
+		return nil, nil
+	}
+	return result.Keys, nil
 }
 
 // outputSearchResults filters, counts, and outputs search results with provenance.

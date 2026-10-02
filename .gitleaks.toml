@@ -27,9 +27,10 @@ regexes = [
   '''Citation Key: [A-Za-z][A-Za-z0-9:._-]*''',
 ]
 
-# doctor_test.go builds credential-bearing URLs to prove `zotio doctor` REDACTS
-# them: the assertions check the rendered hint does not contain "sekret" or
-# "token=abc". The literal is the test's whole point, and it is a fixture.
+# doctor_test.go, security_rsec_test.go and client/transport_rsec_test.go build
+# credential-bearing URLs to prove that `zotio doctor` and client transport
+# errors REDACT them: the assertions check the output does not contain "sekret"
+# or "token=abc". The literal is the tests' whole point, and it is a fixture.
 #
 # Scoped to the exact synthetic user:password pair, so a real credential URI is
 # still flagged anywhere, including elsewhere in this same file. Without this the
@@ -37,8 +38,8 @@ regexes = [
 # stays green on its pinned 1.7.3, and a gate that fails only locally is a gate
 # people learn to ignore.
 [[allowlists]]
-description = "Synthetic credential URI in doctor_test.go (redaction assertions, not a credential)"
+description = "Synthetic credential URI in redaction tests (assertions, not a credential)"
 regexTarget = "line"
 regexes = [
-  '''u:sekret@(localhost:23119|example\.com)''',
+  '''u:sekret@(localhost:(23119|12345)|example\.com)''',
 ]

@@ -1620,10 +1620,12 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 .tex, .md, .markdown, and .qmd files with the items bibcheck parser and
 resolves each citation key against the synced Better BibTeX keys. Items appear
 once, in first-citation order across the files. --follow-includes also reads
-.tex files pulled in by \input{PATH} and \include{PATH}, exactly as items
-bibcheck --follow-includes does. When any citation key is unknown or
-ambiguous, or an include is missing or cyclic, nothing is rendered: the
-command names each problem with its file and line and exits 11.
+.tex files pulled in by \input{PATH} and \include{PATH}, at each include's
+position in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve
+that order. The bib format follows the selected CSL style's sorting rules.
+When any citation key is unknown or ambiguous, or an include is missing or
+cyclic, nothing is rendered: the command names each problem with its file
+and line and exits 11.
 
 ```
 zotio items bibliography [flags]

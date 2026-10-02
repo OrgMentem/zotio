@@ -433,6 +433,11 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 			"refresh": {"items", "fulltext", probeItemKey, "--refresh"},
 		},
 	},
+	"items bibliography": {
+		routes: map[string][]string{
+			"manuscript": {"items", "bibliography", "--manuscript", probeTempFile},
+		},
+	},
 	// Store-backed reads.
 	"library health":    {args: []string{"library", "health"}},
 	"library stats":     {args: []string{"library", "stats"}},

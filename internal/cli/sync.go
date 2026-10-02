@@ -125,9 +125,9 @@ func runSyncWorker(ctx context.Context, work <-chan string, results chan<- syncR
 // their objects no longer exist upstream (incremental collection and trash
 // reconciliation, or a full pass's sweep).
 //
-// Complete is true only when sync returned success and no selected resource
-// failed. A resource skipped for lack of access is a warning that sync
-// reports as complete, and it stays complete here.
+// Complete is true only when sync returned success, no selected resource
+// failed, and incremental reconciliation completed without repair failures.
+// A resource skipped for lack of access stays a warning, as in plain sync.
 type syncChangeSummary struct {
 	Upserted int
 	Deleted  int
@@ -503,9 +503,11 @@ Exit codes & warnings:
 			// until --full. Reconcile those on incremental runs only (a full
 			// pass already swept everything); it warns and keeps the mirror
 			// on any problem, never failing the sync.
+			reconciliationIncomplete := false
 			if !full {
 				reaped := reconcileIncrementalSync(ctx, c, db, resources, cleanSync)
 				tracker.addDeleted(reaped.collectionsReaped + reaped.trashReaped)
+				reconciliationIncomplete = reaped.incomplete
 			}
 
 			// The full-text pass runs after the core resource sync. It keeps a
@@ -601,7 +603,7 @@ Exit codes & warnings:
 				}
 			}
 			if summary != nil {
-				summary.Complete = errCount == 0
+				summary.Complete = errCount == 0 && !reconciliationIncomplete
 			}
 			return nil
 		},

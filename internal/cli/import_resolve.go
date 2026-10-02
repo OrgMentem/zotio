@@ -72,7 +72,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 	}
 	if !synced {
 		return importManifest{}, emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "import resolve", preconditionSyncedStore, detail,
-			remediationFor(cmd.Context(), flags, preconditionSyncedStore))
+			commandPreconditionRemediation(cmd.Context(), flags, cmd, preconditionSyncedStore))
 	}
 	db, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {

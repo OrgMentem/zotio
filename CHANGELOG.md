@@ -119,7 +119,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   empty key variable reported success. `--help` still exits 0. A wrong
   argument count on any command now exits 2 instead of 1, and the message
   ends with `(usage: <use line>)`. `items summarize` with no key still runs
-  with `--collection` or `--scope`.
+  with `--collection` or `--scope`, given directly or by a profile.
 - **Invalid flag values and resource names exit 2.** An invalid `--via` or
   `--data-source`, an unknown `analytics --type`, and a negative `library
   health --require-fresh` now exit 2 (usage) instead of 1; a negative
@@ -151,6 +151,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **More commands refuse an unsynced library with exit 9.** `import scan`,
   `import resolve <dir>` and `items duplicates resolve` return
   `precondition_unmet` (`synced_store`) until a completed items sync exists.
+  A completed sync of an empty library counts.
   Before, `import scan` printed "Run 'zotio sync' first." and exited 0,
   `import resolve` marked every DOI as a create, so `import apply` could
   duplicate library items, and `duplicates resolve` reported a zero-op
@@ -283,16 +284,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`search --fulltext --scope`.** Searches synced PDF text inside one
   collection, tag, query, item or saved search. The scope filter runs before
   ranking and `--limit`, so a hit outside the scope never takes a result
-  slot.
+  slot. A `saved-search:` scope refuses (exit 9) when Zotero desktop is not
+  reachable, even when no mirror exists. The MCP `search` tool takes the same
+  `scope` with `fulltext`.
 - **`items summarize --focus TERMS`.** Replaces the first-pages excerpt and
   the page-ordered annotations with ranked PDF passages and annotations that
-  match the terms, within `--max-chars`. Each passage names its item and
+  match the terms. `--max-chars` caps the PDF passages and `--max-annotations`
+  caps the number of annotations. Each passage names its item and
   attachment. An item with no synced PDF text reports `not_indexed`.
 - **`items bibliography --manuscript`.** Exports only the items a manuscript
-  cites, once each in first-citation order. `--follow-includes` also reads
-  `\input{}` and `\include{}` chapters, as in `items bibcheck`. An unknown or
-  ambiguous citekey, or a missing or cyclic include, writes nothing and
-  exits 11, naming the file and line.
+  cites, once each in first-citation order, in every format. `--follow-includes`
+  also reads `\input{}` and `\include{}` chapters at the place they appear, as
+  in `items bibcheck`. An unknown or ambiguous citekey, or a missing or cyclic
+  include, writes nothing and exits 11, naming the file and line. The route
+  needs a synced mirror, and `capabilities` lists it.
 - **Duplicate attachment bytes.** `items audit --duplicate-attachment-bytes`
   and the `library health --for all` finding `duplicate_attachment_bytes`
   list stored attachments that share a Zotero MD5, split into same-item and
@@ -301,8 +306,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `nonportable_attachment` names PDFs stored as linked files, which other
   devices and group members cannot open. Other presets are unchanged.
 - **`watch --workflow-on-change`.** Runs the workflow only after a complete
-  sync cycle that stored, rewrote or reaped rows. Unchanged and incomplete
-  cycles log a skip.
+  sync cycle that stored, rewrote or reaped rows. Unchanged cycles, and cycles
+  whose sync or collection and trash reconciliation failed, log a skip.
 - **`tail --workflow` passes the changed keys to the workflow.** Steps read
   upserted and deleted keys through `${trigger.json:PATH}` or
   `"stdin_trigger": "upsert_keys"` (for `--keys-from -`). The batch never
@@ -318,8 +323,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `--out`; review edits in it are lost.
 - **`collections bundle` writes a completion record.** The package is
   published as one generation, and `zotio-bundle.json`, written last, lists
-  each file's size and SHA-256. A failed run leaves the previous package
-  intact. The result lists replaced files under `replaced`.
+  each file's size and SHA-256. A run that fails before publishing leaves the
+  previous package intact. A run that fails while publishing leaves no
+  `zotio-bundle.json`, so the package reads as incomplete until a rerun. The
+  result lists replaced files under `replaced`.
 - **MCP `command_search` reports `writesFiles`.** The field marks commands
   that write or delete local files.
 
@@ -374,12 +381,19 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   follows replaces the entry atomically. Removal on read could delete a value
   that another process had just stored. On Windows it could also leave stray
   `.expired` files.
-- **Webhook, feedback and attachment upload errors no longer quote URLs.**
-  A failed `--deliver webhook:` POST (also from `tail` and `watch --health`),
-  `feedback --send` or attachment upload names only the endpoint or storage
-  origin. A cause that can quote a URL, such as a redirect with an
-  unparseable `Location`, is withheld. The warning for a rejected Zotero base
-  URL masks credentials in the URL.
+- **Webhook, feedback, attachment upload and API connection errors no longer
+  quote secrets.** A failed `--deliver webhook:` POST (also from `tail` and
+  `watch --health`), `feedback --send` or attachment upload names only the
+  endpoint or storage origin. A cause that can quote a URL, such as a
+  redirect with an unparseable `Location`, is withheld, and a malformed
+  webhook URL is refused without echoing it. Connection errors from the
+  Zotero API, such as `doctor`'s `api: unreachable`, mask credentials and
+  query tokens in the URL. `auth set-token KEY` refuses the positional key
+  without printing it. The warning for a rejected Zotero base URL masks
+  credentials in the URL.
+- **`tail tags` events carry the tag name.** Every tag upsert used to report
+  the key `<nil>`, so a `--workflow` trigger batch merged all changed tags into
+  one entry.
 - **A second `zotio-mcp --transport http` on a busy address keeps the live
   server's token.** The generated token file is written only after the bind
   succeeds.

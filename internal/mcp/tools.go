@@ -37,6 +37,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25, maximum 100)"), mcplib.Min(1), mcplib.Max(mcpSearchMaxResults)),
 			mcplib.WithBoolean("fulltext", mcplib.Description("Search only synced PDF text and return parent item context")),
+			mcplib.WithString("scope", mcplib.Description("Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
@@ -108,6 +109,20 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		limit = int(v)
 	}
 
+	fulltext, _ := args["fulltext"].(bool)
+	var scope string
+	if rawScope, exists := args["scope"]; exists {
+		var ok bool
+		scope, ok = rawScope.(string)
+		if !ok {
+			return mcplib.NewToolResultError("scope must be a string"), nil
+		}
+		scope = strings.TrimSpace(scope)
+	}
+	if scope != "" && !fulltext {
+		return mcplib.NewToolResultError("scope requires fulltext: only full-text search resolves every hit to an item"), nil
+	}
+
 	path, err := dbPath()
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
@@ -119,8 +134,12 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	defer db.Close()
 
 	var results []json.RawMessage
-	if fulltext, _ := args["fulltext"].(bool); fulltext {
-		matches, searchErr := db.SearchFulltextContext(ctx, store.FulltextSearch{Query: query, Limit: limit})
+	if fulltext {
+		parentKeys, scopeErr := cli.ResolveFulltextSearchScope(ctx, db, scope)
+		if scopeErr != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("resolving search scope: %v", scopeErr)), nil
+		}
+		matches, searchErr := db.SearchFulltextContext(ctx, store.FulltextSearch{Query: query, Limit: limit, ParentKeys: parentKeys})
 		if searchErr != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("full-text search failed: %v", searchErr)), nil
 		}

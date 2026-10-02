@@ -87,6 +87,15 @@ func runCapabilityPreflight(cmd *cobra.Command, flags *rootFlags) error {
 	if cmd == nil || flags == nil || commandPreflightSkipped(cmd) {
 		return nil
 	}
+	return runDeclaredCapabilityPreflight(cmd, flags)
+}
+
+// runDeclaredCapabilityPreflight also serves commands that defer their
+// declared requirements until RunE, after profile-dependent usage validation.
+func runDeclaredCapabilityPreflight(cmd *cobra.Command, flags *rootFlags) error {
+	if cmd == nil || flags == nil {
+		return nil
+	}
 	path := commandRegistryPath(cmd)
 	if path == "" {
 		return nil
@@ -110,10 +119,17 @@ func runCapabilityPreflight(cmd *cobra.Command, flags *rootFlags) error {
 		}
 		if !ok {
 			return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, path, req, detail,
-				remediationFor(ctx, flags, req))
+				commandPreconditionRemediation(ctx, flags, cmd, req))
 		}
 	}
 	return nil
+}
+
+func commandPreconditionRemediation(ctx context.Context, flags *rootFlags, cmd *cobra.Command, req string) []string {
+	if req == preconditionSyncedStore && commandNeedsItemsMirror(cmd) {
+		return importItemsMirrorRemediation()
+	}
+	return remediationFor(ctx, flags, req)
 }
 
 func preconditionEnforcedAtPreflight(entry capabilityEntry, precondition string) bool {
@@ -225,7 +241,7 @@ func preconditionRemediation(precondition string) []string {
 	}
 }
 
-func checkSyncedStorePrecondition(ctx context.Context, _ *rootFlags, _ *cobra.Command, _ capabilityEntry) (bool, string, error) {
+func checkSyncedStorePrecondition(ctx context.Context, _ *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
 	db, err := defaultDBPath("zotio")
 	if err != nil {
 		return false, fmt.Sprintf("resolving local store path: %v", err), nil
@@ -238,6 +254,11 @@ func checkSyncedStorePrecondition(ctx context.Context, _ *rootFlags, _ *cobra.Co
 		return false, fmt.Sprintf("local store not found at %s", db), nil
 	}
 	defer s.Close()
+	// These commands inspect items, not arbitrary mirrored resources. An
+	// empty completed items pass is ready; an unfinished first pass is not.
+	if commandNeedsItemsMirror(cmd) {
+		return importItemsMirrorReady(ctx, s)
+	}
 	state, err := readSyncHintState(s, "")
 	if err != nil {
 		return false, fmt.Sprintf("local store sync state cannot be read: %v", err), nil
@@ -257,6 +278,16 @@ func checkSyncedStorePrecondition(ctx context.Context, _ *rootFlags, _ *cobra.Co
 		return false, "local store is present but contains no synced resources", nil
 	}
 	return true, "", nil
+}
+
+func commandNeedsItemsMirror(cmd *cobra.Command) bool {
+	if cmd != nil {
+		switch commandRegistryPath(cmd) {
+		case "import scan", "import resolve", "items duplicates resolve":
+			return true
+		}
+	}
+	return false
 }
 
 func checkWebAPIKeyPrecondition(_ context.Context, flags *rootFlags, _ *cobra.Command, _ capabilityEntry) (bool, string, error) {

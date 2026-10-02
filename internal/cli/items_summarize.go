@@ -144,19 +144,24 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
   zotio items summarize --collection MAR7RFQN --no-fulltext
   zotio items summarize --scope tag:to-read --agent
   zotio items summarize --scope collection:MAR7RFQN --focus "transfer learning" --max-chars 2000`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
-		// One item key, or a cohort through --collection or --scope instead.
-		// With none of them there is nothing to summarize: a usage error, checked
-		// before the store opens, not help that exits 0.
-		Args: func(cmd *cobra.Command, args []string) error {
+		// Profile values are applied in PersistentPreRunE. Validate the input
+		// and enforce the declared store requirement in RunE so missing input
+		// remains a usage error even when no mirror exists.
+		Annotations: map[string]string{"mcp:read-only": "true", preflightAnnotationKey: preflightAnnotationSkip},
+		Args:        cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && strings.TrimSpace(flagCollection) == "" && strings.TrimSpace(flagScope) == "" {
 				return usageErr(errors.New("missing <itemKey>: pass an item key, --collection <key>, or --scope <spec>"))
 			}
-			return cobra.MaximumNArgs(1)(cmd, args)
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("focus") && strings.TrimSpace(flagFocus) == "" {
 				return usageErr(errors.New("--focus needs search terms"))
+			}
+			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			if err != nil {
+				return err
+			}
+			if err := runDeclaredCapabilityPreflight(cmd, flags); err != nil {
+				return err
 			}
 			db, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
@@ -185,10 +190,6 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				focus:          strings.TrimSpace(flagFocus),
 			}
 
-			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
-			if err != nil {
-				return err
-			}
 			if effectiveScope != "" {
 				sel, serr := resolveScopeSelection(cmd, flags, "items summarize", localQueryStore{db}, effectiveScope)
 				if serr != nil {

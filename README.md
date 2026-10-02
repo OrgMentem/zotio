@@ -263,7 +263,7 @@ format = "obsidian"      # or "logseq"
 
 ### Reading & synthesis
 
-- **`items summarize`** — assemble a bounded, synthesis-ready bundle for an item or collection (citation + abstract + your annotations + a capped fulltext excerpt + known metadata gaps + a synthesis prompt) and hand it to any LLM. `zotio` does the budgeting; it never calls the model. Ask a question with `--focus "TERMS"` and each item instead carries the ranked PDF-text passages and annotations that match, with item and attachment keys, within the same `--max-chars` budget — a finding on page 30 beats the introduction. An item with no synced PDF text says so rather than reporting "no match".
+- **`items summarize`** — assemble a bounded, synthesis-ready bundle for an item or collection (citation + abstract + your annotations + a capped fulltext excerpt + known metadata gaps + a synthesis prompt) and hand it to any LLM. `zotio` does the budgeting; it never calls the model. Ask a question with `--focus "TERMS"` and each item instead carries the ranked PDF-text passages and annotations that match, with item and attachment keys — `--max-chars` caps the passages and `--max-annotations` the annotations — so a finding on page 30 beats the introduction. An item with no synced PDF text says so rather than reporting "no match".
 - **`annotations export` · `annotations timeline` · `annotations search`** — pull highlights and notes as Markdown or JSON, ordered by date or searched by text.
 - **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
 - **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.

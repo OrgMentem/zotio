@@ -86,10 +86,12 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 .tex, .md, .markdown, and .qmd files with the items bibcheck parser and
 resolves each citation key against the synced Better BibTeX keys. Items appear
 once, in first-citation order across the files. --follow-includes also reads
-.tex files pulled in by \input{PATH} and \include{PATH}, exactly as items
-bibcheck --follow-includes does. When any citation key is unknown or
-ambiguous, or an include is missing or cyclic, nothing is rendered: the
-command names each problem with its file and line and exits 11.`,
+.tex files pulled in by \input{PATH} and \include{PATH}, at each include's
+position in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve
+that order. The bib format follows the selected CSL style's sorting rules.
+When any citation key is unknown or ambiguous, or an include is missing or
+cyclic, nothing is rendered: the command names each problem with its file
+and line and exits 11.`,
 		Example: `  zotio items bibliography --scope collection:ABCD1234 --style apa
   zotio items bibliography --scope tag:to-submit --format csljson
   zotio items bibliography --scope collection:ABCD1234 --format bibtex
@@ -181,7 +183,7 @@ command names each problem with its file and line and exits 11.`,
 				}
 			}
 
-			bibliography, err := renderedBibliography(wc, renderKeys, format, flagStyle, citeKeys, flags)
+			bibliography, err := renderedBibliography(wc, renderKeys, format, flagStyle, citeKeys, len(flagManuscripts) > 0, flags)
 			if err != nil {
 				return err
 			}
@@ -507,7 +509,7 @@ func fetchBibliographySelection(c bibliographyGetter, keys []string, flags *root
 	return selection, nil
 }
 
-func renderedBibliography(c bibliographyGetter, keys []string, format, style string, citeKeys map[string]string, flags *rootFlags) (json.RawMessage, error) {
+func renderedBibliography(c bibliographyGetter, keys []string, format, style string, citeKeys map[string]string, manuscriptOrder bool, flags *rootFlags) (json.RawMessage, error) {
 	if format == "csljson" {
 		merged := make([]json.RawMessage, 0, len(keys))
 		for start := 0; start < len(keys); start += bibliographyChunkSize {
@@ -554,9 +556,29 @@ func renderedBibliography(c bibliographyGetter, keys []string, format, style str
 		} else {
 			params["limit"] = strconv.Itoa(end - start)
 		}
+		if manuscriptOrder && format != "bib" {
+			// JSON export fields retain item identities even when Zotero sorts
+			// the response by dateModified rather than the requested key list.
+			params["format"] = "json"
+			params["include"] = format
+		}
 		data, err := c.Get("/items", params)
 		if err != nil {
 			return nil, classifyAPIError(err, flags)
+		}
+		if manuscriptOrder && format != "bib" {
+			exports, err := decodeBibliographyExports(data, format, keys[start:end])
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range keys[start:end] {
+				text := exports[key]
+				if out.Len() > 0 && out.Bytes()[out.Len()-1] != '\n' {
+					out.WriteByte('\n')
+				}
+				out.WriteString(text)
+			}
+			continue
 		}
 		out.Write(data)
 		if end < len(keys) && len(data) > 0 && data[len(data)-1] != '\n' {
@@ -564,6 +586,41 @@ func renderedBibliography(c bibliographyGetter, keys []string, format, style str
 		}
 	}
 	return out.Bytes(), nil
+}
+
+func decodeBibliographyExports(data json.RawMessage, format string, keys []string) (map[string]string, error) {
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("decoding %s export records: %w", format, err)
+	}
+	requested := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		requested[key] = true
+	}
+	byKey := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		var key, text string
+		if err := json.Unmarshal(entry["key"], &key); err != nil {
+			return nil, fmt.Errorf("decoding %s export item key: %w", format, err)
+		}
+		if !requested[key] {
+			return nil, fmt.Errorf("%s export returned unexpected item %q", format, key)
+		}
+		if _, duplicate := byKey[key]; duplicate {
+			return nil, fmt.Errorf("%s export returned item %q more than once", format, key)
+		}
+		if err := json.Unmarshal(entry[format], &text); err != nil {
+			return nil, fmt.Errorf("decoding %s export for item %q: %w", format, key, err)
+		}
+		byKey[key] = text
+	}
+	for _, key := range keys {
+		_, ok := byKey[key]
+		if !ok {
+			return nil, fmt.Errorf("%s export omitted scoped item %q", format, key)
+		}
+	}
+	return byKey, nil
 }
 
 func rewriteCSLJSONCiteKeys(data json.RawMessage, citeKeys map[string]string, scopedKeys []string) ([]json.RawMessage, error) {

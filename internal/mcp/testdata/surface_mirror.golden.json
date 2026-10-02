@@ -1704,7 +1704,7 @@
   },
   {
     "name": "items_bibliography",
-    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.\n\n--manuscript selects the items a manuscript cites instead of a scope. It reads\n.tex, .md, .markdown, and .qmd files with the items bibcheck parser and\nresolves each citation key against the synced Better BibTeX keys. Items appear\nonce, in first-citation order across the files. --follow-includes also reads\n.tex files pulled in by \\input{PATH} and \\include{PATH}, exactly as items\nbibcheck --follow-includes does. When any citation key is unknown or\nambiguous, or an include is missing or cyclic, nothing is rendered: the\ncommand names each problem with its file and line and exits 11.",
+    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.\n\n--manuscript selects the items a manuscript cites instead of a scope. It reads\n.tex, .md, .markdown, and .qmd files with the items bibcheck parser and\nresolves each citation key against the synced Better BibTeX keys. Items appear\nonce, in first-citation order across the files. --follow-includes also reads\n.tex files pulled in by \\input{PATH} and \\include{PATH}, at each include's\nposition in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve\nthat order. The bib format follows the selected CSL style's sorting rules.\nWhen any citation key is unknown or ambiguous, or an include is missing or\ncyclic, nothing is rendered: the command names each problem with its file\nand line and exits 11.",
     "inputSchema": {
       "properties": {
         "follow-includes": {
@@ -3422,6 +3422,10 @@
         },
         "query": {
           "description": "Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.",
           "type": "string"
         }
       },

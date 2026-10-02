@@ -70,6 +70,10 @@
         "query": {
           "description": "Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)",
           "type": "string"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.",
+          "type": "string"
         }
       },
       "required": [

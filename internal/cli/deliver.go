@@ -136,7 +136,7 @@ func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
 func validateExternalHTTPURLWithContext(ctx context.Context, raw string, requireHTTPS bool) error {
 	u, err := neturl.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("invalid URL %q: %w", raw, err)
+		return errors.New("not a valid URL")
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if requireHTTPS {

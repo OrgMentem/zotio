@@ -213,7 +213,7 @@ func watchWorkflowSkipReason(summary *syncChangeSummary, pending syncChangeSumma
 	case summary == nil:
 		return ""
 	case !summary.Complete:
-		return fmt.Sprintf("sync incomplete (a resource failed); %d upserted and %d deleted row(s) wait for a complete cycle", pending.Upserted, pending.Deleted)
+		return fmt.Sprintf("sync incomplete (a resource or incremental repair failed); %d upserted and %d deleted row(s) wait for a complete cycle", pending.Upserted, pending.Deleted)
 	case !pending.changed():
 		return "library unchanged"
 	default:
