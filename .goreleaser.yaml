@@ -108,8 +108,10 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     commit_msg_template: "zotio {{ .Tag }}"
     # Casks live under Casks/ in the tap (formulae used Formula/). The binaries
-    # are unsigned, so the post-install hook below strips the com.apple.quarantine
-    # xattr — otherwise Gatekeeper blocks first run on macOS.
+    # are unsigned, so the postflight_steps block below strips the com.apple.quarantine
+    # xattr — otherwise Gatekeeper blocks first run on macOS. GoReleaser's
+    # hooks.post.install emits a Ruby `postflight` block, which Homebrew 7
+    # deprecates; custom_block carries the declarative stanza instead.
     directory: Casks
     homepage: "https://github.com/OrgMentem/zotio"
     # One product description for every store front; aliased below so the
@@ -118,10 +120,10 @@ homebrew_casks:
     binaries:
       - zotio
       - zotio-mcp
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}"]
+    custom_block: |
+      postflight_steps do
+        run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}"], writable_paths: ["."]
+      end
 # Windows: self-owned Scoop bucket (mirrors the homebrew-tap pattern). Packages
 # the windows zip archives, which already contain both zotio and zotio-mcp.
 scoops:
