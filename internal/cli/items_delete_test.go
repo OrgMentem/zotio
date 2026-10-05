@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -34,24 +36,29 @@ func runDeleteCmd(t *testing.T, cmd interface {
 	return cmd.Execute()
 }
 
-func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *string, *string) {
+// deleteWrite is one non-GET request the delete server received.
+type deleteWrite struct {
+	method, path, version string
+}
+
+// deleteVersionServer answers version reads with the given version and records
+// every write request, so tests can assert the exact write sequence.
+func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *[]deleteWrite) {
 	t.Helper()
-	sent := new(string)
-	method := new(string)
+	writes := new([]deleteWrite)
+	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
+		if r.Method == http.MethodGet {
 			w.Header().Set("Last-Modified-Version", version)
 			_, _ = w.Write([]byte(`{"key":"K","version":` + version + `,"data":{}}`))
-		case http.MethodDelete, http.MethodPatch:
-			*sent = r.Header.Get("If-Unmodified-Since-Version")
-			*method = r.Method
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+			return
 		}
+		mu.Lock()
+		*writes = append(*writes, deleteWrite{r.Method, r.URL.Path, r.Header.Get("If-Unmodified-Since-Version")})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}))
-	return srv, sent, method
+	return srv, writes
 }
 
 // `items delete` documents a trash operation and `items restore` reverses one, so
@@ -111,38 +118,32 @@ func TestItemsDeletePermanentRequiresDestructiveGate(t *testing.T) {
 	_ = runDeleteCmd(t, cmd, srv.URL, "--permanent", "K")
 }
 
-// With the gate, --permanent still does the hard delete and sends the precondition.
-func TestItemsDeletePermanentSendsVersionHeader(t *testing.T) {
-	srv, sent, method := deleteVersionServer(t, "42")
-	defer srv.Close()
-	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	if err := runDeleteCmd(t, cmd, srv.URL, "--permanent", "K"); err != nil {
-		t.Fatalf("items delete --permanent: %v", err)
-	}
-	if *sent != "42" {
-		t.Errorf("If-Unmodified-Since-Version = %q, want 42", *sent)
-	}
-	if *method != http.MethodDelete {
-		t.Errorf("request method = %q, want DELETE: --permanent must destroy, not trash via PATCH", *method)
-	}
-}
-
-func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
-	srv, sent, method := deleteVersionServer(t, "7")
-	defer srv.Close()
-	// collections delete is now a destructive gated mutation: applying it needs
-	// --allow-destructive as well as --yes, and an unset max-changes cap.
-	cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
-		t.Fatalf("collections delete: %v", err)
-	}
-	if *sent != "7" {
-		t.Errorf("If-Unmodified-Since-Version = %q, want 7", *sent)
-	}
-	if *method != http.MethodDelete {
-		t.Errorf("request method = %q, want DELETE: collections delete is destructive, not a PATCH", *method)
+// Hard deletes must issue exactly one DELETE to the target resource with the
+// fetched version as precondition, and no other write (e.g. a trashing PATCH).
+func TestDestructiveDeletesSendVersionHeader(t *testing.T) {
+	for _, tt := range []struct {
+		name, version, path string
+		newCmd              func(*rootFlags) *cobra.Command
+		args                []string
+	}{
+		{"items delete --permanent", "42", "/users/0/items/K", newItemsDeleteCmd, []string{"--permanent", "K"}},
+		{"collections delete", "7", "/users/0/collections/K", newCollectionsDeleteCmd, []string{"K"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, writes := deleteVersionServer(t, tt.version)
+			defer srv.Close()
+			// Both are destructive gated mutations: applying needs --yes,
+			// --allow-destructive, and an unset max-changes cap.
+			cmd := tt.newCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			if err := runDeleteCmd(t, cmd, srv.URL, tt.args...); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			want := []deleteWrite{{http.MethodDelete, tt.path, tt.version}}
+			if !reflect.DeepEqual(*writes, want) {
+				t.Errorf("writes = %+v, want exactly %+v", *writes, want)
+			}
+		})
 	}
 }
 
