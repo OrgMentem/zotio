@@ -279,6 +279,12 @@ func scanDocxPart(data []byte, notes bool) ([]zoteroPartElem, map[string][]zoter
 			}
 		}
 	}
+	// Fields still open at EOF are truncated; report each Zotero one as unreadable.
+	for _, f := range stack {
+		if strings.Contains(f.instr.String(), "ZOTERO_ITEM") {
+			add(zoteroPartElem{field: &zoteroRawField{code: "", para: para}})
+		}
+	}
 	return body, byID, nil
 }
 
@@ -451,6 +457,9 @@ func zoteroFieldOccurrences(path string, f zoteroRawField, group string) []bibch
 		default:
 			out = append(out, occ(zoteroFieldKeyPrefix+lib+"/"+key, ""))
 		}
+	}
+	if len(out) == 0 {
+		return []bibcheckOccurrence{occ(zoteroUnreadableKey, "")}
 	}
 	return out
 }

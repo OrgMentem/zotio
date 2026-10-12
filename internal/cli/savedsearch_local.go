@@ -115,6 +115,11 @@ func (e *savedSearchUnsupportedError) Error() string {
 // local mirror.
 var errSavedSearchNotMirrored = errors.New("saved search is not in the local mirror")
 
+// errSavedSearchItemsNotSynced means no `items` sync has completed for this
+// mirror, so an evaluation would run against an empty or partial item list
+// and present it as a real (empty) cohort.
+var errSavedSearchItemsNotSynced = errors.New("the local mirror has no completed items sync; run 'zotio sync'")
+
 // savedSearchLocalResult is a locally evaluated saved-search cohort.
 type savedSearchLocalResult struct {
 	// Keys holds every matched item key, sorted. Children (attachments,
@@ -145,6 +150,13 @@ func evaluateSavedSearchLocal(ctx context.Context, db *store.Store, searchKey st
 // evaluateSavedSearchDefinition evaluates a saved-search definition payload
 // (the shape the API and the mirror both use) against the mirrored items.
 func evaluateSavedSearchDefinition(ctx context.Context, db *store.Store, definition []byte) (savedSearchLocalResult, error) {
+	_, syncedAt, _, stateErr := db.GetSyncStateContext(ctx, "items")
+	if stateErr != nil {
+		return savedSearchLocalResult{}, fmt.Errorf("reading items sync state from the local mirror: %w", stateErr)
+	}
+	if syncedAt.IsZero() {
+		return savedSearchLocalResult{}, errSavedSearchItemsNotSynced
+	}
 	var row struct {
 		Conditions *[]savedSearchCondition `json:"conditions"`
 		Data       struct {
@@ -371,13 +383,14 @@ type savedSearchMatcher struct {
 }
 
 type savedSearchPlan struct {
-	any         bool
-	noChildren  bool
-	parents     bool
-	children    bool
-	recursive   bool
-	matchers    []savedSearchMatcher
-	unsupported []string
+	any                bool
+	noChildren         bool
+	parentsAndChildren bool
+	parents            bool
+	children           bool
+	recursive          bool
+	matchers           []savedSearchMatcher
+	unsupported        []string
 }
 
 func (p *savedSearchPlan) refuse(format string, args ...any) {
@@ -474,7 +487,7 @@ func compileSavedSearch(conditions []savedSearchCondition) *savedSearchPlan {
 			case "noChildren":
 				p.noChildren = on
 			case "includeParentsAndChildren":
-				p.parents, p.children = on, on
+				p.parentsAndChildren = on
 			case "includeParents":
 				p.parents = on
 			case "includeChildren":
@@ -995,14 +1008,14 @@ func (p *savedSearchPlan) matcherSet(env *savedSearchEnv, m savedSearchMatcher) 
 	for key := range hits {
 		expanded[key] = true
 	}
-	if p.parents {
+	if p.parentsAndChildren || p.parents {
 		for key := range hits {
 			if it := env.byKey[key]; it != nil && it.canHaveParentLink() {
 				expanded[it.parent] = true
 			}
 		}
 	}
-	if p.children {
+	if p.parentsAndChildren || p.children {
 		for _, it := range env.items {
 			if it.canHaveParentLink() && hits[it.parent] {
 				expanded[it.key] = true

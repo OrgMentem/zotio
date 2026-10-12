@@ -745,3 +745,15 @@ func TestFetchArxivPreprintCandidatesZeroLimitIsUnbounded(t *testing.T) {
 		t.Fatalf("limit 20 returned %d candidates, want 20", len(capped))
 	}
 }
+
+func TestWatchPreprintRemediatedMatchesWholeDOIToken(t *testing.T) {
+	entry := watchPreprintEntry{DOI: "10.2000/paper"}
+	longer := map[string]any{"extra": "published as doi:10.2000/paper2"}
+	if watchPreprintRemediated(longer, entry) {
+		t.Fatal("doi:10.2000/paper2 must not remediate 10.2000/paper")
+	}
+	exact := map[string]any{"extra": "note\nPublished as doi:10.2000/paper"}
+	if !watchPreprintRemediated(exact, entry) {
+		t.Fatal("exact provenance line must remediate")
+	}
+}

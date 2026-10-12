@@ -119,6 +119,9 @@ func seedSavedSearchStore(t *testing.T, searches map[string]string) *store.Store
 			t.Fatalf("seed search %s: %v", key, err)
 		}
 	}
+	if err := db.SaveSyncState("items", "", len(items)); err != nil {
+		t.Fatalf("seed items sync state: %v", err)
+	}
 	return db
 }
 
@@ -329,6 +332,58 @@ func TestSavedSearchLocalAbsentDefinitionIsNotMirrored(t *testing.T) {
 	}
 }
 
+// A mirror holding only the definition (a write-through cache) never ran an
+// items sync, so evaluation must refuse rather than report an empty cohort.
+func TestSavedSearchLocalRefusesWhenItemsNeverSynced(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "zotio.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	def := `{"key":"SS1","version":1,"data":{"key":"SS1","name":"d","conditions":` + ssConds([3]string{"title", "contains", "x"}) + `}}`
+	if _, _, err := db.UpsertBatch("searches", []json.RawMessage{json.RawMessage(def)}); err != nil {
+		t.Fatalf("seed search: %v", err)
+	}
+	got, err := evaluateSavedSearchLocal(context.Background(), db, "SS1")
+	if !errors.Is(err, errSavedSearchItemsNotSynced) {
+		t.Fatalf("err = %v (keys %v), want errSavedSearchItemsNotSynced", err, got.Keys)
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	stubSavedSearchLiveUnavailable(t)
+	r, err := resolveScopeLive(context.Background(), &rootFlags{quiet: true, timeout: time.Second}, localQueryStore{Store: db}, scopeSpec{Type: "saved-search", Value: "SS1"})
+	if err != nil {
+		t.Fatalf("resolveScopeLive: %v", err)
+	}
+	if r.Precondition != preconditionLiveLocalAPI || len(r.Keys) != 0 || !strings.Contains(r.PreconditionDetail, "items sync") {
+		t.Fatalf("result = %+v, want the unmet precondition naming the missing items sync", r)
+	}
+}
+
+// includeParentsAndChildren is independent of includeParents: a later
+// includeParents=false must not cancel the combined flag (Zotero search.js
+// ORs them).
+func TestSavedSearchLocalCombinedFlagSurvivesLaterIncludeParentsFalse(t *testing.T) {
+	db := seedSavedSearchStore(t, map[string]string{
+		"SS1": ssConds([3]string{"title", "contains", "full text"}, [3]string{"includeParentsAndChildren", "true", ""}, [3]string{"includeParents", "false", ""}),
+		"SS2": ssConds([3]string{"title", "contains", "séance"}, [3]string{"includeParentsAndChildren", "true", ""}, [3]string{"includeChildren", "false", ""}),
+	})
+	got, err := evaluateSavedSearchLocal(context.Background(), db, "SS1")
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if want := ssKeys("A1", "B1"); !reflect.DeepEqual(got.Keys, want) {
+		t.Fatalf("parent expansion keys = %v, want %v", got.Keys, want)
+	}
+	got, err = evaluateSavedSearchLocal(context.Background(), db, "SS2")
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if want := ssKeys("A1", "B1"); !reflect.DeepEqual(got.Keys, want) {
+		t.Fatalf("child expansion keys = %v, want %v", got.Keys, want)
+	}
+}
+
 // stubSavedSearchLiveUnavailable makes the live path report the desktop as
 // unreachable, the state the local evaluator exists for.
 func stubSavedSearchLiveUnavailable(t *testing.T) {
@@ -480,6 +535,9 @@ func TestResolveScopeLiveLocalFallbackOpensTheDefaultMirror(t *testing.T) {
 	def := `{"key":"SD","version":1,"data":{"key":"SD","name":"d","conditions":` + ssConds([3]string{"title", "is", "offline"}) + `}}`
 	if _, _, err := seeded.UpsertBatch("searches", []json.RawMessage{json.RawMessage(def)}); err != nil {
 		t.Fatalf("seed search: %v", err)
+	}
+	if err := seeded.SaveSyncState("items", "", 1); err != nil {
+		t.Fatalf("seed sync state: %v", err)
 	}
 	if err := seeded.Close(); err != nil {
 		t.Fatalf("close: %v", err)

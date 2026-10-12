@@ -287,7 +287,24 @@ func watchPreprintRemediated(item map[string]any, entry watchPreprintEntry) bool
 	if strings.ToLower(normalizeDOI(zoteroString(item, "DOI"))) == doi {
 		return true
 	}
-	return strings.Contains(strings.ToLower(zoteroString(item, "extra")), "published as doi:"+doi)
+	const marker = "published as doi:"
+	for _, line := range strings.Split(strings.ToLower(zoteroString(item, "extra")), "\n") {
+		for rest := line; ; {
+			i := strings.Index(rest, marker)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(marker):]
+			token := rest
+			if end := strings.IndexAny(token, " \t\r,;)"); end >= 0 {
+				token = token[:end]
+			}
+			if strings.ToLower(normalizeDOI(strings.TrimRight(token, "."))) == doi {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // lastTouch orders due IDs: never checked first, then the longest-unchecked.

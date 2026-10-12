@@ -268,7 +268,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   other condition is refused with exit 9 and names that condition.
   `searches run` uses the same evaluator with `--data-source local`, and in
   the default mode when the desktop cannot answer; `--data-source live` never
-  reads the mirror.
+  reads the mirror. A mirror that has never completed an items sync is
+  refused with exit 9 instead of answering with an empty list.
 
 - **`items bibcheck --follow-includes`.** A thesis whose chapters are pulled
   in by `\input{}` or `\include{}` passed the manuscript gate while a chapter

@@ -137,6 +137,9 @@ func emitSavedSearchLocalResults(cmd *cobra.Command, flags *rootFlags, definitio
 		if errors.As(err, &unsupported) {
 			return false, unsupported.Error(), nil
 		}
+		if errors.Is(err, errSavedSearchItemsNotSynced) {
+			return false, err.Error(), nil
+		}
 		return false, "", err
 	}
 	prov := localProvenanceContext(ctx, db, "items", reason)

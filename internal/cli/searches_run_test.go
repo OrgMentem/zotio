@@ -41,6 +41,9 @@ func seedSearchesRunStore(t *testing.T, conditions string, items ...json.RawMess
 			t.Fatalf("seed items: %v", err)
 		}
 	}
+	if err := db.SaveSyncState("items", "", len(items)); err != nil {
+		t.Fatalf("seed items sync state: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -328,6 +331,39 @@ func TestSearchesRunLocalDataSourceRefusesAnUnsupportedSearch(t *testing.T) {
 	env := searchesRunPreconditionEnvelope(t, out)
 	if !strings.Contains(env.Detail, "fulltextContent") {
 		t.Fatalf("detail does not name the unsupported condition: %q", env.Detail)
+	}
+}
+
+// A mirror that holds the search definition but never completed an items
+// sync (a write-through cache of the definition alone) must refuse, not print
+// [] as if the search ran against the library.
+func TestSearchesRunLocalDataSourceRefusesWhenItemsNeverSynced(t *testing.T) {
+	srv := newSearchesRunTestServer(t, http.StatusOK, nil)
+	t.Setenv("HOME", t.TempDir())
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir store dir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	definition := `{"key":"SK","version":42,"data":{"key":"SK","name":"mirrored search","conditions":` + ssConds([3]string{"title", "contains", "x"}) + `}}`
+	if _, _, err := db.UpsertBatch("searches", []json.RawMessage{json.RawMessage(definition)}); err != nil {
+		t.Fatalf("seed saved search: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	out, _, err := runSearchesRunTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dataSource: "local"}, "SK")
+	if err == nil {
+		t.Fatalf("searches run against a never-synced mirror succeeded; output %q", out)
+	}
+	assertPreconditionExitCode(t, err, 9)
+	env := searchesRunPreconditionEnvelope(t, out)
+	if !strings.Contains(env.Detail, "items sync") {
+		t.Fatalf("detail does not mention the missing items sync: %q", env.Detail)
 	}
 }
 

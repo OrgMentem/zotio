@@ -259,3 +259,24 @@ func TestFsSearchFulltextScopeGroupAllIsolation(t *testing.T) {
 		t.Fatalf("aggregated hits = %v, want P1 from library 0 and L1 from library 99 only", got)
 	}
 }
+
+// An intersection with a saved-search arm needs the live API even when the
+// mirror is missing; it must not return an empty exit-0 answer.
+func TestFsSearchFulltextIntersectionSavedSearchMissingMirror(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := savedSearchLiveClient
+	savedSearchLiveClient = func(context.Context, *rootFlags) (*client.Client, string, error) {
+		return nil, "Zotero desktop local API is not reachable", nil
+	}
+	t.Cleanup(func() { savedSearchLiveClient = old })
+
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	out, err := fsRunSearch(t, &rootFlags{asJSON: true, dataSource: "local", timeout: time.Second},
+		"calibration", "--fulltext", "--db", dbPath, "--scope", "tag:x AND saved-search:S1")
+	if err == nil {
+		t.Fatalf("intersection with saved-search resolved without live API: %s", out)
+	}
+	if ExitCode(err) != 9 {
+		t.Fatalf("ExitCode = %d (%v), want 9", ExitCode(err), err)
+	}
+}

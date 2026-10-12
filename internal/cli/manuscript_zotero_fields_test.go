@@ -251,6 +251,34 @@ func TestZoteroFieldOccurrencesLegacyAndUnreadable(t *testing.T) {
 	}
 }
 
+func TestZoteroFieldsEmptyPayloadIsUnreadable(t *testing.T) {
+	for _, payload := range []string{`{}`, `null`, `[]`, `{"citationItems":[]}`} {
+		got := zoteroFieldOccurrences("p", zoteroRawField{code: `ADDIN ZOTERO_ITEM CSL_CITATION ` + payload + ` RND1`, para: 2}, "")
+		if len(got) != 1 || got[0].CiteKey != zoteroUnreadableKey || got[0].Line != 2 {
+			t.Fatalf("payload %s = %+v, want one unreadable occurrence", payload, got)
+		}
+	}
+}
+
+func TestZoteroFieldsBibcheckGatesOnUnreadableDocxFields(t *testing.T) {
+	home := bibcheckIsolatedHome(t)
+	zfSeed(t)
+	a := zfCode(zfUser("AAAA1111"))
+	truncated := `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>` + strings.NewReplacer("&", "&amp;", "<", "&lt;").Replace(zfCode(zfUser("BBBB2222"))) + `</w:instrText></w:r>`
+	for name, bad := range map[string]string{"truncated": truncated, "empty": zfDocxSimple(`ADDIN ZOTERO_ITEM CSL_CITATION {} RND1`)} {
+		t.Run(name, func(t *testing.T) {
+			path := zfDocx(t, home, name+".docx", zfDocxField(a, 2), bad)
+			report, _, err := runBibcheckJSON(t, path, "--fail-on-unknown")
+			if ExitCode(err) != 11 {
+				t.Fatalf("ExitCode = %d (err=%v), want 11", ExitCode(err), err)
+			}
+			if report.Summary.Unknown != 1 {
+				t.Fatalf("summary = %+v, want 1 unknown", report.Summary)
+			}
+		})
+	}
+}
+
 func TestZoteroFieldsNotAnArchiveIsUsageError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "paper.docx")
 	writeTestFile(t, path, "not a zip")

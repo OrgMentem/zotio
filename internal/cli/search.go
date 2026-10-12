@@ -241,8 +241,11 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			// mirror returns an empty local answer, but a saved-search scope
 			// must still meet its live prerequisite before that early return.
 			if _, statErr := os.Stat(dbPath); statErr != nil && os.IsNotExist(statErr) {
-				if scope.Type == "saved-search" {
-					result, scopeErr := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, scope)
+				// Only saved-search arms need the live API; other arms of an
+				// intersection would query the absent mirror, so check each
+				// saved-search arm on its own.
+				for _, arm := range savedSearchArms(scope) {
+					result, scopeErr := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, arm)
 					if scopeErr != nil {
 						return scopeErr
 					}
@@ -409,4 +412,19 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		fmt.Fprintln(cmd.OutOrStdout(), string(r))
 	}
 	return nil
+}
+
+// savedSearchArms lists the saved-search arms of the scope: the scope itself,
+// or each saved-search arm of an intersection.
+func savedSearchArms(spec scopeSpec) []scopeSpec {
+	if spec.Type == "saved-search" {
+		return []scopeSpec{spec}
+	}
+	var arms []scopeSpec
+	for _, arm := range spec.Arms {
+		if arm.Type == "saved-search" {
+			arms = append(arms, arm)
+		}
+	}
+	return arms
 }
