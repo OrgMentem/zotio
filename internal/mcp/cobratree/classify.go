@@ -55,7 +55,7 @@ const (
 // separately annotated `mcp:hidden`.
 // Excluding `sync` while exposing `sql` is a broken contract because the typed
 // `sql` tool returns empty results until something populates the store. See
-// AGENTS.md "Agent-Native Surface" for the principle.
+// AGENTS.md "MCP Surface" and dev/adr/0001-mcp-command-surface.md for the principle.
 //
 // Adding a new generator-emitted command means deciding which of the two
 // cases above applies. When in doubt, leave it out — the walker registers

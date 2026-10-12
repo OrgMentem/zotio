@@ -27,10 +27,11 @@ func TestExportHelpMatchesSnapshotFlags(t *testing.T) {
 	if err := parent.Execute(); err != nil {
 		t.Fatalf("export --help: %v", err)
 	}
-	for _, flag := range []string{"--format", "--no-cache"} {
-		if strings.Contains(parentHelp.String(), flag) {
-			t.Fatalf("export --help advertises unreachable %s:\n%s", flag, parentHelp.String())
-		}
+	if !strings.Contains(parentHelp.String(), "--format") {
+		t.Fatalf("export --help omits --format:\n%s", parentHelp.String())
+	}
+	if strings.Contains(parentHelp.String(), "--no-cache") {
+		t.Fatalf("export --help advertises unreachable --no-cache:\n%s", parentHelp.String())
 	}
 
 	var snapshotHelp bytes.Buffer

@@ -140,6 +140,9 @@ backwards-compatible resource exports.`,
 			if !validResources[resource] {
 				return usageErr(fmt.Errorf("unknown resource %q; valid: %s", resource, strings.Join(validResourceList, ", ")))
 			}
+			if format != "jsonl" && format != "json" {
+				return usageErr(fmt.Errorf("unknown export format %q: use jsonl or json", format))
+			}
 
 			var err error
 
@@ -283,10 +286,9 @@ backwards-compatible resource exports.`,
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: stdout)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = unlimited)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass response cache for fresh data")
-	// These flags belong to the legacy resource-export form. Keep accepting
-	// them for existing scripts, but do not advertise them on the parent
+	// --no-cache belongs to the legacy resource-export form. Keep accepting
+	// it for existing scripts, but do not advertise it on the parent
 	// command: `export snapshot` has its own, JSONL-only interface.
-	_ = cmd.Flags().MarkHidden("format")
 	_ = cmd.Flags().MarkHidden("no-cache")
 
 	// paginated/resumable snapshot subcommand.

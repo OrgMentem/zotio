@@ -190,6 +190,25 @@ func TestDesktopWaitExitCodesAndOutcomes(t *testing.T) {
 		}
 	})
 
+	t.Run("watch failure exits 9", func(t *testing.T) {
+		flags, _ := desktopTestEnv(t, true, false)
+		old := desktopWait
+		t.Cleanup(func() { desktopWait = old })
+		desktopWait = func(context.Context, desktop.WaitOptions) (desktop.Status, error) {
+			return desktop.Status{Profiles: []desktop.ProfileStatus{}}, errors.New("inotify limit reached")
+		}
+		got, _, err := runDesktopCmd(t, flags, "", "wait", "--timeout", "1h")
+		if code := ExitCode(err); code != 9 {
+			t.Fatalf("exit code = %d (err %v), want 9", code, err)
+		}
+		if got["outcome"] != "watch_failed" {
+			t.Fatalf("wait = %v, want outcome watch_failed", got)
+		}
+		if err == nil || !strings.Contains(err.Error(), "cannot watch the Zotero directories") {
+			t.Fatalf("err = %v, want the watch failure explained", err)
+		}
+	})
+
 	t.Run("non-local base URL exits 10", func(t *testing.T) {
 		flags, _ := desktopTestEnv(t, true, false)
 		flags.configPath = testConfigFile(t, "https://api.zotero.org/users/123")

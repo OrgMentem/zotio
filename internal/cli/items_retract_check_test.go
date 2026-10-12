@@ -9,9 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func seedRetractionDefaultStore(t *testing.T, items []json.RawMessage) {
@@ -81,6 +86,107 @@ func TestItemsRetractCheckJSONReportsFindingsSummaryAndUnregistered(t *testing.T
 	}
 	if statuses["correction"].UpdateType != "correction" || statuses["correction"].UpdateDate != "2022" {
 		t.Errorf("correction finding = %+v", statuses["correction"])
+	}
+}
+
+// renderOnTTY runs fn with a pseudo-terminal as its output and returns what
+// fn wrote. The human table branch only runs when the output is a terminal.
+// The slave end stays open until a sentinel written after fn returns has
+// come back through the master end, so no output is lost to an early close.
+func renderOnTTY(t *testing.T, fn func(out *os.File) error) string {
+	t.Helper()
+	master, slave, err := openTTYPair()
+	if err != nil {
+		t.Skipf("no pseudo-terminal available: %v", err)
+	}
+	t.Cleanup(func() {
+		slave.Close()
+		master.Close()
+	})
+
+	var mu sync.Mutex
+	var captured bytes.Buffer
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := master.Read(buf)
+			mu.Lock()
+			captured.Write(buf[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	if err := fn(slave); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	const sentinel = "<<tty-done>>"
+	if _, err := slave.WriteString(sentinel); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got := captured.String()
+		mu.Unlock()
+		if i := strings.Index(got, sentinel); i >= 0 {
+			return got[:i]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out reading the rendered output; got %q", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestRenderRetractionCheckReportHumanTable(t *testing.T) {
+	t.Cleanup(snapshotCLIGlobals())
+	noColor = true
+
+	report := retractionCheckReport{
+		Findings: []retractionCheckFinding{{
+			ItemKey:    "FLAGKEY1",
+			Status:     "retracted",
+			UpdateType: "retraction",
+			NoticeDOI:  "10.555/retract-notice",
+			Title:      "Flagged Work",
+		}},
+		Summary: retractionCheckSummary{Checked: 3, Flagged: 1, Errors: 2},
+	}
+	got := renderOnTTY(t, func(out *os.File) error {
+		cmd := &cobra.Command{}
+		cmd.SetOut(out)
+		return renderRetractionCheckReport(cmd, &rootFlags{}, report)
+	})
+	for _, want := range []string{"KEY", "STATUS", "TITLE", "FLAGKEY1", "retracted", "10.555/retract-notice", "Flagged Work"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("table lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "Checked 3") {
+		t.Errorf("output lacks the summary line:\n%s", got)
+	}
+	if !strings.Contains(got, "2 CrossRef lookup error") {
+		t.Errorf("output lacks the lookup-error notice for Summary.Errors=2:\n%s", got)
+	}
+}
+
+func TestRenderRetractionCheckReportHumanOmitsErrorNoticeWithoutErrors(t *testing.T) {
+	t.Cleanup(snapshotCLIGlobals())
+	noColor = true
+
+	got := renderOnTTY(t, func(out *os.File) error {
+		cmd := &cobra.Command{}
+		cmd.SetOut(out)
+		return renderRetractionCheckReport(cmd, &rootFlags{}, retractionCheckReport{Summary: retractionCheckSummary{Checked: 1}})
+	})
+	if !strings.Contains(got, "Checked 1") {
+		t.Errorf("output = %q, want the summary line", got)
+	}
+	if strings.Contains(got, "lookup error") || strings.Contains(got, "KEY") {
+		t.Errorf("output = %q, want no table and no lookup-error notice", got)
 	}
 }
 

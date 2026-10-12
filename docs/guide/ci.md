@@ -2,7 +2,7 @@
 
 Gate a paper, thesis, or review repository on the health of its Zotero library — and wear the result as a live badge.
 
-The building blocks are all in the CLI: `library health` exits `11` when findings meet your severity bar (`--fail-on`), `12` when the local mirror is stale (`--require-fresh`), and `9` when a required precondition is missing — and `--badge` emits [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON. CI is just those exit codes wired to a workflow.
+The building blocks are all in the CLI: `library health` exits `11` when findings meet your severity bar (`--fail-on`), `12` when the local mirror is stale (`--require-fresh`), and `9` when a required precondition is missing — and `--badge` emits [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON. A CI job runs `library health` and fails on a non-zero exit code.
 
 ## The GitHub Action
 
@@ -35,7 +35,7 @@ jobs:
           badge-path: badge.json
 ```
 
-**Why the cron matters:** a normal CI gate runs when the repo changes — but your Zotero library changes when you import a paper, with no push and no PR. The schedule catches library drift (and freshly issued retractions) within a day instead of at submission time. The action also writes a verdict table to the job's step summary and exposes `exit-code`/`message`/`color` outputs for downstream steps.
+**Why the cron matters:** a normal CI gate runs when the repo changes, and your Zotero library changes when you import a paper, with no push and no PR. The schedule catches library drift (and freshly issued retractions) within a day instead of at submission time. The action also writes a verdict table to the job's step summary and exposes `exit-code`/`message`/`color` outputs for downstream steps.
 
 Create a Zotero API key with **read access** at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and store it as the `ZOTERO_API_KEY` repository secret — CI runners have no Zotero desktop, so the Web API key is required there. The action verifies the key up front, masks it in logs, and resolves your user ID automatically.
 
@@ -96,7 +96,7 @@ Because `verify` compares content hashes rather than Zotero version integers, an
 
 ## Publish the badge
 
-`badge-path` writes shields endpoint JSON — even when the gate fails, so the badge never lies. Publish it anywhere shields can reach (GitHub Pages, a gist, any static host) and embed:
+`badge-path` writes shields endpoint JSON even when the gate fails, so the badge always reflects the latest result. Publish it anywhere shields can reach (GitHub Pages, a gist, any static host) and embed:
 
 ```markdown
 ![bibliography](https://img.shields.io/endpoint?url=https://<you>.github.io/<repo>/badge.json)
@@ -115,7 +115,7 @@ This site does exactly that: the zotio README badge is regenerated from the main
 
 ## Without the action
 
-Any CI system works — the action is convenience, not magic:
+Any CI system works. The action wraps these steps:
 
 ```bash
 brew install orgmentem/tap/zotio          # or download a release binary

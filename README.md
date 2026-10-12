@@ -73,7 +73,7 @@ Checked 21 DOI-bearing items; 3 update notices flagged; 2 DOI(s) not registered 
 
 That is the bundled library catching the retracted Wakefield 1998 MMR paper,
 with no Zotero install and no API key (the check queries Crossref live).
-`zotio demo --reset` removes it.
+`zotio demo --reset` deletes and re-seeds the demo library, restoring it to its original state. To remove it, delete the `demo.db` file whose path the demo report prints as `db_path`.
 
 Zotero itself red-flags a retracted item when you open it, from the same
 Retraction Watch data. `zotio` adds what the desktop app does not: corrections
@@ -99,11 +99,11 @@ zotio items bibcheck thesis.tex --fail-on-unknown  # every \cite{} resolves? (ex
 
 Zotero's GUI is great for reading and citing. It is painful the moment you need to *operate* on a library at scale: find every article missing a PDF, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context. Existing CLIs and `pyzotero` give you raw API access — then you write the glue, and you own the risk.
 
-`zotio` is the glue, hardened:
+`zotio` provides that glue with these properties:
 
-- **Reads are local and free.** Point at your running desktop app — no API key, no cloud round-trip, works offline against a synced mirror.
+- **Reads are local and free.** Point `zotio` at your running desktop app: no API key and no cloud round-trip, and it works offline against a synced mirror.
 - **Writes are preview-first.** Every mutation shows a plan before it touches anything. Gates cap blast radius; irreversible ops require an explicit opt-in; an append-only journal lets you undo the reversible ones.
-- **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is — so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it does the assembly and budgeting a model is bad at, then hands off.
+- **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is, so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it assembles and budgets the context, then hands it to the model.
 
 It is the tool you reach for when the GUI gets too manual: **find the problems that bite downstream, fix them safely, ingest with review, and give agents a surface they can trust.**
 
@@ -111,7 +111,7 @@ It is the tool you reach for when the GUI gets too manual: **find the problems t
 
 ## How it works
 
-Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update route to the Zotero Web API** and need a configured key. The connector path is a *preference, not a guarantee*: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). For `attachments add` on an existing item, `--via connector` is an explicit desktop route that still needs a Web API key to move the file to its target. Writes are preview-first; item update reads its version from the Web write target at apply time. Supported applied changes update an existing local mirror so a follow-up read can see them without another sync.
+Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update route to the Zotero Web API** and need a configured key. The connector path is a preference: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). For `attachments add` on an existing item, `--via connector` is an explicit desktop route that still needs a Web API key to move the file to its target. Writes are preview-first; item update reads its version from the Web write target at apply time. Supported applied changes update an existing local mirror so a follow-up read can see them without another sync.
 
 ![zotio hybrid routing architecture](docs/assets/architecture.svg)
 
@@ -129,7 +129,7 @@ Run `zotio doctor` any time to see connectivity, cache freshness, and a `writes:
 
 ## The flagship: `library health`
 
-One command that answers a real question — *"is this library fit for the next thing I'm going to do with it?"* — instead of making you run six separate audits and eyeball the output.
+One command that answers a real question — *"is this library fit for the next thing I'm going to do with it?"* — in place of six separate audits.
 
 ![library health diagnostic and CI gate](docs/assets/library-health.svg)
 
@@ -161,11 +161,11 @@ Remediation plan (preview-first)
   duplicate_candidates — zotio items duplicates resolve --doi (preview first; add --yes after review)
 ```
 
-Three things make it trustworthy, not just convenient:
+Three properties make it suitable for gating:
 
 - **It gates CI.** `--fail-on critical|high|info|none` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
-- **It never lies by omission.** A check that needs the desktop app (broken attachments) doesn't silently vanish — it becomes a **loud skip with a remedy**, and if that skip is gate-relevant the run exits **`9`** (setup required) rather than falsely passing.
-- **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`) — health *diagnoses*, dedicated commands *treat*.
+- **It reports what it could not check.** A check that needs the desktop app (broken attachments) becomes a **loud skip with a remedy**. If that skip is gate-relevant, the run exits **`9`** (setup required) instead of passing.
+- **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`). `library health` reports problems; the named commands fix them.
 
 ### CI for your bibliography
 
@@ -202,13 +202,13 @@ Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates
 
 ## Import without making a mess
 
-Bulk-import references through a review checkpoint. Nothing hits your library until you've seen — and can edit — the manifest.
+Bulk-import references through a review checkpoint. `import apply` writes only after you review and, if needed, edit the manifest.
 
 ![reviewable import pipeline: scan, resolve, apply](docs/assets/import-flow.svg)
 
 ```bash
 zotio import scan ~/Downloads/papers          # read-only: triage new vs duplicate vs attach-candidate
-zotio import resolve ~/Downloads/papers -o manifest.json   # resolve DOI/PMID/arXiv/ISBN → editable manifest
+zotio import resolve ~/Downloads/papers > manifest.json   # resolve DOI/PMID/arXiv/ISBN → editable manifest
 #   ... review and edit manifest.json ...
 zotio import apply manifest.json --dry-run     # preview the writes
 zotio import apply manifest.json --yes         # schema-valid creation via the Web API
@@ -229,7 +229,8 @@ Keep an Obsidian or Logseq vault in step with Zotero **in both directions** — 
 ![conflict-safe Obsidian/Logseq vault round-trip](docs/assets/vault-roundtrip.svg)
 
 ```bash
-zotio vault sync              # Zotero → one Markdown note per item (idempotent)
+zotio vault sync              # preview: shows the notes it would write
+zotio vault sync --yes        # Zotero → one Markdown note per item (idempotent)
 zotio vault push --dry-run    # your ## Notes region → a managed Zotero child note
 zotio vault pull --dry-run    # remote note edits → your ## Notes region (fast-forward only)
 ```
@@ -297,10 +298,10 @@ format = "obsidian"      # or "logseq"
 `zotio` publishes a machine-readable trust model so an MCP host, CI job, or shell script can discover what's safe, fresh, and writable *before* it acts.
 
 - **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.)
-- **`capabilities`** — the full registry (140 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions. Commands with several write routes also list each route's target and preconditions.
+- **`capabilities`** — the full command registry, each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions. Commands with several write routes also list each route's target and preconditions.
 - **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints.
 - **`which "<capability in your words>"`** — resolve a natural-language query to the command that does it.
-- **Stable envelopes** — one mutation plan/result shape, one finding shape, one exit-code contract. Learn the grammar once.
+- **Stable envelopes** — one mutation plan/result shape, one finding shape, and one exit-code contract across commands.
 
 **Scope grammar** — one selection vocabulary across reads, audits, exports, enrich, and full-text search (`search QUERY --fulltext --scope collection:KEY` ranks and limits inside the cohort):
 
@@ -485,9 +486,25 @@ zotio desktop status    # is Zotero desktop running, and does its connector acce
 
 Config file: `~/.config/zotio/config.toml`. Static request headers can be set under `[headers]`; per-command overrides take precedence.
 
-| Variable | Required | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `ZOTERO_API_KEY` | No for reads | Required for writes (routed to the Zotero Web API), group libraries, and access while the desktop app is closed. Local desktop reads need no key. Configure once by piping the token into `zotio auth set-token --stdin`. |
+| `ZOTERO_API_KEY` | unset | Required for writes (routed to the Zotero Web API), group libraries, and access while the desktop app is closed. Local desktop reads need no key. Configure once by piping the token into `zotio auth set-token --stdin`. |
+| `ZOTERO_USER_ID` | from config | Overrides the Web API user ID, so writes route without a `keys/current` lookup. |
+| `ZOTERO_BASE_URL` | config value | Overrides the API base URL (used for tests and mock servers). |
+| `ZOTERO_CONFIG` | `config.toml` in the config directory | Path of the config file to load. |
+| `ZOTERO_PROFILE` | unset | Profile name; the `--profile` flag takes precedence. `zotio-mcp` also reports it at startup. |
+| `ZOTERO_PROFILE_DIR` | auto-discovered | Pins the Zotero desktop profile directory instead of discovering it. |
+| `ZOTERO_GROUP` | unset | Group library ID; the `--group` flag takes precedence. `zotio-mcp` requires a numeric ID. |
+| `ZOTERO_QUEUE_TAG` | `to-read` | Tag that `reading-list` uses as its queue. |
+| `ZOTERO_CONFIG_DIR`, `ZOTERO_DATA_DIR`, `ZOTERO_STATE_DIR`, `ZOTERO_CACHE_DIR` | platform default | Absolute directory for that kind of file. Each takes precedence over `ZOTERO_HOME` and the XDG variables. |
+| `ZOTERO_HOME` | unset | Absolute base directory; `config`, `data`, `state`, and `cache` subdirectories live under it. |
+| `ZOTIO_DEMO` | unset | Any value other than empty or `0` runs commands against the bundled demo library. |
+| `UNPAYWALL_EMAIL` | unset | Contact email that `items enrich` uses for Unpaywall lookups. |
+| `ZOTIO_MCP_SURFACE` | `facade` | `mirror` registers one MCP tool per command; any other value keeps the `command_search` and `command_run` pair. |
+| `ZOTIO_MCP_TRANSPORT` | `stdio` | Transport for `zotio-mcp` (`stdio` or `http`). |
+| `ZOTIO_MCP_TOKEN` | generated per run | Bearer token that the `zotio-mcp` HTTP transport requires. `--mcp-auth-token-file` takes precedence. When neither is set, the server generates a token for each start and writes it to a private file in the state directory. |
+| `ZOTERO_FEEDBACK_ENDPOINT` | unset | Public `https://` URL that receives `zotio feedback` entries as JSON. Entries always go to `~/.zotio/feedback.jsonl` first; they are posted only with `--send` or `ZOTERO_FEEDBACK_AUTO_SEND`. |
+| `ZOTERO_FEEDBACK_AUTO_SEND` | off | `1`, `true`, or `yes` posts each feedback entry to the endpoint without `--send`. A failed automatic send prints a warning and the command still exits 0. |
 
 ---
 

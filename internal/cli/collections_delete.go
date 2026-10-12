@@ -3,9 +3,7 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -72,11 +70,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var (
-				applyErr   error
-				data       json.RawMessage
-				statusCode int
-			)
+			var applyErr error
 			ops[0].Apply = func() (string, any, error) {
 				// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
 				// without it). newWriteClient points at the write target, so this
@@ -111,7 +105,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 					detail any
 					delErr error
 				)
-				data, statusCode, status, detail, delErr = deleteWithVersionGuard(c, path, version)
+				_, _, status, detail, delErr = deleteWithVersionGuard(c, path, version)
 				if delErr != nil {
 					if flags.ignoreMissing && strings.Contains(delErr.Error(), "HTTP 404") {
 						return "no_op", map[string]any{
@@ -131,78 +125,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				}
 				return runErr
 			}
-			// The rest of this command's rendering assumes a real "applied" DELETE
-			// populated data/statusCode from the wire. --ignore-missing's no_op
-			// never calls DeleteWithHeaders, so those stay zero-valued, and falling
-			// through produced {"status":0,"success":false} — a no-op that reads as
-			// a failure. Render the standard mutation envelope for that one case,
-			// which is where items delete's own no_op already lives; leave the
-			// "applied" path exactly as it was; that legacy shape is unrelated to
-			// this fix and untouched.
-			if env.Result != nil && len(env.Result.Items) > 0 && env.Result.Items[0].Status == "no_op" {
-				return renderMutation(cmd, flags, env, nil)
-			}
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				// Check if response contains an array (directly or wrapped in "data")
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
-					} else {
-						return nil
-					}
-				} else {
-					var wrapped struct {
-						Data []map[string]any `json:"data"`
-					}
-					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
-						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
-							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
-						} else {
-							return nil
-						}
-					}
-				}
-			}
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				if flags.quiet {
-					return nil
-				}
-				// Apply --compact and --select to the API response before wrapping.
-				// --select wins when both are set: explicit field choice trumps the
-				// generic high-gravity allow-list. Otherwise --compact still applies
-				// when --agent is on but the user did not name fields.
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				envelope := map[string]any{
-					"action":   "delete",
-					"resource": "collections",
-					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
-				}
-				if flags.dryRun {
-					envelope["dry_run"] = true
-					envelope["status"] = 0
-					envelope["success"] = false
-				}
-				if len(filtered) > 0 {
-					var parsed any
-					if err := json.Unmarshal(filtered, &parsed); err == nil {
-						envelope["data"] = parsed
-					}
-				}
-				envelopeJSON, err := json.Marshal(envelope)
-				if err != nil {
-					return err
-				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return renderMutation(cmd, flags, env, nil)
 		},
 	}
 

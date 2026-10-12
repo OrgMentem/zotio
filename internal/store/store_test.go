@@ -377,6 +377,141 @@ func TestReapMirroredItemRollsBackWhenTheDeletionMarkerCannotBeWritten(t *testin
 	}
 }
 
+// poolSynchronousLevels reads PRAGMA synchronous on every connection the pool
+// can hold at once. The pool is capped at two connections, so holding two
+// reaches each one; a connection left at FULL would show up here.
+func poolSynchronousLevels(t *testing.T, s *Store) []int {
+	t.Helper()
+	ctx := context.Background()
+	var conns []*sql.Conn
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	var levels []int
+	for i := range 2 {
+		c, err := s.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("pool conn %d: %v", i, err)
+		}
+		conns = append(conns, c)
+		var level int
+		if err := c.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&level); err != nil {
+			t.Fatalf("read synchronous on conn %d: %v", i, err)
+		}
+		levels = append(levels, level)
+	}
+	return levels
+}
+
+// SQLite reports synchronous as 1 for NORMAL and 2 for FULL.
+const (
+	synchronousNormal = 1
+	synchronousFull   = 2
+)
+
+// A reap records authoritative deletion state, so its commit has to survive
+// power loss. The durable transaction helper runs the reap on a connection
+// raised to FULL and hands the connection back at NORMAL, so every other write
+// keeps the cheaper setting. A power cut cannot be simulated from a Go test:
+// the OS page cache survives the test process, so an unsynced commit is still
+// readable after a reopen. The connection setting is the observable seam.
+func TestWithDurableTxRunsAtFullAndRestoresNormal(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenWithContext(ctx, filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	for _, level := range poolSynchronousLevels(t, s) {
+		if level != synchronousNormal {
+			t.Fatalf("pool synchronous before = %d, want NORMAL (%d)", level, synchronousNormal)
+		}
+	}
+
+	var inside int
+	s.writeMu.Lock()
+	err = s.withDurableTx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&inside)
+	})
+	s.writeMu.Unlock()
+	if err != nil {
+		t.Fatalf("withDurableTx: %v", err)
+	}
+	if inside != synchronousFull {
+		t.Fatalf("synchronous inside the durable transaction = %d, want FULL (%d)", inside, synchronousFull)
+	}
+	for _, level := range poolSynchronousLevels(t, s) {
+		if level != synchronousNormal {
+			t.Fatalf("pool synchronous after commit = %d, want NORMAL (%d)", level, synchronousNormal)
+		}
+	}
+
+	// A failing transaction restores the setting too.
+	boom := errors.New("boom")
+	s.writeMu.Lock()
+	err = s.withDurableTx(ctx, func(*sql.Tx) error { return boom })
+	s.writeMu.Unlock()
+	if !errors.Is(err, boom) {
+		t.Fatalf("withDurableTx error = %v, want %v", err, boom)
+	}
+	for _, level := range poolSynchronousLevels(t, s) {
+		if level != synchronousNormal {
+			t.Fatalf("pool synchronous after rollback = %d, want NORMAL (%d)", level, synchronousNormal)
+		}
+	}
+}
+
+// The reap result is the same through the durable path, and neither a
+// successful nor a failed reap leaves a pool connection at FULL.
+func TestReapMirroredItemLeavesPoolAtNormal(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenWithContext(ctx, filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	live := json.RawMessage(`{"key":"DUR1","version":3,"data":{"key":"DUR1","itemType":"book","title":"Durable"}}`)
+	if _, err := s.UpsertKeyed("items", []string{"DUR1"}, []json.RawMessage{live}); err != nil {
+		t.Fatalf("seed live: %v", err)
+	}
+	if err := s.ReapMirroredItem("DUR1"); err != nil {
+		t.Fatalf("ReapMirroredItem: %v", err)
+	}
+	for _, resourceType := range []string{"items", "items-trash"} {
+		if got, err := s.Get(resourceType, "DUR1"); got != nil || !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s row after reap: got=%s err=%v, want ErrNotFound", resourceType, got, err)
+		}
+		pending, err := s.PendingWrites(resourceType)
+		if err != nil {
+			t.Fatalf("PendingWrites %s: %v", resourceType, err)
+		}
+		if !pending["DUR1"].Deleted {
+			t.Fatalf("deletion marker for %s/DUR1 missing after reap", resourceType)
+		}
+	}
+	for _, level := range poolSynchronousLevels(t, s) {
+		if level != synchronousNormal {
+			t.Fatalf("pool synchronous after reap = %d, want NORMAL (%d)", level, synchronousNormal)
+		}
+	}
+
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_durable_marker BEFORE INSERT ON pending_writes WHEN NEW.deleted=1 AND NEW.id='DUR2' BEGIN SELECT RAISE(ABORT, 'injected marker failure'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	if err := s.ReapMirroredItem("DUR2"); err == nil {
+		t.Fatal("ReapMirroredItem succeeded despite the injected marker failure")
+	}
+	for _, level := range poolSynchronousLevels(t, s) {
+		if level != synchronousNormal {
+			t.Fatalf("pool synchronous after failed reap = %d, want NORMAL (%d)", level, synchronousNormal)
+		}
+	}
+}
+
 // A deletion outranks a field change for the same key. One mutation envelope
 // can carry both (a title update and a permanent delete of the same item), and
 // the applied order inside the envelope is not the store's to choose. The

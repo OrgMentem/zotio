@@ -633,23 +633,6 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 		t.Fatalf("determineSinceParam = %q, want since", got)
 	}
 
-	oldDispatchers := discriminatorDispatchers
-	discriminatorDispatchers = map[string]discriminatorDispatch{
-		"sync-test-base": {
-			Field: "kind",
-			Values: map[string]string{
-				"child": "sync-test-child",
-			},
-		},
-	}
-	defer func() { discriminatorDispatchers = oldDispatchers }()
-	if got := resolveDiscriminatedResource("sync-test-base", map[string]any{"kind": "child"}); got != "sync-test-child" {
-		t.Fatalf("resolveDiscriminatedResource matched = %q, want sync-test-child", got)
-	}
-	if got := resolveDiscriminatedResource("sync-test-base", map[string]any{"kind": "other"}); got != "sync-test-base" {
-		t.Fatalf("resolveDiscriminatedResource fallback = %q, want sync-test-base", got)
-	}
-
 	if got := extractID("items", map[string]any{"id": "item-1"}); got != "item-1" {
 		t.Fatalf("extractID present = %q, want item-1", got)
 	}

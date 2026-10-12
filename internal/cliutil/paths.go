@@ -44,14 +44,11 @@ const (
 	PathKindCache
 )
 
-// pathHomeOverride holds the --home flag value. It is set
-// once at command init; the MCP server's request handlers resolve
-// paths concurrently through ResolveKindDir, so access is guarded.
+// The MCP server's request handlers resolve paths concurrently through
+// ResolveKindDir, so the warning set is guarded.
 var (
-	pathHomeOverrideMu sync.RWMutex
-	pathHomeOverride   string
-	pathWarnedMu       sync.Mutex
-	pathWarned         = map[string]struct{}{}
+	pathWarnedMu sync.Mutex
+	pathWarned   = map[string]struct{}{}
 )
 
 type PathResolution struct {
@@ -66,12 +63,6 @@ type PathResolution struct {
 type PathIgnoredOverride struct {
 	Name  string
 	Value string
-}
-
-func homeOverride() string {
-	pathHomeOverrideMu.RLock()
-	defer pathHomeOverrideMu.RUnlock()
-	return pathHomeOverride
 }
 
 func ConfigDir() (string, error) {
@@ -185,9 +176,6 @@ func ResolveKindDir(kind PathKind) (PathResolution, error) {
 		return pathResolution(kind, override, "per-kind-env", kindEnvVar(kind), ignored), nil
 	} else if skipped != nil {
 		ignored = append(ignored, *skipped)
-	}
-	if override := homeOverride(); override != "" {
-		return pathResolution(kind, filepath.Join(override, kindName(kind)), "--home", "--home", ignored), nil
 	}
 	if home, ok, skipped := envDir(envPrefix + "_HOME"); ok {
 		return pathResolution(kind, filepath.Join(home, kindName(kind)), "home-env", envPrefix+"_HOME", ignored), nil

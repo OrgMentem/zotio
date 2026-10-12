@@ -446,14 +446,12 @@ Exit codes & warnings:
 			var totalSynced int
 			var errCount int
 			var fullIncompleteResources []string
-			var criticalErrCount int
 			var warnCount int
 			// cleanSync marks the resources whose pass completed without error or
 			// access warning. The incremental reconciliation below only acts for
 			// those: it needs a successfully observed pass to build on.
 			cleanSync := map[string]bool{}
 			var failedResources []string
-			var criticalFailedResources []string
 			var warnedResources []string
 			var successCount int
 			var degradedResources []string
@@ -468,10 +466,6 @@ Exit codes & warnings:
 					errCount++
 					if full {
 						fullIncompleteResources = append(fullIncompleteResources, detail)
-					}
-					if criticalResources[res.Resource] {
-						criticalErrCount++
-						criticalFailedResources = append(criticalFailedResources, detail)
 					}
 					if ExitCode(res.Err) == 13 {
 						degradedResources = append(degradedResources, detail)
@@ -590,9 +584,6 @@ Exit codes & warnings:
 			}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
-			}
-			if criticalErrCount > 0 {
-				return fmt.Errorf("%d critical resource(s) failed to sync: %s", criticalErrCount, strings.Join(criticalFailedResources, "; "))
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
@@ -1986,13 +1977,6 @@ func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
 	return ""
 }
 
-type discriminatorDispatch struct {
-	Field  string
-	Values map[string]string
-}
-
-var discriminatorDispatchers = map[string]discriminatorDispatch{}
-
 func upsertResourceBatch(ctx context.Context, db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
 	// Rows pulled from the read plane predate any write the read plane has not
@@ -2029,7 +2013,7 @@ func syncBatchRowRefs(resource string, items []json.RawMessage) []syncRowRef {
 		if json.Unmarshal(item, &obj) != nil {
 			continue
 		}
-		target := canonicalStoreResource(resolveDiscriminatedResource(resource, obj))
+		target := canonicalStoreResource(resource)
 		ref := syncRowRef{resource: target, id: extractID(target, obj)}
 		if ref.id == "" || seen[ref] {
 			continue
@@ -2041,52 +2025,16 @@ func syncBatchRowRefs(resource string, items []json.RawMessage) []syncRowRef {
 }
 
 // writeResourceBatch stores one reconciled page under the resource's store
-// type, or under each row's discriminated type.
+// type.
 func writeResourceBatch(ctx context.Context, db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
-	if _, ok := discriminatorDispatchers[resource]; !ok {
-		// store.UpsertBatch has its own generated ID map;
-		// key resources with sync-local overrides here so tags and global schema
-		// rows do not drop as primary_key_unresolved.
-		if _, hasOverride := resourceIDFieldOverrides[storeResource]; hasOverride {
-			return upsertResourceBatchWithExtractedIDs(ctx, db, storeResource, items)
-		}
-		return db.UpsertBatchContext(ctx, storeResource, items)
+	// store.UpsertBatch has its own generated ID map;
+	// key resources with sync-local overrides here so tags and global schema
+	// rows do not drop as primary_key_unresolved.
+	if _, hasOverride := resourceIDFieldOverrides[storeResource]; hasOverride {
+		return upsertResourceBatchWithExtractedIDs(ctx, db, storeResource, items)
 	}
-
-	grouped := map[string][]json.RawMessage{}
-	order := []string{}
-	for _, item := range items {
-		target := storeResource
-		var obj map[string]any
-		if err := json.Unmarshal(item, &obj); err == nil {
-			target = canonicalStoreResource(resolveDiscriminatedResource(resource, obj))
-		}
-		if _, ok := grouped[target]; !ok {
-			order = append(order, target)
-		}
-		grouped[target] = append(grouped[target], item)
-	}
-
-	var stored, extractFailures int
-	for _, target := range order {
-		if err := ctx.Err(); err != nil {
-			return stored, extractFailures, err
-		}
-		var targetStored, targetExtractFailures int
-		var err error
-		if _, hasOverride := resourceIDFieldOverrides[target]; hasOverride {
-			targetStored, targetExtractFailures, err = upsertResourceBatchWithExtractedIDs(ctx, db, target, grouped[target])
-		} else {
-			targetStored, targetExtractFailures, err = db.UpsertBatchContext(ctx, target, grouped[target])
-		}
-		if err != nil {
-			return stored, extractFailures + targetExtractFailures, err
-		}
-		stored += targetStored
-		extractFailures += targetExtractFailures
-	}
-	return stored, extractFailures, nil
+	return db.UpsertBatchContext(ctx, storeResource, items)
 }
 
 // sync-owned ID overrides are applied before keyed batch
@@ -2131,21 +2079,6 @@ func canonicalStoreResource(resource string) string {
 	}
 }
 
-func resolveDiscriminatedResource(resource string, obj map[string]any) string {
-	dispatcher, ok := discriminatorDispatchers[resource]
-	if !ok || dispatcher.Field == "" {
-		return resource
-	}
-	value := store.LookupFieldValue(obj, dispatcher.Field)
-	if value == nil {
-		return resource
-	}
-	if target, ok := dispatcher.Values[fmt.Sprintf("%v", value)]; ok && target != "" {
-		return target
-	}
-	return resource
-}
-
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(ctx context.Context, db *store.Store, resource string, data json.RawMessage) error {
 	// An empty or array payload is a list response with nothing in it, not a
@@ -2174,20 +2107,15 @@ func upsertSingleObject(ctx context.Context, db *store.Store, resource string, d
 		return fmt.Errorf("decoding single response for %s: %w", resource, err)
 	}
 
-	resource = resolveDiscriminatedResource(resource, obj)
-
 	id := extractID(resource, obj)
 	if id == "" {
 		id = resource
 	}
 
-	switch resource {
-	default:
-		ref := syncRowRef{resource: canonicalStoreResource(resource), id: id}
-		return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func() error {
-			return db.UpsertContext(ctx, ref.resource, ref.id, data)
-		})
-	}
+	ref := syncRowRef{resource: canonicalStoreResource(resource), id: id}
+	return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func() error {
+		return db.UpsertContext(ctx, ref.resource, ref.id, data)
+	})
 }
 
 // normalizeSyncResources preserves the caller's resource order while removing
@@ -2256,16 +2184,6 @@ func syncResourcePath(resource string) (string, error) {
 // resourceIDFieldOverrides is the store's shared map: both sync and the
 // store's UpsertBatch must key rows identically, so there is one definition.
 var resourceIDFieldOverrides = store.ResourceIDFieldOverrides
-
-// criticalResources is the template-time projection of per-resource Critical
-// (set by the profiler from the spec's path-item x-critical extension). It
-// is consulted at error-aggregation time so a non-critical failure can be
-// downgraded to a sync_warning + exit 0 unless --strict was passed.
-//
-// Includes both flat resources and dependent (parent-child) resources so a
-// failed child sync flagged x-critical: true exits non-zero just like a
-// flat-resource critical failure.
-var criticalResources = map[string]bool{}
 
 // extractID delegates to the store's identity function so sync-owned keyed
 // writes and direct UpsertBatch calls cannot disagree about composite tag IDs.

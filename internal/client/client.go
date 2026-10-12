@@ -1862,13 +1862,6 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	return json.RawMessage(`{"dry_run": true}`), 0, nil
 }
 
-func (c *Client) ConfiguredTimeout() time.Duration {
-	if c.HTTPClient != nil && c.HTTPClient.Timeout > 0 {
-		return c.HTTPClient.Timeout
-	}
-	return 30 * time.Second
-}
-
 func (c *Client) authHeader() (string, error) {
 	if c.Config == nil {
 		return "", nil

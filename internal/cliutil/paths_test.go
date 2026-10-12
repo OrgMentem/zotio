@@ -28,15 +28,6 @@ func resetPathEnv(t *testing.T) string {
 	} {
 		t.Setenv(name, "")
 	}
-	pathHomeOverrideMu.Lock()
-	prev := pathHomeOverride
-	pathHomeOverride = ""
-	pathHomeOverrideMu.Unlock()
-	t.Cleanup(func() {
-		pathHomeOverrideMu.Lock()
-		pathHomeOverride = prev
-		pathHomeOverrideMu.Unlock()
-	})
 	return home
 }
 

@@ -6,6 +6,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Changed — breaking
 
+- **Applied `collections delete` renders the standard mutation envelope.**
+  The applied path used to print the raw 204 body, so an interactive terminal
+  showed one blank line. It now renders the plan and result summary with the
+  collection key, as `items delete` does. With `--json` or a non-terminal
+  stdout, the output is the mutation envelope and replaces the old
+  `{action, resource, path, status, success}` object.
+
 - **Named health baselines, health reports, schema baselines, and wrapped SVG
   cards now refuse a busy output path with exit 9.** Health locks both named
   paths before reading a baseline. Schema captures and updates lock before
@@ -332,6 +339,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   that write or delete local files.
 
 ### Fixed
+- **`zotio export` validates `--format` and lists it in help.** A value other
+  than `jsonl` or `json` is a usage error (exit 2) raised before any request.
+  Before, any unknown value was written as JSON.
+- **A permanent delete's local markers survive a power loss.**
+  `ReapMirroredItem` commits the mirror-row removal and the deletion markers
+  with `synchronous=FULL`. Other store writes keep `synchronous=NORMAL`.
 - **`items enrich` reports a provider outage as an error, not as "no match".**
   A transport failure, HTTP 5xx or 429, or a cancelled request from CrossRef,
   OpenAlex, Semantic Scholar or Unpaywall no longer records the item as having

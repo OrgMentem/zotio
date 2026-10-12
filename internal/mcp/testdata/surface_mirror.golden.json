@@ -741,6 +741,10 @@
           "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
+        "format": {
+          "description": "Output format: jsonl or json (default: jsonl)",
+          "type": "string"
+        },
         "limit": {
           "description": "Maximum records to export (0 = unlimited) (default: 0)",
           "type": "number"

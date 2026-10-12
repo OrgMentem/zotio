@@ -33,7 +33,8 @@ type ItemQuery struct {
 }
 
 // itemSortColumns maps Zotero sort field names to a SQL ORDER BY expression
-// over the stored item payload. Unmapped fields fall back to the item key.
+// over the stored item payload. Unmapped fields order by dateModified
+// descending, then item key ascending.
 var itemSortColumns = map[string]string{
 	"title":               "json_extract(r.data, '$.data.title')",
 	"date":                "json_extract(r.data, '$.data.date')",

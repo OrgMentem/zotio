@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -2855,18 +2856,61 @@ func (s *Store) ReapResource(resourceType, id string) error {
 func (s *Store) ReapMirroredItem(key string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	tx, err := s.db.Begin()
+	ctx := context.Background()
+	return s.withDurableTx(ctx, func(tx *sql.Tx) error {
+		for _, resourceType := range []string{"items", "items-trash"} {
+			if err := reapResourceLocked(ctx, tx, resourceType, key); err != nil {
+				return err
+			}
+			if err := markPendingDeletionLocked(ctx, tx, resourceType, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// withDurableTx runs fn in a transaction whose commit is synced to disk before
+// it returns. The pool runs with synchronous=NORMAL, which in WAL mode does
+// not sync the WAL at commit: an acknowledged commit can be lost on power
+// loss. That trade is right for mirror rows a sync rebuilds, and wrong for a
+// transaction that records authoritative deletion state (ADR-0007), where the
+// loss leaves the mirror row alive with no marker to suppress it.
+//
+// synchronous is a per-connection setting that SQLite reads at commit, and
+// PRAGMA synchronous is a no-op inside a transaction. The helper therefore
+// takes one dedicated connection, raises it to FULL before BEGIN, and puts it
+// back to NORMAL after the transaction ends and before the connection returns
+// to the pool. A connection whose setting cannot be restored is discarded, so
+// the pool never hands out a FULL connection by accident. Every other write
+// keeps the NORMAL cost. The caller must hold writeMu.
+func (s *Store) withDurableTx(ctx context.Context, fn func(tx *sql.Tx) error) (err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return fmt.Errorf("raising synchronous to FULL: %w", err)
+	}
+	// Registered before the transaction's rollback defer, so it runs after the
+	// transaction has ended. It uses a fresh context so a cancelled ctx cannot
+	// leave the connection at FULL.
+	defer func() {
+		if _, rerr := conn.ExecContext(context.Background(), "PRAGMA synchronous=NORMAL"); rerr != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			if err == nil {
+				err = fmt.Errorf("restoring synchronous to NORMAL: %w", rerr)
+			}
+		}
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, resourceType := range []string{"items", "items-trash"} {
-		if err := reapResourceLocked(context.Background(), tx, resourceType, key); err != nil {
-			return err
-		}
-		if err := markPendingDeletionLocked(context.Background(), tx, resourceType, key); err != nil {
-			return err
-		}
+	if err := fn(tx); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -206,12 +206,13 @@ func TestGuardedPutReconcilesLostCommittedResponse(t *testing.T) {
 	desired := map[string]any{"name": "Requested", "parentCollection": "PARENT01"}
 
 	for _, tc := range []struct {
-		name       string
-		serveGet   func(w http.ResponseWriter)
-		wantStatus string
-		wantCode   int
-		wantData   bool
-		wantErr    bool
+		name        string
+		serveGet    func(w http.ResponseWriter)
+		wantStatus  string
+		wantCode    int
+		wantData    bool
+		wantErr     bool
+		wantErrText string
 	}{
 		{
 			name: "requested write landed",
@@ -231,10 +232,21 @@ func TestGuardedPutReconcilesLostCommittedResponse(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "read-back fails",
-			serveGet:   func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) },
-			wantStatus: "failed",
-			wantErr:    true,
+			name: "read-back body cannot be compared",
+			serveGet: func(w http.ResponseWriter) {
+				w.Header().Set("Last-Modified-Version", "8")
+				_, _ = w.Write([]byte(`["not an object"]`))
+			},
+			wantStatus:  "failed",
+			wantErr:     true,
+			wantErrText: "cannot be compared",
+		},
+		{
+			name:        "read-back fails",
+			serveGet:    func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) },
+			wantStatus:  "failed",
+			wantErr:     true,
+			wantErrText: "reconciliation failed",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -262,8 +274,8 @@ func TestGuardedPutReconcilesLostCommittedResponse(t *testing.T) {
 					t.Fatalf("detail = %#v, want reconciled evidence naming the observed version", detail)
 				}
 			}
-			if tc.wantStatus == "failed" && !strings.Contains(err.Error(), "reconciliation failed") {
-				t.Errorf("error = %q, want it to name the failed reconciliation", err)
+			if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantErrText)
 			}
 		})
 	}

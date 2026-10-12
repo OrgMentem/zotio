@@ -3,11 +3,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // preprintDetectStubGetter is a fake zoteroGetter serving one canned page per
@@ -186,5 +191,82 @@ func TestCheckPreprintCandidateResolvesPublished(t *testing.T) {
 	}
 	if control.Status != "preprint" {
 		t.Fatalf("control status = %q, want preprint", control.Status)
+	}
+}
+
+// runPreprintCheckCmd executes the preprint-check command against a stub
+// Zotero server holding one arXiv-linked item, with arXiv and CrossRef
+// answered by the given transport.
+func runPreprintCheckCmd(t *testing.T, providers roundTripFunc) (string, error) {
+	t.Helper()
+	zoteroServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/items") {
+			_, _ = w.Write([]byte(`[{
+				"key":"PUB1","version":3,
+				"data":{"key":"PUB1","itemType":"preprint","title":"Published paper","url":"https://arxiv.org/abs/2401.00001"}
+			}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(zoteroServer.Close)
+
+	savedTransport := http.DefaultTransport
+	withDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "export.arxiv.org", "api.crossref.org":
+			return providers(req)
+		default:
+			return savedTransport.RoundTrip(req)
+		}
+	}))
+
+	t.Setenv("ZOTERO_BASE_URL", zoteroServer.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{asJSON: true, timeout: time.Second}
+	cmd := newItemsPreprintCheckCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--limit", "1"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestItemsPreprintCheckReportsPublishedPreprints(t *testing.T) {
+	out, err := runPreprintCheckCmd(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "export.arxiv.org" {
+			return testHTTPResponse(http.StatusOK, arxivAtomFeedXML(`<arxiv:doi>10.2000/published</arxiv:doi>`)), nil
+		}
+		return testHTTPResponse(http.StatusOK, crossrefWorkJSON("10.2000/published", "Journal", 2025)), nil
+	})
+	if err != nil {
+		t.Fatalf("preprint-check: %v", err)
+	}
+	var report FindingsReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode report %q: %v", out, err)
+	}
+	if len(report.Findings) != 1 {
+		t.Fatalf("findings = %+v, want one published preprint", report.Findings)
+	}
+	if f := report.Findings[0]; f.Kind != "preprint_published" || f.ItemKey != "PUB1" {
+		t.Fatalf("finding = %+v, want preprint_published for PUB1", f)
+	}
+	if !strings.Contains(out, "10.2000/published") {
+		t.Fatalf("output %q lacks the published DOI", out)
+	}
+}
+
+func TestItemsPreprintCheckReturnsProviderError(t *testing.T) {
+	_, err := runPreprintCheckCmd(t, func(req *http.Request) (*http.Response, error) {
+		return testHTTPResponse(http.StatusInternalServerError, "upstream down"), nil
+	})
+	if err == nil {
+		t.Fatal("preprint-check succeeded, want the arXiv provider error")
+	}
+	if !strings.Contains(err.Error(), "2401.00001") || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("err = %v, want it to name the arXiv ID and HTTP 500", err)
 	}
 }

@@ -35,7 +35,7 @@ zotio vault sync --yes        # write notes (uses [vault] config)
 - **Identity from the citekey.** Filenames key off `data.citationKey` (native in Zotero 7+), falling back to the item key — lining up with your `[@citekey]` cites.
 - **Backlinks baked in.** Frontmatter carries `zotero://select/...`; each annotation links to `zotero://open-pdf/...?annotation=<key>`.
 - **Idempotent, non-clobbering.** Re-runs update only the managed frontmatter keys and a fenced annotations block. Your prose and extra frontmatter are preserved verbatim.
-- **Scoped.** `--collection`, `--tag`, `--item-type`, `--limit` reuse the local query planner.
+- **Scoped.** `--collection`, `--tag`, `--item-type`, `--limit` reuse the local query planner. `--scope` selects one cohort with the shared grammar (`collection:KEY`, `tag:NAME`, `item:KEY`, `query:TEXT`, `saved-search:KEY`). `--scope` cannot be combined with `--item-type`, and it is refused with `--collection` or `--tag` when they select a different cohort than `--scope`.
 
 ## `vault push` / `vault pull` — note write-back
 

@@ -8,9 +8,9 @@ Reads go to your Zotero desktop app at `localhost:23119`. No API key is required
 
 **Zotero → Settings → Advanced → "Allow other applications to communicate with Zotero."**
 
-## Creating items — no key
+## Connector creates
 
-Creating a new personal-library item with files saved at the same time can work keyless through the local desktop connector (the channel the browser "Save to Zotero" button uses). Adding a file to an existing item (`attachments add`, including `--via connector`) needs a Web API key, because the route finishes with a Web API write.
+Creating new items in a personal library can run without a key through the local desktop connector (the channel the browser "Save to Zotero" button uses). The commands whose connector route needs only a running Zotero desktop are `items create`, the `import` commands (`import doi`, `import url`, `import file`, `import pmid`, `import arxiv`, `import isbn`), and `import apply --via connector`. `items new` always needs a Web API key, because it fetches the `/items/new` template from the Web API, which the local API does not serve. `attachments add` needs a key on every route, including `--via connector`, because the route finishes with a Web API write that moves the attachment to its parent.
 
 ## Editing writes — key required
 

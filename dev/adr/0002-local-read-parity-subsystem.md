@@ -33,7 +33,7 @@ Concretely:
 
 3. **Provenance carries a scoped flag.** A planner-served read sets `prov.Scoped = true`; a generic-dump read does not. Callers and agents can distinguish "this local result reproduced the live scope" from "this is a best-effort dump." This is the requested *provenance flag* — kept, but as a boolean on the existing envelope, not a new interface layer.
 
-4. **Grow by demonstrated value, one resource at a time.** No planner is built ahead of a real consumer. Precedence: item children (done — feeds offline annotation export) > generic pagination (done) > tag-resource filtering (deferred, low offline demand) > saved-search results (deferred, product decision) > unifying `search` through `resolveRead` (deferred, cleanup).
+4. **Grow by demonstrated value, one resource at a time.** No planner is built ahead of a real consumer. Precedence: item children (done — feeds offline annotation export) > generic pagination (done) > tag-resource filtering (done, see Amendments) > saved-search results (deferred, product decision) > unifying `search` through `resolveRead` (deferred, cleanup).
 
 ### What we explicitly do NOT build
 
@@ -71,3 +71,4 @@ Concretely:
 ## Amendments
 
 - **2026-07-08:** The generator was retired; this ADR is the carry-forward record for the local read parity subsystem.
+- **2026-10-12:** Tag-resource filtering is implemented (`resolveLocalTagList` in `data_source.go`, covered by `data_source_local_query_planner_test.go`; commits `a443d2a`, `b8051a4`). Decision item 4 no longer lists it as deferred.

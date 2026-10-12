@@ -75,7 +75,7 @@ Detect what a Zotero upgrade changed: new or removed item types, fields, and cre
 
 ### `import scan`
 
-Reviewable ingest: triage a folder of PDFs against your library (new vs duplicate vs attach-candidate), resolve metadata, then apply schema-valid creates from an editable manifest.
+Read-only triage of a folder of PDFs against your library (new vs duplicate vs attach-candidate). Follow with import resolve to fetch metadata and import apply to create schema-valid items from an editable manifest.
 
 > **Why it matters** — Bulk-import without making a mess — every create is previewed, deduplicated, and schema-validated before it touches your library.
 
@@ -149,7 +149,7 @@ Run a declarative multi-step workflow spec (JSON) in-process, with per-step stat
 
 ### `vault sync`
 
-Two-way Obsidian/Logseq vault sync: one Markdown note per item, managed blocks that never clobber your prose, conflict-safe write-back via push/pull/resolve.
+One-way Zotero-to-vault Obsidian/Logseq sync: one Markdown note per item, managed blocks that never clobber your prose. vault push, pull, and resolve write edits back with conflict checks.
 
 > **Why it matters** — Keep a PKM vault and Zotero in lockstep without losing hand-written notes on either side.
 

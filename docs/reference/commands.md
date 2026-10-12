@@ -949,6 +949,7 @@ Examples:
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--format` | `string` | `jsonl` | Output format: jsonl or json |
 | `--limit` | `int` | `0` | Maximum records to export (0 = unlimited) |
 | `-o, --output` | `string` |  | Output file path (default: stdout) |
 

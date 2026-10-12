@@ -64,6 +64,11 @@ whose key carries one.**
    canonical resources get a marker because both listings keep reporting the key:
    `/items` during the lag, and `/items/trash` when the item was trashed before
    it was purged.
+   That transaction commits on a connection set to `synchronous=FULL`
+   (`withDurableTx`), so an acknowledged reap survives a power loss; the rest
+   of the store keeps `synchronous=NORMAL`. Under NORMAL, a WAL commit not yet
+   synced could be rolled back on recovery while the remote delete stands, and
+   the next sync would accept the stale desktop row.
 
 3. **A deletion outranks a field change for the same key.** One envelope can
    carry both, and the order inside it is not the store's to choose, so

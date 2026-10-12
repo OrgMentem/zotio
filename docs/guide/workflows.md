@@ -1,8 +1,6 @@
 # Workflows & triggers
 
-A **workflow** chains several `zotio` steps into one reviewed run: one preview, one approval, and a shared run ID for journaled writes — with data flowing between steps, conditionals, and resume. It is the automation counterpart to [safe-by-default writes](../concepts/write-safety.md): the same preview-first, one-`--yes` contract, stretched from a single command to a whole plan. Steps run in order with no rollback, so a later failure leaves earlier successful writes applied.
-
-Without a workflow: run five commands, approve five times, and hope you didn't skip one. With: one preview, one `--yes`, and journaled mutations filed under one workflow run ID. Vault steps use their own reports instead of journal entries.
+A **workflow** chains several `zotio` steps into one reviewed run with one preview, one approval, and a shared run ID for journaled writes (vault steps use their own reports instead of journal entries), with data flowing between steps, conditionals, and resume. It is the automation counterpart to [safe-by-default writes](../concepts/write-safety.md): the same preview-first, one-`--yes` contract, stretched from a single command to a whole plan. Steps run in order with no rollback, so a later failure leaves earlier successful writes applied.
 
 ## What you'd use it for
 
@@ -10,7 +8,7 @@ Without a workflow: run five commands, approve five times, and hope you didn't s
 
 ```json
 { "steps": [
-  { "name": "diagnose", "args": ["library", "health", "--json"] },
+  { "name": "diagnose", "args": ["library", "health", "--for", "all", "--json"] },
   { "name": "fix", "args": ["items", "enrich", "--missing-doi", "--scope", "collection:ABCD1234"] }
 ]}
 ```
@@ -37,7 +35,7 @@ zotio watch --workflow nightly-hygiene.json --workflow-on-change
 ```
 
 !!! tip "Just one command?"
-    Don't wrap it — run it directly. Workflows earn their keep when steps *feed each other* or must *apply together*.
+    Run a single command directly. Use a workflow when steps feed each other or must apply together.
 
 ## Preview, then apply
 
@@ -101,7 +99,7 @@ Field names use letters, digits, `_`, and `-`. A selector has at most 256 charac
 
 ```json
 { "steps": [
-  { "name": "diagnose", "args": ["library", "health", "--json"] },
+  { "name": "diagnose", "args": ["library", "health", "--for", "all", "--json"] },
   { "name": "fix", "args": ["items", "enrich", "--missing-doi", "--keys-from", "-"],
     "stdin_from": "diagnose", "stdin_select": "findings[kind=missing_doi].item_key" }
 ]}
