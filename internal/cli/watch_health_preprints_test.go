@@ -757,3 +757,15 @@ func TestWatchPreprintRemediatedMatchesWholeDOIToken(t *testing.T) {
 		t.Fatal("exact provenance line must remediate")
 	}
 }
+
+func TestWatchPreprintRemediatedParenthesizedDOI(t *testing.T) {
+	entry := watchPreprintEntry{DOI: "10.1002/(SICI)1099-0844(199803)10:1<1::AID-X>3.0.CO;2-Z"}
+	item := map[string]any{"extra": "zotio preprint-check: published as doi:10.1002/(SICI)1099-0844(199803)10:1<1::AID-X>3.0.CO;2-Z (Venue, 1998) on 2026-01-01"}
+	if !watchPreprintRemediated(item, entry) {
+		t.Fatal("parenthesized DOI must remediate")
+	}
+	short := watchPreprintEntry{DOI: "10.1002/(SICI)1099-0844(199803)10"}
+	if watchPreprintRemediated(item, short) {
+		t.Fatal("DOI prefix must not remediate")
+	}
+}

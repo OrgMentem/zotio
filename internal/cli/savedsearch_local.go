@@ -150,12 +150,12 @@ func evaluateSavedSearchLocal(ctx context.Context, db *store.Store, searchKey st
 // evaluateSavedSearchDefinition evaluates a saved-search definition payload
 // (the shape the API and the mirror both use) against the mirrored items.
 func evaluateSavedSearchDefinition(ctx context.Context, db *store.Store, definition []byte) (savedSearchLocalResult, error) {
-	_, syncedAt, _, stateErr := db.GetSyncStateContext(ctx, "items")
+	ready, reason, stateErr := importItemsMirrorReady(ctx, db)
 	if stateErr != nil {
-		return savedSearchLocalResult{}, fmt.Errorf("reading items sync state from the local mirror: %w", stateErr)
+		return savedSearchLocalResult{}, stateErr
 	}
-	if syncedAt.IsZero() {
-		return savedSearchLocalResult{}, errSavedSearchItemsNotSynced
+	if !ready {
+		return savedSearchLocalResult{}, fmt.Errorf("%w (%s)", errSavedSearchItemsNotSynced, reason)
 	}
 	var row struct {
 		Conditions *[]savedSearchCondition `json:"conditions"`

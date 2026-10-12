@@ -13,6 +13,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   stdout, the output is the mutation envelope and replaces the old
   `{action, resource, path, status, success}` object.
 
+- **`items enrich` reports a provider outage as an error, not as "no match".**
+  A transport failure, HTTP 5xx or 429, or a cancelled request from CrossRef,
+  OpenAlex, Semantic Scholar or Unpaywall no longer records the item as having
+  no DOI, abstract, PDF or subjects. The item stays in the journal skip list
+  with the provider's reason, the other proposals still apply, and the command
+  exits non-zero. A 404 or an empty answer is still a genuine miss, and a
+  fallback provider that answers still wins.
+
+- **`items create` without `--items` or `--stdin` is a usage error (exit 2)**
+  in both preview and `--yes` modes, instead of planning a null payload.
+
+- **`items preprint-check --limit 0` means no limit.** It used to fall back
+  to the default cap of 100 per source.
+
 - **Named health baselines, health reports, schema baselines, and wrapped SVG
   cards now refuse a busy output path with exit 9.** Health locks both named
   paths before reading a baseline. Schema captures and updates lock before
@@ -246,15 +260,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   across runs, `w:fldSimple`, footnotes and endnotes) and `.odt` reference
   marks and bookmarks are matched to items in the target library. Items that
   are missing, from another library, or unreadable are unknown. Findings name
-  the paragraph that holds the field.
+  the paragraph that holds the field. These formats do not need Better
+  BibTeX; `items bibcheck` requires it only for `.tex` and Markdown
+  manuscripts.
 - **`watch --health --health-check-preprints`.** Each cycle rechecks arXiv
   preprints in the health scope and reports a `preprint_published` finding
   once, when a published version appears. Answers are cached in
   `watch-preprints.json` in the state directory. A published answer never
   expires; an unpublished one is rechecked after `--health-preprint-recheck`
   (default 7 days, minimum 1 hour). A failed lookup keeps the last known
-  answer and is reported as a skip. `items preprint-check --limit 0` now
-  means no limit.
+  answer and is reported as a skip.
 - **`items enrich --missing-mesh`.** It reads an item's PMID, or finds it from
   the DOI through PubMed, and proposes the record's MeSH descriptors as
   automatic `mesh/<descriptor>` tags. It previews by default and skips items
@@ -387,13 +402,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **A permanent delete's local markers survive a power loss.**
   `ReapMirroredItem` commits the mirror-row removal and the deletion markers
   with `synchronous=FULL`. Other store writes keep `synchronous=NORMAL`.
-- **`items enrich` reports a provider outage as an error, not as "no match".**
-  A transport failure, HTTP 5xx or 429, or a cancelled request from CrossRef,
-  OpenAlex, Semantic Scholar or Unpaywall no longer records the item as having
-  no DOI, abstract, PDF or subjects. The item stays in the journal skip list
-  with the provider's reason, the other proposals still apply, and the command
-  exits non-zero. A 404 or an empty answer is still a genuine miss, and a
-  fallback provider that answers still wins.
 - **`items enrich --attach-mode linked-file` publishes a PDF only after the
   whole download succeeds.** The download goes to a temporary file in the
   same directory, is synced, and is then linked into place without replacing
@@ -415,8 +423,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   It builds the plan offline, as `--dry-run` does.
 - **`collections move` previews honor `--json` and `--agent`.** The preview
   uses the same envelope as `collections update` instead of a fixed sentence.
-- **`items create` without `--items` or `--stdin` is a usage error (exit 2)**
-  in both preview and `--yes` modes, instead of planning a null payload.
 - **`items duplicates resolve` reports itself as destructive in agent
   context.** Its annotations now agree with the capability registry and the
   merge gate, which already required `--allow-destructive`.

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"zotio/internal/cliutil"
 	"zotio/internal/store"
@@ -296,10 +297,10 @@ func watchPreprintRemediated(item map[string]any, entry watchPreprintEntry) bool
 			}
 			rest = rest[i+len(marker):]
 			token := rest
-			if end := strings.IndexAny(token, " \t\r,;)"); end >= 0 {
+			if end := strings.IndexFunc(token, unicode.IsSpace); end >= 0 {
 				token = token[:end]
 			}
-			if strings.ToLower(normalizeDOI(strings.TrimRight(token, "."))) == doi {
+			if strings.ToLower(normalizeDOI(strings.TrimRight(token, ".,;"))) == doi {
 				return true
 			}
 		}

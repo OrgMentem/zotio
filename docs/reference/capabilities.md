@@ -61,7 +61,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
 | `items authors` | read |  |  |  |
-| `items bibcheck` | read |  |  | `synced_store`, `better_bibtex` |
+| `items bibcheck` | read |  |  | `synced_store` |
 | `items bibliography` | read |  |  |  |
 | `items children` | read |  |  |  |
 | `items cite` | read |  |  |  |

@@ -17,6 +17,7 @@ import (
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -338,6 +339,12 @@ func checkBetterBibTeXPrecondition(ctx context.Context, _ *rootFlags, _ *cobra.C
 		return false, "local store is not synced, so Better BibTeX citation keys cannot be inspected", nil
 	}
 	defer s.Close()
+	return betterBibTeXCitationKeys(ctx, s.DB())
+}
+
+// betterBibTeXCitationKeys is the Better BibTeX gate over an already open
+// store, so a command that holds the store can run it without a second open.
+func betterBibTeXCitationKeys(ctx context.Context, db *store.GuardedDB) (bool, string, error) {
 	var citeable int
 	var keyed int
 	// The Extra probe searches for 'Citation Key:' without a trailing space so
@@ -355,7 +362,7 @@ func checkBetterBibTeXPrecondition(ctx context.Context, _ *rootFlags, _ *cobra.C
 	// item as missing a key, which is the answer the operator asked for;
 	// refusing hides the whole library behind an exit-9 that names a cause the
 	// operator cannot act on.
-	err = s.DB().QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 SELECT
 	COUNT(*) AS citeable,
 	COUNT(CASE WHEN instr(COALESCE(json_extract(data,'$.data.extra'), ''), 'Citation Key:') > 0

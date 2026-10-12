@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -284,6 +285,83 @@ func TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExis
 	if len(env.Remediation) == 0 {
 		t.Fatal("remediation is empty")
 	}
+}
+
+// Word and LibreOffice manuscripts cite by Zotero item key, so a library
+// whose items carry no Better BibTeX citation key must still resolve them.
+// Only the manuscripts that cite by citation key need the key source.
+func TestBibcheckBetterBibTeXGateAppliesOnlyToCitekeyManuscripts(t *testing.T) {
+	seed := func(t *testing.T) {
+		t.Helper()
+		seedSyncedBibcheckItems(t, []json.RawMessage{
+			json.RawMessage(`{"key":"AAAA1111","version":1,"data":{"key":"AAAA1111","itemType":"journalArticle","title":"Alpha","creators":[{"lastName":"Doe"}],"date":"2024","publicationTitle":"J"}}`),
+		})
+	}
+
+	for _, ext := range []string{".docx", ".odt"} {
+		t.Run(ext+" resolves without citation keys", func(t *testing.T) {
+			root, _, out, _ := newPreflightTestRoot(t)
+			seed(t)
+			code := zfCode(zfUser("AAAA1111"))
+			var path string
+			if ext == ".docx" {
+				path = zfDocx(t, t.TempDir(), "paper.docx", zfDocxField(code, 2))
+			} else {
+				path = zfOdt(t, t.TempDir(), "paper.odt", "", zfOdtMark(code))
+			}
+			root.SetArgs([]string{"--json", "items", "bibcheck", path, "--fail-on-unknown"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("items bibcheck %s on a library with no citation keys: %v; output=%s", ext, err, out.String())
+			}
+			var report bibcheckReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("decode report %q: %v", out.String(), err)
+			}
+			if report.Format != zoteroFieldsFormat || report.Summary.Total != 1 || report.Summary.OK != 1 {
+				t.Fatalf("report format=%q summary=%+v, want one resolved %s key", report.Format, report.Summary, zoteroFieldsFormat)
+			}
+		})
+	}
+
+	for _, name := range []string{"paper.tex", "paper.md", "paper.markdown", "paper.qmd"} {
+		t.Run(name+" is refused without citation keys", func(t *testing.T) {
+			root, _, out, _ := newPreflightTestRoot(t)
+			seed(t)
+			path := filepath.Join(t.TempDir(), name)
+			writeTestFile(t, path, "\\cite{alpha} @alpha")
+			root.SetArgs([]string{"--json", "items", "bibcheck", path})
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("items bibcheck %s succeeded on a library with no citation keys; output=%s", name, out.String())
+			}
+			assertPreconditionExitCode(t, err, 9)
+			var env preconditionUnmetEnvelope
+			if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+				t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+			}
+			if env.Kind != "precondition_unmet" || env.Capability != "items bibcheck" || env.Precondition != preconditionBetterBibTeX {
+				t.Fatalf("envelope = %+v, want precondition_unmet items bibcheck better_bibtex", env)
+			}
+			if len(env.Remediation) == 0 {
+				t.Fatal("remediation is empty")
+			}
+		})
+	}
+
+	t.Run("mixed docx and tex is refused", func(t *testing.T) {
+		root, _, out, _ := newPreflightTestRoot(t)
+		seed(t)
+		dir := t.TempDir()
+		docx := zfDocx(t, dir, "paper.docx", zfDocxField(zfCode(zfUser("AAAA1111")), 2))
+		tex := filepath.Join(dir, "paper.tex")
+		writeTestFile(t, tex, `\cite{alpha}`)
+		root.SetArgs([]string{"--json", "items", "bibcheck", docx, tex})
+		err := root.Execute()
+		if err == nil {
+			t.Fatalf("items bibcheck docx+tex succeeded on a library with no citation keys; output=%s", out.String())
+		}
+		assertPreconditionExitCode(t, err, 9)
+	})
 }
 
 // The write-plane gates decide which API receives operator traffic, so their

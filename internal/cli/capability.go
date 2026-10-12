@@ -180,7 +180,20 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"export snapshot verify": {Requires: []string{preconditionSyncedStore}},
 	// Citation keys live in Better BibTeX's `extra` field.
 	"items citekey-conflicts": {Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
-	"items bibcheck":          {Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
+	// bibcheck always reads the synced store. Better BibTeX applies only to
+	// the manuscripts that cite by citation key (.tex, .md, .markdown, .qmd);
+	// Word and LibreOffice (.docx, .odt) manuscripts name items by Zotero item
+	// key, so a library with no citation keys still resolves them. The top-level
+	// requires and the default route are therefore the key-free baseline, and
+	// the citekey route carries the extra better_bibtex claim. Preflight cannot
+	// see the file extensions, so the command enforces that route itself.
+	"items bibcheck": {
+		Requires: []string{preconditionSyncedStore},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionSyncedStore}},
+			{Via: "citekey", Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
+		},
+	},
 	// Schema templates are built from global endpoints served by the local API.
 	"schema new-item-template": {Requires: []string{preconditionLiveLocalAPI}},
 	// Mutations: auto-routed to the Web API, so they need a key.

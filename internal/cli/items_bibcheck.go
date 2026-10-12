@@ -15,6 +15,8 @@ import (
 	"sync"
 	"unicode"
 
+	"zotio/internal/store"
+
 	"github.com/spf13/cobra"
 )
 
@@ -167,6 +169,9 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			defer rawDB.Close()
+			if err := requireBibcheckCitekeyPlane(cmd, flags, formats, rawDB.DB()); err != nil {
+				return err
+			}
 			db := localQueryStore{rawDB}
 
 			items, err := loadCitekeyItems(db)
@@ -229,6 +234,34 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&checkRetractions, "check-retractions", false, "Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing")
 
 	return cmd
+}
+
+// requireBibcheckCitekeyPlane enforces better_bibtex for the manuscripts that
+// cite by Better BibTeX citation key (.tex, .md, .markdown, .qmd). Word and
+// LibreOffice manuscripts name items by Zotero item key, so a library without
+// citation keys still resolves them and this gate does not apply. Central
+// preflight cannot make that call: it sees the registry entry, not the file
+// extensions, so the requirement is enforced here once the formats are known.
+func requireBibcheckCitekeyPlane(cmd *cobra.Command, flags *rootFlags, formats map[string]string, db *store.GuardedDB) error {
+	needsCitekeys := false
+	for _, format := range formats {
+		if format != zoteroFieldsFormat {
+			needsCitekeys = true
+			break
+		}
+	}
+	if !needsCitekeys {
+		return nil
+	}
+	ok, detail, err := betterBibTeXCitationKeys(cmd.Context(), db)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionBetterBibTeX, detail,
+		remediationFor(cmd.Context(), flags, preconditionBetterBibTeX))
 }
 
 // Dispatch manuscript parsing by supported extension only.

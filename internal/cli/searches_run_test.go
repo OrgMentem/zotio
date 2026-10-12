@@ -334,6 +334,36 @@ func TestSearchesRunLocalDataSourceRefusesAnUnsupportedSearch(t *testing.T) {
 	}
 }
 
+// An interrupted initial items sync leaves a resume checkpoint with a
+// last_synced_at stamp; the mirror is partial, so local evaluation refuses.
+func TestSearchesRunLocalDataSourceRefusesUnfinishedInitialItemsPass(t *testing.T) {
+	var resultRequests int
+	srv := searchesRunLiveResultsServer(t, `{"key":"SK","version":42,"data":{"name":"live only search"}}`, 0, &resultRequests)
+	seedSearchesRunStore(t,
+		ssConds([3]string{"title", "contains", "learning"}),
+		ssItem("AAAA1111", "journalArticle", map[string]any{"title": "Deep Learning"}),
+	)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if err := db.SaveSyncResumeStateContext(context.Background(), "items", "100", "items?limit=100", 1); err != nil {
+		t.Fatalf("seed unfinished pass: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	out, _, err := runSearchesRunTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dataSource: "local"}, "SK")
+	if err == nil {
+		t.Fatalf("searches run --data-source local succeeded on a partial mirror; output %q", out)
+	}
+	assertPreconditionExitCode(t, err, 9)
+	if strings.Contains(out, "AAAA1111") {
+		t.Fatalf("a partial-mirror result leaked: %q", out)
+	}
+}
+
 // A mirror that holds the search definition but never completed an items
 // sync (a write-through cache of the definition alone) must refuse, not print
 // [] as if the search ran against the library.

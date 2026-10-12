@@ -84,7 +84,7 @@ To publish the bibliography the manuscript actually cites, export it with `--man
       - run: zotio items bibliography --manuscript thesis.odt --format bibtex > references.bib
 ```
 
-zotio matches each cited item by its Zotero item key against the library you target (`--group <id>` for a group library). An item that is missing, deleted, trashed, or from another library is reported as unknown and exits 11 with `--fail-on-unknown`. Findings name the paragraph that holds the field (`thesis.docx:3`). A damaged field, or a citation with no usable item URI, is also reported as unknown. A file that is not a valid `.docx` or `.odt` exits 2.
+zotio matches each cited item by its Zotero item key against the library you target (`--group <id>` for a group library). An item that is missing, deleted, trashed, or from another library is reported as unknown and exits 11 with `--fail-on-unknown`. Findings name the paragraph that holds the field (`thesis.docx:3`). A damaged field, or a citation with no usable item URI, is also reported as unknown. A file that is not a ZIP archive, or that has no document part, exits 2. A file whose document XML cannot be parsed exits 1.
 
 ### Retracted papers the manuscript cites
 

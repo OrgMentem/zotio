@@ -468,7 +468,10 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 		routes: map[string][]string{"verify-files": {"items", "audit", "--verify-files"}},
 	},
 	"items citekey-conflicts": {args: []string{"items", "citekey-conflicts"}},
-	"items bibcheck":          {args: []string{"items", "bibcheck", probeTempFile}},
+	"items bibcheck": {
+		args:   []string{"items", "bibcheck", probeTempFile},
+		routes: map[string][]string{"citekey": {"items", "bibcheck", probeTempFile}},
+	},
 	"export snapshot verify": {
 		skip: "verifies a lockfile artifact produced by a prior export run; its own tests cover the offline read",
 	},
@@ -518,6 +521,26 @@ func TestNoteTemplateCapabilityDeclaresConditionalDataSources(t *testing.T) {
 	}
 	if requires := got["live"]; !slices.Equal(requires, []string{preconditionLiveLocalAPI}) {
 		t.Fatalf("live route requires = %v, want [%s]", requires, preconditionLiveLocalAPI)
+	}
+}
+
+// Word and LibreOffice manuscripts do not need Better BibTeX, so the registry
+// must not claim it unconditionally. The citation-key formats carry it on a
+// route that the offline probe selects with a .tex manuscript.
+func TestBibcheckCapabilityScopesBetterBibTeXToCitekeyRoute(t *testing.T) {
+	entry := capabilityOverrides["items bibcheck"]
+	if !slices.Equal(entry.Requires, []string{preconditionSyncedStore}) {
+		t.Fatalf("items bibcheck requires = %v, want only [%s]", entry.Requires, preconditionSyncedStore)
+	}
+	got := make(map[string][]string, len(entry.Routes))
+	for _, route := range entry.Routes {
+		got[route.Via] = route.Requires
+	}
+	if !slices.Equal(got["default"], []string{preconditionSyncedStore}) {
+		t.Fatalf("default route requires = %v, want [%s]", got["default"], preconditionSyncedStore)
+	}
+	if !slices.Equal(got["citekey"], []string{preconditionSyncedStore, preconditionBetterBibTeX}) {
+		t.Fatalf("citekey route requires = %v, want [%s %s]", got["citekey"], preconditionSyncedStore, preconditionBetterBibTeX)
 	}
 }
 
