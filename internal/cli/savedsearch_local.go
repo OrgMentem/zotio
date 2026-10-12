@@ -158,8 +158,10 @@ type savedSearchLocalResult struct {
 	Keys []string
 	// TopLevelKeys is Keys minus child items, sorted.
 	TopLevelKeys []string
-	// Items holds the mirrored payload of every matched item, in the order
-	// the item list endpoints use: dateModified descending, key ascending.
+	// Items holds the mirrored payload of what `searches run` prints: every
+	// match plus the child items of the matches (see
+	// savedSearchWithDescendants), in the order the item list endpoints use:
+	// dateModified descending, key ascending.
 	Items []json.RawMessage
 }
 
@@ -1067,18 +1069,71 @@ func (p *savedSearchPlan) evaluate(env *savedSearchEnv) (savedSearchLocalResult,
 	}
 	sort.Strings(keys)
 	sort.Strings(top)
-	ordered := make([]*savedSearchItem, len(keys))
-	for i, key := range keys {
-		ordered[i] = env.byKey[key]
+	items := orderSavedSearchItems(env, savedSearchWithDescendants(env, result))
+	return savedSearchLocalResult{Keys: keys, TopLevelKeys: top, Items: items}, nil
+}
+
+// savedSearchWithDescendants is the item set `searches run` returns: the
+// search's own matches plus their child items. The local API endpoint
+// /searches/:key/items (server_localAPI.js 1080-1114, Zotero 10.0.3) runs an
+// outer search with addCondition('includeChildren', 'true') under
+// search.setScope(savedSearch, true), and search.js 641-655 widens the scope
+// results S (tmpTable) with:
+//
+//	itemAttachments WHERE parentItemID IN S                    child attachments
+//	itemNotes       WHERE parentItemID IN S                    child notes
+//	itemAnnotations WHERE parentItemID IN (attachments whose
+//	                parentItemID IN S)                         annotations of those attachments
+//	itemAnnotations WHERE parentItemID IN S                    annotations of an attachment in S
+//
+// The outer search keeps its default trash exclusion (search.js 1278-1295:
+// deletedItems and the children and grandchildren of deleted items), which
+// the environment already applies, so only live descendants are added. S is
+// the evaluator's matches, so the top-level cohort never changes: scope
+// consumers read Keys and TopLevelKeys, not this set.
+func savedSearchWithDescendants(env *savedSearchEnv, matched map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(matched))
+	for key := range matched {
+		out[key] = true
 	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return ordered[i].fields["dateModified"] > ordered[j].fields["dateModified"]
+	for _, it := range env.items {
+		if it.parent == "" {
+			continue
+		}
+		switch it.itemType {
+		case "attachment", "note":
+			if matched[it.parent] {
+				out[it.key] = true
+			}
+		case "annotation":
+			if matched[it.parent] {
+				out[it.key] = true
+			} else if att := env.byKey[it.parent]; att != nil && att.itemType == "attachment" && att.parent != "" && matched[att.parent] {
+				out[it.key] = true
+			}
+		}
+	}
+	return out
+}
+
+// orderSavedSearchItems returns the payloads of keys in the order the item
+// list endpoints use: dateModified descending, key ascending.
+func orderSavedSearchItems(env *savedSearchEnv, keys map[string]bool) []json.RawMessage {
+	ordered := make([]*savedSearchItem, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, env.byKey[key])
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if a, b := ordered[i].fields["dateModified"], ordered[j].fields["dateModified"]; a != b {
+			return a > b
+		}
+		return ordered[i].key < ordered[j].key
 	})
 	items := make([]json.RawMessage, len(ordered))
 	for i, it := range ordered {
 		items[i] = it.raw
 	}
-	return savedSearchLocalResult{Keys: keys, TopLevelKeys: top, Items: items}, nil
+	return items
 }
 
 // combine ANDs (or, under joinMode any, ORs) the per-condition selections

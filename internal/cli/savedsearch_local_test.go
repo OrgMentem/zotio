@@ -772,3 +772,71 @@ func TestResolveScopeIntersectionCarriesLocalEvaluationFromEachSavedSearchArm(t 
 		t.Fatalf("detail = %q, want it to name fulltextContent", refused.PreconditionDetail)
 	}
 }
+
+// `searches run` prints what Zotero's /searches/:key/items returns: the
+// search's matches (S) plus attachments and notes whose parent is in S,
+// annotations of those attachments, and annotations whose parent is in S.
+// Trashed descendants stay out, an unmatched parent's children stay out, and
+// the top-level cohort (Keys, TopLevelKeys) never changes.
+func TestSavedSearchLocalItemsIncludeDescendantsOfMatches(t *testing.T) {
+	db := seedSavedSearchStore(t, map[string]string{
+		"SD": ssConds([3]string{"tag", "is", "grp"}),
+	})
+	grp := ssTags("grp")
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		// A matched parent with an attachment (with annotations) and a note.
+		ssItem("P1", "journalArticle", map[string]any{"title": "Matched", "tags": grp}),
+		ssItem("PA1", "attachment", map[string]any{"title": "pdf", "parentItem": "P1"}),
+		ssItem("PANN1", "annotation", map[string]any{"parentItem": "PA1", "annotationType": "highlight"}),
+		ssItem("PANN2", "annotation", map[string]any{"parentItem": "PA1", "annotationType": "note"}),
+		ssItem("PN1", "note", map[string]any{"parentItem": "P1", "note": "<p>n</p>"}),
+		// A matched top-level attachment with an annotation.
+		ssItem("SA", "attachment", map[string]any{"title": "standalone", "tags": grp}),
+		ssItem("SANN", "annotation", map[string]any{"parentItem": "SA", "annotationType": "highlight"}),
+		// An unmatched parent with children, one of which matches itself.
+		ssItem("U1", "journalArticle", map[string]any{"title": "Unmatched"}),
+		ssItem("UA", "attachment", map[string]any{"title": "other pdf", "parentItem": "U1"}),
+		ssItem("UANN", "annotation", map[string]any{"parentItem": "UA", "annotationType": "highlight"}),
+		ssItem("UN", "note", map[string]any{"parentItem": "U1", "note": "<p>u</p>"}),
+		ssItem("UM", "attachment", map[string]any{"title": "matching child", "parentItem": "U1", "tags": grp}),
+		ssItem("UMANN", "annotation", map[string]any{"parentItem": "UM", "annotationType": "highlight"}),
+		// A trashed child of a matched parent, and its annotation.
+		ssItem("PT", "attachment", map[string]any{"title": "trashed pdf", "parentItem": "P1"}),
+		ssItem("PTANN", "annotation", map[string]any{"parentItem": "PT", "annotationType": "highlight"}),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items-trash", []json.RawMessage{
+		ssItem("PT", "attachment", map[string]any{"title": "trashed pdf", "parentItem": "P1"}),
+	}); err != nil {
+		t.Fatalf("seed trash: %v", err)
+	}
+
+	got, err := evaluateSavedSearchLocal(context.Background(), db, "SD")
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if want := ssKeys("P1", "SA", "UM"); !reflect.DeepEqual(got.Keys, want) {
+		t.Fatalf("keys = %v, want %v", got.Keys, want)
+	}
+	if want := ssKeys("P1", "SA"); !reflect.DeepEqual(got.TopLevelKeys, want) {
+		t.Fatalf("top-level keys = %v, want %v", got.TopLevelKeys, want)
+	}
+	itemKeys := make([]string, len(got.Items))
+	for i, raw := range got.Items {
+		var row struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			t.Fatalf("decode item: %v", err)
+		}
+		itemKeys[i] = row.Key
+	}
+	// Matches P1, SA, UM; descendants PA1+PN1 (of P1), PANN1+PANN2 (annotations
+	// of PA1, an attachment under P1), SANN (annotation of SA), UMANN (annotation
+	// of UM). Not U1/UA/UN/UANN (U1 is not in S) and not PT/PTANN (trashed).
+	want := ssKeys("P1", "SA", "UM", "PA1", "PN1", "PANN1", "PANN2", "SANN", "UMANN")
+	if !reflect.DeepEqual(itemKeys, want) {
+		t.Fatalf("items = %v, want %v", itemKeys, want)
+	}
+}

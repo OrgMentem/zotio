@@ -493,3 +493,28 @@ func TestSearchesRunLiveDataSourceNeverFallsBackToLocal(t *testing.T) {
 	assertPreconditionExitCode(t, err, 9)
 	searchesRunPreconditionEnvelope(t, out)
 }
+
+// The full-item output of a local run carries the matches' children, as
+// /searches/:key/items does: child attachments and notes of a match, and
+// annotations of those attachments. An unmatched parent's children stay out.
+func TestSearchesRunLocalDataSourceAddsTheChildrenOfMatches(t *testing.T) {
+	var resultRequests int
+	srv := searchesRunLiveResultsServer(t, `{"key":"SK","version":42,"data":{"name":"live only search"}}`, 0, &resultRequests)
+	seedSearchesRunStore(t,
+		ssConds([3]string{"title", "contains", "learning"}),
+		ssItem("AAAA1111", "journalArticle", map[string]any{"title": "Deep Learning"}),
+		ssItem("PDF00001", "attachment", map[string]any{"title": "Full text", "parentItem": "AAAA1111"}),
+		ssItem("ANN00001", "annotation", map[string]any{"parentItem": "PDF00001", "annotationType": "highlight"}),
+		ssItem("NOTE0001", "note", map[string]any{"parentItem": "AAAA1111", "note": "<p>n</p>"}),
+		ssItem("CCCC3333", "journalArticle", map[string]any{"title": "Gardening"}),
+		ssItem("PDF00002", "attachment", map[string]any{"title": "Other", "parentItem": "CCCC3333"}),
+	)
+
+	out, _, err := runSearchesRunTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dataSource: "local"}, "SK")
+	if err != nil {
+		t.Fatalf("searches run --data-source local: %v\noutput: %s", err, out)
+	}
+	if got, want := searchesRunOutputKeys(t, out), []string{"AAAA1111", "ANN00001", "NOTE0001", "PDF00001"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
