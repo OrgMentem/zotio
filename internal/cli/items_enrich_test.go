@@ -146,7 +146,7 @@ func TestResolveDOIViaCrossRef_ExactTitleMatch(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 
 	data := map[string]any{"title": "attention is all you need", "creators": []any{map[string]any{"lastName": "Vaswani"}}}
-	doi, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
+	doi, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
 	if !ok {
 		t.Fatal("expected a confident match")
 	}
@@ -160,7 +160,7 @@ func TestResolveDOIViaCrossRef_NoConfidentMatch(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 
 	data := map[string]any{"title": "a title that matches nothing returned"}
-	if _, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
+	if _, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
 		t.Error("expected no match for a non-matching title")
 	}
 }
@@ -172,7 +172,7 @@ func TestResolveAbstractViaCrossRef_StripsJATS(t *testing.T) {
 	defer srv.Close()
 	withBase(t, &enrichCrossRefBase, srv.URL)
 
-	abstract, ok := resolveAbstractViaCrossRef(context.Background(), http.DefaultClient, "10.1/x")
+	abstract, ok, _ := resolveAbstractViaCrossRef(context.Background(), http.DefaultClient, "10.1/x")
 	if !ok {
 		t.Fatal("expected an abstract")
 	}
@@ -191,7 +191,7 @@ func TestResolvePDFViaUnpaywall(t *testing.T) {
 	defer srv.Close()
 	withBase(t, &enrichUnpaywallBase, srv.URL)
 
-	pdf, ok := resolvePDFViaUnpaywall(context.Background(), http.DefaultClient, "10.1/x", "me@example.com")
+	pdf, ok, _ := resolvePDFViaUnpaywall(context.Background(), http.DefaultClient, "10.1/x", "me@example.com")
 	if !ok || pdf != "https://oa.example/p.pdf" {
 		t.Errorf("pdf = %q ok=%v, want url_for_pdf", pdf, ok)
 	}
@@ -226,7 +226,7 @@ func TestResolveEnrichmentCitationFillsOnlyBlankFields(t *testing.T) {
 		"DOI":      "10.1/x",
 		"creators": []any{map[string]any{"lastName": "Babbage", "creatorType": "author"}},
 	}
-	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 7, data, "", true, true, "linked-url", "")
+	p, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 7, data, "", true, true, "linked-url", "")
 	if skip != "" {
 		t.Fatalf("skip = %q, want a proposal", skip)
 	}
@@ -262,7 +262,7 @@ func TestResolveEnrichmentCitationVenueFieldFollowsItemType(t *testing.T) {
 				"DOI":      "10.1/x",
 				"creators": []any{map[string]any{"lastName": "B", "creatorType": "author"}},
 			}
-			p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+			p, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 			if skip != "" {
 				t.Fatalf("skip = %q, want a proposal", skip)
 			}
@@ -284,7 +284,7 @@ func TestResolveEnrichmentCitationVenueFieldFollowsItemType(t *testing.T) {
 		"DOI":      "10.1/x",
 		"creators": []any{map[string]any{"lastName": "B", "creatorType": "author"}},
 	}
-	if _, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+	if _, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
 		t.Fatal("preprint repository resolved to a value, want a skip")
 	}
 }
@@ -302,7 +302,7 @@ func TestResolveEnrichmentCitationNeverProposesExtra(t *testing.T) {
 		"title":    "T",
 		"date":     "2020",
 	}
-	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	p, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 	if skip != "" {
 		t.Fatalf("skip = %q, want a creators-only proposal", skip)
 	}
@@ -320,7 +320,7 @@ func TestResolveEnrichmentCitationRequiresDOI(t *testing.T) {
 	// A citation-incomplete item may lack creators, date and venue at once, so
 	// the title-match anchor used by --missing-doi has too little to confirm.
 	data := map[string]any{"itemType": "journalArticle", "title": "Operator Title"}
-	_, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	_, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 	if !strings.Contains(skip, "--missing-doi") {
 		t.Fatalf("skip = %q, want it to name --missing-doi as the prior step", skip)
 	}
@@ -334,7 +334,7 @@ func TestResolveEnrichmentCitationSkipsWhenProviderAddsNothing(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 
 	data := map[string]any{"itemType": "journalArticle", "title": "Operator Title", "DOI": "10.1/x", "date": "2020", "publicationTitle": "J"}
-	_, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	_, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 	if skip == "" {
 		t.Fatal("expected a skip when CrossRef supplies none of the blank fields")
 	}
@@ -366,7 +366,7 @@ func TestResolveEnrichmentCitationFillsRenderFieldsOnlyWhenProviderHasThem(t *te
 
 	withBase(t, &enrichCrossRefBase, full.URL)
 	data := clone(map[string]any{"publicationTitle": "J"})
-	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	p, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 	if skip != "" {
 		t.Fatalf("skip = %q, want a proposal", skip)
 	}
@@ -377,7 +377,7 @@ func TestResolveEnrichmentCitationFillsRenderFieldsOnlyWhenProviderHasThem(t *te
 
 	// An operator's own value is never replaced by the provider's.
 	data = clone(map[string]any{"publicationTitle": "J", "volume": "99", "issue": "9", "pages": "1-2"})
-	if _, skip = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+	if _, skip, _ = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
 		t.Fatal("proposed a change for an item whose render fields are all populated")
 	}
 
@@ -390,7 +390,7 @@ func TestResolveEnrichmentCitationFillsRenderFieldsOnlyWhenProviderHasThem(t *te
 	t.Cleanup(bare.Close)
 	withBase(t, &enrichCrossRefBase, bare.URL)
 	data = clone(map[string]any{"publicationTitle": "J"})
-	if _, skip = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+	if _, skip, _ = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
 		t.Fatal("invented a volume the provider does not have")
 	}
 }
@@ -422,7 +422,7 @@ func TestResolveEnrichmentCitationRenderFieldsFollowTheSchema(t *testing.T) {
 				return ""
 			}(),
 		}
-		p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+		p, skip, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
 		if want == nil {
 			if skip == "" {
 				t.Fatalf("%s: proposed %#v, want a skip: the type defines no render field", itemType, p.Fields)
@@ -489,7 +489,7 @@ func TestResolveEnrichmentLinkedPDFDeclaresPDFContentType(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichUnpaywallBase, srv.URL)
 
-	proposal, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_pdf", "K1", nil, map[string]any{
+	proposal, reason, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_pdf", "K1", nil, map[string]any{
 		"title": "Paper",
 		"DOI":   "10.1/x",
 	}, "me@example.com", false, false, "linked-url", "")
@@ -507,7 +507,7 @@ func TestResolvePDFViaUnpaywall_NoOA(t *testing.T) {
 	}))
 	defer srv.Close()
 	withBase(t, &enrichUnpaywallBase, srv.URL)
-	if _, ok := resolvePDFViaUnpaywall(context.Background(), http.DefaultClient, "10.1/x", "me@example.com"); ok {
+	if _, ok, _ := resolvePDFViaUnpaywall(context.Background(), http.DefaultClient, "10.1/x", "me@example.com"); ok {
 		t.Error("expected no OA PDF")
 	}
 }
@@ -1996,7 +1996,7 @@ func TestResolveSubjectsViaOpenAlexKeepsConfidentTermsOnly(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 
-	tags, ok := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "me@example.com")
+	tags, ok, _ := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "me@example.com")
 	if !ok {
 		t.Fatal("want concepts resolved")
 	}
@@ -2033,7 +2033,7 @@ func TestResolveSubjectsViaOpenAlexKeepsConfidentTermsOnly(t *testing.T) {
 	}))
 	t.Cleanup(weak.Close)
 	withBase(t, &enrichOpenAlexBase, weak.URL)
-	if tags, ok := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", ""); ok {
+	if tags, ok, _ := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", ""); ok {
 		t.Fatalf("tags = %v, want no proposal below the score threshold", tags)
 	}
 }
@@ -2722,7 +2722,7 @@ func TestReconstructAbstractRejectsTooManyPositions(t *testing.T) {
 func TestResolveAbstractViaOpenAlex(t *testing.T) {
 	srv := openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.1/x","title":"T","abstract_inverted_index":{"We":[0],"propose":[1],"Transformer":[2]}}]}`)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
-	abstract, ok := resolveAbstractViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "")
+	abstract, ok, _ := resolveAbstractViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "")
 	if !ok || abstract != "We propose Transformer" {
 		t.Errorf("abstract = %q ok=%v, want 'We propose Transformer'", abstract, ok)
 	}
@@ -2732,7 +2732,7 @@ func TestResolveDOIViaOpenAlex(t *testing.T) {
 	srv := openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.9/match","title":"Attention Is All You Need"}]}`)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 	data := map[string]any{"title": "attention is all you need"}
-	doi, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
+	doi, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
 	if !ok || doi != "10.9/match" {
 		t.Errorf("doi = %q ok=%v, want 10.9/match", doi, ok)
 	}
@@ -2751,7 +2751,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, oa.URL)
 
 	data := map[string]any{"title": "T", "DOI": "10.1/x"}
-	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true, false, "linked-url", "")
+	prop, reason, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true, false, "linked-url", "")
 	if reason != "" {
 		t.Fatalf("unexpected skip: %s", reason)
 	}
@@ -2762,7 +2762,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 		t.Errorf("abstract = %v, want 'From OpenAlex'", prop.Fields["abstractNote"])
 	}
 
-	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false, false, "linked-url", ""); reason == "" {
+	if _, reason, _ := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false, false, "linked-url", ""); reason == "" {
 		t.Error("expected a skip when the OpenAlex fallback is disabled")
 	}
 }
@@ -2867,7 +2867,7 @@ func TestResolveDOIViaCrossRef_NonLatinMismatchReturnsNoMatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	if _, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
+	if _, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
 		t.Fatal("expected no DOI match for unrelated Chinese titles")
 	}
 }
@@ -2880,7 +2880,7 @@ func TestResolveDOIViaCrossRef_NonLatinIdenticalMatches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	doi, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
+	doi, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
 	if !ok || doi != "10.9/match" {
 		t.Fatalf("doi = %q ok=%v, want 10.9/match for identical Chinese titles", doi, ok)
 	}
@@ -2895,7 +2895,7 @@ func TestResolveDOIViaCrossRef_PunctuationOnlyLocalTitleReturnsNoMatch(t *testin
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	data := map[string]any{"title": "...!!!"}
-	if _, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
+	if _, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
 		t.Fatal("expected no match for punctuation-only local title")
 	}
 	// The guard returns before iterating, but getJSON still ran (empty guard
@@ -2911,7 +2911,7 @@ func TestResolveDOIViaSemanticScholar_NonLatinMismatchReturnsNoMatch(t *testing.
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichSemanticScholarBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	if _, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
+	if _, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
 		t.Fatal("expected no DOI match for unrelated Chinese titles via Semantic Scholar")
 	}
 }
@@ -2923,7 +2923,7 @@ func TestResolveDOIViaSemanticScholar_NonLatinIdenticalMatches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichSemanticScholarBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	doi, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data)
+	doi, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data)
 	if !ok || doi != "10.9/ssmatch" {
 		t.Fatalf("doi = %q ok=%v, want 10.9/ssmatch for identical Chinese titles", doi, ok)
 	}
@@ -2936,7 +2936,7 @@ func TestResolveDOIViaOpenAlex_NonLatinMismatchReturnsNoMatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	if _, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
+	if _, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
 		t.Fatal("expected no DOI match for unrelated Chinese titles via OpenAlex")
 	}
 }
@@ -2948,7 +2948,7 @@ func TestResolveDOIViaOpenAlex_NonLatinIdenticalMatches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 	data := map[string]any{"title": "机器学习导论"}
-	doi, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
+	doi, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
 	if !ok || doi != "10.9/oamatch" {
 		t.Fatalf("doi = %q ok=%v, want 10.9/oamatch for identical Chinese titles", doi, ok)
 	}
@@ -2961,7 +2961,7 @@ func TestResolveDOIViaOpenAlex_PunctuationOnlyLocalTitleReturnsNoMatch(t *testin
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 	data := map[string]any{"title": "...!!!"}
-	if _, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
+	if _, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
 		t.Fatal("expected no match for punctuation-only local title via OpenAlex")
 	}
 }
@@ -2972,7 +2972,7 @@ func TestResolveDOIViaSemanticScholar_PunctuationOnlyLocalTitleReturnsNoMatch(t 
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichSemanticScholarBase, srv.URL)
 	data := map[string]any{"title": "...!!!"}
-	if _, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
+	if _, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
 		t.Fatal("expected no match for punctuation-only local title via Semantic Scholar")
 	}
 }
@@ -3124,7 +3124,14 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 		t.Fatalf("error = %v (exit %d), want a usage refusal naming the disagreement", err, ExitCode(err))
 	}
 
-	if err := run("--missing-doi", "--scope", "collection:COLP", "--collection", "COLP"); err != nil {
+	// The agreeing spelling reaches the providers. Answer CrossRef with an empty
+	// result so the run tests scope handling, not a provider outage.
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"items":[]}}`))
+	}))
+	t.Cleanup(empty.Close)
+	withBase(t, &enrichCrossRefBase, empty.URL)
+	if err := run("--missing-doi", "--no-openalex", "--no-semantic-scholar", "--scope", "collection:COLP", "--collection", "COLP"); err != nil {
 		t.Fatalf("agreeing --scope/--collection was refused: %v", err)
 	}
 
@@ -3185,5 +3192,307 @@ func TestValidateEnrichItemsAppliesLimitAfterCohortFilter(t *testing.T) {
 	}
 	if report.Validated != 1 {
 		t.Fatalf("validated = %d, want 1 (the cohort member, not the newest library row)", report.Validated)
+	}
+}
+
+// enrichDirEntries lists a directory's entry names, so a test can prove that a
+// failed download left neither a destination file nor a stray temporary file.
+func enrichDirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// A download cut off mid-body (server closes before Content-Length is met)
+// must never leave bytes at the final path: the retry would otherwise meet a
+// truncated PDF and refuse to clobber it. The retry must then succeed.
+func TestDownloadEnrichPDFTruncatedBodyLeavesNoFileAndRetrySucceeds(t *testing.T) {
+	withPDFSafety(t, nil)
+	truncated := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		if truncated {
+			w.Header().Set("Content-Length", "1000")
+			_, _ = w.Write([]byte("%PDF-1.7\npartial"))
+			return
+		}
+		_, _ = w.Write([]byte("%PDF-1.7\ncomplete"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "paper.pdf")
+	downloader := enrichPDFDownloaderFactory(srv.Client())
+	if err := downloader.download(context.Background(), srv.URL+"/paper.pdf", dest, 1024); err == nil {
+		t.Fatal("truncated download succeeded, want an error")
+	}
+	if got := enrichDirEntries(t, dir); len(got) != 0 {
+		t.Fatalf("directory after failed download = %v, want empty: no final file and no temp file", got)
+	}
+
+	truncated = false
+	if err := downloader.download(context.Background(), srv.URL+"/paper.pdf", dest, 1024); err != nil {
+		t.Fatalf("retry after failed download: %v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "%PDF-1.7\ncomplete" {
+		t.Fatalf("retried body = %q, err = %v", got, err)
+	}
+	assertFileMode(t, dest, 0o600)
+}
+
+// A temporary file stranded by a killed process (SIGKILL skips every cleanup)
+// must not block a later download into the same directory.
+func TestDownloadEnrichPDFIgnoresStrandedTempFile(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	stranded := filepath.Join(dir, ".zotio-output-killed.tmp")
+	if err := os.WriteFile(stranded, []byte("%PDF-1.7\npart"), 0o600); err != nil {
+		t.Fatalf("seed stranded temp file: %v", err)
+	}
+	dest := filepath.Join(dir, "paper.pdf")
+	if err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL+"/paper.pdf", dest, 1024); err != nil {
+		t.Fatalf("download beside stranded temp file: %v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "%PDF-1.7\nbody" {
+		t.Fatalf("downloaded body = %q, err = %v", got, err)
+	}
+}
+
+// The no-clobber guarantee holds at publish time too, not only at the early
+// existence check: a file that appears while the body streams is kept, and the
+// staged temporary file is removed.
+func TestWritePDFResponseKeepsFileCreatedDuringDownload(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "paper.pdf")
+	body := io.MultiReader(strings.NewReader("%PDF-1.7\nnew"), readerFunc(func([]byte) (int, error) {
+		if err := os.WriteFile(dest, []byte("existing"), 0o600); err != nil {
+			t.Errorf("seed racing file: %v", err)
+		}
+		return 0, io.EOF
+	}))
+	err := writePDFResponse(body, dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), "refusing to clobber") {
+		t.Fatalf("err = %v, want no-clobber rejection", err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != "existing" {
+		t.Fatalf("racing file changed to %q", got)
+	}
+	if got := enrichDirEntries(t, dir); len(got) != 1 || got[0] != "paper.pdf" {
+		t.Fatalf("directory = %v, want only paper.pdf (temp file removed)", got)
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// providerStatusServer answers every request with one status and an empty JSON
+// object body, so each resolver sees the same HTTP outcome.
+func providerStatusServer(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func setEnrichProviderBases(t *testing.T, base string) {
+	t.Helper()
+	withBase(t, &enrichCrossRefBase, base)
+	withBase(t, &enrichUnpaywallBase, base)
+	withBase(t, &enrichOpenAlexBase, base)
+	withBase(t, &enrichSemanticScholarBase, base)
+}
+
+// A provider that cannot answer (5xx, 429, refused connection) says nothing
+// about whether the record exists, so every resolver must return an error for
+// it. Only a 404 is the provider's authoritative "no such record".
+func TestEnrichResolversDistinguishProviderErrorFromNoMatch(t *testing.T) {
+	ctx := context.Background()
+	data := map[string]any{"title": "Attention Is All You Need"}
+	resolvers := map[string]func() (bool, error){
+		"crossref doi": func() (bool, error) {
+			_, _, ok, err := resolveDOIViaCrossRef(ctx, http.DefaultClient, data)
+			return ok, err
+		},
+		"crossref abstract": func() (bool, error) {
+			_, ok, err := resolveAbstractViaCrossRef(ctx, http.DefaultClient, "10.1/x")
+			return ok, err
+		},
+		"unpaywall link": func() (bool, error) {
+			_, ok, err := resolvePDFViaUnpaywall(ctx, http.DefaultClient, "10.1/x", "me@example.com")
+			return ok, err
+		},
+		"unpaywall download": func() (bool, error) {
+			_, ok, err := resolveDownloadPDFViaUnpaywall(ctx, http.DefaultClient, "10.1/x", "me@example.com")
+			return ok, err
+		},
+		"openalex doi": func() (bool, error) {
+			_, ok, err := resolveDOIViaOpenAlex(ctx, http.DefaultClient, data, "")
+			return ok, err
+		},
+		"openalex abstract": func() (bool, error) {
+			_, ok, err := resolveAbstractViaOpenAlex(ctx, http.DefaultClient, "10.1/x", "")
+			return ok, err
+		},
+		"openalex subjects": func() (bool, error) {
+			_, ok, err := resolveSubjectsViaOpenAlex(ctx, http.DefaultClient, "10.1/x", "")
+			return ok, err
+		},
+		"semantic scholar doi": func() (bool, error) {
+			_, ok, err := resolveDOIViaSemanticScholar(ctx, http.DefaultClient, data)
+			return ok, err
+		},
+		"semantic scholar abstract": func() (bool, error) {
+			_, ok, err := resolveAbstractViaSemanticScholar(ctx, http.DefaultClient, "10.1/x")
+			return ok, err
+		},
+	}
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL
+	closed.Close()
+	outcomes := []struct {
+		name    string
+		base    string
+		wantErr bool
+	}{
+		{"500", providerStatusServer(t, http.StatusInternalServerError).URL, true},
+		{"429", providerStatusServer(t, http.StatusTooManyRequests).URL, true},
+		{"transport", closedURL, true},
+		{"404", providerStatusServer(t, http.StatusNotFound).URL, false},
+	}
+	for _, outcome := range outcomes {
+		t.Run(outcome.name, func(t *testing.T) {
+			setEnrichProviderBases(t, outcome.base)
+			for name, resolve := range resolvers {
+				ok, err := resolve()
+				if ok {
+					t.Errorf("%s: reported a match for %s", name, outcome.name)
+				}
+				if outcome.wantErr && err == nil {
+					t.Errorf("%s: %s was swallowed as a no-match, want an error", name, outcome.name)
+				}
+				if !outcome.wantErr && err != nil {
+					t.Errorf("%s: 404 returned error %v, want a clean no-match", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveEnrichmentReportsProviderErrorNotSkip(t *testing.T) {
+	ctx := context.Background()
+	data := map[string]any{"title": "Attention Is All You Need", "DOI": "10.1/x"}
+	cases := []struct {
+		name     string
+		category string
+	}{
+		{"missing_doi", "missing_doi"},
+		{"missing_abstract", "missing_abstract"},
+		{"missing_citation", "missing_citation"},
+		{"missing_subjects", "missing_subjects"},
+		{"missing_pdf", "missing_pdf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/500", func(t *testing.T) {
+			setEnrichProviderBases(t, providerStatusServer(t, http.StatusInternalServerError).URL)
+			_, reason, err := resolveEnrichment(ctx, http.DefaultClient, tc.category, "K1", 1, data, "me@example.com", true, true, "linked-url", "")
+			if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+				t.Fatalf("err = %v, want the provider's HTTP 500", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want no skip reason alongside a provider error", reason)
+			}
+		})
+		t.Run(tc.name+"/404", func(t *testing.T) {
+			setEnrichProviderBases(t, providerStatusServer(t, http.StatusNotFound).URL)
+			_, reason, err := resolveEnrichment(ctx, http.DefaultClient, tc.category, "K1", 1, data, "me@example.com", true, true, "linked-url", "")
+			if err != nil {
+				t.Fatalf("err = %v, want a clean no-match for 404", err)
+			}
+			if reason == "" {
+				t.Fatal("404 produced neither a proposal nor a skip reason")
+			}
+		})
+	}
+}
+
+// A fallback provider that does answer still wins over a failed primary, but a
+// fallback that merely reports "no match" must not erase the primary's failure.
+func TestResolveEnrichmentFallbackAfterProviderError(t *testing.T) {
+	ctx := context.Background()
+	data := map[string]any{"title": "Attention Is All You Need"}
+	withBase(t, &enrichCrossRefBase, providerStatusServer(t, http.StatusServiceUnavailable).URL)
+
+	withBase(t, &enrichOpenAlexBase, openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.9/oa","title":"Attention Is All You Need"}]}`).URL)
+	prop, reason, err := resolveEnrichment(ctx, http.DefaultClient, "missing_doi", "K1", 1, data, "", true, false, "linked-url", "")
+	if err != nil || reason != "" {
+		t.Fatalf("reason = %q, err = %v, want the OpenAlex proposal", reason, err)
+	}
+	if prop.Source != "OpenAlex" || prop.Fields["DOI"] != "10.9/oa" {
+		t.Fatalf("proposal = %+v, want OpenAlex DOI 10.9/oa", prop)
+	}
+
+	withBase(t, &enrichOpenAlexBase, openAlexWorkServer(t, `{"results":[]}`).URL)
+	_, reason, err = resolveEnrichment(ctx, http.DefaultClient, "missing_doi", "K1", 1, data, "", true, false, "linked-url", "")
+	if err == nil || !strings.Contains(err.Error(), "CrossRef") || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("err = %v, want the CrossRef outage to survive an empty OpenAlex answer", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want no skip reason", reason)
+	}
+}
+
+// At the command seam a provider outage is an error: every affected item is
+// listed with the provider's reason and the build returns a non-nil error. A
+// 404 stays an ordinary skip with no error.
+func TestBuildEnrichProposalsProviderOutageIsAnErrorNotASkip(t *testing.T) {
+	db := seedEnrichStore(t)
+
+	withBase(t, &enrichCrossRefBase, providerStatusServer(t, http.StatusInternalServerError).URL)
+	proposals, skipped, err := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("err = %v, want the CrossRef HTTP 500 reported", err)
+	}
+	if len(proposals) != 0 {
+		t.Fatalf("proposals = %+v, want none during an outage", proposals)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %+v, want both items listed", skipped)
+	}
+	for _, skip := range skipped {
+		if strings.Contains(skip.Reason, "no confident") || !strings.Contains(skip.Reason, "HTTP 500") {
+			t.Errorf("skip %s reason = %q, want the provider failure, not an authoritative miss", skip.Key, skip.Reason)
+		}
+	}
+
+	withBase(t, &enrichCrossRefBase, providerStatusServer(t, http.StatusNotFound).URL)
+	proposals, skipped, err = buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("404 build err = %v, want a clean no-match", err)
+	}
+	if len(proposals) != 0 || len(skipped) != 2 {
+		t.Fatalf("proposals = %+v skipped = %+v, want two ordinary skips", proposals, skipped)
+	}
+	for _, skip := range skipped {
+		if !strings.Contains(skip.Reason, "no confident") {
+			t.Errorf("skip %s reason = %q, want the no-match reason", skip.Key, skip.Reason)
+		}
 	}
 }

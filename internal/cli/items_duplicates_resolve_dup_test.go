@@ -177,3 +177,27 @@ func dupAssertSyncedStoreRefusal(t *testing.T, out string) {
 		t.Fatalf("envelope = %+v, want precondition_unmet/%s for items duplicates resolve", env, preconditionSyncedStore)
 	}
 }
+
+// TestDuplicatesResolveAnnotationsMatchDestructiveGate pins the agent-context
+// annotations to the registry and the mutation gate, which both treat a merge
+// (it trashes the duplicate) as destructive.
+func TestDuplicatesResolveAnnotationsMatchDestructiveGate(t *testing.T) {
+	cmd := newItemsDuplicatesResolveCmd(&rootFlags{})
+	for _, key := range []string{"zotio:destructive", "zotio:requires-allow-destructive"} {
+		if got := cmd.Annotations[key]; got != "true" {
+			t.Errorf("annotation %s = %q, want \"true\"", key, got)
+		}
+	}
+	var found bool
+	for _, e := range buildCapabilityRegistry(RootCmd()) {
+		if e.Path == "items duplicates resolve" {
+			found = true
+			if !e.Destructive {
+				t.Errorf("capability registry reports items duplicates resolve as non-destructive")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("items duplicates resolve missing from capability registry")
+	}
+}

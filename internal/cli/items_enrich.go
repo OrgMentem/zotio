@@ -462,7 +462,10 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			}
 			version, data := enrichItemFields(raw)
 			title := stringFromMap(data, "title")
-			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
+			prop, reason, resolveErr := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
+			if resolveErr != nil {
+				return outcome{}, &enrichProviderError{err: resolveErr}
+			}
 			if reason != "" {
 				return outcome{skip: enrichSkip{Key: key, Title: title, Category: category, Reason: reason}, skipped: true}, nil
 			}
@@ -478,7 +481,10 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			proposals = append(proposals, r.Value.prop)
 		}
 	}
-	var localReadErrs []error
+	// A failed provider lookup or an unreadable local row is not a "no match":
+	// each stays visible in the skip list for the journal and also becomes a
+	// command error, so the run cannot exit clean after an outage.
+	var buildErrs []error
 	for _, fanoutErr := range fanoutErrs {
 		skipped = append(skipped, enrichSkip{
 			Key:      fanoutErr.Source,
@@ -487,10 +493,14 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		})
 		var localReadErr *enrichLocalReadError
 		if errors.As(fanoutErr.Err, &localReadErr) {
-			localReadErrs = append(localReadErrs, fmt.Errorf("loading enrichment item %s: %w", fanoutErr.Source, fanoutErr.Err))
+			buildErrs = append(buildErrs, fmt.Errorf("loading enrichment item %s: %w", fanoutErr.Source, fanoutErr.Err))
+		}
+		var providerErr *enrichProviderError
+		if errors.As(fanoutErr.Err, &providerErr) {
+			buildErrs = append(buildErrs, fmt.Errorf("enriching item %s (%s): %w", fanoutErr.Source, category, fanoutErr.Err))
 		}
 	}
-	return proposals, skipped, errors.Join(localReadErrs...)
+	return proposals, skipped, errors.Join(buildErrs...)
 }
 
 const enrichKeyChunkSize = 900
@@ -802,29 +812,53 @@ func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report e
 	return nil
 }
 
-// resolveEnrichment dispatches to the provider for a category and returns either
-// a proposal or a non-empty skip reason.
-func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) (enrichProposal, string) {
+// resolveEnrichment dispatches to the provider for a category and returns a
+// proposal, a non-empty skip reason, or an error. The skip reason means the
+// providers answered and have no usable metadata. The error means at least one
+// provider could not answer and none supplied a result, so the item's metadata
+// is unknown, not absent.
+func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) (enrichProposal, string, error) {
 	title := stringFromMap(data, "title")
+	// lookupErrs collects failed provider lookups. A later provider that finds
+	// a result still wins, but without one the failures decide the outcome.
+	var lookupErrs []error
+	note := func(err error) {
+		if err != nil {
+			lookupErrs = append(lookupErrs, err)
+		}
+	}
+	// miss reports "no result": a provider error when any lookup failed,
+	// otherwise the genuine no-match reason.
+	miss := func(reason string) (enrichProposal, string, error) {
+		if err := errors.Join(lookupErrs...); err != nil {
+			return enrichProposal{}, "", err
+		}
+		return enrichProposal{}, reason, nil
+	}
 	switch category {
 	case "missing_doi":
 		if title == "" {
-			return enrichProposal{}, "no title to search for a DOI"
+			return enrichProposal{}, "no title to search for a DOI", nil
 		}
-		doi, _, ok := resolveDOIViaCrossRef(ctx, httpClient, data)
+		doi, _, ok, err := resolveDOIViaCrossRef(ctx, httpClient, data)
+		note(err)
 		source := "CrossRef"
 		if !ok && useOpenAlex {
-			if d, ok2 := resolveDOIViaOpenAlex(ctx, httpClient, data, email); ok2 {
+			d, ok2, err := resolveDOIViaOpenAlex(ctx, httpClient, data, email)
+			note(err)
+			if ok2 {
 				doi, ok, source = d, true, "OpenAlex"
 			}
 		}
 		if !ok && useSemanticScholar {
-			if d, ok2 := resolveDOIViaSemanticScholar(ctx, httpClient, data); ok2 {
+			d, ok2, err := resolveDOIViaSemanticScholar(ctx, httpClient, data)
+			note(err)
+			if ok2 {
 				doi, ok, source = d, true, "Semantic Scholar"
 			}
 		}
 		if !ok {
-			return enrichProposal{}, "no confident CrossRef/OpenAlex/Semantic Scholar title match"
+			return miss("no confident CrossRef/OpenAlex/Semantic Scholar title match")
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
@@ -832,27 +866,32 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Fields:  map[string]any{"DOI": doi},
 			version: version,
 			extra:   stringFromMap(data, "extra"),
-		}, ""
+		}, "", nil
 
 	case "missing_abstract":
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
-			return enrichProposal{}, "no DOI to look up abstract"
+			return enrichProposal{}, "no DOI to look up abstract", nil
 		}
-		abstract, ok := resolveAbstractViaCrossRef(ctx, httpClient, doi)
+		abstract, ok, err := resolveAbstractViaCrossRef(ctx, httpClient, doi)
+		note(err)
 		source := "CrossRef"
 		if !ok && useOpenAlex {
-			if a, ok2 := resolveAbstractViaOpenAlex(ctx, httpClient, doi, email); ok2 {
+			a, ok2, err := resolveAbstractViaOpenAlex(ctx, httpClient, doi, email)
+			note(err)
+			if ok2 {
 				abstract, ok, source = a, true, "OpenAlex"
 			}
 		}
 		if !ok && useSemanticScholar {
-			if a, ok2 := resolveAbstractViaSemanticScholar(ctx, httpClient, doi); ok2 {
+			a, ok2, err := resolveAbstractViaSemanticScholar(ctx, httpClient, doi)
+			note(err)
+			if ok2 {
 				abstract, ok, source = a, true, "Semantic Scholar"
 			}
 		}
 		if !ok {
-			return enrichProposal{}, "no abstract on CrossRef, OpenAlex, or Semantic Scholar for this DOI"
+			return miss("no abstract on CrossRef, OpenAlex, or Semantic Scholar for this DOI")
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
@@ -860,7 +899,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Fields:  map[string]any{"abstractNote": abstract},
 			version: version,
 			extra:   stringFromMap(data, "extra"),
-		}, ""
+		}, "", nil
 
 	case "missing_citation":
 		// A DOI is the only safe identity anchor here. The --missing-doi
@@ -870,15 +909,18 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		// failure this check exists to catch.
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
-			return enrichProposal{}, "no DOI to look up citation fields; run --missing-doi first"
+			return enrichProposal{}, "no DOI to look up citation fields; run --missing-doi first", nil
 		}
-		work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi)
-		if !ok {
-			return enrichProposal{}, "no CrossRef record for this DOI"
+		work, found, err := lookupCrossRefWork(ctx, httpClient, doi)
+		if err != nil {
+			return enrichProposal{}, "", err
+		}
+		if !found {
+			return enrichProposal{}, "no CrossRef record for this DOI", nil
 		}
 		fields := citationEnrichFields(data, work)
 		if len(fields) == 0 {
-			return enrichProposal{}, "CrossRef supplied none of the citation fields this item lacks"
+			return enrichProposal{}, "CrossRef supplied none of the citation fields this item lacks", nil
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
@@ -886,7 +928,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Fields:  fields,
 			version: version,
 			extra:   stringFromMap(data, "extra"),
-		}, ""
+		}, "", nil
 
 	case "missing_subjects":
 		// OpenAlex only. CrossRef carries no subject vocabulary, and the
@@ -895,14 +937,17 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		// only and is a separate, still-open ask.
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
-			return enrichProposal{}, "no DOI to look up subject terms; run --missing-doi first"
+			return enrichProposal{}, "no DOI to look up subject terms; run --missing-doi first", nil
 		}
 		if !useOpenAlex {
-			return enrichProposal{}, "subject terms come from OpenAlex, which --no-openalex disabled"
+			return enrichProposal{}, "subject terms come from OpenAlex, which --no-openalex disabled", nil
 		}
-		tags, ok := resolveSubjectsViaOpenAlex(ctx, httpClient, doi, email)
+		tags, ok, err := resolveSubjectsViaOpenAlex(ctx, httpClient, doi, email)
+		if err != nil {
+			return enrichProposal{}, "", err
+		}
 		if !ok {
-			return enrichProposal{}, fmt.Sprintf("OpenAlex has no concepts scoring at least %.2f for this DOI", minOpenAlexConceptScore)
+			return enrichProposal{}, fmt.Sprintf("OpenAlex has no concepts scoring at least %.2f for this DOI", minOpenAlexConceptScore), nil
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionTag,
@@ -910,7 +955,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Tags:    tags,
 			version: version,
 			extra:   stringFromMap(data, "extra"),
-		}, ""
+		}, "", nil
 
 	// repair_pdf resolves and attaches exactly as missing_pdf does; only the
 	// work queue differs, because the item already HAS a PDF child whose file
@@ -920,23 +965,27 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 	case "missing_pdf", "repair_pdf":
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
-			return enrichProposal{}, "no DOI to look up open-access PDF"
+			return enrichProposal{}, "no DOI to look up open-access PDF", nil
 		}
 		if email == "" {
 			email = enrichUnpaywallEmail()
 		}
 		if email == "" {
-			return enrichProposal{}, "Unpaywall requires a contact email (--email or UNPAYWALL_EMAIL)"
+			return enrichProposal{}, "Unpaywall requires a contact email (--email or UNPAYWALL_EMAIL)", nil
 		}
 		var pdfURL string
 		var ok bool
+		var err error
 		if attachMode == "linked-file" {
-			pdfURL, ok = resolveDownloadPDFViaUnpaywall(ctx, httpClient, doi, email)
+			pdfURL, ok, err = resolveDownloadPDFViaUnpaywall(ctx, httpClient, doi, email)
 		} else {
-			pdfURL, ok = resolvePDFViaUnpaywall(ctx, httpClient, doi, email)
+			pdfURL, ok, err = resolvePDFViaUnpaywall(ctx, httpClient, doi, email)
+		}
+		if err != nil {
+			return enrichProposal{}, "", err
 		}
 		if !ok {
-			return enrichProposal{}, "no open-access PDF found on Unpaywall"
+			return enrichProposal{}, "no open-access PDF found on Unpaywall", nil
 		}
 		p := enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionAttach,
@@ -946,7 +995,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		case "linked-file":
 			p.PDFPath = filepath.Join(pdfDir, key+".pdf")
 			p.Note = fmt.Sprintf("linked-file -> %s (download %q)", p.PDFPath, pdfURL)
-			return p, ""
+			return p, "", nil
 		default:
 			p.AttachMode = "linked-url"
 			p.Attachment = map[string]any{
@@ -957,10 +1006,10 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 				"parentItem":  key,
 				"contentType": "application/pdf",
 			}
-			return p, ""
+			return p, "", nil
 		}
 	}
-	return enrichProposal{}, "unknown category"
+	return enrichProposal{}, "unknown category", nil
 }
 
 // citationEnrichFields returns the citation-core fields the STORED item lacks
@@ -1637,25 +1686,34 @@ func validateEnrichPDFContentType(raw string) error {
 	}
 }
 
+// writePDFResponse stages the body in a same-directory temporary file and
+// publishes it at destPath only after the header, size cap, fsync, and close
+// all succeed. A process killed mid-download therefore leaves, at worst, an
+// unreferenced temporary file: destPath is either absent or a complete PDF, so
+// a retry never meets a truncated file that the no-clobber guard would refuse.
 func writePDFResponse(body io.Reader, destPath string, maxBytes int64) error {
 	if maxBytes < 5 {
 		return fmt.Errorf("PDF size cap must be at least 5 bytes")
 	}
-	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tmpPath, err := stageAtomicOutput(filepath.Dir(destPath), 0o600, func(w io.Writer) error {
+		if err := copyPDFBody(w, body, destPath, maxBytes); err != nil {
+			return err
+		}
+		if s, ok := w.(interface{ Sync() error }); ok {
+			if err := s.Sync(); err != nil {
+				return fmt.Errorf("syncing %s: %w", destPath, err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("refusing to clobber existing file %s", destPath)
-		}
-		return fmt.Errorf("creating %s: %w", destPath, err)
+		return err
 	}
-	keep := false
-	defer func() {
-		_ = f.Close()
-		if !keep {
-			_ = os.Remove(destPath)
-		}
-	}()
+	return publishPDFNoClobber(tmpPath, destPath)
+}
 
+// copyPDFBody applies the %PDF- magic gate and the size cap while copying.
+func copyPDFBody(w io.Writer, body io.Reader, destPath string, maxBytes int64) error {
 	header := make([]byte, 5)
 	n, err := io.ReadFull(body, header)
 	if err != nil {
@@ -1664,23 +1722,50 @@ func writePDFResponse(body io.Reader, destPath string, maxBytes int64) error {
 	if string(header) != "%PDF-" {
 		return fmt.Errorf("downloaded file is not a PDF: missing %%PDF- header")
 	}
-	written, err := f.Write(header[:n])
+	written, err := w.Write(header[:n])
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", destPath, err)
 	}
 	remaining := maxBytes - int64(written)
 	limited := &io.LimitedReader{R: body, N: remaining + 1}
-	copied, err := io.Copy(f, limited)
+	copied, err := io.Copy(w, limited)
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", destPath, err)
 	}
 	if int64(written)+copied > maxBytes {
 		return fmt.Errorf("downloaded PDF exceeds size cap of %d bytes", maxBytes)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", destPath, err)
+	return nil
+}
+
+// publishPDFNoClobber moves the staged file to destPath without replacing
+// anything already there. A hard link fails with EEXIST instead of
+// overwriting, which keeps the no-clobber guarantee atomic even if another
+// writer creates destPath after the early existence check. Filesystems
+// without hard links first claim destPath with an O_EXCL placeholder, so no
+// other writer can create it, then rename the staged file over that
+// placeholder. The staged file is removed on every path.
+func publishPDFNoClobber(tmpPath, destPath string) error {
+	defer func() { _ = os.Remove(tmpPath) }()
+	err := os.Link(tmpPath, destPath)
+	if err == nil {
+		return nil
 	}
-	keep = true
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("refusing to clobber existing file %s", destPath)
+	}
+	placeholder, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("refusing to clobber existing file %s", destPath)
+		}
+		return fmt.Errorf("publishing %s: %w", destPath, err)
+	}
+	_ = placeholder.Close()
+	if renameErr := os.Rename(tmpPath, destPath); renameErr != nil {
+		_ = os.Remove(destPath)
+		return fmt.Errorf("publishing %s: %w", destPath, renameErr)
+	}
 	return nil
 }
 
@@ -1714,13 +1799,61 @@ type crossRefSearchResponse struct {
 	} `json:"message"`
 }
 
+// enrichProviderError marks a lookup that could not be answered: a transport
+// failure, a non-404 HTTP status (429, 5xx), an undecodable body, or a
+// cancelled context. It is distinct from a provider's authoritative "no such
+// record", so a failed lookup is reported as an error instead of being
+// recorded as proof that the item has no metadata.
+type enrichProviderError struct {
+	err error
+}
+
+func (e *enrichProviderError) Error() string {
+	return fmt.Sprintf("provider lookup failed: %v", e.err)
+}
+
+func (e *enrichProviderError) Unwrap() error {
+	return e.err
+}
+
+// getProviderJSON performs getJSON and separates the three outcomes a resolver
+// must not conflate: the record exists and decoded (found, nil), the provider
+// answered that no such record exists, HTTP 404 or 410 (not found, nil), and
+// the provider could not answer (not found, error naming the provider).
+func getProviderJSON(ctx context.Context, httpClient *http.Client, provider, rawURL string, out any) (bool, error) {
+	err := getJSON(ctx, httpClient, rawURL, out)
+	switch {
+	case err == nil:
+		return true, nil
+	case isRegistryRecordAbsent(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: %w", provider, err)
+	}
+}
+
+// lookupCrossRefWork fetches a CrossRef work by DOI with the same three-way
+// outcome as getProviderJSON.
+func lookupCrossRefWork(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool, error) {
+	work, err := fetchCrossRefWork(ctx, httpClient, doi, nil)
+	switch {
+	case err == nil:
+		return work, true, nil
+	case isRegistryRecordAbsent(err):
+		return crossRefWork{}, false, nil
+	default:
+		return crossRefWork{}, false, err
+	}
+}
+
 // resolveDOIViaCrossRef searches CrossRef by bibliographic query and returns the
 // DOI of the candidate whose title matches the item's title exactly (after
-// normalization), guarding against attaching a wrong DOI.
-func resolveDOIViaCrossRef(ctx context.Context, httpClient *http.Client, data map[string]any) (string, crossRefWork, bool) {
+// normalization), guarding against attaching a wrong DOI. A provider failure is
+// returned as an error, never as a missing match.
+func resolveDOIViaCrossRef(ctx context.Context, httpClient *http.Client, data map[string]any) (string, crossRefWork, bool, error) {
 	title := stringFromMap(data, "title")
 	if title == "" {
-		return "", crossRefWork{}, false
+		return "", crossRefWork{}, false, nil
 	}
 	q := title
 	if author := firstCreatorFamily(data); author != "" {
@@ -1732,39 +1865,40 @@ func resolveDOIViaCrossRef(ctx context.Context, httpClient *http.Client, data ma
 	}.Encode()
 
 	var resp crossRefSearchResponse
-	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
-		return "", crossRefWork{}, false
+	found, err := getProviderJSON(ctx, httpClient, "CrossRef", u, &resp)
+	if err != nil || !found {
+		return "", crossRefWork{}, false, err
 	}
 	want := normalizeTitleForMatch(title)
 	// Empty-equals-empty must never count as an exact match: punctuation-only
 	// or (pre-fix) non-Latin titles all collapsed to "" and would otherwise
 	// accept the first provider hit as a false exact match.
 	if want == "" {
-		return "", crossRefWork{}, false
+		return "", crossRefWork{}, false, nil
 	}
 	for _, w := range resp.Message.Items {
 		if len(w.Title) == 0 || w.DOI == "" {
 			continue
 		}
 		if cand := normalizeTitleForMatch(w.Title[0]); cand != "" && cand == want {
-			return normalizeDOI(w.DOI), w, true
+			return normalizeDOI(w.DOI), w, true, nil
 		}
 	}
-	return "", crossRefWork{}, false
+	return "", crossRefWork{}, false, nil
 }
 
 // resolveAbstractViaCrossRef fetches a work by DOI and returns its abstract with
 // JATS XML markup stripped.
-func resolveAbstractViaCrossRef(ctx context.Context, httpClient *http.Client, doi string) (string, bool) {
-	work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi)
-	if !ok {
-		return "", false
+func resolveAbstractViaCrossRef(ctx context.Context, httpClient *http.Client, doi string) (string, bool, error) {
+	work, found, err := lookupCrossRefWork(ctx, httpClient, doi)
+	if err != nil || !found {
+		return "", false, err
 	}
 	abstract := stripJATS(work.Abstract)
 	if abstract == "" {
-		return "", false
+		return "", false, nil
 	}
-	return abstract, true
+	return abstract, true, nil
 }
 
 type unpaywallResponse struct {
@@ -1775,40 +1909,42 @@ type unpaywallResponse struct {
 }
 
 // resolvePDFViaUnpaywall returns the best open-access PDF URL for a DOI.
-func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
+func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool, error) {
 	u := enrichUnpaywallBase + "/" + url.PathEscape(doi) + "?" + url.Values{"email": {email}}.Encode()
 	var resp unpaywallResponse
-	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "Unpaywall", u, &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	if resp.BestOA.URLForPDF != "" {
 		// Unpaywall data becomes a
 		// Zotero linked-url attachment, so only HTTPS public URLs are accepted.
 		if err := validateExternalHTTPURL(resp.BestOA.URLForPDF, true); err == nil {
-			return resp.BestOA.URLForPDF, true
+			return resp.BestOA.URLForPDF, true, nil
 		}
 	}
 	if resp.BestOA.URL != "" {
 		if err := validateExternalHTTPURL(resp.BestOA.URL, true); err == nil {
-			return resp.BestOA.URL, true
+			return resp.BestOA.URL, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
-func resolveDownloadPDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
+func resolveDownloadPDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool, error) {
 	u := enrichUnpaywallBase + "/" + url.PathEscape(doi) + "?" + url.Values{"email": {email}}.Encode()
 	var resp unpaywallResponse
-	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "Unpaywall", u, &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	for _, candidate := range []string{resp.BestOA.URLForPDF, resp.BestOA.URL} {
 		parsed, err := url.Parse(strings.TrimSpace(candidate))
 		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" {
-			return candidate, true
+			return candidate, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // --- Semantic Scholar (fallback for DOI + abstract). ---
@@ -1826,45 +1962,49 @@ type semanticScholarSearchResponse struct {
 }
 
 // Semantic Scholar title-search DOI fallback with the same exact-title guard as CrossRef/OpenAlex.
-func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, data map[string]any) (string, bool) {
+func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, data map[string]any) (string, bool, error) {
 	title := stringFromMap(data, "title")
 	if title == "" {
-		return "", false
+		return "", false, nil
 	}
 	u := enrichSemanticScholarBase + "/paper/search?fields=title,externalIds&limit=5&query=" + url.QueryEscape(title)
 	var resp semanticScholarSearchResponse
-	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "Semantic Scholar", u, &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	want := normalizeTitleForMatch(title)
 	if want == "" {
-		return "", false
+		return "", false, nil
 	}
 	for _, paper := range resp.Data {
 		if paper.Title == "" || paper.ExternalIDs.DOI == "" {
 			continue
 		}
 		if cand := normalizeTitleForMatch(paper.Title); cand != "" && cand == want {
-			return normalizeDOI(paper.ExternalIDs.DOI), true
+			return normalizeDOI(paper.ExternalIDs.DOI), true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // Semantic Scholar DOI lookup fallback for abstracts.
-func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Client, doi string) (string, bool) {
+func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Client, doi string) (string, bool, error) {
 	var resp semanticScholarPaper
-	if err := getJSON(ctx, httpClient, enrichSemanticScholarBase+"/paper/DOI:"+url.PathEscape(doi)+"?fields=abstract", &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "Semantic Scholar", enrichSemanticScholarBase+"/paper/DOI:"+url.PathEscape(doi)+"?fields=abstract", &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	abstract := strings.TrimSpace(resp.Abstract)
 	if abstract == "" {
-		return "", false
+		return "", false, nil
 	}
-	return abstract, true
+	return abstract, true, nil
 }
 
-// CrossRef DOI fetch shared by abstract enrichment and validation discrepancy checks.
+// CrossRef DOI fetch for the validation and creator-audit passes, which count a
+// failed lookup themselves. Enrichment resolvers use lookupCrossRefWork, which
+// keeps a provider failure apart from a missing record.
 func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool) {
 	work, err := fetchCrossRefWork(ctx, httpClient, doi, nil)
 	if err != nil {
@@ -1932,45 +2072,47 @@ func openAlexFilterLiteral(value string) string {
 
 // resolveDOIViaOpenAlex searches OpenAlex by title and returns the DOI of the
 // candidate whose title matches exactly (same guard as the CrossRef resolver).
-func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data map[string]any, email string) (string, bool) {
+func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data map[string]any, email string) (string, bool, error) {
 	title := stringFromMap(data, "title")
 	if title == "" {
-		return "", false
+		return "", false, nil
 	}
 	var resp openAlexSearchResponse
-	if err := getJSON(ctx, httpClient, openAlexWorksURL("title.search:"+openAlexFilterLiteral(title), email), &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "OpenAlex", openAlexWorksURL("title.search:"+openAlexFilterLiteral(title), email), &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	want := normalizeTitleForMatch(title)
 	if want == "" {
-		return "", false
+		return "", false, nil
 	}
 	for _, w := range resp.Results {
 		if w.DOI == "" || w.Title == "" {
 			continue
 		}
 		if cand := normalizeTitleForMatch(w.Title); cand != "" && cand == want {
-			return normalizeDOI(w.DOI), true
+			return normalizeDOI(w.DOI), true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // resolveAbstractViaOpenAlex fetches a work by DOI and reconstructs its abstract
 // from OpenAlex's inverted index.
-func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
+func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool, error) {
 	var resp openAlexSearchResponse
-	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp); err != nil {
-		return "", false
+	found, err := getProviderJSON(ctx, httpClient, "OpenAlex", openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp)
+	if err != nil || !found {
+		return "", false, err
 	}
 	if len(resp.Results) == 0 {
-		return "", false
+		return "", false, nil
 	}
 	abstract := reconstructAbstract(resp.Results[0].AbstractInvertedIndex)
 	if abstract == "" {
-		return "", false
+		return "", false, nil
 	}
-	return abstract, true
+	return abstract, true, nil
 }
 
 const (
@@ -1989,13 +2131,14 @@ const (
 
 // resolveSubjectsViaOpenAlex returns namespaced subject tags for a DOI, keeping
 // only concepts OpenAlex is confident about, strongest first.
-func resolveSubjectsViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) ([]string, bool) {
+func resolveSubjectsViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) ([]string, bool, error) {
 	var resp openAlexSearchResponse
-	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp); err != nil {
-		return nil, false
+	found, err := getProviderJSON(ctx, httpClient, "OpenAlex", openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp)
+	if err != nil || !found {
+		return nil, false, err
 	}
 	if len(resp.Results) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	concepts := append([]openAlexConcept(nil), resp.Results[0].Concepts...)
 	// OpenAlex documents no ordering guarantee, and the cap keeps only the
@@ -2023,9 +2166,9 @@ func resolveSubjectsViaOpenAlex(ctx context.Context, httpClient *http.Client, do
 		}
 	}
 	if len(tags) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
-	return tags, true
+	return tags, true, nil
 }
 
 const (

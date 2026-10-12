@@ -146,6 +146,27 @@ func TestAtomicReplaceCompareBeforeReplace(t *testing.T) {
 	}
 }
 
+func TestAtomicReplaceSyncsParentDirAndSurfacesFailure(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "n.md")
+	writeFile(t, p, "A")
+	orig := vaultSyncDir
+	defer func() { vaultSyncDir = orig }()
+	var synced string
+	vaultSyncDir = func(d string) error { synced = d; return nil }
+	if err := atomicReplace(p, []byte("A"), []byte("B")); err != nil {
+		t.Fatal(err)
+	}
+	if synced != dir {
+		t.Errorf("synced dir = %q, want %q", synced, dir)
+	}
+	boom := errors.New("sync failed")
+	vaultSyncDir = func(string) error { return boom }
+	if err := atomicReplace(p, []byte("B"), []byte("C")); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want %v", err, boom)
+	}
+}
+
 func TestAtomicReplaceChecksImmediatelyBeforeRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "n.md")
 	writeFile(t, path, "expected")

@@ -332,6 +332,39 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   that write or delete local files.
 
 ### Fixed
+- **`items enrich` reports a provider outage as an error, not as "no match".**
+  A transport failure, HTTP 5xx or 429, or a cancelled request from CrossRef,
+  OpenAlex, Semantic Scholar or Unpaywall no longer records the item as having
+  no DOI, abstract, PDF or subjects. The item stays in the journal skip list
+  with the provider's reason, the other proposals still apply, and the command
+  exits non-zero. A 404 or an empty answer is still a genuine miss, and a
+  fallback provider that answers still wins.
+- **`items enrich --attach-mode linked-file` publishes a PDF only after the
+  whole download succeeds.** The download goes to a temporary file in the
+  same directory, is synced, and is then linked into place without replacing
+  an existing file. A killed run no longer leaves a truncated PDF that the
+  retry refuses to overwrite.
+- **`vault sync` and `vault push` sync the note directory after an atomic
+  replace.** A power loss right after the rename can no longer lose the new
+  note. A directory sync failure is reported as an error.
+- **Stored attachment uploads refuse an HTTPS-to-HTTP redirect.** A 307 or 308
+  from the storage endpoint to a plain `http://` URL could replay the upload
+  body without encryption. The upload now stops at that redirect.
+- **`journal undo` of a manual tag add keeps a later automatic tag with the
+  same name.** The undo matches the recorded tag type exactly.
+- **`tags audit fix` and `creators audit fix` fail with exit 9 when the local
+  store is missing**, with the `zotio sync` remediation, instead of exiting 0
+  with no plan. `tags audit fix` now declares `synced_store` in the
+  capability registry.
+- **The default `items move` preview needs no API key and sends no request.**
+  It builds the plan offline, as `--dry-run` does.
+- **`collections move` previews honor `--json` and `--agent`.** The preview
+  uses the same envelope as `collections update` instead of a fixed sentence.
+- **`items create` without `--items` or `--stdin` is a usage error (exit 2)**
+  in both preview and `--yes` modes, instead of planning a null payload.
+- **`items duplicates resolve` reports itself as destructive in agent
+  context.** Its annotations now agree with the capability registry and the
+  merge gate, which already required `--allow-destructive`.
 - **Ambiguous item creates keep their reconciliation evidence in the journal.**
   A lost response or write-token conflict now marks the create as possibly
   committed, so `journal undo` refuses to claim it reversed an unknown write.

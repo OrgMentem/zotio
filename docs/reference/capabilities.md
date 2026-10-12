@@ -130,7 +130,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `searches run` | read |  |  | `live_local_api` |
 | `sync` | sync |  |  |  |
 | `tags audit` | read |  |  | `synced_store` |
-| `tags audit fix` | write | `web_api` |  | `web_api_key` |
+| `tags audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `tags get` | read |  |  |  |
 | `tags inventory` | read |  |  | `synced_store` |
 | `tags list` | read |  |  |  |

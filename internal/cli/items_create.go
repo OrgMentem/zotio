@@ -144,7 +144,7 @@ func itemsCreateBody(cmd *cobra.Command, bodyItems string, stdinBody bool) (any,
 		}
 		return normalizeItemsCreateBody(parsedItems), nil
 	default:
-		return nil, nil
+		return nil, usageErr(fmt.Errorf("items create requires --items or --stdin"))
 	}
 }
 

@@ -85,8 +85,7 @@ supported.`,
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return preconditionErr(errors.New("no local data. Run 'zotio sync' first"))
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}

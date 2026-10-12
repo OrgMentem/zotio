@@ -56,6 +56,32 @@ func TestItemsCreateSendsBareArray(t *testing.T) {
 	}
 }
 
+func TestItemsCreateWithoutBodyIsUsageErrorAndSendsNothing(t *testing.T) {
+	for _, yes := range []bool{false, true} {
+		requestCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+		cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: yes, maxChanges: -1})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs(nil)
+		err := cmd.Execute()
+		srv.Close()
+		if err == nil || ExitCode(err) != 2 {
+			t.Fatalf("yes=%v: err = %v, exit code %d; want usage error (2)", yes, err, ExitCode(err))
+		}
+		if requestCount != 0 {
+			t.Errorf("yes=%v: made %d HTTP requests, want 0", yes, requestCount)
+		}
+	}
+}
+
 func TestItemsCreateConnectorDryRunDoesNotWrite(t *testing.T) {
 	oldPing := connectorPing
 	defer func() { connectorPing = oldPing }()

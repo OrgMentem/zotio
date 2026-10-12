@@ -347,3 +347,21 @@ func assertCreatorArray(t *testing.T, raw any, want []map[string]string) {
 		}
 	}
 }
+
+func TestCreatorsAuditFixMissingStoreIsPreconditionError(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	_, out, err := runCreatorAuditFixCmd(t, &rootFlags{}, "http://127.0.0.1:1")
+	if err == nil {
+		t.Fatalf("want precondition error, got nil (output %q)", out)
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9 (err %v)", got, err)
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("error %q lacks remediation", err)
+	}
+}

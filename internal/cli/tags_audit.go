@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -82,7 +83,7 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, ok, err := readTagAudit(cmd, policy)
+			res, ok, err := readTagAudit(cmd, policy, false)
 			if err != nil {
 				return err
 			}
@@ -150,7 +151,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 					keyFilter[key] = true
 				}
 			}
-			res, ok, err := readTagAudit(cmd, policy)
+			res, ok, err := readTagAudit(cmd, policy, true)
 			if err != nil {
 				return err
 			}
@@ -163,8 +164,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return preconditionErr(errors.New("no local data. Run 'zotio sync' first"))
 			}
 			defer rawDB.Close()
 			ops, err := buildTagAuditFixOps(localQueryStore{rawDB}, res.Plans, func(update tagRenameUpdate) (string, any, error) {
@@ -251,12 +251,18 @@ FROM resources r, json_each(json_extract(r.data, '$.data.tags')) AS tags
 WHERE r.resource_type = 'items' AND tag_name IN (%s)
 ORDER BY r.id ASC`
 
-func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer) (tagAuditResult, bool, error) {
+// readTagAudit reads the audit from the local store. A missing store is a
+// hint for the read-only report but a precondition failure when requireStore
+// is set (the fix path must not exit 0 having planned nothing).
+func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer, requireStore bool) (tagAuditResult, bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return tagAuditResult{}, false, fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
+		if requireStore {
+			return tagAuditResult{}, false, preconditionErr(errors.New("no local data. Run 'zotio sync' first"))
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 		return tagAuditResult{}, false, nil
 	}

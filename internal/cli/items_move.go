@@ -55,7 +55,7 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 	if err != nil {
 		return err
 	}
-	if flags.dryRun {
+	if !resolveMutationMode(flags).Apply {
 		ops := make([]mutation.Op, 0, len(keys))
 		for _, key := range keys {
 			changes := make([]mutation.Change, 0, 2)

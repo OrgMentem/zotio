@@ -109,18 +109,16 @@ func TestCollectionsSingleKeyCommandsRefuseMoreThanOneKey(t *testing.T) {
 		},
 		{
 			name:    "move",
-			newCmd:  func() *cobra.Command { return newCollectionsMoveCmd(&rootFlags{}) },
+			newCmd:  func() *cobra.Command { return newCollectionsMoveCmd(&rootFlags{asJSON: true}) },
 			twoKeys: []string{"--to", "PARENT", "K1", "K2"},
-			oneKey:  []string{"--to", "PARENT", "COLL"},
-			checkPreview: func(t *testing.T, out string) {
+			oneKey:  []string{"--to", "PARENT", "K1"},
+			checkPreview: wantJSONPreview("move", func(t *testing.T, decoded map[string]any) {
 				t.Helper()
-				if want := "Would move collection COLL under parent PARENT\n"; out != want {
-					t.Errorf("stdout = %q, want %q", out, want)
+				body, ok := decoded["body"].(map[string]any)
+				if !ok || body["parentCollection"] != "PARENT" {
+					t.Errorf("move preview body = %v, want parentCollection PARENT", decoded["body"])
 				}
-				if strings.Contains(out, "K2") {
-					t.Errorf("move preview %q mentions K2, want only the single requested key", out)
-				}
-			},
+			}),
 		},
 	}
 	for _, tc := range cases {

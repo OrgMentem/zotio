@@ -576,7 +576,7 @@ func undoDropTag(tags []map[string]any, name string, tagType int) ([]map[string]
 	removed := false
 	for _, tagObj := range tags {
 		tagName, _ := tagObj["tag"].(string)
-		if tagName == name && (tagType == 0 || itemTagType(tagObj) == tagType) {
+		if tagName == name && itemTagType(tagObj) == tagType {
 			removed = true
 			continue
 		}

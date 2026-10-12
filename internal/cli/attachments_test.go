@@ -826,6 +826,64 @@ func TestPostUploadPayloadAllowsLoopbackTestEscape(t *testing.T) {
 	}
 }
 
+// A signed HTTPS upload must not follow a 307/308 down to plaintext HTTP:
+// the transport would reopen the file and replay the whole envelope there.
+func TestPostUploadPayloadRefusesHTTPSToHTTPRedirect(t *testing.T) {
+	plainHit := make(chan string, 1)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		plainHit <- string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(plain.Close)
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		http.Redirect(w, r, plain.URL+"/replay?signature=secret", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(secure.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+	err := postUploadPayload(context.Background(), &client.Client{HTTPClient: secure.Client()}, secure.URL+"/upload", "", "", "", uploadRequestFor(t, []byte("private attachment bytes")))
+	if err == nil {
+		t.Fatal("upload followed an https-to-http redirect, want an error")
+	}
+	if strings.Contains(err.Error(), "signature=secret") {
+		t.Errorf("error %q quotes the redirect target's signed query", err)
+	}
+	select {
+	case body := <-plainHit:
+		t.Fatalf("plaintext target received the upload body %q", body)
+	default:
+	}
+}
+
+func TestPostUploadPayloadFollowsSameSchemeRedirect(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewTLSServer(nil)
+	t.Cleanup(srv.Close)
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upload" {
+			http.Redirect(w, r, "/final", http.StatusTemporaryRedirect)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", uploadRequestFor(t, []byte("payload"))); err != nil {
+		t.Fatalf("https upload redirected within https: %v", err)
+	}
+	if gotBody != "payload" {
+		t.Errorf("redirected body = %q, want %q", gotBody, "payload")
+	}
+}
+
 // The envelope is streamed rather than concatenated into a second full-size
 // buffer, so the bytes on the wire and the declared length both have to stay
 // exactly what a single-buffer body produced -- storage backends reject a

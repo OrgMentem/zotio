@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -376,12 +377,16 @@ func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, fil
 		existing2, rErr := readVaultFile(path)
 		if rErr == nil {
 			content2, boundary2 := buildVaultNote(existing2, meta, annBlock, format)
-			if err2 := atomicReplace(path, existing2, []byte(content2)); err2 == nil {
+			err2 := atomicReplace(path, existing2, []byte(content2))
+			if err2 == nil {
 				result.Status = noteStatus(existing2, content2)
 				if boundary2 {
 					result.Note = "needs_notes_boundary: add a single '## Notes' heading or notes markers to enable note sync"
 				}
 				return result, nil
+			}
+			if !errors.Is(err2, errVaultFileBusy) {
+				return vaultSyncResult{}, fmt.Errorf("writing %s: %w", path, err2)
 			}
 		}
 		result.Status = "file_busy"
@@ -469,7 +474,30 @@ func atomicReplace(path string, expected, newContent []byte) error {
 	if !bytes.Equal(cur, expected) {
 		return errVaultFileBusy
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return vaultSyncDir(filepath.Dir(path))
+}
+
+// vaultSyncDir is a seam so tests can observe directory-sync failures.
+var vaultSyncDir = syncDirectory
+
+// syncDirectory flushes a directory entry change (rename) to stable storage.
+// Windows cannot open or sync directories, so it is a no-op there.
+func syncDirectory(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // vaultIndex maps a Zotero item key to the basename of its existing managed

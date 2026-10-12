@@ -35,12 +35,18 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 			}
 			path := replacePathParam("/collections/{collectionKey}", "collectionKey", args[0])
 
-			if !resolveMutationMode(flags).Apply {
-				if flags.quiet {
-					return nil
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Would move collection %s under parent %s\n", args[0], flagTo)
-				return nil
+			if mode := resolveMutationMode(flags); !mode.Apply {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":         "move",
+					"resource":       "collections",
+					"key":            args[0],
+					"path":           path,
+					"body":           map[string]any{"parentCollection": parentCollection},
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
+				}, flags)
 			}
 
 			c, err := flags.newWriteClient()

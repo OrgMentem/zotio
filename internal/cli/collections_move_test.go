@@ -71,20 +71,18 @@ func runCollectionsMoveTestCmd(t *testing.T, srv *collectionMoveTestServer, flag
 }
 
 // TestCollectionsMovePreviewWritesNothing pins one contract across every
-// preview mode: print the "would move" line (nothing at all under --quiet) and
-// issue not one HTTP request. The three modes are distinct inputs to
-// resolveMutationMode and flags.quiet, so each stays a case, but the shared
-// server, output, and no-request assertions exist exactly once.
+// preview mode: emit the shared preview envelope (nothing under --quiet) and
+// issue not one HTTP request.
 func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
-	const wouldMove = "Would move collection COLL under parent PARENT\n"
 	tests := []struct {
-		name    string
-		flags   *rootFlags
-		wantOut string
+		name      string
+		flags     *rootFlags
+		wantEmpty bool
 	}{
-		{name: "default_preview", flags: &rootFlags{}, wantOut: wouldMove},
-		{name: "dry_run", flags: &rootFlags{dryRun: true}, wantOut: wouldMove},
-		{name: "quiet_preview", flags: &rootFlags{quiet: true}, wantOut: ""},
+		{name: "default_preview", flags: &rootFlags{}},
+		{name: "dry_run", flags: &rootFlags{dryRun: true}},
+		{name: "agent_preview", flags: &rootFlags{asJSON: true, agent: true}},
+		{name: "quiet_preview", flags: &rootFlags{quiet: true}, wantEmpty: true},
 	}
 
 	for _, tt := range tests {
@@ -95,11 +93,32 @@ func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("collections move preview: %v; stderr=%s", err, stderr)
 			}
-			if out != tt.wantOut {
-				t.Fatalf("stdout = %q, want %q", out, tt.wantOut)
-			}
 			if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
 				t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
+			}
+			if tt.wantEmpty {
+				if out != "" {
+					t.Fatalf("stdout = %q, want empty", out)
+				}
+				return
+			}
+			if !strings.Contains(out, "COLL") || !strings.Contains(out, "PARENT") {
+				t.Fatalf("preview %q does not show the planned move", out)
+			}
+			if tt.flags.asJSON {
+				var env struct {
+					Action  string         `json:"action"`
+					Key     string         `json:"key"`
+					Body    map[string]any `json:"body"`
+					DryRun  bool           `json:"dry_run"`
+					Success bool           `json:"success"`
+				}
+				if err := json.Unmarshal([]byte(out), &env); err != nil {
+					t.Fatalf("preview is not valid JSON: %v\n%s", err, out)
+				}
+				if env.Action != "move" || env.Key != "COLL" || !env.DryRun || env.Success || env.Body["parentCollection"] != "PARENT" {
+					t.Fatalf("envelope = %+v, want planned move of COLL under PARENT", env)
+				}
 			}
 		})
 	}

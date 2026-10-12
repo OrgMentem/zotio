@@ -644,6 +644,17 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	// Re-resolve and vet the storage host at dial time so a signed HTTPS URL
 	// cannot reach a private address through DNS rebinding.
 	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
+	// The generic redirect gate accepts public http:// targets, and GetBody
+	// lets a 307/308 replay the whole envelope, so an HTTPS upload must not
+	// follow a redirect down to plaintext. The message names no URL: the
+	// Location can carry the signed query.
+	publicRedirectGate := httpClient.CheckRedirect
+	httpClient.CheckRedirect = func(redirectReq *http.Request, via []*http.Request) error {
+		if u.Scheme == "https" && redirectReq.URL.Scheme != "https" {
+			return errors.New("refusing upload redirect from https to a non-https URL")
+		}
+		return publicRedirectGate(redirectReq, via)
+	}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		// The local file failing mid-stream (it shrank, grew, or changed under

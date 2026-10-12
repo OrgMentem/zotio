@@ -773,6 +773,49 @@ func TestJournalUndoAutomaticAddPreservesReplacementManualTag(t *testing.T) {
 	}
 }
 
+func TestJournalUndoManualAddPreservesReplacementAutomaticTag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := newItemTagTestServer(t, map[string]string{"K1": "5"}, map[string][]map[string]any{
+		"K1": {{"tag": "ml", "type": float64(1)}, {"tag": "keep", "type": float64(0)}},
+	})
+	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	entry := mutation.JournalEntry{
+		SchemaVersion: mutation.JournalSchemaVersion, RunID: "manual-add", Operation: "items.tags.add", Mode: "apply", OK: true,
+		Timestamp: time.Now(), Summary: mutation.ResultSummary{Attempted: 1, Applied: 1},
+		Ops: []mutation.JournalOp{
+			{
+				ID: "items.tags.add:K1", Key: "K1", Kind: "tag_add", Status: "applied",
+				Changes: []mutation.Change{{Field: "tags", Add: "ml", TagType: 0}},
+			},
+		},
+	}
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	cmd := newJournalCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"undo", "manual-add"})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("undo apply: %v; stderr=%s", err, errOut.String())
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 {
+		t.Fatalf("undo env = %+v, want no-op preserving automatic replacement", env)
+	}
+	if srv.patchCounts["K1"] != 0 {
+		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	}
+}
+
 // applyUndoMembership previously built its header map conditionally
 // ("if version > 0"), so an item whose version could not be resolved was
 // PATCHed with no If-Unmodified-Since-Version at all. Zotero rejects that with

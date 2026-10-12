@@ -255,3 +255,15 @@ func TestItemsMoveBulkKeysFrom(t *testing.T) {
 		}
 	}
 }
+
+func TestItemsMoveDefaultPreviewIsOffline(t *testing.T) {
+	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{"K1": {"SOURCE"}})
+
+	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true}, "--to", "TARGET", "K1")
+	if !env.OK || env.Mode != "preview" {
+		t.Fatalf("env = %+v, want ok preview", env)
+	}
+	if len(srv.getCounts) != 0 || len(srv.patchCounts) != 0 {
+		t.Fatalf("GETs = %v PATCHes = %v, want no HTTP requests", srv.getCounts, srv.patchCounts)
+	}
+}
