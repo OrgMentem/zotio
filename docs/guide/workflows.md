@@ -37,6 +37,32 @@ zotio watch --workflow nightly-hygiene.json --workflow-on-change
 !!! tip "Just one command?"
     Run a single command directly. Use a workflow when steps feed each other or must apply together.
 
+## Select cohorts, enrich MeSH terms, watch preprints
+
+**Combine cohorts with AND.** Join two or more `--scope` arms with ` AND ` (capital letters, a space on each side) to select only the items that match every arm. It works wherever `--scope` works, including `library health`, `items audit`, `items enrich`, `items summarize`, `items bibliography`, and `vault sync`:
+
+```bash
+zotio library health --scope 'collection:ABCD1234 AND tag:include' --fail-on high
+zotio items enrich --missing-doi --scope 'collection:ABCD1234 AND tag:include'
+```
+
+The text splits only where ` AND ` is followed by another arm (`collection:`, `tag:`, `item:`, `query:`, `saved-search:`). So `query:trust AND safety` stays one query, and lowercase `and` never splits. `library` cannot be an arm (exit 2). A saved-search arm that cannot be evaluated refuses with exit 9; it never counts as empty.
+
+**Saved searches without the desktop.** Zotero desktop evaluates `saved-search:KEY` when it answers. When the desktop local API is unreachable or refuses access, zotio evaluates the synced search definition against the local mirror and prints a `notice:` line. `searches run KEY` does the same, and `--data-source local` forces the local evaluation; `--data-source live` turns the fallback off. The local evaluator supports text fields (title, publication title, publisher, DOI), creator, tag, collection, item type, and date conditions, with any/all join and the child-item flags. A saved search with any other condition (full text, notes, nested searches) exits 9 and names the condition; zotio never returns a partial result.
+
+**Tag biomedical items with MeSH terms.** `items enrich --missing-mesh` reads an item's PMID (the PMID field or a `PMID:` line in Extra), or looks up its DOI in PubMed, and proposes the record's MeSH descriptors as automatic `mesh/<descriptor>` tags, for example `mesh/Neoplasms`. A DOI match is accepted only when the PubMed record lists the same DOI. Items that already carry a `mesh/` tag are skipped, and so are records PubMed has not indexed yet. It previews by default and writes only with `--yes`. `--email` (or `UNPAYWALL_EMAIL`) is optional here; it gives NCBI a contact address. If PubMed is down or rate-limits, the command exits with an error and records no MeSH terms.
+
+```bash
+zotio items enrich --missing-mesh --scope collection:ABCD1234 --email you@example.org          # preview
+zotio items enrich --missing-mesh --scope collection:ABCD1234 --email you@example.org --yes    # apply
+```
+
+**Watch for preprints that get published.** `zotio watch --health --health-check-preprints` also watches the arXiv preprints in the library. Each cycle it looks up in arXiv and CrossRef the preprints whose last answer is older than `--health-preprint-recheck` (default `7d`; accepts `168h`, `7d`, or `2w`; at least `1h`). When a preprint gains a published record, the watch output and the `--health-webhook` payload carry one new `preprint_published` finding, once. The finding points at `zotio items preprint-check fix`, which previews the update before it writes. `--health-check-preprints` requires `--health`, and `--health-preprint-recheck` requires `--health-check-preprints` (exit 2 otherwise). `--health-scope` limits the preprints that are checked. Answers are cached in the state directory (`watch-preprints.json`). A provider failure is a logged skip that keeps the last known answer. Each cycle makes at most 50 lookups, so a large library is covered over several cycles.
+
+```bash
+zotio watch --health --health-check-preprints --health-webhook https://example.org/hook
+```
+
 ## Preview, then apply
 
 ```bash

@@ -62,7 +62,7 @@ With the default cache enabled, that recipe is quiet when nothing changed and lo
 
 ## Gate the manuscript too
 
-The library gate catches bad references; `items bibcheck` catches the reverse — citekeys a manuscript cites that the library can't back (unknown or ambiguous keys), plus cited items missing citation-core fields. Pass one or more LaTeX or Pandoc files. For a thesis whose chapters are pulled in with `\input{…}` or `\include{…}`, add `--follow-includes` so the chapters are checked too; a missing or cyclic include then fails the run:
+The library gate catches bad references; `items bibcheck` catches the reverse — citekeys a manuscript cites that the library can't back (unknown or ambiguous keys), plus cited items missing citation-core fields. Pass one or more LaTeX, Pandoc, Word (`.docx`), or LibreOffice (`.odt`) files. For a thesis whose chapters are pulled in with `\input{…}` or `\include{…}`, add `--follow-includes` so the chapters are checked too; a missing or cyclic include then fails the run:
 
 ```yaml
       - run: zotio items bibcheck thesis.tex chapters/*.md --follow-includes --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys or a broken include
@@ -74,6 +74,29 @@ To publish the bibliography the manuscript actually cites, export it with `--man
 ```yaml
       - run: zotio items bibliography --manuscript thesis.tex --follow-includes --format biblatex > references.bib
 ```
+
+### Word and LibreOffice manuscripts
+
+`items bibcheck` and `items bibliography --manuscript` also read the Zotero citation fields in `.docx` and `.odt` files, so a manuscript written with the Zotero plugin needs no LaTeX or Pandoc source:
+
+```yaml
+      - run: zotio items bibcheck thesis.docx --fail-on-unknown
+      - run: zotio items bibliography --manuscript thesis.odt --format bibtex > references.bib
+```
+
+zotio matches each cited item by its Zotero item key against the library you target (`--group <id>` for a group library). An item that is missing, deleted, trashed, or from another library is reported as unknown and exits 11 with `--fail-on-unknown`. Findings name the paragraph that holds the field (`thesis.docx:3`). A damaged field, or a citation with no usable item URI, is also reported as unknown. A file that is not a valid `.docx` or `.odt` exits 2.
+
+### Retracted papers the manuscript cites
+
+A library-wide retraction check is noisy because people keep retracted papers on purpose. To ask only about the papers one manuscript cites, add `--check-retractions`:
+
+```yaml
+      - run: zotio items bibcheck paper.tex --check-retractions --fail-on high
+```
+
+bibcheck resolves each citation to a library item, then asks CrossRef about the DOI of exactly those items. A retraction is a critical `retracted_item` finding. An expression of concern is a high `expression_of_concern` finding. Both name the manuscript file and line that cites the paper. Corrections are not reported. With `--fail-on high`, a retraction or concern exits 11.
+
+The check uses the network, so it is off unless you pass the flag. If CrossRef cannot be reached, or a lookup fails, bibcheck does not report a clean result. It lists the skipped lookups in the output and in the JSON `skipped` field, and with `--fail-on` it exits 9. The JSON `retractions` field gives the counts of cited items checked, flagged, and unchecked (no DOI, or a failed lookup).
 
 ![zotio items bibcheck resolving manuscript citekeys](../assets/demos/bibcheck.gif)
 

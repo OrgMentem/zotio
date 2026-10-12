@@ -33,20 +33,20 @@ Concretely:
 
 3. **Provenance carries a scoped flag.** A planner-served read sets `prov.Scoped = true`; a generic-dump read does not. Callers and agents can distinguish "this local result reproduced the live scope" from "this is a best-effort dump." This is the requested *provenance flag* — kept, but as a boolean on the existing envelope, not a new interface layer.
 
-4. **Grow by demonstrated value, one resource at a time.** No planner is built ahead of a real consumer. Precedence: item children (done — feeds offline annotation export) > generic pagination (done) > tag-resource filtering (done, see Amendments) > saved-search results (deferred, product decision) > unifying `search` through `resolveRead` (deferred, cleanup).
+4. **Grow by demonstrated value, one resource at a time.** No planner is built ahead of a real consumer. Precedence: item children (done — feeds offline annotation export) > generic pagination (done) > tag-resource filtering (done, see Amendments) > saved-search results (done as a scope fallback, see Amendments) > unifying `search` through `resolveRead` (deferred, cleanup).
 
 ### What we explicitly do NOT build
 
 - A generic `Planner` interface abstracting over all resource shapes.
 - Per-resource planners for endpoints with no offline consumer (speculative parity).
-- Local evaluation of saved-search condition sets **until** the supported operator subset is decided.
+- Local evaluation of saved-search condition sets **beyond the supported operator subset**. Inside the subset it exists (see Amendments); outside it the evaluator refuses rather than approximates.
 
 ## Consequences
 
 - **The subsystem is legible.** A reader/agent knows `query.go` + `resolveLocal*` is *the* local read model, owned here, with a fixed extension pattern — not a pile of endpoint patches.
 - **`Scoped` provenance is a stable contract.** Offline/agent workflows can gate on "was this reproduced or dumped."
 - **Bounded blast radius.** Each new resource is a typed query + a `resolveLocal<Resource>` + parity tests; it can't silently change item behavior.
-- **The proposed generic planner layer is rejected as over-built** and split into per-resource follow-up work (tags, saved-search/deferred, unify search), each gated on its own demonstrated need. The umbrella stays deferred.
+- **The proposed generic planner layer is rejected as over-built** and split into per-resource follow-up work (tags and saved-search, both now done; unify search, deferred), each gated on its own demonstrated need. The umbrella stays deferred.
 - **Tradeoff (accepted):** we forgo a single uniform read abstraction. Adding a resource is a small amount of near-duplicated builder code rather than implementing an interface. For a read model over heterogeneous Zotero endpoints, explicit-per-shape is more honest than a lowest-common-denominator interface.
 - **Regeneration risk is now documented:** this ADR is the carry-forward record for the subsystem.
 
@@ -72,3 +72,8 @@ Concretely:
 
 - **2026-07-08:** The generator was retired; this ADR is the carry-forward record for the local read parity subsystem.
 - **2026-10-12:** Tag-resource filtering is implemented (`resolveLocalTagList` in `data_source.go`, covered by `data_source_local_query_planner_test.go`; commits `a443d2a`, `b8051a4`). Decision item 4 no longer lists it as deferred.
+- **2026-10-12:** Saved-search evaluation is implemented as an offline fallback for `--scope saved-search:KEY` (`internal/cli/savedsearch_local.go`, wired into `resolveScopeLive` and `searches run`; covered by `savedsearch_local_test.go`). Decision item 4 no longer lists it as deferred, and the "do NOT build" line now bounds it instead of forbidding it. The decisions:
+  - **Live stays authoritative.** Zotero evaluates every condition type, so a reachable desktop answers first. The mirror is consulted only when the desktop is not the configured base, does not answer, or refuses with HTTP 403; `--data-source live` disables the fallback. The result carries `scopeResult.LocalEvaluation` (which search, how fresh the mirror, why live was skipped) and a stderr notice.
+  - **Explicit operator subset, no partial evaluation.** The evaluator replays Zotero's `search.js` semantics for text fields, `creator`/`author`/`editor`/`bookAuthor`, `tag`, `collection` (+ `recursive`), `itemType`, `date`/`dateAdded`/`dateModified` (`is`/`isNot`/`isBefore`/`isAfter`), `joinMode`, `noChildren`, and `includeParents`/`includeChildren`/`includeParentsAndChildren`. A definition with any other condition, operator, or value (full text, notes, `anyField`, nested saved searches, condition groups, `isInTheLast`, LIKE wildcards, a collection the mirror does not hold, a mirrored item date it cannot parse) is refused whole. The precondition detail names each offending part; the unmet `live_local_api` precondition (exit 9) is the outcome, never a smaller cohort.
+  - **Deviation from the "typed query in `query.go`" pattern.** Zotero matches text after accent, case, quote, and dash folding (`normalizeForSearch`), which SQLite cannot reproduce over the JSON mirror. The evaluator therefore loads the mirrored items and evaluates in Go. `query.go` is unchanged.
+  - **`searches run` uses it too.** `--data-source local`, and the auto fallback when the results endpoint cannot execute the search (network error or 404), evaluate the synced definition and print the matched item payloads (children included, as Zotero's search returns them) in item-list order. `--data-source live` never falls back. An unsupported condition keeps the `live_local_api` refusal. The capability entry became three routes (default declares nothing, `local` requires `synced_store`, `live` requires `live_local_api`), probed by `TestCapabilityRequiresMatchesOfflineBehaviour`.

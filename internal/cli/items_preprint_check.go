@@ -159,8 +159,11 @@ func fetchPreprintCheckFixCandidates(c zoteroGetter, limit int) ([]map[string]an
 
 // fetchPreprintCheckCandidates shares paging/deduping while allowing fix to report no_arxiv_id skips.
 func fetchPreprintCheckCandidates(c zoteroGetter, limit int, requireArxivID bool) ([]map[string]any, error) {
+	// A positive limit still fetches at least one full page per source so the
+	// arXiv-ID filter has headroom; zero or negative means no cap, matching the
+	// "0 = all" convention of the other check commands.
 	fetchLimit := limit
-	if fetchLimit <= 0 || fetchLimit < 100 {
+	if limit > 0 && limit < 100 {
 		fetchLimit = 100
 	}
 	sources := []map[string]string{

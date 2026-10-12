@@ -555,12 +555,11 @@ func TestScopeFlagUsesACanonicalDefault(t *testing.T) {
 // accepts. A string that names a scope type parseScopeSpec rejects is a
 // documented flag that cannot be used.
 func TestScopeFlagUsageNamesOnlyRealArms(t *testing.T) {
-	arms, ok := strings.CutPrefix(scopeFlagUsage, "Item cohort: ")
-	if !ok {
-		t.Fatalf("scopeFlagUsage = %q, want it to start with the cohort prefix", scopeFlagUsage)
+	if !strings.HasPrefix(scopeFlagUsage, "Item cohort: "+scopeArmsUsage) {
+		t.Fatalf("scopeFlagUsage = %q, want it to start with the cohort prefix and scopeArmsUsage", scopeFlagUsage)
 	}
 	seen := map[string]bool{}
-	for _, arm := range strings.Split(arms, "|") {
+	for _, arm := range strings.Split(scopeArmsUsage, "|") {
 		arm = strings.TrimSpace(arm)
 		spec, err := parseScopeSpec(arm)
 		if err != nil {
@@ -573,5 +572,341 @@ func TestScopeFlagUsageNamesOnlyRealArms(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("scopeFlagUsage does not advertise the %q arm, which parseScopeSpec accepts", want)
 		}
+	}
+}
+
+// The help string documents AND, so its own example has to be an expression
+// the parser reads as an intersection of the two arms it names.
+func TestScopeFlagUsageDocumentsAnd(t *testing.T) {
+	const example = "collection:KEY AND tag:NAME"
+	if !strings.Contains(scopeFlagUsage, "AND") || !strings.Contains(scopeFlagUsage, example) {
+		t.Fatalf("scopeFlagUsage = %q, want it to document AND with the example %q", scopeFlagUsage, example)
+	}
+	spec, err := parseScopeSpec(example)
+	if err != nil {
+		t.Fatalf("parseScopeSpec(%q): %v", example, err)
+	}
+	if spec.Type != scopeTypeIntersection || len(spec.Arms) != 2 {
+		t.Fatalf("parseScopeSpec(%q) = %+v, want a two-arm intersection", example, spec)
+	}
+}
+
+func TestParseScopeSpecIntersection(t *testing.T) {
+	cases := []struct {
+		expr     string
+		wantType string
+		wantVal  string
+		wantArms []string
+		wantErr  string
+	}{
+		// Single arms parse exactly as they always did.
+		{expr: "collection:C", wantType: "collection", wantVal: "C"},
+		{expr: "library", wantType: "library"},
+		{expr: "query:psychological safety: a review", wantType: "query", wantVal: "psychological safety: a review"},
+		// AND only splits before a recognized arm; everywhere else it is text.
+		{expr: "query:trust AND safety", wantType: "query", wantVal: "trust AND safety"},
+		{expr: "tag:rock AND roll", wantType: "tag", wantVal: "rock AND roll"},
+		{expr: "tag:rock and roll", wantType: "tag", wantVal: "rock and roll"},
+		{expr: "tag:ANDROID", wantType: "tag", wantVal: "ANDROID"},
+		// Intersections.
+		{expr: "collection:C AND tag:T", wantType: scopeTypeIntersection, wantArms: []string{"collection:C", "tag:T"}},
+		{expr: "  collection:C   AND   tag:T  ", wantType: scopeTypeIntersection, wantArms: []string{"collection:C", "tag:T"}},
+		{expr: "query:trust AND safety AND tag:x", wantType: scopeTypeIntersection, wantArms: []string{"query:trust AND safety", "tag:x"}},
+		{expr: "query:psychological safety: a review AND collection:C", wantType: scopeTypeIntersection, wantArms: []string{"query:psychological safety: a review", "collection:C"}},
+		{expr: "collection:C AND tag:T AND item:K AND saved-search:S", wantType: scopeTypeIntersection, wantArms: []string{"collection:C", "tag:T", "item:K", "saved-search:S"}},
+		{expr: "tag:x AND tag:x", wantType: scopeTypeIntersection, wantArms: []string{"tag:x", "tag:x"}},
+		// Errors.
+		{expr: "library AND tag:x", wantErr: "cannot combine library"},
+		{expr: "tag:x AND library", wantErr: "cannot combine library"},
+		{expr: "collection:C AND tag:", wantErr: `scope "tag" requires a value`},
+		{expr: "collection: AND tag:T", wantErr: `scope "collection" requires a value`},
+		{expr: "collection:C AND AND tag:T", wantErr: "empty operand"},
+		{expr: "bogus:x AND tag:y", wantErr: `unknown scope type "bogus"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			spec, err := parseScopeSpec(tc.expr)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("parseScopeSpec(%q) = %+v, %v, want error containing %q", tc.expr, spec, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseScopeSpec(%q): %v", tc.expr, err)
+			}
+			if spec.Type != tc.wantType || spec.Value != tc.wantVal {
+				t.Fatalf("parseScopeSpec(%q) = {%q,%q}, want {%q,%q}", tc.expr, spec.Type, spec.Value, tc.wantType, tc.wantVal)
+			}
+			var arms []string
+			for _, arm := range spec.Arms {
+				arms = append(arms, arm.expr())
+			}
+			if strings.Join(arms, "|") != strings.Join(tc.wantArms, "|") {
+				t.Fatalf("parseScopeSpec(%q) arms = %q, want %q", tc.expr, arms, tc.wantArms)
+			}
+		})
+	}
+}
+
+// seedIntersectionStore mirrors a cohort where every set operation has a
+// distinct answer:
+//
+//	K1: C1        T1 T2   title "zqfoo"
+//	K2: C1 C2     T1      title "zqfoo"
+//	K3:    C2     T1 T2
+//	K4: C1                title "zqfoo"
+//	K5:                   (in no collection, no tag)
+func seedIntersectionStore(t *testing.T) localQueryStore {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"zqfoo one","collections":["C1"],"tags":[{"tag":"T1"},{"tag":"T2"}]}}`),
+		json.RawMessage(`{"key":"K2","version":1,"data":{"key":"K2","itemType":"journalArticle","title":"zqfoo two","collections":["C1","C2"],"tags":[{"tag":"T1"}]}}`),
+		json.RawMessage(`{"key":"K3","version":1,"data":{"key":"K3","itemType":"journalArticle","title":"other three","collections":["C2"],"tags":[{"tag":"T1"},{"tag":"T2"}]}}`),
+		json.RawMessage(`{"key":"K4","version":1,"data":{"key":"K4","itemType":"journalArticle","title":"zqfoo four","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"K5","version":1,"data":{"key":"K5","itemType":"journalArticle","title":"other five"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return localQueryStore{db}
+}
+
+func mustParseScope(t *testing.T, expr string) scopeSpec {
+	t.Helper()
+	spec, err := parseScopeSpec(expr)
+	if err != nil {
+		t.Fatalf("parseScopeSpec(%q): %v", expr, err)
+	}
+	return spec
+}
+
+func TestResolveScopeIntersection(t *testing.T) {
+	db := seedIntersectionStore(t)
+	cases := []struct {
+		expr string
+		want string
+	}{
+		{"collection:C1 AND tag:T1", "K1,K2"},
+		{"tag:T1 AND collection:C1", "K1,K2"},
+		{"collection:C1 AND collection:C2", "K2"},
+		{"collection:C1 AND tag:T1 AND tag:T2", "K1"},
+		{"collection:C2 AND tag:T1", "K2,K3"},
+		{"query:zqfoo AND tag:T1", "K1,K2"},
+		{"collection:C1 AND query:zqfoo", "K1,K2,K4"},
+		{"item:K2 AND tag:T1", "K2"},
+		{"item:K4 AND tag:T1", ""},
+		{"collection:C1 AND tag:NOPE", ""},
+		// A repeated operand changes nothing.
+		{"collection:C1 AND tag:T1 AND collection:C1 AND tag:T1", "K1,K2"},
+		{"tag:T1 AND tag:T1", "K1,K2,K3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			r, err := resolveScope(db, mustParseScope(t, tc.expr))
+			if err != nil {
+				t.Fatalf("resolveScope: %v", err)
+			}
+			if r.Precondition != "" || r.All {
+				t.Fatalf("result = %+v, want a concrete key set", r)
+			}
+			if got := strings.Join(r.Keys, ","); got != tc.want {
+				t.Fatalf("keys = %q, want %q", got, tc.want)
+			}
+			if r.Keys == nil {
+				t.Fatal("Keys is nil, want a non-nil empty slice for an empty intersection")
+			}
+		})
+	}
+
+	t.Run("provenance records the full expression and every arm", func(t *testing.T) {
+		r, err := resolveScope(db, mustParseScope(t, "  collection:C1   AND tag:T1 AND collection:C1 "))
+		if err != nil {
+			t.Fatalf("resolveScope: %v", err)
+		}
+		if r.Expr != "collection:C1 AND tag:T1 AND collection:C1" || r.Type != scopeTypeIntersection {
+			t.Fatalf("result = %+v, want the canonical full expression and intersection type", r)
+		}
+		if got := strings.Join(r.Arms, "|"); got != "collection:C1|tag:T1|collection:C1" {
+			t.Fatalf("arms = %q, want every arm as written", got)
+		}
+	})
+
+	t.Run("a single arm keeps its old result", func(t *testing.T) {
+		r, err := resolveScope(db, mustParseScope(t, "collection:C1"))
+		if err != nil {
+			t.Fatalf("resolveScope: %v", err)
+		}
+		if r.Expr != "collection:C1" || r.Type != "collection" || r.Arms != nil {
+			t.Fatalf("result = %+v, want the plain collection result with no arms", r)
+		}
+	})
+
+	t.Run("a hand-built intersection with library is refused", func(t *testing.T) {
+		spec := scopeSpec{Type: scopeTypeIntersection, Arms: []scopeSpec{{Type: "library"}, {Type: "tag", Value: "T1"}}}
+		if _, err := resolveScope(db, spec); err == nil {
+			t.Fatal("intersection with a library operand resolved")
+		}
+	})
+}
+
+// A saved search nobody can evaluate is not an empty set. Intersecting it with
+// anything would otherwise report a clean empty cohort, and a health gate over
+// it would pass vacuously.
+func TestResolveScopeIntersectionSavedSearchOperandNeverEmpty(t *testing.T) {
+	db := seedIntersectionStore(t)
+
+	t.Run("local resolver marks the precondition", func(t *testing.T) {
+		r, err := resolveScope(db, mustParseScope(t, "collection:C1 AND saved-search:S1"))
+		if err != nil {
+			t.Fatalf("resolveScope: %v", err)
+		}
+		if r.Precondition != preconditionLiveLocalAPI || len(r.Keys) != 0 || r.Expr != "collection:C1 AND saved-search:S1" {
+			t.Fatalf("result = %+v, want live_local_api unmet over the full expression", r)
+		}
+	})
+
+	t.Run("non-local base refuses with exit 9 even when the other operand is empty", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("ZOTIO_DEMO", "")
+		t.Setenv("ZOTERO_BASE_URL", "")
+		flags := &rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/users/123"), asJSON: true}
+		for _, expr := range []string{"collection:C1 AND saved-search:S1", "tag:NOPE AND saved-search:S1", "saved-search:S1 AND tag:NOPE"} {
+			r, err := resolveScopeLive(context.Background(), flags, db, mustParseScope(t, expr))
+			if err != nil {
+				t.Fatalf("%s: resolveScopeLive: %v", expr, err)
+			}
+			if r.Precondition != preconditionLiveLocalAPI || len(r.Keys) != 0 {
+				t.Fatalf("%s: result = %+v, want unmet live_local_api and no keys", expr, r)
+			}
+			refusal := scopePreconditionErr(context.Background(), nil, flags, "library health", r)
+			if code := ExitCode(refusal); code != 9 {
+				t.Fatalf("%s: refusal exit = %d (%v), want 9", expr, code, refusal)
+			}
+			if !strings.Contains(refusal.Error(), expr) {
+				t.Fatalf("%s: refusal = %q, want it to name the whole expression", expr, refusal)
+			}
+		}
+	})
+
+	t.Run("forbidden desktop API is the same precondition", func(t *testing.T) {
+		routeLocalAPIToHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Local API is not enabled", http.StatusForbidden)
+		}))
+		flags := &rootFlags{timeout: 5 * time.Second}
+		r, err := resolveScopeLive(context.Background(), flags, db, mustParseScope(t, "tag:T1 AND saved-search:S1"))
+		if err != nil || r.Precondition != preconditionLiveLocalAPI || r.PreconditionDetail == "" {
+			t.Fatalf("result = %+v, err = %v, want unmet live_local_api with its detail", r, err)
+		}
+	})
+
+	t.Run("a live saved search intersects with the local arms", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`[{"key":"K1","data":{}},{"key":"K3","data":{}},{"key":"K4","data":{}}]`))
+		})
+		r, err := resolveScopeLive(context.Background(), &rootFlags{}, db, mustParseScope(t, "collection:C1 AND saved-search:S1"))
+		if err != nil {
+			t.Fatalf("resolveScopeLive: %v", err)
+		}
+		if r.Precondition != "" || strings.Join(r.Keys, ",") != "K1,K4" {
+			t.Fatalf("result = %+v, want K1,K4 (C1 members the search also returns)", r)
+		}
+	})
+
+	t.Run("an unknown saved search is an error, not an empty operand", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, savedSearchPages(t))
+		_, err := resolveScopeLive(context.Background(), &rootFlags{}, db, mustParseScope(t, "tag:T1 AND saved-search:NOPE"))
+		if err == nil || !strings.Contains(err.Error(), "saved search NOPE not found") {
+			t.Fatalf("err = %v, want not-found naming NOPE", err)
+		}
+	})
+}
+
+func TestReconcileScopeFlagsWithIntersection(t *testing.T) {
+	coll := scopeSugarFor("collection", "collection", "C1")
+	tag := scopeSugarFor("tag", "tag", "T1")
+
+	// A legacy flag that names one arm of the intersection agrees with it:
+	// the scope already requires that cohort.
+	got, err := reconcileScopeFlags("collection:C1 AND tag:T1", coll, tag)
+	if err != nil || got != "collection:C1 AND tag:T1" {
+		t.Fatalf("reconcile = %q, %v, want the intersection back with both flags agreeing", got, err)
+	}
+
+	// A legacy flag outside the arms still disagrees, and the error says how to fix it.
+	_, err = reconcileScopeFlags("collection:C1 AND query:foo", coll, tag)
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("err = %v (exit %d), want a usage error for --tag outside the arms", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "--tag and --scope disagree") || !strings.Contains(err.Error(), "name tag:T1 as an arm of --scope") {
+		t.Fatalf("err = %q, want the disagreement naming the arm to add", err)
+	}
+
+	// A single-arm scope behaves as before: only an exact match agrees.
+	if _, err := reconcileScopeFlags("collection:C2", coll); err == nil {
+		t.Fatal("--collection C1 agreed with --scope collection:C2")
+	}
+	if got, err := reconcileScopeFlags("collection:C1", coll); err != nil || got != "collection:C1" {
+		t.Fatalf("reconcile = %q, %v, want exact match accepted", got, err)
+	}
+
+	// An expression that does not parse has no arms, so a flag never agrees with it.
+	if _, err := reconcileScopeFlags("collection:C1 AND library", coll); err == nil {
+		t.Fatal("--collection agreed with an unparseable --scope")
+	}
+}
+
+// The consumer-visible case: `items audit --scope 'collection:A AND tag:read'`
+// counts and lists only the items in both, not either set alone.
+func TestItemsAuditScopeIntersectionCountsOnlyTheIntersection(t *testing.T) {
+	auditIsolateEnv(t, "")
+	auditSeedDB(t, []json.RawMessage{
+		json.RawMessage(`{"key":"BOTH1","version":1,"data":{"key":"BOTH1","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLA"],"tags":[{"tag":"read"}]}}`),
+		json.RawMessage(`{"key":"BOTH2","version":1,"data":{"key":"BOTH2","itemType":"journalArticle","title":"Beta","dateAdded":"2020-01-02T00:00:00Z","collections":["COLA","COLB"],"tags":[{"tag":"read"}]}}`),
+		json.RawMessage(`{"key":"COLONLY","version":1,"data":{"key":"COLONLY","itemType":"journalArticle","title":"Gamma","dateAdded":"2020-01-03T00:00:00Z","collections":["COLA"]}}`),
+		json.RawMessage(`{"key":"TAGONLY","version":1,"data":{"key":"TAGONLY","itemType":"journalArticle","title":"Delta","dateAdded":"2020-01-04T00:00:00Z","collections":["COLB"],"tags":[{"tag":"read"}]}}`),
+		json.RawMessage(`{"key":"NEITHER","version":1,"data":{"key":"NEITHER","itemType":"journalArticle","title":"Epsilon","dateAdded":"2030-01-01T00:00:00Z"}}`),
+	})
+	flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
+
+	summaryOut, _, err := runItemsAudit(t, flags, "--scope", "collection:COLA AND tag:read")
+	if err != nil {
+		t.Fatalf("intersection summary: %v", err)
+	}
+	var summary itemsAuditSummary
+	if err := json.Unmarshal([]byte(summaryOut), &summary); err != nil {
+		t.Fatalf("decode summary %q: %v", summaryOut, err)
+	}
+	if summary.TopLevelItems != 2 || summary.MissingDOI != 2 || summary.MissingTags != 0 {
+		t.Fatalf("summary = %+v, want top_level_items 2, missing_doi 2, missing_tags 0 (BOTH1, BOTH2 only)", summary)
+	}
+
+	out, _, err := runItemsAudit(t, flags, "--missing-doi", "--scope", "collection:COLA AND tag:read", "--limit", "1")
+	if err != nil {
+		t.Fatalf("intersection list: %v", err)
+	}
+	rows := decodeAuditSlice(t, decodeAuditMap(t, out)["missing_doi"])
+	if len(rows) != 1 {
+		t.Fatalf("limited rows = %d, want 1", len(rows))
+	}
+	out, _, err = runItemsAudit(t, flags, "--missing-doi", "--scope", "collection:COLA AND tag:read")
+	if err != nil {
+		t.Fatalf("intersection list: %v", err)
+	}
+	got := auditRowKeys(t, decodeAuditSlice(t, decodeAuditMap(t, out)["missing_doi"]))
+	if len(got) != 2 || !got["BOTH1"] || !got["BOTH2"] {
+		t.Fatalf("missing_doi keys = %v, want {BOTH1, BOTH2}", got)
+	}
+
+	_, _, err = runItemsAudit(t, flags, "--scope", "library AND tag:read")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "cannot combine library") {
+		t.Fatalf("library AND tag: err = %v (exit %d), want a usage error naming the library rule", err, ExitCode(err))
 	}
 }

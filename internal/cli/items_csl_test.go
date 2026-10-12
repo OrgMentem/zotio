@@ -338,6 +338,75 @@ func TestItemsBibliographySavedSearchScopeRendersResolvedKeys(t *testing.T) {
 	}
 }
 
+// An AND intersection resolves against the synced store, then renders only the
+// intersection keys through the Web API.
+func TestItemsBibliographyIntersectionScopeRendersOnlyIntersectionKeys(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	cliTestSeedItemsStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["C1"],"tags":[{"tag":"T1"}]}}`),
+		json.RawMessage(`{"key":"K2","version":1,"data":{"key":"K2","itemType":"journalArticle","title":"two","collections":["C1"],"tags":[{"tag":"T1"}]}}`),
+		json.RawMessage(`{"key":"K3","version":1,"data":{"key":"K3","itemType":"journalArticle","title":"three","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"K4","version":1,"data":{"key":"K4","itemType":"journalArticle","title":"four","tags":[{"tag":"T1"}]}}`),
+	})
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/items" || r.URL.Query().Get("format") != "bibtex" {
+			t.Errorf("unexpected request %s", r.URL.String())
+		}
+		requests = append(requests, r.URL.Query().Get("itemKey"))
+		_, _ = fmt.Fprintf(w, "@article{%s}", r.URL.Query().Get("itemKey"))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND tag:T1", "--format", "bibtex"})
+	if err != nil {
+		t.Fatalf("intersection bibliography: %v (exit %d)", err, ExitCode(err))
+	}
+	if !reflect.DeepEqual(requests, []string{"K1,K2"}) {
+		t.Fatalf("itemKey requests = %v, want only [K1,K2]", requests)
+	}
+	if got := out.String(); got != "@article{K1,K2}" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+// An unmet saved-search arm must refuse (exit 9), never render an empty or
+// partial bibliography.
+func TestItemsBibliographyIntersectionUnmetSavedSearchArmExits9(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	cliTestSeedItemsStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["C1"]}}`),
+	})
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	_, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND saved-search:S1", "--format", "bibtex"})
+	if err == nil {
+		t.Fatal("unmet saved-search arm rendered a bibliography")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit = %d (%v), want 9", got, err)
+	}
+}
+
+func TestItemsBibliographyIntersectionMissingStoreIsPrecondition(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/users/0")
+	_, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND tag:T1", "--format", "bibtex"})
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("err = %v (exit %d), want exit 9", err, ExitCode(err))
+	}
+}
+
 func TestItemsBibliographyCSLJSONRejectsMissingAndDuplicateCiteKeys(t *testing.T) {
 	tests := []struct {
 		name string

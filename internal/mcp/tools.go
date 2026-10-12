@@ -37,7 +37,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25, maximum 100)"), mcplib.Min(1), mcplib.Max(mcpSearchMaxResults)),
 			mcplib.WithBoolean("fulltext", mcplib.Description("Search only synced PDF text and return parent item context")),
-			mcplib.WithString("scope", mcplib.Description("Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.")),
+			mcplib.WithString("scope", mcplib.Description("Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; join arms with AND to intersect them, e.g. collection:KEY AND tag:NAME; requires fulltext. Membership applies before ranking and limit.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),

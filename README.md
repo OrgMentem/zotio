@@ -254,7 +254,7 @@ format = "obsidian"      # or "logseq"
 
 - **`items retract-check`** — check every DOI against **Crossref's Retraction Watch data**: retractions, expressions of concern, and corrections, with notice DOIs and dates. Opt into the `library health` gate with `--check-retractions`. *(This one reads the network.)*
 - **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*
-- **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown and resolve every key against your library — unknown and ambiguous keys flagged, and an unknown key carries the closest keys in your library as an advisory suggestion when one is close enough to name, so a one-character typo is a named fix rather than a hand-grep of the `.bib`. `--fail-on-unknown` exits 11 for CI.
+- **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown, or read the Zotero citation fields in `.docx` and `.odt` files, and resolve every key against your library — unknown and ambiguous keys flagged, and an unknown key carries the closest keys in your library as an advisory suggestion when one is close enough to name, so a one-character typo is a named fix rather than a hand-grep of the `.bib`. `--fail-on-unknown` exits 11 for CI. `--check-retractions` also looks up the DOI of each cited item at CrossRef (network) and reports retractions (critical) and expressions of concern (high) at the citing line; a lookup that fails is reported as skipped and exits 9 under `--fail-on`.
 - **`tags audit`** — group tags that differ only by case or variant, with item counts and **ready-to-run merge commands**. On a real 840-tag library it surfaced 53 duplicate groups in one pass.
 - **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage, and optional intake buckets with `--added-by month|year`.
 - **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
@@ -277,18 +277,18 @@ format = "obsidian"      # or "logseq"
 
 ### Enrichment (reads external APIs, writes Zotero)
 
-- **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**; fill missing citation fields from **CrossRef**; attach open-access PDFs from **Unpaywall**; and record provenance in each item's Extra field. `--missing-citation` fills only blank fields supported by the item type, including provider-backed volume, issue, and pages. `--validate` reports title, year, and render-field discrepancies against CrossRef, plus DOI registration failures from OpenCitations, without writing.
+- **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**; fill missing citation fields from **CrossRef**; attach open-access PDFs from **Unpaywall**; and record provenance in each item's Extra field. `--missing-citation` fills only blank fields supported by the item type, including provider-backed volume, issue, and pages. `--missing-mesh` proposes PubMed MeSH descriptors as automatic `mesh/<descriptor>` tags for items with a PMID or a DOI that PubMed knows, previews by default, and reports a PubMed outage as an error. `--validate` reports title, year, and render-field discrepancies against CrossRef, plus DOI registration failures from OpenCitations, without writing.
 - **`items preprint-check`** — find arXiv preprints that now have a published CrossRef record; `preprint-check fix` upgrades them with the journal DOI — preview-first, journaled, and it never overwrites a conflicting DOI.
 
 ### Export & reproducibility
 
-- **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys.
+- **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` (or a `.docx`/`.odt` written with the Zotero plugin) exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys. `--scope` accepts AND-joined cohorts such as `collection:KEY AND tag:NAME`.
 - **`collections export`** — a whole collection and its subcollections as one BibTeX, RIS, or CSL-JSON file, structure preserved in comments.
 - **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
 
 ### Freshness & schema
 
-- **`sync` · `watch` · `tail`** — populate the mirror, keep it fresh with periodic incremental syncs, or stream live changes. `watch --health` diffs `library health` between cycles and reports **new findings** to stdout or a webhook — hear about drift the cycle it appears.
+- **`sync` · `watch` · `tail`** — populate the mirror, keep it fresh with periodic incremental syncs, or stream live changes. `watch --health` diffs `library health` between cycles and reports **new findings** to stdout or a webhook — hear about drift the cycle it appears. Add `--health-check-preprints` to also watch the library's arXiv preprints: a preprint that gains a published record is reported once as a `preprint_published` finding. Answers are cached for `--health-preprint-recheck` (default `7d`, at least `1h`), and a provider failure is logged as a skip, never an all-clear.
 - **`schema drift`** — after a Zotero upgrade, detect item-type / field / creator-field changes against a saved baseline.
 
 ---
@@ -306,8 +306,13 @@ format = "obsidian"      # or "logseq"
 **Scope grammar** — one selection vocabulary across reads, audits, exports, enrich, and full-text search (`search QUERY --fulltext --scope collection:KEY` ranks and limits inside the cohort):
 
 ```
-collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live desktop)
+collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY
+<arm> AND <arm>   # intersection, e.g. collection:KEY AND tag:NAME
 ```
+
+Join arms with ` AND ` (capital letters, a space on each side) to select only the items that match every arm, for example `zotio items enrich --missing-doi --scope 'collection:ABCD1234 AND tag:include'`. The text splits only where ` AND ` is followed by another arm, so `query:trust AND safety` stays one query. `library` cannot be an arm of an intersection (exit 2). A saved-search arm that cannot be evaluated refuses with exit 9 instead of counting as empty.
+
+`saved-search:KEY` is evaluated by Zotero desktop when it answers. When the desktop is not reachable or refuses local API access, zotio evaluates the synced search definition against the local mirror and prints a `notice:` line; `--data-source live` turns the fallback off. The local evaluator supports text fields, creator, tag, collection, item type, and date conditions with any/all join and the child-item flags. A search that uses any other condition (full text, notes, nested searches) exits 9 naming the condition.
 
 **Exit codes:** `0` ok · `2` usage (including a missing required argument; an explicit `--help` exits 0) · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup (including *another writer holds the lock* — retry) · `10` config · `11` quality-gate failed · `12` freshness-gate failed · `13` degraded — incomplete: part of a read was unreadable, or part of a batched write was rejected after other elements succeeded. Output is not guaranteed; read the reported failures and reconcile before retrying. · `14` timed out — a bounded wait (`desktop wait --timeout`) ended before Zotero's connector answered; wait again. · `15` Zotero open but stuck — `desktop wait` found Zotero running past its startup window with a connector that does not answer or is off; tell the user.
 

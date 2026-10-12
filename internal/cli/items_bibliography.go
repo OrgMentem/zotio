@@ -84,7 +84,10 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 
 --manuscript selects the items a manuscript cites instead of a scope. It reads
 .tex, .md, .markdown, and .qmd files with the items bibcheck parser and
-resolves each citation key against the synced Better BibTeX keys. Items appear
+resolves each citation key against the synced Better BibTeX keys. It also reads
+Zotero Word (.docx) and LibreOffice (.odt) files: each Zotero citation field
+names its items by Zotero URI, and an item that is not in the targeted library
+(missing, deleted, trashed, or from another library) counts as unknown. Items appear
 once, in first-citation order across the files. --follow-includes also reads
 .tex files pulled in by \input{PATH} and \include{PATH}, at each include's
 position in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve
@@ -135,7 +138,8 @@ and line and exits 11.`,
 				if err != nil {
 					return usageErr(err)
 				}
-				if spec.Type == "saved-search" {
+				switch spec.Type {
+				case "saved-search":
 					// Zotero evaluates the search on the desktop local API; the
 					// resolved keys then render through the Web API like item:KEY.
 					// The saved-search arm never reads the store, so none is opened.
@@ -147,7 +151,27 @@ and line and exits 11.`,
 						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "items bibliography", resolved)
 					}
 					selection = bibliographySelection{Keys: resolved.Keys}
-				} else {
+				case scopeTypeIntersection:
+					// An intersection resolves to an exact key set against the
+					// synced store (a saved-search arm runs live), then renders
+					// through the Web API like item:KEY.
+					rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+					if err != nil {
+						return fmt.Errorf("opening local database: %w", err)
+					}
+					if rawDB == nil {
+						return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first"))
+					}
+					defer rawDB.Close()
+					resolved, err := resolveScopeLive(cmd.Context(), flags, localQueryStore{Store: rawDB}, spec)
+					if err != nil {
+						return err
+					}
+					if resolved.Precondition != "" {
+						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "items bibliography", resolved)
+					}
+					selection = bibliographySelection{Keys: resolved.Keys}
+				default:
 					selection, err = bibliographyScopeSelection(wc, spec, flags)
 					if err != nil {
 						return err
@@ -210,7 +234,7 @@ and line and exits 11.`,
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
-	cmd.Flags().StringArrayVar(&flagManuscripts, "manuscript", nil, "Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11")
+	cmd.Flags().StringArrayVar(&flagManuscripts, "manuscript", nil, "Select the items cited in this .tex, .md, .markdown, .qmd, .docx, or .odt file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11")
 	cmd.Flags().BoolVar(&flagFollowIncludes, "follow-includes", false, "With --manuscript, also read .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11")
 	cmd.Flags().StringVar(&flagStyle, "style", "", "CSL style ID for --format bib (default uses Zotero's default bibliography style)")
 	cmd.Flags().StringVar(&flagFormat, "format", "bib", "Output format: bib, csljson, bibtex, biblatex, or ris")

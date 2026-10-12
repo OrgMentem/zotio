@@ -164,7 +164,7 @@ zotio annotations search <query> [flags]
 | `--color` | `string` |  | Filter by annotation color (yellow, red, green, blue, purple, orange) |
 | `--limit` | `int` | `50` | Maximum number of annotations to return |
 | `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio annotations timeline`
 
@@ -650,7 +650,7 @@ zotio creators audit
 | --- | --- | --- | --- |
 | `--include-ambiguous` | `bool` | `false` | Include unsafe same-surname groups as review-only evidence; no rename commands are emitted |
 | `--orcid` | `bool` | `false` | Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME |
 
 #### `zotio creators audit fix`
 
@@ -685,7 +685,7 @@ zotio creators audit fix
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--map` | `stringArray` | `[]` | Tier-2 alias mapping alias=canonical; repeatable |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME |
 
 ### `zotio creators rename`
 
@@ -717,7 +717,7 @@ zotio creators rename --from "Adam J Rock" --to "Adam J. Rock"
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--from` | `string` |  | Old creator display name |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME |
 | `--to` | `string` |  | New creator display name |
 
 ## `zotio demo`
@@ -1223,7 +1223,7 @@ zotio import discover [flags]
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
 | `--out` | `string` |  | Path to write the reviewable import manifest |
 | `--overwrite` | `bool` | `false` | Replace an existing manifest at --out; review edits in it are lost |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (required) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (required) |
 
 ### `zotio import doi`
 
@@ -1562,7 +1562,7 @@ zotio items audit [flags]
 | `--missing-doi` | `bool` | `false` | List journal articles, conference papers, and preprints with no DOI |
 | `--missing-pdf` | `bool` | `false` | List items that should have an attached PDF but do not |
 | `--missing-tags` | `bool` | `false` | List items with no tags |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--verify-files` | `bool` | `false` | Verify each PDF attachment's file exists on disk (one local-API lookup per attachment) |
 
 ### `zotio items authors`
@@ -1594,10 +1594,12 @@ zotio items bibcheck paper.tex
   zotio items bibcheck manuscript.md --fail-on-unknown
   zotio items bibcheck paper.tex chapter.md --json
   zotio items bibcheck chapter.qmd --fail-on high
+  zotio items bibcheck paper.tex --check-retractions --fail-on high
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--check-retractions` | `bool` | `false` | Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing |
 | `--fail-on` | `string` |  | Exit 11 when findings reach this severity: high, any, or none |
 | `--fail-on-unknown` | `bool` | `false` | Exit 11 when any cited key is unknown or ambiguous |
 | `--follow-includes` | `bool` | `false` | Also check .tex files pulled in by \input{PATH} and \include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \input PATH, \subfile, or \import |
@@ -1619,7 +1621,10 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 
 --manuscript selects the items a manuscript cites instead of a scope. It reads
 .tex, .md, .markdown, and .qmd files with the items bibcheck parser and
-resolves each citation key against the synced Better BibTeX keys. Items appear
+resolves each citation key against the synced Better BibTeX keys. It also reads
+Zotero Word (.docx) and LibreOffice (.odt) files: each Zotero citation field
+names its items by Zotero URI, and an item that is not in the targeted library
+(missing, deleted, trashed, or from another library) counts as unknown. Items appear
 once, in first-citation order across the files. --follow-includes also reads
 .tex files pulled in by \input{PATH} and \include{PATH}, at each include's
 position in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve
@@ -1648,8 +1653,8 @@ zotio items bibliography --scope collection:ABCD1234 --style apa
 | --- | --- | --- | --- |
 | `--follow-includes` | `bool` | `false` | With --manuscript, also read .tex files pulled in by \input{PATH} and \include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11 |
 | `--format` | `string` | `bib` | Output format: bib, csljson, bibtex, biblatex, or ris |
-| `--manuscript` | `stringArray` | `[]` | Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11 |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
+| `--manuscript` | `stringArray` | `[]` | Select the items cited in this .tex, .md, .markdown, .qmd, .docx, or .odt file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11 |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME |
 | `--style` | `string` |  | CSL style ID for --format bib (default uses Zotero's default bibliography style) |
 
 ### `zotio items children`
@@ -1848,6 +1853,17 @@ Work queues come from the same checks as 'items audit':
                       OpenAlex scores at or above 0.50 are proposed, the
                       strongest six at most, so an untagged library becomes
                       facetable without burying the operator's own tags.
+  --missing-mesh      propose PubMed MeSH descriptors as automatic "mesh/<descriptor>"
+                      tags for items with a PMID (the PMID field or an Extra
+                      "PMID:" line) or a DOI that PubMed knows. The PMID is read
+                      from the item; a DOI is resolved through PubMed ESearch.
+                      Every MeshHeadingList descriptor is proposed in PubMed's
+                      order; qualifiers and the major-topic marker are not.
+                      Items that already carry a mesh/ tag are left alone, and
+                      a term the item already has is never proposed twice. A
+                      record PubMed has not indexed yet is skipped, so a later
+                      run picks it up. PubMed calls send tool=zotio and the
+                      --email contact, paced to 3 requests per second.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -1874,20 +1890,21 @@ zotio items enrich [flags]
 | --- | --- | --- | --- |
 | `--attach-mode` | `string` | `linked-url` | PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add` |
 | `--collection` | `string` |  | Scope the work queue to items in a collection key |
-| `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL |
+| `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf), the OpenAlex polite pool and NCBI PubMed for --missing-mesh (both optional); or set UNPAYWALL_EMAIL |
 | `--keys` | `string` |  | Comma-separated exact item keys to enrich |
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |
 | `--limit` | `int` | `25` | Maximum items to process per category |
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
 | `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
+| `--missing-mesh` | `bool` | `false` | Propose PubMed MeSH descriptors as automatic mesh/<descriptor> tags for items with a PMID or DOI that carry no mesh/ tag yet |
 | `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
 | `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic concept/<term> tags for untagged items (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
 | `--repair-pdf` | `bool` | `false` | Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope/--collection) |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--validate` | `bool` | `false` | Read-only DOI discrepancy report against CrossRef and OpenCitations |
 
 ### `zotio items file`
@@ -2262,7 +2279,7 @@ zotio items summarize 9UXV5R7L
 | `--max-annotations` | `int` | `40` | Max annotations included per item |
 | `--max-chars` | `int` | `8000` | Max characters of fulltext per item: the excerpt, or with --focus the matched PDF-text passages |
 | `--no-fulltext` | `bool` | `false` | Omit the fulltext excerpt (abstract + annotations only) |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio items tags`
 
@@ -2518,7 +2535,7 @@ zotio library health [flags]
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
 | `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
 | `--require-fresh` | `duration` | `0s` | Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--verify-files` | `bool` | `false` | Run the live broken-attachment check (needs Zotero desktop running) |
 | `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after checks |
 
@@ -2541,7 +2558,7 @@ zotio library prisma [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--by` | `string` | `all` | Duplicate detector to run (doi, title, all) |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio library stats`
 
@@ -2933,7 +2950,7 @@ Examples:
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
 | `--fulltext` | `bool` | `false` | Search synced PDF full text and return parent item context |
 | `--limit` | `int` | `50` | Maximum results to return |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library); requires --fulltext |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library); requires --fulltext |
 | `--type` | `string` |  | Filter by resource type |
 
 ## `zotio searches`
@@ -3005,10 +3022,18 @@ Run a saved Zotero search when the API exposes results
 
 Executes a saved search and returns the matching items.
 
-Sync mirrors saved-search DEFINITIONS, never their result membership, so the
-result read runs against Zotero desktop's local API. With Zotero closed, or on
-a plane without /searches/{key}/items, the command refuses with a
-precondition_unmet envelope (exit 9) instead of an empty-looking answer.
+Zotero desktop evaluates the search through its local API; that read is
+authoritative. Sync mirrors the saved-search definition, so with
+--data-source local, or when the desktop cannot answer (Zotero closed, or a
+plane without /searches/{key}/items), the definition is evaluated against the
+synced items instead. That local evaluation supports title and other text
+fields, creator, tag, collection, item type, and date conditions with any/all
+join and the noChildren/includeParents/includeChildren flags. A search that
+uses any other condition (full text, notes, nested searches, groups, ...) is
+never evaluated partially: the command refuses with a precondition_unmet
+envelope (exit 9) naming the condition, instead of an empty-looking answer.
+Local results come from the last sync and include child items exactly as
+Zotero's search does.
 
 ```
 zotio searches run <searchKey>
@@ -3418,9 +3443,11 @@ updated counts as one change against --max-changes.
 
 --collection, --tag and --item-type combine (collection AND tag AND type).
 --scope selects one cohort through the shared grammar instead
-(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar
-has no conjunction, so --scope is refused alongside a filter that means a
-different cohort.
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY), and joins
+arms with AND to intersect them (collection:KEY AND tag:NAME). --scope is
+refused alongside a filter that means a different cohort: --item-type has no
+--scope arm, and --collection or --tag must match the scope or be one of its
+AND arms.
 
 ```
 zotio vault sync [--out <dir>] [flags]
@@ -3442,7 +3469,7 @@ zotio vault sync                 # uses [vault] root/notes_dir from config
 | `--item-type` | `string` |  | Only sync items of this type |
 | `--limit` | `int` | `0` | Maximum items to sync (0 = all) |
 | `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
-| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--tag` | `string` |  | Only sync items with this tag |
 
 ## `zotio version`
@@ -3477,6 +3504,16 @@ its object no longer exists upstream. An unchanged cycle logs that it skipped
 the workflow. A cycle whose sync failed, or in which any resource failed, never
 runs it; its changes wait for the next complete cycle.
 
+Add --health-check-preprints to --health to watch the arXiv preprints in the
+library for a published record. Each cycle looks up the preprints whose last
+answer is older than --health-preprint-recheck (default 7d), a bounded number
+per cycle, and reports a new preprint_published finding through the same drift
+output and --health-webhook as the other health checks. Answers are cached in
+the zotio state directory, so an unpublished preprint is not looked up again
+inside the horizon and a published one is kept. A failed lookup is logged as a
+skip and never clears an existing finding. Act on a finding with zotio items
+preprint-check fix.
+
 ```
 zotio watch [resource...] [flags]
 ```
@@ -3484,9 +3521,11 @@ zotio watch [resource...] [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--health` | `bool` | `false` | Run quick library health checks after each successful sync |
+| `--health-check-preprints` | `bool` | `false` | With --health: also watch arXiv preprints for a published record each cycle (the items preprint-check lookups); a newly published preprint is reported once as a preprint_published finding |
 | `--health-check-retractions` | `bool` | `false` | With --health: also run the Crossref retraction check each cycle (same as library health --check-retractions); each DOI is re-checked at most once per 24h |
 | `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, vault, all |
-| `--health-scope` | `string` | `library` | Health cohort for --health: Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library); resolved each cycle, and findings for items leaving the cohort count as resolved |
+| `--health-preprint-recheck` | `string` |  | With --health-check-preprints: how long an unpublished answer is trusted before the preprint is looked up again (default 7d; e.g. 2w or 168h; at least 1h); published answers are kept |
+| `--health-scope` | `string` | `library` | Health cohort for --health: Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library); resolved each cycle, and findings for items leaving the cohort count as resolved |
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |

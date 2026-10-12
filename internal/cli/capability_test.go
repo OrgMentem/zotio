@@ -412,7 +412,14 @@ const (
 
 var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 	// Live-plane reads.
-	"searches run":             {args: []string{"searches", "run", "PROBESK"}},
+	// searches run evaluates a saved search live; its local route evaluates
+	// the seeded (supported) PROBESK definition against the mirror.
+	"searches run": {
+		routes: map[string][]string{
+			"local": {"searches", "run", "PROBESK", "--data-source", "local"},
+			"live":  {"searches", "run", "PROBESK", "--data-source", "live"},
+		},
+	},
 	"items file":               {args: []string{"items", "file", probeItemKey}},
 	"schema new-item-template": {args: []string{"schema", "new-item-template", "--item-type", "journalArticle"}},
 	// The connector commands refuse on the base URL before any request, in

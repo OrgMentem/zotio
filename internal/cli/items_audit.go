@@ -63,10 +63,15 @@ func (s scopeSelection) queryLimit(limit int) int {
 // four commands. An empty expr means no --scope and yields an unrestricted
 // selection.
 //
+// An intersection (`collection:KEY AND tag:NAME`) resolves to the keys every
+// arm holds, so a command filters a work queue to the exact cohort without
+// knowing the expression had arms.
+//
 // saved-search:KEY is evaluated by Zotero and has no local mirror, so it is
 // executed through the desktop local API. When that API is unavailable it
 // refuses through the shared precondition_unmet emitter rather than operating
-// on an empty cohort.
+// on an empty cohort. That holds for a saved search used as one arm of an
+// intersection too.
 func resolveScopeSelection(cmd *cobra.Command, flags *rootFlags, capability string, db localQueryStore, expr string) (scopeSelection, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -117,7 +122,8 @@ func scopeSugarFor(name, scopeType, value string) scopeSugarFlag {
 
 // reconcileScopeFlags returns the effective scope expression for a run. It is
 // empty when --scope was absent, which leaves the bespoke flags on the query
-// path they already had.
+// path they already had. A bespoke flag agrees with an intersection that names
+// the same cohort as one of its arms, because that scope already requires it.
 func reconcileScopeFlags(scopeExpr string, sugar ...scopeSugarFlag) (string, error) {
 	scopeExpr = strings.TrimSpace(scopeExpr)
 	if scopeExpr == "" {
@@ -131,10 +137,33 @@ func reconcileScopeFlags(scopeExpr string, sugar ...scopeSugarFlag) (string, err
 			return "", usageErr(fmt.Errorf("--%s cannot be combined with --scope: the scope grammar has no --%s arm, so the two selections cannot be reconciled; select the whole cohort with --scope, or drop --scope and keep --%s", s.name, s.name, s.name))
 		}
 		if s.expr != scopeExpr {
-			return "", usageErr(fmt.Errorf("--%s and --scope disagree: --%s selects %q while --scope selects %q; pass one of them", s.name, s.name, s.expr, scopeExpr))
+			if scopeHasArm(scopeExpr, s.expr) {
+				continue
+			}
+			hint := "pass one of them"
+			if strings.Contains(scopeExpr, scopeAndToken) {
+				hint = fmt.Sprintf("pass one of them, or name %s as an arm of --scope", s.expr)
+			}
+			return "", usageErr(fmt.Errorf("--%s and --scope disagree: --%s selects %q while --scope selects %q; %s", s.name, s.name, s.expr, scopeExpr, hint))
 		}
 	}
 	return scopeExpr, nil
+}
+
+// scopeHasArm reports whether scopeExpr is an intersection with armExpr as one
+// of its arms. An expression that does not parse has no arms; the command's
+// own parse refuses it with the grammar error.
+func scopeHasArm(scopeExpr, armExpr string) bool {
+	spec, err := parseScopeSpec(scopeExpr)
+	if err != nil || spec.Type != scopeTypeIntersection {
+		return false
+	}
+	for _, arm := range spec.Arms {
+		if arm.expr() == armExpr {
+			return true
+		}
+	}
+	return false
 }
 
 // scopedAuditRows runs a work-queue query and narrows it to the cohort. The

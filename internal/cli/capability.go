@@ -90,13 +90,22 @@ var connectorTemplateCreateCapability = capabilityEntry{
 // builder merges these onto the annotation-derived base; a test asserts every
 // key resolves to a real runnable command so the table never goes stale.
 var capabilityOverrides = map[string]capabilityEntry{
+	// `searches run` executes a saved search. Zotero desktop evaluates the
+	// conditions, so live is authoritative; --data-source local, and the auto
+	// fallback when the desktop cannot answer, evaluate the synced definition
+	// against the mirror (savedsearch_local.go, ADR-0002). That evaluator
+	// supports only an operator subset and refuses the rest with the
+	// live_local_api precondition, so the local route claims the mirror and
+	// the live route claims the desktop; auto can use either, so the default
+	// route declares nothing. The offline probe seeds a supported search.
+	"searches run": {
+		Routes: []capabilityRoute{
+			{Via: "default"},
+			{Via: "local", Requires: []string{preconditionSyncedStore}},
+			{Via: "live", Requires: []string{preconditionLiveLocalAPI}},
+		},
+	},
 	// Reads that need the live Zotero desktop / local API.
-	//
-	// `searches run` executes a saved search. Sync mirrors saved-search
-	// definitions but never their result membership, and evaluating the
-	// condition set is Zotero's job (ADR-0002 defers local evaluation), so the
-	// read has exactly one plane.
-	"searches run": {Requires: []string{preconditionLiveLocalAPI}},
 	// `items file` resolves /items/{key}/file/view/url, a local-API-only
 	// endpoint the Web API does not serve.
 	"items file": {Requires: []string{preconditionLiveLocalAPI}},

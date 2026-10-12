@@ -229,6 +229,47 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Added
 
+- **`--scope` intersects arms joined by ` AND `.** For example,
+  `collection:KEY AND tag:NAME` selects the items in both. The text splits
+  only where ` AND ` is followed by another arm, so `query:trust AND safety`
+  stays one query. `library` cannot be combined. Every command that takes
+  `--scope` accepts it, including `items bibliography`. A saved-search arm
+  that cannot be evaluated refuses with exit 9; it never counts as empty.
+- **`items bibcheck --check-retractions`.** The check asks CrossRef about the
+  cited items only. A retraction is a critical `retracted_item` finding and an
+  expression of concern is a high `expression_of_concern` finding, each with
+  the citing lines, so `--fail-on` and exit 11 apply. A failed lookup is
+  reported as a skip; under a `--fail-on` gate it exits 9. Without the flag,
+  no CrossRef request is made.
+- **`items bibcheck` and `items bibliography --manuscript` read Zotero Word
+  and LibreOffice documents.** `.docx` field codes (including fields split
+  across runs, `w:fldSimple`, footnotes and endnotes) and `.odt` reference
+  marks and bookmarks are matched to items in the target library. Items that
+  are missing, from another library, or unreadable are unknown. Findings name
+  the paragraph that holds the field.
+- **`watch --health --health-check-preprints`.** Each cycle rechecks arXiv
+  preprints in the health scope and reports a `preprint_published` finding
+  once, when a published version appears. Answers are cached in
+  `watch-preprints.json` in the state directory. A published answer never
+  expires; an unpublished one is rechecked after `--health-preprint-recheck`
+  (default 7 days, minimum 1 hour). A failed lookup keeps the last known
+  answer and is reported as a skip. `items preprint-check --limit 0` now
+  means no limit.
+- **`items enrich --missing-mesh`.** It reads an item's PMID, or finds it from
+  the DOI through PubMed, and proposes the record's MeSH descriptors as
+  automatic `mesh/<descriptor>` tags. It previews by default and skips items
+  that already carry a `mesh/` tag. A PubMed outage is an error, not a skip.
+  Enrich subject-tag provenance now counts only the tags actually added.
+- **Saved searches resolve from the local mirror when Zotero cannot answer.**
+  `--scope saved-search:KEY` evaluates the synced search against the mirror
+  when the desktop local API is unreachable or refuses access. Supported
+  conditions are text fields, creators, tags, collections, item type, and
+  dates, with any/all join and the parent/child options. A search with any
+  other condition is refused with exit 9 and names that condition.
+  `searches run` uses the same evaluator with `--data-source local`, and in
+  the default mode when the desktop cannot answer; `--data-source live` never
+  reads the mirror.
+
 - **`items bibcheck --follow-includes`.** A thesis whose chapters are pulled
   in by `\input{}` or `\include{}` passed the manuscript gate while a chapter
   cited an unknown key, because only the named files were read. With the

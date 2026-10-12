@@ -119,9 +119,11 @@ updated counts as one change against --max-changes.
 
 --collection, --tag and --item-type combine (collection AND tag AND type).
 --scope selects one cohort through the shared grammar instead
-(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar
-has no conjunction, so --scope is refused alongside a filter that means a
-different cohort.`,
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY), and joins
+arms with AND to intersect them (collection:KEY AND tag:NAME). --scope is
+refused alongside a filter that means a different cohort: --item-type has no
+--scope arm, and --collection or --tag must match the scope or be one of its
+AND arms.`,
 		Example: `  zotio vault sync                 # uses [vault] root/notes_dir from config
   zotio vault sync --out ~/vault/refs --yes
   zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run

@@ -72,7 +72,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; join arms with AND to intersect them, e.g. collection:KEY AND tag:NAME; requires fulltext. Membership applies before ranking and limit.",
           "type": "string"
         }
       },

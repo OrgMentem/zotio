@@ -33,6 +33,9 @@ type watchHealthMonitor struct {
 	// retractions is non-nil only with --health-check-retractions; it lives
 	// for the watch process so each DOI costs one CrossRef request per TTL.
 	retractions *watchRetractionCache
+	// preprints is non-nil only with --health-check-preprints; it lives for
+	// the watch process, backed by a recheck cache in the state directory.
+	preprints *watchPreprintMonitor
 	// scope is the --health-scope cohort, re-resolved every cycle against the
 	// freshly synced store so collection membership changes are picked up.
 	scope scopeSpec
@@ -63,7 +66,7 @@ func (m *watchHealthMonitor) scopeExpr() string {
 	if m.scope.Type == "" || m.scope.Type == "library" {
 		return "library"
 	}
-	return m.scope.Type + ":" + m.scope.Value
+	return m.scope.expr()
 }
 
 // watchRetractionCacheTTL bounds how often watch re-asks CrossRef about one
@@ -291,7 +294,11 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		}
 	}
 	if m.retractions == nil {
-		return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scope)
+		report, err := assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scope)
+		if err != nil {
+			return report, err
+		}
+		return m.withPreprintCheck(ctx, db, scopeSet, report)
 	}
 	// retracted_item runs outside assembleHealthReport here: the one-shot
 	// runner drops every finding when any lookup fails, but a long-running
@@ -329,7 +336,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 			},
 		})
 	}
-	return report, nil
+	return m.withPreprintCheck(ctx, db, scopeSet, report)
 }
 
 // deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.

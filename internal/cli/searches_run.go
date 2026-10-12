@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,10 +21,18 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 		Short: "Run a saved Zotero search when the API exposes results",
 		Long: `Executes a saved search and returns the matching items.
 
-Sync mirrors saved-search DEFINITIONS, never their result membership, so the
-result read runs against Zotero desktop's local API. With Zotero closed, or on
-a plane without /searches/{key}/items, the command refuses with a
-precondition_unmet envelope (exit 9) instead of an empty-looking answer.`,
+Zotero desktop evaluates the search through its local API; that read is
+authoritative. Sync mirrors the saved-search definition, so with
+--data-source local, or when the desktop cannot answer (Zotero closed, or a
+plane without /searches/{key}/items), the definition is evaluated against the
+synced items instead. That local evaluation supports title and other text
+fields, creator, tag, collection, item type, and date conditions with any/all
+join and the noChildren/includeParents/includeChildren flags. A search that
+uses any other condition (full text, notes, nested searches, groups, ...) is
+never evaluated partially: the command refuses with a precondition_unmet
+envelope (exit 9) naming the condition, instead of an empty-looking answer.
+Local results come from the last sync and include child items exactly as
+Zotero's search does.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,17 +60,30 @@ precondition_unmet envelope (exit 9) instead of an empty-looking answer.`,
 			searchPath := "/searches/" + searchKey
 			searchData, prov, err := resolveRead(cmd.Context(), c, flags, "searches", false, searchPath, nil, nil)
 			if err != nil {
+				if flags.dataSource == "live" && isNetworkError(err) {
+					// --data-source live forbids the mirror, so an unreachable
+					// desktop is the live_local_api precondition, not a bare error.
+					return refuseSavedSearchResults(cmd, flags, rawSearchKey, nil,
+						fmt.Sprintf("the live read plane is unreachable: %v", err))
+				}
 				return classifyAPIError(err, flags)
 			}
 
-			// Result membership requires evaluating the saved search's condition
-			// set, which only Zotero can do (ADR-0002 defers local evaluation
-			// until the supported operator subset is decided). So this read has
-			// exactly one plane, and --data-source local is a refusal rather
-			// than a live read wearing a local label.
+			// Zotero desktop evaluates a saved search's conditions, so the
+			// live read is authoritative. --data-source local, and the auto
+			// fallback when the live read plane cannot execute the search,
+			// evaluate the synced definition against the mirrored items
+			// instead (savedsearch_local.go). That evaluator supports a
+			// narrow operator subset and refuses the rest whole, so a
+			// condition it cannot reproduce ends in the live_local_api
+			// precondition below, never in a smaller result set.
 			if flags.dataSource == "local" {
+				served, detail, err := emitSavedSearchLocalResults(cmd, flags, searchData, "user_requested")
+				if err != nil || served {
+					return err
+				}
 				return refuseSavedSearchResults(cmd, flags, rawSearchKey, searchData,
-					"sync mirrors saved-search definitions only, so --data-source local cannot evaluate this search's conditions")
+					"--data-source local could not evaluate this search against the mirror: "+detail)
 			}
 			results, resultErr := c.Get(searchPath+"/items", nil)
 			if resultErr != nil {
@@ -71,8 +93,15 @@ precondition_unmet envelope (exit 9) instead of an empty-looking answer.`,
 				// and it must be loud: reporting it as ok/empty is what made a
 				// closed Zotero indistinguishable from a 0-hit search.
 				if isNetworkError(resultErr) || isAPIStatus(resultErr, http.StatusNotFound) {
-					return refuseSavedSearchResults(cmd, flags, rawSearchKey, searchData,
-						fmt.Sprintf("the saved-search results endpoint could not be executed on the configured plane: %v", resultErr))
+					liveDetail := fmt.Sprintf("the saved-search results endpoint could not be executed on the configured plane: %v", resultErr)
+					if flags.dataSource != "live" {
+						served, detail, err := emitSavedSearchLocalResults(cmd, flags, searchData, "api_unreachable")
+						if err != nil || served {
+							return err
+						}
+						liveDetail += "; the local mirror could not evaluate it either: " + detail
+					}
+					return refuseSavedSearchResults(cmd, flags, rawSearchKey, searchData, liveDetail)
 				}
 				return classifyAPIError(resultErr, flags)
 			}
@@ -83,12 +112,51 @@ precondition_unmet envelope (exit 9) instead of an empty-looking answer.`,
 	return cmd
 }
 
+// emitSavedSearchLocalResults evaluates a saved-search definition against the
+// local mirror and prints the matched items, one stored item payload each, the
+// same payloads the local item reads return. served reports whether results
+// were printed; when false, detail says why the mirror could not serve the
+// search (unsupported condition, no mirror) and nothing was printed. Only an
+// unexpected store failure returns an error.
+func emitSavedSearchLocalResults(cmd *cobra.Command, flags *rootFlags, definition []byte, reason string) (served bool, detail string, err error) {
+	// The live attempt may have consumed the caller's deadline, so the
+	// mirror read runs detached from it, as resolveRead's own fallback does.
+	ctx := context.WithoutCancel(cmd.Context())
+	db, err := openStoreForRead(ctx, "zotio")
+	if err != nil {
+		return false, fmt.Sprintf("the local mirror could not be opened: %v", err), nil
+	}
+	if db == nil {
+		return false, "there is no local mirror; run 'zotio sync'", nil
+	}
+	defer db.Close()
+
+	local, err := evaluateSavedSearchDefinition(ctx, db, definition)
+	if err != nil {
+		var unsupported *savedSearchUnsupportedError
+		if errors.As(err, &unsupported) {
+			return false, unsupported.Error(), nil
+		}
+		return false, "", err
+	}
+	prov := localProvenanceContext(ctx, db, "items", reason)
+	prov.Scoped = true
+	prov = attachFreshness(prov, flags)
+	encoded, err := json.Marshal(local.Items)
+	if err != nil {
+		return false, "", fmt.Errorf("encoding local saved-search results: %w", err)
+	}
+	printProvenance(cmd, len(local.Items), prov)
+	return true, "", printOutputWithFlags(cmd.OutOrStdout(), encoded, flags)
+}
+
 // refuseSavedSearchResults refuses a saved-search execution the configured
 // plane cannot perform, naming the search so the operator knows which one
-// failed. The definition is available even offline (it is mirrored); the
-// result membership is not, and a fabricated broad /items query cannot be
-// distinguished from an unfiltered library dump when the plane silently
-// ignores unknown query parameters — which Zotero does.
+// failed. The definition is available even offline (it is mirrored), but the
+// local evaluator reproduces only a subset of Zotero's conditions, and a
+// fabricated broad /items query cannot be distinguished from an unfiltered
+// library dump when the plane silently ignores unknown query parameters —
+// which Zotero does.
 func refuseSavedSearchResults(cmd *cobra.Command, flags *rootFlags, searchKey string, definition []byte, detail string) error {
 	name := savedSearchName(definition)
 	label := searchKey

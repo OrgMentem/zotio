@@ -42,6 +42,11 @@ type bibcheckOccurrence struct {
 	File    string
 	Line    int
 	Format  string
+	// ItemKey is set only for a Zotero Word/LibreOffice field citation that
+	// names an item in the targeted library. CiteKey is then
+	// "zotero:<ItemKey>", which bibcheckItemsByCiteKey indexes, so every
+	// occurrence resolves through the one citekey path.
+	ItemKey string
 }
 
 type bibcheckMatch struct {
@@ -79,6 +84,11 @@ type bibcheckReport struct {
 	Files      []bibcheckFileReport `json:"files,omitempty"`
 	Includes   []bibcheckInclude    `json:"includes,omitempty"`
 	Findings   []Finding            `json:"findings"`
+	// Retractions and Skipped appear only under --check-retractions.
+	// Retractions says what the CrossRef lookup covered; a Skipped entry
+	// means a lookup could not run, which is never an all-clear.
+	Retractions *bibcheckRetractionSummary `json:"retractions,omitempty"`
+	Skipped     []healthSkip               `json:"skipped,omitempty"`
 }
 
 // bibcheckInclude is one file traversed through \input{} or \include{}
@@ -96,6 +106,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	var failOnUnknown bool
 	var failOn string
 	var followIncludes bool
+	var checkRetractions bool
 
 	cmd := &cobra.Command{
 		Use:   "bibcheck <manuscript...>",
@@ -103,7 +114,8 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 		Example: `  zotio items bibcheck paper.tex
   zotio items bibcheck manuscript.md --fail-on-unknown
   zotio items bibcheck paper.tex chapter.md --json
-  zotio items bibcheck chapter.qmd --fail-on high`,
+  zotio items bibcheck chapter.qmd --fail-on high
+  zotio items bibcheck paper.tex --check-retractions --fail-on high`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -181,6 +193,16 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 				}
 				report.Findings = append(report.Findings, tree.findings...)
 			}
+			if checkRetractions {
+				cited := collectBibcheckCitedItems(occurrences, bibcheckCiteKeyResolver(items))
+				retractions, err := runBibcheckRetractionCheck(cmd.Context(), flags, db, cited, source)
+				if err != nil {
+					return err
+				}
+				report.Findings = append(report.Findings, retractions.Findings...)
+				report.Retractions = &retractions.Summary
+				report.Skipped = retractions.Skipped
+			}
 			if err := printBibcheckReport(cmd, flags, report); err != nil {
 				return err
 			}
@@ -193,12 +215,18 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 			if bibcheckGateTriggered(gate, report.Findings) {
 				return gateErr(fmt.Errorf("bibcheck found %d finding(s) at or above %s", len(report.Findings), gate))
 			}
+			// A retraction lookup that could not run leaves the gate unable to
+			// certify the manuscript: exit 9, like library health, not a pass.
+			if len(report.Skipped) > 0 && failOnRank(gate) > 0 {
+				return preconditionErr(fmt.Errorf("bibcheck could not certify cited works against CrossRef: %s", report.Skipped[0].Detail))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&failOnUnknown, "fail-on-unknown", false, "Exit 11 when any cited key is unknown or ambiguous")
 	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit 11 when findings reach this severity: high, any, or none")
 	cmd.Flags().BoolVar(&followIncludes, "follow-includes", false, "Also check .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \\input PATH, \\subfile, or \\import")
+	cmd.Flags().BoolVar(&checkRetractions, "check-retractions", false, "Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing")
 
 	return cmd
 }
@@ -212,11 +240,14 @@ func parseManuscriptCitationOccurrences(path string) ([]bibcheckOccurrence, stri
 		format = "tex"
 	case ".md", ".markdown", ".qmd":
 		format = "pandoc-markdown"
+	case ".docx", ".odt":
+		occurrences, err := parseZoteroFieldOccurrences(path, ext)
+		return occurrences, zoteroFieldsFormat, err
 	default:
 		if ext == "" {
 			ext = "<none>"
 		}
-		return nil, "", usageErr(fmt.Errorf("unsupported manuscript extension %q; supported formats: .tex, .md, .markdown, .qmd", ext))
+		return nil, "", usageErr(fmt.Errorf("unsupported manuscript extension %q; supported formats: .tex, .md, .markdown, .qmd, .docx, .odt", ext))
 	}
 
 	data, err := os.ReadFile(path)
@@ -686,8 +717,11 @@ func buildBibcheckReportFromOccurrences(paths []string, formats map[string]strin
 }
 
 func bibcheckItemsByCiteKey(items []citekeyItem) map[string][]citekeyItem {
-	byCiteKey := make(map[string][]citekeyItem, len(items))
+	byCiteKey := make(map[string][]citekeyItem, 2*len(items))
 	for _, item := range items {
+		// Zotero Word/LibreOffice fields cite by item key, not citekey, so
+		// every item is addressable that way even without a Better BibTeX key.
+		byCiteKey[zoteroFieldKeyPrefix+item.Key] = []citekeyItem{item}
 		if item.CiteKey == "" {
 			continue
 		}
@@ -746,7 +780,9 @@ func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey ma
 		switch len(matches) {
 		case 0:
 			result.Status = "unknown"
-			result.Suggestions = rankNearCiteKeys(key, candidates(), nearCiteKeyMatchLimit)
+			if !strings.HasPrefix(key, zoteroFieldKeyPrefix) {
+				result.Suggestions = rankNearCiteKeys(key, candidates(), nearCiteKeyMatchLimit)
+			}
 			summary.Unknown++
 		case 1:
 			result.Status = "ok"
@@ -851,6 +887,9 @@ func parseManuscriptFiles(paths []string, followIncludes bool) ([]bibcheckOccurr
 func bibcheckCiteKeyCandidates(byCiteKey map[string][]citekeyItem) []citeKeyCandidate {
 	candidates := make([]citeKeyCandidate, 0, len(byCiteKey))
 	for citeKey, items := range byCiteKey {
+		if strings.HasPrefix(citeKey, zoteroFieldKeyPrefix) {
+			continue
+		}
 		if len(items) == 0 {
 			continue
 		}
@@ -883,11 +922,11 @@ func buildBibcheckFindings(order []string, locationsByCiteKey map[string][]bibch
 			findings = append(findings, Finding{
 				Kind:              "undefined_citekey",
 				Severity:          sevHigh,
-				Title:             fmt.Sprintf("Undefined citekey %s", citeKey),
+				Title:             bibcheckUndefinedTitle(citeKey),
 				Evidence:          bibcheckEvidence(citeKey, locations, nil, ""),
 				Source:            source,
 				Autofixable:       false,
-				RecommendedAction: undefinedAction,
+				RecommendedAction: bibcheckUndefinedAction(citeKey, undefinedAction),
 			})
 			continue
 		}
@@ -1034,6 +1073,7 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 			return err
 		}
 	}
+	printBibcheckRetractionStatus(out, report)
 	if len(report.Findings) == 0 {
 		return nil
 	}
@@ -1064,6 +1104,8 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 			} else {
 				fmt.Fprintf(out, "  incomplete_citation high %s (%s) — %s\n", citeKey, sanitizeForTerminal(finding.ItemKey), locationText)
 			}
+		case bibcheckRetractedKind, bibcheckConcernKind:
+			printBibcheckRetractionFinding(out, finding)
 		}
 	}
 	return nil

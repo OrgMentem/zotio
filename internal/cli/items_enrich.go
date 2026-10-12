@@ -112,6 +112,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagRepairPDF         bool
 		flagMissingCitation   bool
 		flagMissingSubjects   bool
+		flagMissingMesh       bool
 		flagLimit             int
 		flagEmail             string
 		flagNoOpenAlex        bool
@@ -154,6 +155,17 @@ Work queues come from the same checks as 'items audit':
                       OpenAlex scores at or above 0.50 are proposed, the
                       strongest six at most, so an untagged library becomes
                       facetable without burying the operator's own tags.
+  --missing-mesh      propose PubMed MeSH descriptors as automatic "mesh/<descriptor>"
+                      tags for items with a PMID (the PMID field or an Extra
+                      "PMID:" line) or a DOI that PubMed knows. The PMID is read
+                      from the item; a DOI is resolved through PubMed ESearch.
+                      Every MeshHeadingList descriptor is proposed in PubMed's
+                      order; qualifiers and the major-topic marker are not.
+                      Items that already carry a mesh/ tag are left alone, and
+                      a term the item already has is never proposed twice. A
+                      record PubMed has not indexed yet is skipped, so a later
+                      run picks it up. PubMed calls send tool=zotio and the
+                      --email contact, paced to 3 requests per second.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -193,8 +205,8 @@ Applied field changes record provenance in the item's Extra field.`,
 			if wantsPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
 				return usageErr(fmt.Errorf("--pdf-dir is required with --attach-mode linked-file"))
 			}
-			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation && !flagMissingSubjects {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, or --validate")
+			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation && !flagMissingSubjects && !flagMissingMesh {
+				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, --missing-mesh, or --validate")
 			}
 			// Whether an attachment file is broken is only knowable from the
 			// live desktop API, which this command does not call. Without a
@@ -329,6 +341,13 @@ Applied field changes record provenance in the item's Extra field.`,
 					proposalErrs = append(proposalErrs, buildErr)
 				}
 			}
+			if flagMissingMesh {
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_mesh", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
+				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
+			}
 
 			// Preserve proposal building and route preview/apply through the shared mutation helper.
 			mode := resolveMutationMode(flags)
@@ -366,6 +385,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	// flag's value placeholder, so `concept/<term>` rendered as if this bool
 	// flag took an argument.
 	cmd.Flags().BoolVar(&flagMissingSubjects, "missing-subjects", false, "Propose OpenAlex subject terms as automatic concept/<term> tags for untagged items (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingMesh, "missing-mesh", false, "Propose PubMed MeSH descriptors as automatic mesh/<descriptor> tags for items with a PMID or DOI that carry no mesh/ tag yet")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
@@ -375,7 +395,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
 	cmd.Flags().StringVar(&keys, "keys", "", "Comma-separated exact item keys to enrich")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
-	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
+	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf), the OpenAlex polite pool and NCBI PubMed for --missing-mesh (both optional); or set UNPAYWALL_EMAIL")
 	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
 	cmd.Flags().BoolVar(&flagNoSemanticScholar, "no-semantic-scholar", false, "Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract")
 	cmd.Flags().BoolVar(&flagValidate, "validate", false, "Read-only DOI discrepancy report against CrossRef and OpenCitations")
@@ -624,6 +644,8 @@ ORDER BY date_added DESC`
 		return queryRepairPDFItemsForKeys(db, 0, collection, keys)
 	case "missing_subjects":
 		return queryMissingTagsItemsForKeys(db, 0, collection, keys)
+	case "missing_mesh":
+		return queryMissingMeshItems(db, 0, collection, keys)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}
@@ -647,6 +669,8 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 		return nil, fmt.Errorf("repair_pdf has no library-wide work queue: name the broken items with --keys/--keys-from/--scope")
 	case "missing_subjects":
 		return queryMissingTagsItemsScoped(db, limit, collection)
+	case "missing_mesh":
+		return queryMissingMeshItems(db, limit, collection, nil)
 	case "missing_citation":
 		return queryCitationEnrichCandidates(db, limit, collection)
 	default:
@@ -933,8 +957,8 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 	case "missing_subjects":
 		// OpenAlex only. CrossRef carries no subject vocabulary, and the
 		// concepts OpenAlex assigns are discipline-agnostic, which is what an
-		// untagged library needs; the PubMed MeSH route covers biomedicine
-		// only and is a separate, still-open ask.
+		// untagged library needs; the biomedical MeSH route is the separate
+		// missing_mesh category below.
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
 			return enrichProposal{}, "no DOI to look up subject terms; run --missing-doi first", nil
@@ -952,6 +976,22 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionTag,
 			Source: "OpenAlex", Note: "subject tags " + strings.Join(tags, ", "),
+			Tags:    tags,
+			version: version,
+			extra:   stringFromMap(data, "extra"),
+		}, "", nil
+
+	case "missing_mesh":
+		tags, source, reason, err := resolveMeshViaPubMed(ctx, httpClient, data, email)
+		if err != nil {
+			return enrichProposal{}, "", err
+		}
+		if reason != "" {
+			return enrichProposal{}, reason, nil
+		}
+		return enrichProposal{
+			Key: key, Title: title, Category: category, Action: enrichActionTag,
+			Source: source, Note: "MeSH tags " + strings.Join(tags, ", "),
 			Tags:    tags,
 			version: version,
 			extra:   stringFromMap(data, "extra"),
@@ -1270,6 +1310,9 @@ func applyEnrichSubjectTags(ctx context.Context, c *client.Client, p *enrichProp
 	live := *p
 	_, liveData := enrichItemFields(currentData)
 	live.extra = stringFromMap(liveData, "extra")
+	// Name only the terms this write added, so a term that landed on the live
+	// item since the last sync is not credited to the provider.
+	live.Tags = added
 	body := map[string]any{"tags": nextTags, "extra": appendEnrichProvenance(&live, flags)}
 	return patchWithWritePlaneVersion(ctx, c, path, body)
 }
@@ -1498,6 +1541,10 @@ func enrichProvenanceLine(p *enrichProposal) string {
 		// and the automatic tag type alone does not say which provider or
 		// when.
 		field = "subject tags " + strings.Join(p.Tags, "+")
+	case "missing_mesh":
+		// The terms can run to a dozen or more, so the line carries the count;
+		// the PMID in the source ties it to the PubMed record that lists them.
+		field = fmt.Sprintf("MeSH tags (%d)", len(p.Tags))
 	}
 	return fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
 }

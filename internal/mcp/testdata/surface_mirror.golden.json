@@ -582,7 +582,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
           "type": "string"
         }
       },
@@ -627,7 +627,7 @@
           "type": "number"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
           "type": "string"
         },
         "yes": {
@@ -677,7 +677,7 @@
           "type": "number"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
           "type": "string"
         },
         "to": {
@@ -1047,7 +1047,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (required)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (required)",
           "type": "string"
         }
       },
@@ -1646,7 +1646,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         },
         "verify-files": {
@@ -1689,6 +1689,10 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
+        "check-retractions": {
+          "description": "Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing (default: false)",
+          "type": "boolean"
+        },
         "fail-on": {
           "description": "Exit 11 when findings reach this severity: high, any, or none",
           "type": "string"
@@ -1708,7 +1712,7 @@
   },
   {
     "name": "items_bibliography",
-    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.\n\n--manuscript selects the items a manuscript cites instead of a scope. It reads\n.tex, .md, .markdown, and .qmd files with the items bibcheck parser and\nresolves each citation key against the synced Better BibTeX keys. Items appear\nonce, in first-citation order across the files. --follow-includes also reads\n.tex files pulled in by \\input{PATH} and \\include{PATH}, at each include's\nposition in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve\nthat order. The bib format follows the selected CSL style's sorting rules.\nWhen any citation key is unknown or ambiguous, or an include is missing or\ncyclic, nothing is rendered: the command names each problem with its file\nand line and exits 11.",
+    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.\n\n--manuscript selects the items a manuscript cites instead of a scope. It reads\n.tex, .md, .markdown, and .qmd files with the items bibcheck parser and\nresolves each citation key against the synced Better BibTeX keys. It also reads\nZotero Word (.docx) and LibreOffice (.odt) files: each Zotero citation field\nnames its items by Zotero URI, and an item that is not in the targeted library\n(missing, deleted, trashed, or from another library) counts as unknown. Items appear\nonce, in first-citation order across the files. --follow-includes also reads\n.tex files pulled in by \\input{PATH} and \\include{PATH}, at each include's\nposition in the text. BibTeX, BibLaTeX, RIS, and CSL-JSON exports preserve\nthat order. The bib format follows the selected CSL style's sorting rules.\nWhen any citation key is unknown or ambiguous, or an include is missing or\ncyclic, nothing is rendered: the command names each problem with its file\nand line and exits 11.",
     "inputSchema": {
       "properties": {
         "follow-includes": {
@@ -1720,14 +1724,14 @@
           "type": "string"
         },
         "manuscript": {
-          "description": "Select the items cited in this .tex, .md, .markdown, or .qmd file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11",
+          "description": "Select the items cited in this .tex, .md, .markdown, .qmd, .docx, or .odt file instead of --scope (repeatable); an unknown or ambiguous citation key exits 11",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
           "type": "string"
         },
         "style": {
@@ -1973,7 +1977,7 @@
   },
   {
     "name": "items_enrich",
-    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n  --repair-pdf        re-attach an open-access PDF for items whose EXISTING attachment\n                      file is missing or broken on disk (requires DOI and an exact key\n                      set from --keys/--keys-from, since \"broken\" is a live fact this\n                      command cannot observe locally). Feed it the broken_attachment_file\n                      findings from 'zotio library health --verify-files --json'.\n  --missing-citation  fill the core citation fields from CrossRef (requires DOI):\n                      creators, title, date and the venue field of the item's\n                      own type, plus volume/issue/pages when CrossRef carries\n                      them and the item's copy is blank. A blank volume is only\n                      a defect if the venue actually has one, so those fields\n                      are reported by --validate, not by 'library health'.\n  --missing-subjects  propose OpenAlex subject terms as automatic \"concept/\u003cterm\u003e\"\n                      tags for untagged items (requires DOI). Only concepts\n                      OpenAlex scores at or above 0.50 are proposed, the\n                      strongest six at most, so an untagged library becomes\n                      facetable without burying the operator's own tags.\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --scope to select the cohort through the shared grammar\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); --collection\nis the older spelling of --scope collection:KEY and still works. Pass\n--keys/--keys-from to scope to exact item keys. Pass --yes to apply via the\nZotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
+    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n  --repair-pdf        re-attach an open-access PDF for items whose EXISTING attachment\n                      file is missing or broken on disk (requires DOI and an exact key\n                      set from --keys/--keys-from, since \"broken\" is a live fact this\n                      command cannot observe locally). Feed it the broken_attachment_file\n                      findings from 'zotio library health --verify-files --json'.\n  --missing-citation  fill the core citation fields from CrossRef (requires DOI):\n                      creators, title, date and the venue field of the item's\n                      own type, plus volume/issue/pages when CrossRef carries\n                      them and the item's copy is blank. A blank volume is only\n                      a defect if the venue actually has one, so those fields\n                      are reported by --validate, not by 'library health'.\n  --missing-subjects  propose OpenAlex subject terms as automatic \"concept/\u003cterm\u003e\"\n                      tags for untagged items (requires DOI). Only concepts\n                      OpenAlex scores at or above 0.50 are proposed, the\n                      strongest six at most, so an untagged library becomes\n                      facetable without burying the operator's own tags.\n  --missing-mesh      propose PubMed MeSH descriptors as automatic \"mesh/\u003cdescriptor\u003e\"\n                      tags for items with a PMID (the PMID field or an Extra\n                      \"PMID:\" line) or a DOI that PubMed knows. The PMID is read\n                      from the item; a DOI is resolved through PubMed ESearch.\n                      Every MeshHeadingList descriptor is proposed in PubMed's\n                      order; qualifiers and the major-topic marker are not.\n                      Items that already carry a mesh/ tag are left alone, and\n                      a term the item already has is never proposed twice. A\n                      record PubMed has not indexed yet is skipped, so a later\n                      run picks it up. PubMed calls send tool=zotio and the\n                      --email contact, paced to 3 requests per second.\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --scope to select the cohort through the shared grammar\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); --collection\nis the older spelling of --scope collection:KEY and still works. Pass\n--keys/--keys-from to scope to exact item keys. Pass --yes to apply via the\nZotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -2001,7 +2005,7 @@
           "type": "boolean"
         },
         "email": {
-          "description": "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL",
+          "description": "Contact email for Unpaywall (required for --missing-pdf), the OpenAlex polite pool and NCBI PubMed for --missing-mesh (both optional); or set UNPAYWALL_EMAIL",
           "type": "string"
         },
         "keys": {
@@ -2036,6 +2040,10 @@
           "description": "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar (default: false)",
           "type": "boolean"
         },
+        "missing-mesh": {
+          "description": "Propose PubMed MeSH descriptors as automatic mesh/\u003cdescriptor\u003e tags for items with a PMID or DOI that carry no mesh/ tag yet (default: false)",
+          "type": "boolean"
+        },
         "missing-pdf": {
           "description": "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) (default: false)",
           "type": "boolean"
@@ -2061,7 +2069,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         },
         "validate": {
@@ -2666,7 +2674,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         }
       },
@@ -3106,7 +3114,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         },
         "verify-files": {
@@ -3132,7 +3140,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         }
       },
@@ -3429,7 +3437,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; requires fulltext. Membership applies before ranking and limit.",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; join arms with AND to intersect them, e.g. collection:KEY AND tag:NAME; requires fulltext. Membership applies before ranking and limit.",
           "type": "string"
         }
       },
@@ -3519,7 +3527,7 @@
   },
   {
     "name": "searches_run",
-    "description": "Executes a saved search and returns the matching items.\n\nSync mirrors saved-search DEFINITIONS, never their result membership, so the\nresult read runs against Zotero desktop's local API. With Zotero closed, or on\na plane without /searches/{key}/items, the command refuses with a\nprecondition_unmet envelope (exit 9) instead of an empty-looking answer.",
+    "description": "Executes a saved search and returns the matching items.\n\nZotero desktop evaluates the search through its local API; that read is\nauthoritative. Sync mirrors the saved-search definition, so with\n--data-source local, or when the desktop cannot answer (Zotero closed, or a\nplane without /searches/{key}/items), the definition is evaluated against the\nsynced items instead. That local evaluation supports title and other text\nfields, creator, tag, collection, item type, and date conditions with any/all\njoin and the noChildren/includeParents/includeChildren flags. A search that\nuses any other condition (full text, notes, nested searches, groups, ...) is\nnever evaluated partially: the command refuses with a precondition_unmet\nenvelope (exit 9) naming the condition, instead of an empty-looking answer.\nLocal results come from the last sync and include child items exactly as\nZotero's search does.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -3980,7 +3988,7 @@
   },
   {
     "name": "vault_sync",
-    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved.\n\nPreviews by default, showing create/update/unchanged without writing. Pass --yes\nto write; --dry-run always wins over --yes. Each note that would be created or\nupdated counts as one change against --max-changes.\n\n--collection, --tag and --item-type combine (collection AND tag AND type).\n--scope selects one cohort through the shared grammar instead\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar\nhas no conjunction, so --scope is refused alongside a filter that means a\ndifferent cohort.",
+    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved.\n\nPreviews by default, showing create/update/unchanged without writing. Pass --yes\nto write; --dry-run always wins over --yes. Each note that would be created or\nupdated counts as one change against --max-changes.\n\n--collection, --tag and --item-type combine (collection AND tag AND type).\n--scope selects one cohort through the shared grammar instead\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY), and joins\narms with AND to intersect them (collection:KEY AND tag:NAME). --scope is\nrefused alongside a filter that means a different cohort: --item-type has no\n--scope arm, and --collection or --tag must match the scope or be one of its\nAND arms.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -4032,7 +4040,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         },
         "tag": {
