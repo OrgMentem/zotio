@@ -103,3 +103,27 @@ func TestInverseOpsTrashesCreatedItem(t *testing.T) {
 		t.Fatalf("create inverse changes = %+v, want deleted trash change", inverse[0].Changes)
 	}
 }
+
+// An op that recorded its own inverse is reversed from that record, even though
+// its planned field change (a DOI overwrite) is not invertible on its own.
+func TestInverseOpsReplaysRecordedRevert(t *testing.T) {
+	revert := []Change{
+		{Field: "DOI", Add: "", Remove: "10.1/x"},
+		{Field: "extra_line", Remove: "zotio: DOI added via CrossRef on 2026-10-12"},
+	}
+	entry := JournalEntry{Ops: []JournalOp{{
+		ID: "doi", Key: "K1", Kind: "missing_doi", Status: "applied",
+		Changes: []Change{{Field: "DOI", Add: "10.1/x"}},
+		Revert:  revert,
+	}}}
+	inverse, refused := InverseOps(entry)
+	if len(refused) != 0 {
+		t.Fatalf("refused = %+v, want none: the op recorded how to undo itself", refused)
+	}
+	if len(inverse) != 1 || inverse[0].Key != "K1" || inverse[0].Kind != "undo.missing_doi" || inverse[0].ID != "undo:doi" {
+		t.Fatalf("inverse = %+v, want undo.missing_doi on K1", inverse)
+	}
+	if len(inverse[0].Changes) != 2 || inverse[0].Changes[0] != revert[0] || inverse[0].Changes[1] != revert[1] {
+		t.Fatalf("inverse changes = %+v, want the recorded revert verbatim", inverse[0].Changes)
+	}
+}

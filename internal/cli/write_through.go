@@ -47,8 +47,12 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		return
 	}
 	changesByOp := make(map[string][]mutation.Change, len(env.Plan.Operations))
+	effectiveByOp := make(map[string]func() []mutation.Change)
 	for _, op := range env.Plan.Operations {
 		changesByOp[op.ID] = op.Changes
+		if op.Effective != nil {
+			effectiveByOp[op.ID] = op.Effective
+		}
 	}
 	kindByOp := make(map[string]string, len(env.Plan.Operations))
 	for _, op := range env.Plan.Operations {
@@ -81,6 +85,15 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		it := &env.Result.Items[i]
 		if it.Status != "applied" || it.Key == "" {
 			continue
+		}
+		// An op that skipped part of its plan (an undo leaves alone what the
+		// live item no longer holds) replays and records only what it wrote.
+		// Replaying the plan would overwrite a later edit in the mirror and
+		// pin it there with a pending-write marker.
+		if effective := effectiveByOp[it.OpID]; effective != nil {
+			if landed := effective(); landed != nil {
+				changesByOp[it.OpID] = landed
+			}
 		}
 		// Trash, restore and permanent delete change an item's EXISTENCE or its
 		// trash membership rather than a replayable field, so applyChangeToItemData
@@ -610,11 +623,12 @@ var mirrorIdentityFields = map[string]bool{
 // applyChangeToItemData forward-applies one change to an item's data map. It
 // handles tag/collection membership (scalar values only), whole-list tag and
 // collection replacements ("tags_set"/"collections_set" as sent by items
-// update), creator display-name renames over the ordered creators array, and
-// scalar field set/clear for a conservative, explicit allowlist of known
-// Zotero item fields; anything else ("deleted"/trash, structural edits,
-// unrecognized or identity field names) returns false so the caller skips
-// write-through for that item and leaves it for the next `sync`.
+// update), creator display-name renames over the ordered creators array,
+// removal of one recorded Extra line, and scalar field set/clear for a
+// conservative, explicit allowlist of known Zotero item fields; anything else
+// ("deleted"/trash, structural edits, unrecognized or identity field names)
+// returns false so the caller skips write-through for that item and leaves it
+// for the next `sync`.
 func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 	switch c.Field {
 	case "tags":
@@ -627,6 +641,8 @@ func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 		return applyCollectionsSetChangeToData(data, c)
 	case "creators":
 		return applyCreatorRenameChangeToData(data, c)
+	case extraLineField:
+		return applyExtraLineChangeToData(data, c)
 	default:
 		// Fail-closed: replay only fields this CLI knows to be directly-settable
 		// Zotero item fields (mirrorReplayableFields), and never identity or
@@ -657,6 +673,24 @@ func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 		}
 		return true
 	}
+}
+
+// applyExtraLineChangeToData replays the removal of one whole line of Extra,
+// the inverse a journaled enrich write records for the provenance line it
+// added. The line is removed from whatever Extra the mirror holds, which may
+// predate the write, so an Extra without the line is a successful no-op. Only
+// removal exists: no producer records an Extra-line addition (enrich writes
+// Extra from a live read and keeps it out of its planned changes), so any
+// other shape returns false rather than guess.
+func applyExtraLineChangeToData(data map[string]any, c mutation.Change) bool {
+	line, ok := c.Remove.(string)
+	if !ok || line == "" || c.Add != nil {
+		return false
+	}
+	if next, removed := removeExtraLine(stringFromMap(data, "extra"), line); removed {
+		data["extra"] = next
+	}
+	return true
 }
 
 func applyTagChangeToData(data map[string]any, c mutation.Change) bool {

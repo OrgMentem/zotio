@@ -36,7 +36,11 @@ type JournalOp struct {
 	Status      string   `json:"status"`
 	Destructive bool     `json:"destructive,omitempty"`
 	Changes     []Change `json:"changes"`
-	Reason      any      `json:"reason,omitempty"`
+	// Revert is the inverse the op captured at write time (see Op.Revert). It
+	// is empty for ops that predate it and for ops whose Changes invert on
+	// their own; undo then falls back to inverting Changes.
+	Revert []Change `json:"revert,omitempty"`
+	Reason any      `json:"reason,omitempty"`
 }
 
 // JournalEntry records one applied mutation run. WorkflowRunID groups the
@@ -107,6 +111,12 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 		if detail, ok := item.Reason.(map[string]any); ok && detail["committed"] == true {
 			reason = detail
 		}
+		// The inverse is only meaningful for a write that landed. Apply has
+		// finished by now, so the op's recorder holds what that write did.
+		var revert []Change
+		if item.Status == "applied" && op.Revert != nil {
+			revert = op.Revert()
+		}
 		ops = append(ops, JournalOp{
 			ID:          op.ID,
 			Key:         key,
@@ -114,6 +124,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 			Status:      item.Status,
 			Destructive: op.Destructive,
 			Changes:     op.Changes,
+			Revert:      revert,
 			Reason:      reason,
 		})
 	}

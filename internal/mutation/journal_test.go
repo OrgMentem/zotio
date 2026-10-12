@@ -64,6 +64,64 @@ func TestBuildJournalEntryJoinsStatus(t *testing.T) {
 		t.Errorf("op2 status = %q, want no_op", e.Ops[1].Status)
 	}
 }
+
+// Revert is read after Apply and only for a write that landed: a failed or
+// conflicting op wrote nothing, so a recorded inverse would undo nothing.
+// The record also has to survive the journal file, including an empty prior
+// value (Add: ""), which is what restores a field that was blank.
+func TestBuildJournalEntryRecordsRevertOnlyForAppliedOps(t *testing.T) {
+	revert := []Change{
+		{Field: "DOI", Add: "", Remove: "10.1/x"},
+		{Field: "extra_line", Remove: "zotio: DOI added via CrossRef on 2026-10-12"},
+	}
+	called := map[string]int{}
+	recorder := func(id string) func() []Change {
+		return func() []Change {
+			called[id]++
+			return revert
+		}
+	}
+	changes := []Change{{Field: "DOI", Add: "10.1/x"}}
+	env := Envelope{
+		Operation: "items.enrich",
+		Mode:      "apply",
+		Plan: Plan{Operations: []Op{
+			{ID: "applied", Key: "K1", Kind: "missing_doi", Changes: changes, Revert: recorder("applied")},
+			{ID: "failed", Key: "K2", Kind: "missing_doi", Changes: changes, Revert: recorder("failed")},
+			{ID: "plain", Key: "K3", Kind: "tag_add", Changes: []Change{{Field: "tags", Add: "ml"}}},
+		}},
+		Result: &Result{
+			Summary: ResultSummary{Attempted: 3, Applied: 2, Failed: 1},
+			Items: []ResultItem{
+				{OpID: "applied", Key: "K1", Status: "applied"},
+				{OpID: "failed", Key: "K2", Status: "failed"},
+				{OpID: "plain", Key: "K3", Status: "applied"},
+			},
+		},
+	}
+	entry, ok := BuildJournalEntry(env, time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("apply envelope should build an entry")
+	}
+	if called["failed"] != 0 || called["applied"] != 1 {
+		t.Fatalf("recorder calls = %v, want only the applied op's recorder, once", called)
+	}
+	if len(entry.Ops[0].Revert) != 2 || len(entry.Ops[1].Revert) != 0 || len(entry.Ops[2].Revert) != 0 {
+		t.Fatalf("revert records = %+v, want one for the applied op only", entry.Ops)
+	}
+
+	dir := t.TempDir()
+	if err := WriteEntry(dir, entry); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := ReadEntry(dir, entry.RunID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got.Ops[0].Revert) != 2 || got.Ops[0].Revert[0] != revert[0] || got.Ops[0].Revert[1] != revert[1] {
+		t.Fatalf("round-tripped revert = %+v, want %+v (an empty prior value must survive)", got.Ops[0].Revert, revert)
+	}
+}
 func TestBuildJournalEntryUsesAppliedResultKey(t *testing.T) {
 	env := Envelope{
 		Operation: "items.new",

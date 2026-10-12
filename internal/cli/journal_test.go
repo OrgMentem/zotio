@@ -859,7 +859,7 @@ func TestApplyUndoMembershipRequiresWritePlaneVersion(t *testing.T) {
 
 			c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
 			changes := []mutation.Change{{Field: "tags", Remove: "ml"}}
-			status, detail, err := applyUndoMembership(c, "/items/K1", changes)
+			status, detail, _, err := applyUndoMembership(c, "/items/K1", changes)
 
 			if status != tc.wantStatus {
 				t.Fatalf("status = %q (detail %v, err %v), want %q", status, detail, err, tc.wantStatus)
@@ -939,7 +939,7 @@ func TestJournalUndoTakesPreconditionFromWritePlane(t *testing.T) {
 			}
 		})
 
-		status, detail, err := applyUndoMembership(c, "/items/K1", []mutation.Change{{Field: "tags", Remove: "ml"}})
+		status, detail, _, err := applyUndoMembership(c, "/items/K1", []mutation.Change{{Field: "tags", Remove: "ml"}})
 		if err != nil || status != "applied" {
 			t.Fatalf("applyUndoMembership = (%q, %v, %v), want applied", status, detail, err)
 		}

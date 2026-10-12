@@ -80,8 +80,9 @@ type enrichProposal struct {
 	PDFPath     string         `json:"pdf_path,omitempty"`
 	Tags        []string       `json:"tags,omitempty"` // subject enrichment: namespaced tags to add
 	// Statuses now live in mutation.Result items, not proposal JSON.
-	version any    // item version for the PATCH conflict guard (not serialized)
-	extra   string // item's current Extra so provenance appends instead of replacing (not serialized)
+	version any               // item version for the PATCH conflict guard (not serialized)
+	extra   string            // item's current Extra so provenance appends instead of replacing (not serialized)
+	revert  []mutation.Change // inverse Apply captured from the live item, for journal undo (not serialized)
 }
 
 // enrichSkip records a candidate for which no confident proposal was produced.
@@ -367,7 +368,14 @@ Applied field changes record provenance in the item's Extra field.`,
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.enrich", ops)
 			if len(skipped) > 0 {
-				env.Journal = map[string]any{"skipped": skipped}
+				// Merge, never replace: runMutation has already put the
+				// applied run's run_id here, and journal undo needs it.
+				journal, _ := env.Journal.(map[string]any)
+				if journal == nil {
+					journal = map[string]any{}
+				}
+				journal["skipped"] = skipped
+				env.Journal = journal
 			}
 			renderErr := renderMutation(cmd, flags, env, nil)
 			if renderErr != nil {
@@ -1313,7 +1321,16 @@ func applyEnrichSubjectTags(ctx context.Context, c *client.Client, p *enrichProp
 	// Name only the terms this write added, so a term that landed on the live
 	// item since the last sync is not credited to the provider.
 	live.Tags = added
-	body := map[string]any{"tags": nextTags, "extra": appendEnrichProvenance(&live, flags)}
+	extra, line := enrichProvenanceExtra(&live)
+	body := map[string]any{"tags": nextTags, "extra": extra}
+	// Journal undo needs the inverse of exactly this write: the terms it added,
+	// not every proposed term, and the provenance line only if this write put
+	// it there.
+	revert := make([]mutation.Change, 0, len(added)+1)
+	for _, tag := range added {
+		revert = append(revert, mutation.Change{Field: "tags", Remove: tag, TagType: 1})
+	}
+	p.revert = withExtraLineRevert(revert, line)
 	return patchWithWritePlaneVersion(ctx, c, path, body)
 }
 
@@ -1414,7 +1431,11 @@ func applyEnrichFieldPatch(ctx context.Context, c apiMutator, p *enrichProposal,
 	for k, v := range p.Fields {
 		body[k] = v
 	}
-	body["extra"] = appendEnrichProvenance(&live, flags)
+	extra, line := enrichProvenanceExtra(&live)
+	body["extra"] = extra
+	// Journal undo restores each field to what the live item held a moment
+	// ago, not to what the possibly stale mirror said it held.
+	p.revert = enrichFieldRevert(p.Fields, liveData, line)
 
 	snapshot := &enrichWriteSnapshotMutator{
 		apiMutator: c,
@@ -1452,6 +1473,9 @@ func enrichPlannedOps(ctx context.Context, proposals []enrichProposal, c apiMuta
 			Apply: func() (string, any, error) {
 				return applyEnrichProposalWithContext(ctx, downloader, c, &proposal, flags)
 			},
+			// Apply fills proposal.revert for the two actions that write
+			// Extra; every other action leaves it nil and is not reversible.
+			Revert: func() []mutation.Change { return proposal.revert },
 		})
 	}
 	return ops
@@ -1554,17 +1578,86 @@ func enrichProvenanceLine(p *enrichProposal) string {
 // existing content is always preserved — Extra carries user data such as Better
 // BibTeX "Citation Key:" lines that a wholesale PATCH replace would destroy.
 func appendEnrichProvenance(p *enrichProposal, _ *rootFlags) string {
+	extra, _ := enrichProvenanceExtra(p)
+	return extra
+}
+
+// enrichProvenanceExtra is appendEnrichProvenance plus the line this call
+// added. added is empty when an identical line was already present (a
+// same-day re-run), even one an editor gave a CRLF terminator: the earlier
+// write owns that line, so undoing this one must not delete it.
+func enrichProvenanceExtra(p *enrichProposal) (extra, added string) {
 	line := enrichProvenanceLine(p)
 	existing := strings.TrimRight(p.extra, "\n")
 	if existing == "" {
-		return line
+		return line, line
 	}
 	for _, l := range strings.Split(existing, "\n") {
-		if l == line {
-			return existing // identical provenance already recorded (same-day re-run)
+		if strings.TrimSuffix(l, "\r") == line {
+			return existing, "" // identical provenance already recorded (same-day re-run)
 		}
 	}
-	return existing + "\n" + line
+	return existing + "\n" + line, line
+}
+
+// extraLineField names the synthetic change that carries one whole line of an
+// item's Extra. It is the only way undo can say "remove the provenance line
+// this run added": Extra is a free-text field the enrich write replaced in
+// full, so an Add/Remove pair on "extra" itself would clobber the user's
+// other lines on replay.
+const extraLineField = "extra_line"
+
+// withExtraLineRevert appends the removal of the line a write added to Extra.
+// An empty line means the write added none, so there is nothing to remove.
+func withExtraLineRevert(revert []mutation.Change, line string) []mutation.Change {
+	if line == "" {
+		return revert
+	}
+	return append(revert, mutation.Change{Field: extraLineField, Remove: line})
+}
+
+// enrichFieldRevert builds the inverse of a field PATCH: each written field
+// goes back to the value the live item held before the write (Add), and only
+// while it still holds the value the run wrote (Remove). It returns nil, so
+// the op stays refused as before, when a written value is not a string: undo
+// has no way to restore anything else.
+func enrichFieldRevert(fields, live map[string]any, line string) []mutation.Change {
+	revert := make([]mutation.Change, 0, len(fields)+1)
+	for _, name := range sortedFieldNames(fields) {
+		written, ok := fields[name].(string)
+		if !ok {
+			return nil
+		}
+		revert = append(revert, mutation.Change{Field: name, Add: stringFromMap(live, name), Remove: written})
+	}
+	return withExtraLineRevert(revert, line)
+}
+
+// removeExtraLine deletes the first line of extra equal to line, together with
+// that line's own separator, and reports whether it found one. It is the exact
+// inverse of enrichProvenanceExtra on a trimmed Extra: no blank line is left
+// behind and every other byte, including lines the user added after the
+// provenance line, is kept.
+//
+// Lines are split on LF, and a trailing CR is not part of the line's content:
+// an editor that rewrote Extra with CRLF separators still matches. A line
+// takes the separator after it with it, so the other lines keep their own CRLF
+// terminators; the last line has none, so it takes the CRLF before it instead.
+func removeExtraLine(extra, line string) (string, bool) {
+	if line == "" {
+		return extra, false
+	}
+	lines := strings.Split(extra, "\n")
+	for i, l := range lines {
+		if strings.TrimSuffix(l, "\r") != line {
+			continue
+		}
+		if i == len(lines)-1 && i > 0 {
+			lines[i-1] = strings.TrimSuffix(lines[i-1], "\r")
+		}
+		return strings.Join(append(lines[:i:i], lines[i+1:]...), "\n"), true
+	}
+	return extra, false
 }
 
 type enrichPDFResolver interface {

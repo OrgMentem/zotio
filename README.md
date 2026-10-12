@@ -196,7 +196,7 @@ Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates
 - **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** Supported mutation-envelope writes update an existing local mirror when they apply; a follow-up mirror read can see the change without another `sync`.
-- **Journaled + reversible.** Each applied mutation-envelope run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, and creates — reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing. Vault writes use the same `--yes` approval gate but have a separate per-note report and no journal entry.
+- **Journaled + reversible.** Each applied mutation-envelope run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, `items enrich` DOI/abstract/citation-field/tag writes — which also takes the provenance line back out of Extra — and creates, reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, other field overwrites) rather than guessing. Vault writes use the same `--yes` approval gate but have a separate per-note report and no journal entry.
 
 ---
 

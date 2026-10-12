@@ -253,6 +253,173 @@ func TestSavedSearchLocalTopLevelKeysDropChildren(t *testing.T) {
 	}
 }
 
+// seedAnyFieldStore extends the shared library with the items an empty
+// anyField search must tell apart. Zotero 10.0.3 expands anyField contains ""
+// to field/tag/note/annotationText/annotationComment/creator contains "",
+// each a LIKE '%%'. That selects an item with ANY itemData value, tag,
+// creator, annotation text, or annotation comment, and nothing else, so an
+// item with none of those is excluded even when it is in the collection:
+//
+//	E1 article, empty title, in C1                      no value: excluded
+//	E3 article with only a tag, in C1                   included
+//	E4 book with only a creator, in C1                  included
+//	E5 annotation with text, under B1                   included
+//	E6 annotation with only a type, under B1            excluded
+//
+// N1 gains a tag so no note depends on the note index (tested separately).
+func seedAnyFieldStore(t *testing.T, searches map[string]string) *store.Store {
+	t.Helper()
+	db := seedSavedSearchStore(t, searches)
+	extra := []json.RawMessage{
+		ssItem("E1", "journalArticle", map[string]any{"title": "", "collections": []string{"C1"}}),
+		ssItem("E3", "journalArticle", map[string]any{"tags": ssTags("solo"), "collections": []string{"C1"}}),
+		ssItem("E4", "book", map[string]any{
+			"creators": []map[string]any{ssCreator("author", "Ann", "Only")}, "collections": []string{"C1"},
+		}),
+		ssItem("E5", "annotation", map[string]any{
+			"parentItem": "B1", "annotationType": "highlight", "annotationText": "hl", "annotationComment": "",
+		}),
+		ssItem("E6", "annotation", map[string]any{
+			"parentItem": "B1", "annotationType": "image", "annotationText": "", "annotationComment": "",
+		}),
+		ssItem("N1", "note", map[string]any{"parentItem": "A3", "note": "<p>x</p>", "tags": ssTags("noted")}),
+	}
+	if _, _, err := db.UpsertBatch("items", extra); err != nil {
+		t.Fatalf("seed anyField items: %v", err)
+	}
+	return db
+}
+
+func evalSavedSearchKeys(t *testing.T, db *store.Store, key string) []string {
+	t.Helper()
+	got, err := evaluateSavedSearchLocal(context.Background(), db, key)
+	if err != nil {
+		t.Fatalf("evaluate %s: %v", key, err)
+	}
+	if got.Keys == nil {
+		return []string{}
+	}
+	return got.Keys
+}
+
+// Zotero saves the untouched default row of a new search as
+// {anyField contains ""}. It is not match-all: the collection's items that
+// carry no value are dropped (joinMode all) or merely added by the
+// collection itself (joinMode any).
+func TestSavedSearchLocalAnyFieldEmptyContains(t *testing.T) {
+	anyField := [3]string{"anyField", "contains", ""}
+	collection := [3]string{"collection", "is", "C1"}
+	cases := []struct {
+		name       string
+		conditions string
+		want       []string
+	}{
+		{"joinMode all, recursive collection", ssConds([3]string{"joinMode", "all", ""}, collection, [3]string{"recursive", "true", ""}, anyField), ssKeys("A1", "A5", "E3", "E4")},
+		{"default joinMode, anyField first", ssConds(anyField, collection, [3]string{"recursive", "true", ""}), ssKeys("A1", "A5", "E3", "E4")},
+		{"joinMode all, flat collection", ssConds(collection, anyField), ssKeys("A1", "E3", "E4")},
+		{"joinMode any, collection adds its valueless items", ssConds([3]string{"joinMode", "any", ""}, collection, anyField), ssKeys("A1", "A2", "A3", "A4", "A5", "B1", "E1", "E3", "E4", "E5", "LIVE1", "N1")},
+		{"joinMode any, anyField alone excludes the valueless", ssConds([3]string{"joinMode", "any", ""}, anyField, [3]string{"tag", "is", "garden"}), ssKeys("A1", "A2", "A3", "A4", "A5", "B1", "E3", "E4", "E5", "LIVE1", "N1")},
+		{"anyField alone", ssConds(anyField), ssKeys("A1", "A2", "A3", "A4", "A5", "B1", "E3", "E4", "E5", "LIVE1", "N1")},
+		{"doesNotContain selects nothing", ssConds(collection, [3]string{"anyField", "doesNotContain", ""}), ssKeys()},
+		{"doesNotContain adds nothing under joinMode any", ssConds([3]string{"joinMode", "any", ""}, [3]string{"collection", "is", "C2"}, [3]string{"anyField", "doesNotContain", ""}), ssKeys("A2")},
+		{"include flags widen a contains hit", ssConds([3]string{"collection", "is", "C1"}, anyField, [3]string{"includeChildren", "true", ""}), ssKeys("A1", "B1", "E3", "E4")},
+	}
+	searches := make(map[string]string, len(cases))
+	for i, tc := range cases {
+		searches["AF"+string(rune('a'+i))] = tc.conditions
+	}
+	db := seedAnyFieldStore(t, searches)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.want
+			if want == nil {
+				want = []string{}
+			}
+			got := evalSavedSearchKeys(t, db, "AF"+string(rune('a'+i)))
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("keys = %v, want %v (conditions %s)", got, want, tc.conditions)
+			}
+		})
+	}
+}
+
+// A note matches anyField contains "" only while Zotero's note index is
+// unfinished (getNoteContentSQL returns null and the note condition scans
+// every note row); once built, an empty term matches no note text. The
+// mirror cannot tell the two apart, so a result that differs between them is
+// refused, and one that does not is returned.
+func TestSavedSearchLocalAnyFieldRefusesWhenNoteIndexStateMatters(t *testing.T) {
+	anyField := [3]string{"anyField", "contains", ""}
+	db := seedSavedSearchStore(t, map[string]string{
+		// N1 (a bare child note of A3) is in neither collection: the readings agree.
+		"NA": ssConds([3]string{"collection", "is", "C1"}, anyField),
+		// joinMode any lets the bare note in on the pending reading only.
+		"NB": ssConds([3]string{"joinMode", "any", ""}, [3]string{"collection", "is", "C2"}, anyField),
+	})
+	if got, want := evalSavedSearchKeys(t, db, "NA"), ssKeys("A1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+	_, err := evaluateSavedSearchLocal(context.Background(), db, "NB")
+	var unsupported *savedSearchUnsupportedError
+	if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), "indexing note text") {
+		t.Fatalf("err = %v, want a note-index refusal", err)
+	}
+
+	// A bare note placed in the collection changes the all-mode result.
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		ssItem("N2", "note", map[string]any{"note": "<p>y</p>", "collections": []string{"C1"}}),
+	}); err != nil {
+		t.Fatalf("seed note: %v", err)
+	}
+	_, err = evaluateSavedSearchLocal(context.Background(), db, "NA")
+	if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), "indexing note text") {
+		t.Fatalf("err = %v, want a note-index refusal with the note in the collection", err)
+	}
+}
+
+// Zotero keeps an itemNotes row for an attachment whose note was set and
+// then cleared, and the pending-index note scan matches it. The mirror shows
+// only an empty or absent note, so an attachment with no itemData value, tag,
+// or creator may or may not match anyField contains "". A result that depends
+// on it is refused; an attachment with its own value matches either way.
+func TestSavedSearchLocalAnyFieldRefusesBareAttachment(t *testing.T) {
+	anyField := [3]string{"anyField", "contains", ""}
+	db := seedSavedSearchStore(t, map[string]string{
+		"AA": ssConds([3]string{"collection", "is", "C3"}, anyField),
+		"AB": ssConds([3]string{"collection", "is", "C3"}, anyField, [3]string{"joinMode", "all", ""}),
+		"AC": ssConds([3]string{"collection", "is", "C4"}, anyField),
+	})
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
+		json.RawMessage(`{"key":"C3","version":1,"data":{"key":"C3","name":"Bare","parentCollection":false}}`),
+		json.RawMessage(`{"key":"C4","version":1,"data":{"key":"C4","name":"Titled","parentCollection":false}}`),
+	}); err != nil {
+		t.Fatalf("seed collections: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		// Only non-itemData keys, empty note: no itemData row, tag, or creator.
+		ssItem("BARE", "attachment", map[string]any{
+			"contentType": "application/pdf", "filename": "x.pdf", "linkMode": "imported_file",
+			"note": "", "collections": []string{"C3"},
+		}),
+		ssItem("TITLED", "attachment", map[string]any{
+			"title": "Paper PDF", "contentType": "application/pdf", "linkMode": "imported_file",
+			"collections": []string{"C4"},
+		}),
+	}); err != nil {
+		t.Fatalf("seed attachments: %v", err)
+	}
+	for _, key := range []string{"AA", "AB"} {
+		_, err := evaluateSavedSearchLocal(context.Background(), db, key)
+		var unsupported *savedSearchUnsupportedError
+		if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), "indexing note text") {
+			t.Fatalf("%s: err = %v, want a note-index refusal for the bare attachment", key, err)
+		}
+	}
+	if got, want := evalSavedSearchKeys(t, db, "AC"), ssKeys("TITLED"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
+
 // A definition with ANY unsupported part is refused whole, with every
 // offending part named; the supported conditions next to it never produce a
 // partial cohort.
@@ -264,7 +431,12 @@ func TestSavedSearchLocalRefusesUnsupportedDefinitions(t *testing.T) {
 	}{
 		{"fulltextContent", ssConds([3]string{"title", "contains", "learning"}, [3]string{"fulltextContent", "contains", "kernel"}), []string{"fulltextContent"}},
 		{"note", ssConds([3]string{"note", "contains", "x"}), []string{"note: condition"}},
-		{"anyField", ssConds([3]string{"anyField", "contains", "x"}), []string{"anyField"}},
+		{"anyField", ssConds([3]string{"anyField", "contains", "x"}), []string{`anyField: a non-empty value "x"`}},
+		{"anyField doesNotContain a value", ssConds([3]string{"anyField", "doesNotContain", "x"}), []string{`anyField: a non-empty value "x"`}},
+		{"anyField whitespace value", ssConds([3]string{"anyField", "contains", " "}), []string{`anyField: a non-empty value " "`}},
+		{"anyField empty is", ssConds([3]string{"anyField", "is", ""}), []string{`anyField: operator "is"`}},
+		{"anyField empty beginsWith", ssConds([3]string{"anyField", "beginsWith", ""}), []string{`anyField: operator "beginsWith"`}},
+		{"anyField empty isNot", ssConds([3]string{"anyField", "isNot", ""}), []string{`anyField: operator "isNot"`}},
 		{"year", ssConds([3]string{"year", "is", "2020"}), []string{"year"}},
 		{"nested group", ssConds([3]string{"groupStart", "true", ""}, [3]string{"tag", "is", "ai"}, [3]string{"groupEnd", "true", ""}), []string{"groupStart", "groupEnd"}},
 		{"nested saved search", ssConds([3]string{"savedSearch", "is", "OTHER"}), []string{"savedSearch"}},

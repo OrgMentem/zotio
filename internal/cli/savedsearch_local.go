@@ -52,10 +52,12 @@ import (
 //	                            is, isNot, isBefore, isAfter with a YYYY,
 //	                            YYYY-MM, or YYYY-MM-DD value (dateAdded and
 //	                            dateModified also take YYYY-MM-DD HH:MM:SS)
+//	            anyField        contains, doesNotContain, with an EMPTY value
+//	                            only (see below)
 //	flags       joinMode any|all, noChildren, includeParentsAndChildren,
 //	            includeParents, includeChildren, recursive (collection only)
 //
-// Not supported, by design: fulltextContent, note, anyField,
+// Not supported, by design: fulltextContent, note, anyField with a value,
 // quicksearch-*, savedSearch (nesting), unfiled, deleted, includeDeleted,
 // libraryID, year, isInTheLast, isLessThan/isGreaterThan, condition groups
 // (groupStart/groupEnd), resultLevel, and every other condition name.
@@ -76,6 +78,35 @@ import (
 //   - Children (attachments, notes) can match on their own fields and tags,
 //     so a raw result holds them. Scope consumers keep top-level items only,
 //     matching the live arm (see resolveScopeLive).
+//   - anyField with an empty value (the untouched default row Zotero saves
+//     for a new search). In the Zotero 10.0.3 release, search.js
+//     _buildQuery case 'anyField' (lines 1214-1239) does not skip the
+//     condition and does not treat "" as match-all: it splices in a group
+//     of field, tag, note, annotationText, annotationComment, and creator
+//     conditions with the same operator and value, ORed for contains and
+//     ANDed for doesNotContain. A stored NULL value loads as "" (searches.js
+//     155-157) and a text contains compiles to LIKE '%' || value || '%'
+//     (search.js 1923-1932), so "" is LIKE '%%', which matches every
+//     non-NULL value. contains "" therefore selects an item that has ANY
+//     itemData value, tag, creator, annotation text, or annotation comment
+//     (annotation text and comment are stored NULL when empty, item.js
+//     2285-2288).
+//     A note's own text matches nothing: getNoteContentSQL returns the
+//     constant '0' for an empty term (fulltext.js 2546-2548). Until the
+//     one-time note-index backfill finishes it returns null instead
+//     (fulltext.js 2529-2541) and the note condition falls back to a LIKE
+//     scan (search.js 1711-1722) that matches every itemNotes row: every
+//     note item, and every attachment that was ever given a note, even one
+//     since cleared (item.js 2124-2149, items.js 510-522, fulltext.js 5631
+//     "notes and attachments can both have itemNotes rows"). The mirror
+//     cannot see that state, so the evaluator runs both readings, treating
+//     every attachment as possibly matching, and refuses when they select
+//     different items.
+//     doesNotContain "" selects nothing: a negated field/tag/creator
+//     condition excludes annotations and a negated annotation condition
+//     excludes every other item (search.js 1435-1438), and the group ANDs
+//     them.
+//     A non-empty anyField value stays refused.
 
 // savedSearchCondition is one {condition, operator, value} entry of a saved
 // search definition.
@@ -380,6 +411,9 @@ type savedSearchMatcher struct {
 	// ready. It may be nil.
 	prepare func(env *savedSearchEnv) []string
 	matches func(it *savedSearchItem) bool
+	// matchesNotesPending, when set, is the selection while Zotero's
+	// one-time note-index backfill is still running (see anyField above).
+	matchesNotesPending func(it *savedSearchItem) bool
 }
 
 type savedSearchPlan struct {
@@ -505,6 +539,8 @@ func compileSavedSearch(conditions []savedSearchCondition) *savedSearchPlan {
 			p.addItemType(op, value)
 		case "date", "dateAdded", "dateModified":
 			p.addDate(name, op, value)
+		case "anyField":
+			p.addAnyField(op, value)
 		default:
 			if fields, ok := savedSearchTextFields[name]; ok {
 				p.addText(name, fields, false, op, value)
@@ -694,6 +730,71 @@ func (p *savedSearchPlan) addItemType(op, value string) {
 		negate:  op == "isNot",
 		matches: func(it *savedSearchItem) bool { return strings.EqualFold(it.itemType, value) },
 	})
+}
+
+// savedSearchNonFieldKeys are the string keys of an item's data that Zotero
+// does not store as itemData rows: item columns, attachment columns, the
+// note body (itemNotes), and annotation columns (itemAnnotations).
+var savedSearchNonFieldKeys = map[string]bool{
+	"key": true, "itemType": true, "parentItem": true, "dateAdded": true,
+	"dateModified": true, "parentCollection": true,
+	"linkMode": true, "contentType": true, "charset": true, "filename": true,
+	"md5": true, "mtime": true, "path": true, "note": true,
+	"annotationType": true, "annotationAuthorName": true, "annotationText": true,
+	"annotationComment": true, "annotationColor": true, "annotationPageLabel": true,
+	"annotationSortIndex": true, "annotationPosition": true, "annotationIsExternal": true,
+}
+
+// hasItemDataValue reports whether the item has at least one itemData row,
+// which is what the generic field condition's LIKE '%%' selects.
+func (it *savedSearchItem) hasItemDataValue() bool {
+	for name := range it.fields {
+		if !savedSearchNonFieldKeys[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// anyFieldEmptyContains is anyField contains "": the item has an itemData
+// value, a tag, a creator, annotation text, or an annotation comment.
+func anyFieldEmptyContains(it *savedSearchItem) bool {
+	return it.hasItemDataValue() || len(it.tags) > 0 || len(it.creators) > 0 ||
+		it.fields["annotationText"] != "" || it.fields["annotationComment"] != ""
+}
+
+// addAnyField compiles anyField with an empty value; see the anyField entry
+// in the file comment for the Zotero source it replays. A non-empty value
+// would fan out over every field, tag, note body, and annotation with
+// full-text note matching, which the mirror does not replay.
+func (p *savedSearchPlan) addAnyField(op, value string) {
+	if value != "" {
+		p.refuse("anyField: a non-empty value %q is not supported", value)
+		return
+	}
+	switch op {
+	case "contains":
+		p.matchers = append(p.matchers, savedSearchMatcher{
+			label:   "anyField contains",
+			matches: anyFieldEmptyContains,
+			// With the note index unfinished, the note condition LIKE-scans
+			// every itemNotes row. A note item always has one. An attachment
+			// keeps one once its note has been set and then cleared (item.js
+			// 2124-2149 saves a bare wrapper; items.js 510-522 strips it, so
+			// the API shows the note as empty or absent), and the mirror
+			// cannot see whether that row exists, so every attachment may match.
+			matchesNotesPending: func(it *savedSearchItem) bool {
+				return anyFieldEmptyContains(it) || it.itemType == "note" || it.itemType == "attachment"
+			},
+		})
+	case "doesNotContain":
+		p.matchers = append(p.matchers, savedSearchMatcher{
+			label:   "anyField doesNotContain",
+			matches: func(*savedSearchItem) bool { return false },
+		})
+	default:
+		p.refuse("anyField: operator %q is not supported", op)
+	}
 }
 
 func (p *savedSearchPlan) addCollection(op, value string) {
@@ -947,34 +1048,20 @@ func (p *savedSearchPlan) evaluate(env *savedSearchEnv) (savedSearchLocalResult,
 		return savedSearchLocalResult{}, &savedSearchUnsupportedError{Reasons: reasons}
 	}
 
-	var result map[string]bool
-	for i, m := range p.matchers {
-		matched := p.matcherSet(env, m)
-		switch {
-		case i == 0:
-			result = matched
-		case p.any:
-			for key := range matched {
-				result[key] = true
-			}
-		default:
-			for key := range result {
-				if !matched[key] {
-					delete(result, key)
-				}
-			}
+	result := p.combine(env, false)
+	if p.hasNoteIndexReading() {
+		if pending := p.combine(env, true); !sameKeySet(result, pending) {
+			return savedSearchLocalResult{}, &savedSearchUnsupportedError{Reasons: []string{
+				"anyField: the result depends on whether Zotero has finished indexing note text, which the mirror cannot tell",
+			}}
 		}
 	}
 
 	keys := make([]string, 0, len(result))
 	top := make([]string, 0, len(result))
 	for key := range result {
-		it := env.byKey[key]
-		if it == nil || (p.noChildren && it.isChild()) {
-			continue
-		}
 		keys = append(keys, key)
-		if !it.isChild() {
+		if !env.byKey[key].isChild() {
 			top = append(top, key)
 		}
 	}
@@ -994,13 +1081,71 @@ func (p *savedSearchPlan) evaluate(env *savedSearchEnv) (savedSearchLocalResult,
 	return savedSearchLocalResult{Keys: keys, TopLevelKeys: top, Items: items}, nil
 }
 
+// combine ANDs (or, under joinMode any, ORs) the per-condition selections
+// and drops what the scope never returns: keys with no live item, and child
+// items under noChildren. notesPending picks the pending-note-index reading
+// of the matchers that have one.
+func (p *savedSearchPlan) combine(env *savedSearchEnv, notesPending bool) map[string]bool {
+	var result map[string]bool
+	for i, m := range p.matchers {
+		matched := p.matcherSet(env, m, notesPending)
+		switch {
+		case i == 0:
+			result = matched
+		case p.any:
+			for key := range matched {
+				result[key] = true
+			}
+		default:
+			for key := range result {
+				if !matched[key] {
+					delete(result, key)
+				}
+			}
+		}
+	}
+	for key := range result {
+		if it := env.byKey[key]; it == nil || (p.noChildren && it.isChild()) {
+			delete(result, key)
+		}
+	}
+	return result
+}
+
+// hasNoteIndexReading reports whether any matcher selects differently while
+// Zotero's note index is still being built.
+func (p *savedSearchPlan) hasNoteIndexReading() bool {
+	for _, m := range p.matchers {
+		if m.matchesNotesPending != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func sameKeySet(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key := range a {
+		if !b[key] {
+			return false
+		}
+	}
+	return true
+}
+
 // matcherSet is the per-condition selection Zotero builds: the items with a
 // matching value, widened by the include* flags, then complemented for a
 // negative operator.
-func (p *savedSearchPlan) matcherSet(env *savedSearchEnv, m savedSearchMatcher) map[string]bool {
+func (p *savedSearchPlan) matcherSet(env *savedSearchEnv, m savedSearchMatcher, notesPending bool) map[string]bool {
+	matches := m.matches
+	if notesPending && m.matchesNotesPending != nil {
+		matches = m.matchesNotesPending
+	}
 	hits := make(map[string]bool)
 	for _, it := range env.items {
-		if m.matches(it) {
+		if matches(it) {
 			hits[it.key] = true
 		}
 	}

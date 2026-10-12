@@ -279,8 +279,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `--scope saved-search:KEY` evaluates the synced search against the mirror
   when the desktop local API is unreachable or refuses access. Supported
   conditions are text fields, creators, tags, collections, item type, and
-  dates, with any/all join and the parent/child options. A search with any
-  other condition is refused with exit 9 and names that condition.
+  dates, with any/all join and the parent/child options. The empty Any Field
+  row that Zotero saves in every new search (`anyField contains ""`) is
+  evaluated as Zotero 10 does: it selects items with any field value, tag,
+  creator, or annotation text. A non-empty Any Field value, a result that
+  depends on notes or attachments whose note-index state the mirror cannot
+  see, and any other condition are refused with exit 9 and named.
   `searches run` uses the same evaluator with `--data-source local`, and in
   the default mode when the desktop cannot answer; `--data-source live` never
   reads the mirror. A mirror that has never completed an items sync is
@@ -396,6 +400,18 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   that write or delete local files.
 
 ### Fixed
+- **`journal undo` of an `items enrich` run removes the provenance line it
+  added to Extra.** Enrich now records the exact `zotio:` line it appended,
+  the tags it added, and the value each filled field held before. Undo takes
+  the line out of the live Extra in the same version-guarded PATCH that
+  reverses the tags or fields, and leaves every other line alone. A field
+  is restored only while it still holds the value the run wrote. DOI,
+  abstract, citation-field, subject-tag, and MeSH-tag runs are undoable.
+  Runs journaled before this release undo as before: their tags are
+  removed, the Extra line stays, and field overwrites are refused.
+- **An applied `items enrich` run that skipped a candidate prints its
+  `run_id`.** The skipped list replaced the journal object, so the run id
+  that `journal undo` needs was missing from the envelope.
 - **`zotio export` validates `--format` and lists it in help.** A value other
   than `jsonl` or `json` is a usage error (exit 2) raised before any request.
   Before, any unknown value was written as JSON.

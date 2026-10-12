@@ -368,6 +368,10 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 				path := replacePathParam("/items/{itemKey}", "itemKey", inv.Key)
 				changes := inv.Changes
 				op := mutation.Op{ID: inv.ID, Key: inv.Key, Kind: inv.Kind, Changes: changes}
+				// An inverse skips whatever the live item no longer holds, so
+				// the mirror must replay and record only what the PATCH sent.
+				var effective []mutation.Change
+				op.Effective = func() []mutation.Change { return effective }
 				op.Apply = func() (string, any, error) {
 					if writeClient == nil {
 						return "failed", "no write client", errors.New("no write client")
@@ -375,7 +379,9 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 					if inv.Kind == "undo.item_create" {
 						return applyUndoCreate(writeClient, path)
 					}
-					return applyUndoMembership(writeClient, path, changes)
+					status, detail, landed, err := applyUndoMembership(writeClient, path, changes)
+					effective = landed
+					return status, detail, err
 				}
 				ops = append(ops, op)
 			}
@@ -478,30 +484,48 @@ func applyUndoCreate(c *client.Client, path string) (string, any, error) {
 	return status, detail, nil
 }
 
-// applyUndoMembership re-reads the item and applies the inverse tag/collection
-// changes in a single version-checked PATCH. Both the membership state being
-// inverted and the precondition guarding it come from the plane the PATCH
-// lands on, so the read cannot describe a different library than the write.
-func applyUndoMembership(c *client.Client, path string, changes []mutation.Change) (string, any, error) {
+// applyUndoMembership re-reads the item and applies the inverse changes in a
+// single version-checked PATCH: tag and collection membership, the field
+// restores and Extra-line removals an op recorded at write time. The state
+// being inverted and the precondition guarding it both come from the plane
+// the PATCH lands on, so the read cannot describe a different library than the
+// write.
+//
+// Every inverse is conditional on the live item, so an edit made after the
+// run survives: a tag is dropped only while present, a field is restored only
+// while it still holds the value the run wrote, and an Extra line is removed
+// only while present. A line that is gone leaves Extra untouched and never
+// fails the undo.
+//
+// The returned changes are the part of changes the PATCH actually carried.
+// The mirror replays and records those, not the plan: replaying a skipped
+// field restore would overwrite the user's later edit in the mirror and pin it
+// there with a pending-write marker.
+func applyUndoMembership(c *client.Client, path string, changes []mutation.Change) (string, any, []mutation.Change, error) {
 	data, version, err := c.GetFromWriteBaseWithVersion(path, nil)
 	if err != nil {
-		return "failed", err.Error(), err
+		return "failed", err.Error(), nil, err
 	}
 	tags, err := itemDataTags(data)
 	if err != nil {
-		return "failed", err.Error(), err
+		return "failed", err.Error(), nil, err
 	}
 	colls, err := itemCollections(data)
 	if err != nil {
-		return "failed", err.Error(), err
+		return "failed", err.Error(), nil, err
 	}
+	_, live := enrichItemFields(data)
 
 	nextTags := copyItemTags(tags)
 	nextColls := append([]string(nil), colls...)
-	tagsChanged, collsChanged := false, false
+	nextExtra := stringFromMap(live, "extra")
+	tagsChanged, collsChanged, extraChanged := false, false, false
+	restoredFields := map[string]any{}
+	effective := make([]mutation.Change, 0, len(changes))
 	for _, ch := range changes {
 		switch ch.Field {
 		case "tags":
+			took := mutation.Change{Field: ch.Field, TagType: ch.TagType}
 			if name, ok := ch.Add.(string); ok && name != "" && !itemHasTag(nextTags, name) {
 				tag := map[string]any{"tag": name}
 				if ch.TagType != 0 {
@@ -509,41 +533,78 @@ func applyUndoMembership(c *client.Client, path string, changes []mutation.Chang
 				}
 				nextTags = append(nextTags, tag)
 				tagsChanged = true
+				took.Add = name
 			}
 			if name, ok := ch.Remove.(string); ok && name != "" {
 				if filtered, removed := undoDropTag(nextTags, name, ch.TagType); removed {
 					nextTags, tagsChanged = filtered, true
+					took.Remove = name
 				}
 			}
+			if took.Add != nil || took.Remove != nil {
+				effective = append(effective, took)
+			}
 		case "collections":
+			took := mutation.Change{Field: ch.Field}
 			if name, ok := ch.Add.(string); ok && name != "" && !undoContains(nextColls, name) {
 				nextColls = append(nextColls, name)
 				collsChanged = true
+				took.Add = name
 			}
 			if name, ok := ch.Remove.(string); ok && name != "" {
 				if filtered, removed := undoDropString(nextColls, name); removed {
 					nextColls, collsChanged = filtered, true
+					took.Remove = name
 				}
 			}
+			if took.Add != nil || took.Remove != nil {
+				effective = append(effective, took)
+			}
+		case extraLineField:
+			line, ok := ch.Remove.(string)
+			if !ok || line == "" {
+				return "failed", "cannot undo an Extra line change without the recorded line", nil, fmt.Errorf("invalid %q change", ch.Field)
+			}
+			if next, removed := removeExtraLine(nextExtra, line); removed {
+				nextExtra, extraChanged = next, true
+				effective = append(effective, ch)
+			}
 		default:
-			return "failed", fmt.Sprintf("cannot undo change on field %q", ch.Field), fmt.Errorf("irreversible field %q", ch.Field)
+			// A recorded field restore: Remove is the value the run wrote and
+			// Add the value it replaced. Anything else cannot be inverted.
+			written, wroteOK := ch.Remove.(string)
+			prior, priorOK := ch.Add.(string)
+			if !wroteOK || !priorOK {
+				return "failed", fmt.Sprintf("cannot undo change on field %q", ch.Field), nil, fmt.Errorf("irreversible field %q", ch.Field)
+			}
+			if stringFromMap(live, ch.Field) == written && written != prior {
+				restoredFields[ch.Field] = prior
+				effective = append(effective, ch)
+			}
 		}
 	}
-	if !tagsChanged && !collsChanged {
-		return "no_op", "already in reversed state", nil
+	if !tagsChanged && !collsChanged && !extraChanged && len(restoredFields) == 0 {
+		return "no_op", "already in reversed state", nil, nil
 	}
 
 	body := map[string]any{}
+	for field, prior := range restoredFields {
+		body[field] = prior
+	}
 	if tagsChanged {
 		body["tags"] = nextTags
 	}
 	if collsChanged {
 		body["collections"] = nextColls
 	}
+	if extraChanged {
+		body["extra"] = nextExtra
+	}
 	// Fail closed rather than dispatch an unguarded PATCH: Zotero rejects a
 	// key-based write with no precondition, and a server that accepted one
 	// would let this reversal silently clobber a concurrent edit.
-	return patchWithVersionGuard(c, path, body, version)
+	status, detail, err := patchWithVersionGuard(c, path, body, version)
+	return status, detail, effective, err
 }
 
 func undoContains(items []string, want string) bool {

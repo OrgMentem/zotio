@@ -46,6 +46,21 @@ type Op struct {
 	// hide a committed write and invite a duplicating retry. Ops without it
 	// keep the plain not_attempted verdict.
 	Dispatched func() bool `json:"-"`
+	// Revert, when set, returns the changes that undo this op's write, as
+	// captured from live state while Apply ran: the value a field held before
+	// the write, the exact line appended to Extra. BuildJournalEntry calls it
+	// only for an applied op and records the result as JournalOp.Revert, and
+	// InverseOps replays that record instead of inverting Changes. An op whose
+	// Changes already invert losslessly (tag and collection membership) leaves
+	// it nil.
+	Revert func() []Change `json:"-"`
+	// Effective, when set, returns the part of Changes that actually took
+	// effect while Apply ran. An inverse op skips whatever the live item no
+	// longer holds (a field the user has since corrected, a tag already gone),
+	// so the plan can name writes the request never carried. The mirror
+	// write-through replays and records these for an applied op; nil means the
+	// whole of Changes landed.
+	Effective func() []Change `json:"-"`
 }
 
 // PlanSummary counts the planned operations before apply.

@@ -2,8 +2,9 @@
 // journal undo. Reversibility is decided per change
 // field: tag/collection membership inverts cleanly (Add<->Remove); field
 // overwrites (DOI, abstract), renames, merges, and deletions are refused because
-// the prior value was not (or cannot be) captured. An item create is reversed
-// by moving the recorded created key to the trash.
+// the prior value was not (or cannot be) captured, unless the op recorded its
+// own inverse at write time (JournalOp.Revert), which is then replayed as is.
+// An item create is reversed by moving the recorded created key to the trash.
 
 package mutation
 
@@ -80,6 +81,18 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 				Key:     op.Key,
 				Kind:    "undo.item_create",
 				Changes: []Change{{Field: "deleted", Add: true}},
+			})
+			continue
+		}
+		// An op that captured its own inverse while it wrote (a field's prior
+		// value, the Extra line it appended) is reversed from that record: its
+		// planned Changes cannot be inverted on their own.
+		if len(op.Revert) > 0 {
+			inverse = append(inverse, Op{
+				ID:      "undo:" + op.ID,
+				Key:     op.Key,
+				Kind:    "undo." + op.Kind,
+				Changes: op.Revert,
 			})
 			continue
 		}
