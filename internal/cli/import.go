@@ -18,7 +18,6 @@ import (
 
 func newImportCmd(flags *rootFlags) *cobra.Command {
 	var inputFile string
-	var batchSize int
 
 	cmd := &cobra.Command{
 		Use:   "import <resource>",
@@ -52,7 +51,7 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 			} else {
 				f, err := os.Open(inputFile)
 				if err != nil {
-					return fmt.Errorf("opening input file: %w", err)
+					return usageErr(fmt.Errorf("opening input file: %w", err))
 				}
 				defer f.Close()
 				reader = f
@@ -129,7 +128,7 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 				// A gate rejection (max-changes/destructive) never touched the
 				// network and has no per-record result to fold into the
 				// succeeded/failed/skipped envelope; surface it directly.
-				return fmt.Errorf("%s", env.Error.Message)
+				return renderMutationResult(cmd, flags, env, runErr, nil)
 			}
 
 			succeeded, failed := 0, parseFailed
@@ -168,7 +167,6 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 
 	cmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input JSONL file path (use - for stdin)")
 	_ = cmd.MarkFlagRequired("input")
-	cmd.Flags().IntVar(&batchSize, "batch-size", 1, "Records per batch (future: batch API support)")
 
 	cmd.AddCommand(newImportDoiCmd(flags))
 	cmd.AddCommand(newImportUrlCmd(flags))

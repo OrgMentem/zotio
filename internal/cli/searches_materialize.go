@@ -34,16 +34,18 @@ No search-to-collection binding is stored. For a scheduled refresh, put this
 command in refresh.json, then run 'zotio watch --workflow refresh.json --yes'
 after each sync (or run 'zotio workflow run refresh.json --yes').`,
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
+			"mcp:read-only": "false",
 		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toCollection == "" {
-				return fmt.Errorf("required flag %q not set", "to")
+				return usageErr(fmt.Errorf("required flag %q not set", "to"))
+			}
+			if err := validateKeyArg("collection", toCollection); err != nil {
+				return err
+			}
+			if err := validateKeyArg("search", args[0]); err != nil {
+				return err
 			}
 			return runSearchesMaterializeMutation(cmd, flags, args[0], toCollection, prune)
 		},
@@ -67,12 +69,23 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	searchPath := "/searches/" + url.PathEscape(searchKey) + "/items"
 	searchItems, err := searchesMaterializeItems(readClient, searchPath, "saved search "+searchKey)
 	if err != nil {
-		if isNetworkError(err) || isAPIStatus(err, http.StatusNotFound) {
+		if isAPIStatus(err, http.StatusNotFound) {
+			// A missing search is not a missing Zotero: the desktop answered.
+			return classifyAPIError(fmt.Errorf("saved search %s not found: %w", searchKey, err), flags)
+		}
+		if isNetworkError(err) {
 			return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "searches materialize", preconditionLiveLocalAPI,
 				fmt.Sprintf("saved search %s could not be executed, so no membership is known to materialize: %v", searchKey, err),
 				remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI))
 		}
 		return err
+	}
+	// The local API answers /collections/<unknown>/items with the whole
+	// library, so a mistyped target would read as an empty collection and
+	// every search hit would be planned as an add. Ask for the collection
+	// itself first: a missing one exits 3.
+	if _, err := readClient.Get("/collections/"+url.PathEscape(toCollection), nil); err != nil {
+		return classifyAPIError(fmt.Errorf("cannot read target collection %s; refusing refresh: %w", toCollection, err), flags)
 	}
 	collectionPath := "/collections/" + url.PathEscape(toCollection) + "/items"
 	collectionItems, err := searchesMaterializeItems(readClient, collectionPath, "collection "+toCollection)
@@ -198,7 +211,7 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 			fmt.Fprintf(cmd.OutOrStdout(), "Skipped %d child item(s) (%s): %s\n", len(skippedChildren), strings.Join(skippedChildren, ", "), journal["skipped_child_hint"])
 		}
 	}
-	return runErr
+	return markRendered(runErr)
 }
 
 // searchesMaterializeItems reads every page and refuses a cross-page repeat.

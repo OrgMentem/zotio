@@ -258,10 +258,17 @@ func TestExportSnapshotCSLJSONInterruptedResume(t *testing.T) {
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	output := filepath.Join(t.TempDir(), "library.json")
+	// A failed run used to truncate the output in place and destroy the
+	// previous snapshot.
+	if err := os.WriteFile(output, []byte("PREVIOUS SNAPSHOT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := runSnapshotFormat(output, "csljson", false); err == nil {
 		t.Fatal("interrupted snapshot unexpectedly succeeded")
 	}
-	assertSnapshotFormatContent(t, output, "csljson", 2)
+	if got, err := os.ReadFile(output); err != nil || string(got) != "PREVIOUS SNAPSHOT" {
+		t.Fatalf("output after interrupted run = %q (err %v), want the previous snapshot untouched", got, err)
+	}
 	cp, ok := readExportCheckpoint(output + ".checkpoint.json")
 	if !ok || cp.Format != "csljson" || cp.Fetched != 2 {
 		t.Fatalf("checkpoint = %+v, readable=%v", cp, ok)
@@ -276,9 +283,6 @@ func TestExportSnapshotCSLJSONInterruptedResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := sidecar.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(output, []byte(`[{"id":"PARTIAL"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := runSnapshotFormat(output, "csljson", true); err != nil {

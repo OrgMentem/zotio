@@ -18,7 +18,7 @@ The skill drives the CLI directly, choosing commands and flags for you.
 
 ```bash
 zotio agent-context --pretty     # structured JSON: commands, flags, auth
-zotio which "stale tickets"      # resolve a natural-language goal to a command
+zotio which "find papers missing PDFs"   # resolve a natural-language goal to a command
 zotio capabilities               # read/write classification + preconditions
 zotio <command> --help           # per-command help
 ```
@@ -34,6 +34,6 @@ zotio tags audit fix --agent --yes   # apply the merge
 
 - Reads are safe and keyless. Writes preview by default; `--agent` does **not** auto-apply them.
 - `--max-changes` caps how many operations a single mutation may apply (lower under `--agent`).
-- `--dry-run` prints each write request instead of sending it; read requests still run.
+- `--dry-run` performs no write of any kind (no Zotero write, local file, config save, or journal entry); read requests still run.
 
 See [Safe-by-default writes](../concepts/write-safety.md) for the full mutation contract and the [command reference](../reference/commands.md) for every flag.

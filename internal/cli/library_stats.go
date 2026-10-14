@@ -57,15 +57,21 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Show library-wide local statistics",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if flagTop < 0 {
-				return fmt.Errorf("--top must be zero or greater")
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
-			if flagYears < 0 {
-				return fmt.Errorf("--years must be zero or greater")
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--top", flagTop); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--years", flagYears); err != nil {
+				return err
 			}
 			addedBy := strings.ToLower(strings.TrimSpace(flagAddedBy))
 			if addedBy != "" && addedBy != "month" && addedBy != "year" {
-				return fmt.Errorf("--added-by must be month or year")
+				return usageErr(fmt.Errorf("invalid --added-by %q: want month or year", flagAddedBy))
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -73,8 +79,7 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -83,7 +88,10 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("querying library statistics: %w", err)
 			}
-			if flags.asJSON {
+			if flags.quiet {
+				return nil
+			}
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(stats)
 				if err != nil {
 					return err
@@ -93,8 +101,8 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 			return printLibraryStats(cmd, stats, flagYears)
 		},
 	}
-	cmd.Flags().IntVar(&flagTop, "top", 10, "Number of venues to show")
-	cmd.Flags().IntVar(&flagYears, "years", 20, "Number of years to show")
+	cmd.Flags().IntVar(&flagTop, "top", 10, "Number of venues to show (0 = no limit)")
+	cmd.Flags().IntVar(&flagYears, "years", 20, "Number of years to show (0 = all years)")
 	cmd.Flags().StringVar(&flagAddedBy, "added-by", "", "Group item intake by month or year")
 
 	return cmd
@@ -150,6 +158,15 @@ GROUP BY item_type ORDER BY count DESC`)
 	return out, nil
 }
 
+// sqliteLimit maps the shared "0 = no limit" convention onto SQLite, where a
+// negative LIMIT means unbounded.
+func sqliteLimit(n int) int {
+	if n <= 0 {
+		return -1
+	}
+	return n
+}
+
 func queryLibraryItemsByYear(db localQueryStore, years int) ([]libraryYearCount, error) {
 	rows, err := db.QueryRaw(`
 SELECT
@@ -158,7 +175,7 @@ SELECT
 FROM resources WHERE resource_type='items'
 	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
 	AND year != '' AND year GLOB '[12][0-9][0-9][0-9]'
-GROUP BY year ORDER BY year DESC LIMIT ?`, years)
+GROUP BY year ORDER BY year DESC LIMIT ?`, sqliteLimit(years))
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +238,7 @@ SELECT
 FROM resources WHERE resource_type='items'
 	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
 GROUP BY venue HAVING venue != 'Unknown'
-ORDER BY count DESC LIMIT ?`, top)
+ORDER BY count DESC LIMIT ?`, sqliteLimit(top))
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +301,11 @@ func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error 
 	for _, row := range stats.ItemsByYear {
 		yearRows = append(yearRows, statRow{label: row.Year, count: row.Count})
 	}
-	printStatSection(w, fmt.Sprintf("Items by Year (last %d years)", years), yearRows)
+	yearHeading := "Items by Year"
+	if years > 0 {
+		yearHeading = fmt.Sprintf("Items by Year (last %d years)", years)
+	}
+	printStatSection(w, yearHeading, yearRows)
 	if stats.AddedBy != "" {
 		addedRows := make([]statRow, 0, len(stats.ItemsAdded))
 		for _, row := range stats.ItemsAdded {

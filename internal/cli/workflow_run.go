@@ -113,8 +113,10 @@ func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <file.json>",
 		Short: "Preview or apply a declarative multi-step workflow",
-		Long: `Runs a declarative workflow spec in process. By default, mutating steps
-are previewed with --dry-run while read-only steps run normally.
+		Long: `Runs a declarative workflow spec in process. By default, every step that
+changes anything is previewed with --dry-run: library writes, local state
+writes, and steps that write a local file (an export, a report, a baseline).
+Steps that change nothing run normally.
 
 Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
 Override declared values with repeatable --var NAME=value. Arguments may also
@@ -149,12 +151,8 @@ sidecar; continue it with --yes --resume, which skips the completed steps.`,
 		// local-file runner off the MCP command surface rather than bypassing its
 		// per-command flag allowlist.
 		Annotations: map[string]string{
-			"mcp:hidden":                       "true",
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
+			"mcp:hidden":    "true",
+			"mcp:read-only": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runWorkflowRunFile(cmd.Context(), args[0], workflowRunInvocation{
@@ -567,10 +565,24 @@ func workflowRunStepFlagConsumesValue(command *cobra.Command, arg string) bool {
 	return false
 }
 
+// workflowRunStepIsReadOnlyWithRoot reports whether a preview may run the step
+// for real, because it changes nothing: not the library, not the local state,
+// and not a local file. A step whose command carries mcp:read-only=true but
+// also mcp:writes-files (an export, a report, a baseline), or that declares
+// its own --dry-run flag, is not read-only here: the preview injects
+// --dry-run into it, so the file it would write stays untouched.
 func workflowRunStepIsReadOnlyWithRoot(root *cobra.Command, args []string) bool {
 	command, _, err := root.Find(workflowRunStepPositionalsWithRoot(root, args))
 	if err != nil || command == nil {
 		return false
+	}
+	if command.LocalFlags().Lookup("dry-run") != nil {
+		return false
+	}
+	for c := command; c != nil; c = c.Parent() {
+		if commandWritesFiles(c) {
+			return false
+		}
 	}
 	for ; command != nil; command = command.Parent() {
 		if readOnly, ok := command.Annotations["mcp:read-only"]; ok {
@@ -578,6 +590,22 @@ func workflowRunStepIsReadOnlyWithRoot(root *cobra.Command, args []string) bool 
 		}
 	}
 	return false
+}
+
+// workflowRunNotPreviewableReason is the skip reason a preview records for a
+// step whose command cannot preview.
+const workflowRunNotPreviewableReason = "not previewable; runs only on apply"
+
+// workflowRunStepRejectsDryRun reports whether the step's command is one the
+// registry marks zotio:supports-dry-run=false: it rejects --dry-run, so a
+// preview must skip it.
+func workflowRunStepRejectsDryRun(root *cobra.Command, args []string) bool {
+	command, _, err := root.Find(workflowRunStepPositionalsWithRoot(root, args))
+	if err != nil || command == nil {
+		return false
+	}
+	path := strings.TrimPrefix(command.CommandPath(), root.Name()+" ")
+	return registryRejectsDryRun[path]
 }
 
 func workflowRunStepArgs(mode string, readOnly bool, args []string) []string {
@@ -949,6 +977,12 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 		}
 
 		root := newRoot()
+		if execution.Mode == workflowRunModePreview && workflowRunStepRejectsDryRun(root, resolvedArgs) {
+			// A step that cannot preview (sync, watch, init) neither runs
+			// for real nor gets --dry-run, which it rejects with exit 2.
+			skipStep(stepReport, workflowRunNotPreviewableReason)
+			continue
+		}
 		args := workflowRunStepArgs(execution.Mode, workflowRunStepIsReadOnlyWithRoot(root, resolvedArgs), resolvedArgs)
 		args = workflowRunStepAppendRuntimeFlags(args, execution.Agent, execution.NoInput)
 		if execution.Mode == workflowRunModeApply {

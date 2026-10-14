@@ -48,3 +48,19 @@ func TestExportRejectsUnknownFormatBeforeFetching(t *testing.T) {
 		t.Errorf("stdout = %q, want empty", out.String())
 	}
 }
+
+// JSONL is one compact JSON object per line. The Zotero APIs return records
+// pretty-printed, and writing them as returned made one record span dozens of
+// lines, so a line reader could not parse the export.
+func TestWriteExportJSONLWritesOneCompactObjectPerLine(t *testing.T) {
+	data := []byte("[\n  {\n    \"key\": \"K1\",\n    \"data\": {\"title\": \"A\"}\n  },\n  {\n    \"key\": \"K2\"\n  }\n]")
+	var out bytes.Buffer
+	count, err := writeExport(&out, "jsonl", data, 0)
+	if err != nil {
+		t.Fatalf("writeExport: %v", err)
+	}
+	want := "{\"key\":\"K1\",\"data\":{\"title\":\"A\"}}\n{\"key\":\"K2\"}\n"
+	if count != 2 || out.String() != want {
+		t.Fatalf("writeExport = %d records, %q; want 2 records, %q", count, out.String(), want)
+	}
+}

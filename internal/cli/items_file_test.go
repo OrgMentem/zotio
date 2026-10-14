@@ -101,8 +101,10 @@ func TestItemsFileResolvesParentToChildPDF(t *testing.T) {
 		switch r.URL.Path {
 		case "/users/0/items/PARENT/file/view/url":
 			http.Error(w, "no file", http.StatusNotFound)
+		case "/users/0/items/PARENT":
+			_, _ = io.WriteString(w, `{"key":"PARENT"}`)
 		case "/users/0/items/PARENT/children":
-			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","contentType":"application/pdf"}}]`)
+			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","parentItem":"PARENT","contentType":"application/pdf"}}]`)
 		case "/users/0/items/PDF9/file/view/url":
 			_, _ = io.WriteString(w, fileURL)
 		default:
@@ -135,6 +137,8 @@ func TestItemsFileNoAttachmentErrors(t *testing.T) {
 		switch r.URL.Path {
 		case "/users/0/items/BARE/file/view/url":
 			http.Error(w, "no file", http.StatusNotFound)
+		case "/users/0/items/BARE":
+			_, _ = io.WriteString(w, `{"key":"BARE"}`)
 		case "/users/0/items/BARE/children":
 			_, _ = io.WriteString(w, `[]`)
 		default:
@@ -155,8 +159,10 @@ func TestItemsFileTransientFailureSurfacesError(t *testing.T) {
 		switch {
 		case strings.HasSuffix(p, "/items/PARENT/file/view/url"):
 			http.Error(w, "not an attachment", http.StatusNotFound)
+		case strings.HasSuffix(p, "/items/PARENT"):
+			_, _ = io.WriteString(w, `{"key":"PARENT"}`)
 		case strings.HasSuffix(p, "/items/PARENT/children"):
-			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","contentType":"application/pdf"}}]`)
+			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","parentItem":"PARENT","contentType":"application/pdf"}}]`)
 		case strings.HasSuffix(p, "/items/PDF9/file/view/url"):
 			http.Error(w, "transient 500", http.StatusInternalServerError)
 		default:
@@ -177,8 +183,10 @@ func TestItemsFileTransientFailureSurfacesError(t *testing.T) {
 		switch {
 		case strings.HasSuffix(p, "/items/PARENT2/file/view/url"):
 			http.Error(w, "not found", http.StatusNotFound)
+		case strings.HasSuffix(p, "/items/PARENT2"):
+			_, _ = io.WriteString(w, `{"key":"PARENT2"}`)
 		case strings.HasSuffix(p, "/items/PARENT2/children"):
-			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","contentType":"application/pdf"}}]`)
+			_, _ = io.WriteString(w, `[{"key":"PDF9","data":{"key":"PDF9","itemType":"attachment","parentItem":"PARENT2","contentType":"application/pdf"}}]`)
 		case strings.HasSuffix(p, "/items/PDF9/file/view/url"):
 			http.Error(w, "no file", http.StatusNotFound)
 		default:
@@ -204,6 +212,8 @@ func TestItemsFileNonLocalBaseDoesNotSpuriousError(t *testing.T) {
 		switch r.URL.Path {
 		case "/users/0/items/BARE/file/view/url":
 			http.Error(w, "no file", http.StatusNotFound)
+		case "/users/0/items/BARE":
+			_, _ = io.WriteString(w, `{"key":"BARE"}`)
 		case "/users/0/items/BARE/children":
 			_, _ = io.WriteString(w, `[]`)
 		default:
@@ -228,5 +238,26 @@ func TestItemsFileNonLocalBaseDoesNotSpuriousError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no attachment file found") {
 		t.Fatalf("err = %q, want no-attachment message, not transport error", err.Error())
+	}
+}
+
+// The Zotero local API answers /items/<unknown>/children with the whole
+// library; an unknown key must exit 3 instead of resolving another item's file.
+func TestItemsFileUnknownKeyIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/children") {
+			_, _ = io.WriteString(w, `[{"key":"OTHER222","data":{"key":"OTHER222","itemType":"attachment","parentItem":"OTHER111","contentType":"application/pdf"}}]`)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := runItemsFile(t, srv.URL, false, "NOPE2345")
+	if err == nil {
+		t.Fatal("expected error for unknown item key")
+	}
+	if got := ExitCode(err); got != 3 {
+		t.Fatalf("exit code = %d, want 3 (err=%v)", got, err)
 	}
 }

@@ -16,18 +16,21 @@ func TestTagsInventoryAggregationAndCollectionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
-		json.RawMessage(`{"key":"I1","version":1,"data":{"key":"I1","itemType":"book","collections":["COL1"],"tags":[{"tag":" Atlas ","type":0},{"tag":"Mixed","type":0},{"tag":"Only"},{"tag":"Alpha"},{"tag":" Variant "},{"tag":"Variant"},{"tag":"ParentChild"},{"tag":"   "}]}}`),
-		json.RawMessage(`{"key":"I2","version":1,"data":{"key":"I2","itemType":"book","collections":["COL1"],"tags":[{"tag":"Atlas"},{"tag":"Mixed","type":1},{"tag":"Only"},{"tag":"Alpha"}]}}`),
-		json.RawMessage(`{"key":"I3","version":1,"data":{"key":"I3","itemType":"book","collections":["COL2"],"tags":[{"tag":"Atlas"},{"tag":"alpha"}]}}`),
+		json.RawMessage(`{"key":"I1","version":1,"data":{"key":"I1","itemType":"book","collections":["CBCB2222"],"tags":[{"tag":" Atlas ","type":0},{"tag":"Mixed","type":0},{"tag":"Only"},{"tag":"Alpha"},{"tag":" Variant "},{"tag":"Variant"},{"tag":"ParentChild"},{"tag":"   "}]}}`),
+		json.RawMessage(`{"key":"I2","version":1,"data":{"key":"I2","itemType":"book","collections":["CBCB2222"],"tags":[{"tag":"Atlas"},{"tag":"Mixed","type":1},{"tag":"Only"},{"tag":"Alpha"}]}}`),
+		json.RawMessage(`{"key":"I3","version":1,"data":{"key":"I3","itemType":"book","collections":["CDCD3333"],"tags":[{"tag":"Atlas"},{"tag":"alpha"}]}}`),
 		json.RawMessage(`{"key":"I4","version":1,"data":{"key":"I4","itemType":"book","collections":[],"tags":[{"tag":"Mixed","type":0},{"tag":"Ambiguous"}]}}`),
-		json.RawMessage(`{"key":"I5","version":1,"data":{"key":"I5","itemType":"book","collections":["COL1","COL2"],"tags":[{"tag":"Linked"},{"tag":"Ambiguous"}]}}`),
+		json.RawMessage(`{"key":"I5","version":1,"data":{"key":"I5","itemType":"book","collections":["CBCB2222","CDCD3333"],"tags":[{"tag":"Linked"},{"tag":"Ambiguous"}]}}`),
+		json.RawMessage(`{"key":"A","version":1,"data":{"key":"A","itemType":"journalArticle","title":"Beta","date":"2020","collections":["CBCB2222"],"tags":[{"tag":"ml"}],"creators":[{"lastName":"Zhang"}]}}`),
+		json.RawMessage(`{"key":"B","version":1,"data":{"key":"B","itemType":"journalArticle","title":"Alpha","date":"2022","collections":["CBCB2222","CDCD3333"],"tags":[{"tag":"nlp"}]}}`),
 		json.RawMessage(`{"key":"CHILD","version":1,"data":{"key":"CHILD","itemType":"attachment","parentItem":"I1","collections":[],"tags":[{"tag":"Ghost"},{"tag":"Atlas"},{"tag":"ParentChild"}]}}`),
 	}); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
 	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
-		json.RawMessage(`{"key":"FAKE","version":1,"data":{"key":"FAKE","itemType":"book","collections":["COL1"],"tags":[{"tag":"Atlas"}]}}`),
+		json.RawMessage(`{"key":"FAKE","version":1,"data":{"key":"FAKE","itemType":"book","collections":["CBCB2222"],"tags":[{"tag":"Atlas"}]}}`),
+		json.RawMessage(`{"key":"CBCB2222","version":1,"data":{"key":"CBCB2222","name":"One"}}`),
 	}); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
@@ -52,7 +55,7 @@ func TestTagsInventoryAggregationAndCollectionScope(t *testing.T) {
 			{Tag: "alpha", CollectionCount: 1, LibraryCount: 1, CollectionOnly: true},
 			{Tag: "ParentChild", CollectionCount: 1, LibraryCount: 1, CollectionOnly: true},
 		}},
-		{"COL1", "COL1", []tagInventoryItem{
+		{"CBCB2222", "CBCB2222", []tagInventoryItem{
 			{Tag: "Alpha", CollectionCount: 2, LibraryCount: 2, CollectionOnly: true},
 			{Tag: "Atlas", CollectionCount: 2, LibraryCount: 3},
 			{Tag: "Mixed", CollectionCount: 2, LibraryCount: 3},
@@ -76,10 +79,13 @@ func TestTagsInventoryAggregationAndCollectionScope(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			var got []tagInventoryItem
-			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			var env struct {
+				Results []tagInventoryItem `json:"results"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 				t.Fatalf("decode inventory %q: %v", out.String(), err)
 			}
+			got := env.Results
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("inventory = %+v, want %+v", got, tc.want)
 			}

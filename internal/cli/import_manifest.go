@@ -51,7 +51,7 @@ type importManifestEntry struct {
 	Note           string           `json:"note,omitempty"`
 	Discovery      *importDiscovery `json:"discovery,omitempty"`
 	// Collection overrides the manifest's default destination for this entry;
-	// empty means the manifest (or `import apply --collection`) default.
+	// empty means the manifest (or `import apply --to`) default.
 	Collection string `json:"collection,omitempty"`
 }
 
@@ -62,6 +62,9 @@ type importManifest struct {
 	Entries       []importManifestEntry `json:"entries"`
 	// Collection is the default destination collection key for created items.
 	Collection string `json:"collection,omitempty"`
+	// Truncated is set by `import resolve --limit` when more PDFs existed than
+	// the limit allowed.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // manifestActionForStatus maps a scan classification to its default action:
@@ -93,7 +96,7 @@ func readImportManifest(path string, stdin io.Reader) (importManifest, error) {
 	} else {
 		f, err := os.Open(path)
 		if err != nil {
-			return importManifest{}, fmt.Errorf("opening manifest: %w", err)
+			return importManifest{}, usageErr(fmt.Errorf("opening manifest: %w", err))
 		}
 		defer f.Close()
 		r = f
@@ -104,10 +107,10 @@ func readImportManifest(path string, stdin io.Reader) (importManifest, error) {
 	}
 	var m importManifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return importManifest{}, fmt.Errorf("parsing manifest: %w", err)
+		return importManifest{}, usageErr(fmt.Errorf("parsing manifest: %w", err))
 	}
 	if m.SchemaVersion != 1 && m.SchemaVersion != importManifestSchemaVersion && m.SchemaVersion != importManifestCollectionSchemaVersion {
-		return importManifest{}, fmt.Errorf("unsupported manifest schema_version %d (want 1, %d, or %d)", m.SchemaVersion, importManifestSchemaVersion, importManifestCollectionSchemaVersion)
+		return importManifest{}, usageErr(fmt.Errorf("unsupported manifest schema_version %d (want 1, %d, or %d)", m.SchemaVersion, importManifestSchemaVersion, importManifestCollectionSchemaVersion))
 	}
 	return m, nil
 }

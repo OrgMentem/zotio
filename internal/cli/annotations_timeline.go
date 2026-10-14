@@ -4,7 +4,6 @@ package cli
 
 import (
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -17,19 +16,43 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	var flagSince string
 	var flagItem string
 	var flagCollection string
-	// prefer the local store unless --refresh.
+	var flagScope string
+	// bypass the mirror fallback and read live only.
 	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:   "timeline",
 		Short: "List annotations sorted by creation date",
+		Long: `List annotations newest first. --item names the top-level item that owns the
+annotations, never the attachment that holds them. --collection and --item are
+shorthand for --scope collection:KEY and --scope item:KEY.
+
+With --data-source auto (the default) the command reads live and serves the
+local mirror when Zotero is unreachable.`,
 		Example: `  zotio annotations timeline --limit 50
   zotio annotations timeline --since 2024-01-01
-  zotio annotations timeline --item ABCD1234 --json`,
+  zotio annotations timeline --item ABCD2345 --json
+  zotio annotations timeline --scope "collection:ABCD2345 AND tag:to-read"`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			if refresh && flags.dataSource == "local" {
 				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
+			}
+			scopeExpr, err := annotationScopeExpr(flagScope,
+				scopeSugarFor("collection", "collection", flagCollection),
+				scopeSugarFor("item", "item", flagItem))
+			if err != nil {
+				return err
+			}
+			if err := validateAnnotationScope(scopeExpr); err != nil {
+				return err
+			}
+			since, hasSince, err := parseAnnotationSince(flagSince)
+			if err != nil {
+				return err
 			}
 			readFlags := flags
 			if refresh {
@@ -41,85 +64,31 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			since, hasSince, err := parseAnnotationSince(flagSince)
+			reader := newAnnotationReader(cmd, flags, readFlags, c)
+			result, err := reader.collect(cmd.Context(), annotationReadQuery{
+				Scope:       scopeExpr,
+				Limit:       flagLimit,
+				Since:       since,
+				HasSince:    hasSince,
+				NewestFirst: true,
+			})
 			if err != nil {
 				return err
 			}
-
-			var annotations []annotationSummary
-			var provenance DataProvenance
-			if flagCollection != "" {
-				path := "/collections/" + url.PathEscape(flagCollection) + "/items"
-				items, prov, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, nil, 0)
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				provenance = prov
-				for _, item := range items {
-					if !zoteroItemHasChildren(item) {
-						continue
-					}
-					key := zoteroString(item, "key")
-					if key == "" {
-						continue
-					}
-					childPath := "/items/" + url.PathEscape(key) + "/children"
-					children, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
-					if err != nil {
-						return classifyAPIError(err, flags)
-					}
-					childItems, err := decodeZoteroItems(children)
-					if err != nil {
-						return fmt.Errorf("parsing annotation children for %s: %w", key, err)
-					}
-					annotations = append(annotations, annotationSummariesFromItems(childItems)...)
-				}
-			} else {
-				// The requested limit is applied after client-side --item/--since
-				// filtering below, so page the full set when a filter is active
-				// rather than capping the fetch at the first page.
-				maxItems := flagLimit
-				if flagItem != "" || hasSince {
-					maxItems = 0
-				}
-				items, prov, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, "/items", map[string]string{
-					"itemType":  "annotation",
-					"sort":      "dateAdded",
-					"direction": "desc",
-				}, maxItems)
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				provenance = prov
-				annotations = annotationSummariesFromItems(items)
+			summaries := make([]annotationSummary, 0, len(result.Rows))
+			for _, row := range result.Rows {
+				summaries = append(summaries, row.Summary)
 			}
-
-			filtered := make([]annotationSummary, 0, len(annotations))
-			for _, annotation := range annotations {
-				if flagItem != "" && annotation.ParentItem != flagItem {
-					continue
-				}
-				if hasSince {
-					added, err := parseZoteroTime(annotation.DateAdded)
-					if err != nil || !added.After(since) {
-						continue
-					}
-				}
-				filtered = append(filtered, annotation)
-			}
-			filtered = sortAnnotationsByInstantDesc(filtered)
-			if flagLimit > 0 && len(filtered) > flagLimit {
-				filtered = filtered[:flagLimit]
-			}
-			return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, provenance)
+			noteEmptyLocalAnnotations(cmd, result.Prov, len(summaries))
+			return printCommandJSONEnvelope(cmd.OutOrStdout(), summaries, flags, result.Prov)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return (0 = no limit)")
 	cmd.Flags().StringVar(&flagSince, "since", "", "ISO date string; include annotations after this date")
-	cmd.Flags().StringVar(&flagItem, "item", "", "Scope to annotations of a specific parent item key")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope to items in this collection key")
-	// bypass the local store and fetch live.
-	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
+	cmd.Flags().StringVar(&flagItem, "item", "", "Only annotations of this top-level item key (same as --scope item:KEY)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Only annotations of items in this collection key (same as --scope collection:KEY)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Read live only, with no local mirror fallback (same as --data-source live)")
 
 	return cmd
 }
@@ -157,15 +126,23 @@ func parseZoteroTime(value string) (time.Time, error) {
 // Unparseable timestamps cannot be placed on the timeline at all, so they sort
 // last by key rather than being dropped or comparing as the zero instant.
 func sortAnnotationsByInstantDesc(annotations []annotationSummary) []annotationSummary {
+	return sortByAnnotationInstantDesc(annotations, func(a annotationSummary) annotationSummary { return a })
+}
+
+// sortByAnnotationInstantDesc is sortAnnotationsByInstantDesc for any row type
+// that carries an annotationSummary.
+func sortByAnnotationInstantDesc[T any](rows []T, summary func(T) annotationSummary) []T {
 	type keyed struct {
-		annotation annotationSummary
-		added      time.Time
-		valid      bool
+		row   T
+		key   string
+		added time.Time
+		valid bool
 	}
-	keys := make([]keyed, len(annotations))
-	for i, annotation := range annotations {
-		added, err := parseZoteroTime(annotation.DateAdded)
-		keys[i] = keyed{annotation: annotation, added: added, valid: err == nil}
+	keys := make([]keyed, len(rows))
+	for i, row := range rows {
+		s := summary(row)
+		added, err := parseZoteroTime(s.DateAdded)
+		keys[i] = keyed{row: row, key: s.Key, added: added, valid: err == nil}
 	}
 	sort.SliceStable(keys, func(i, j int) bool {
 		if keys[i].valid != keys[j].valid {
@@ -174,11 +151,11 @@ func sortAnnotationsByInstantDesc(annotations []annotationSummary) []annotationS
 		if keys[i].valid && !keys[i].added.Equal(keys[j].added) {
 			return keys[i].added.After(keys[j].added)
 		}
-		return keys[i].annotation.Key < keys[j].annotation.Key
+		return keys[i].key < keys[j].key
 	})
-	sorted := make([]annotationSummary, len(keys))
+	sorted := make([]T, len(keys))
 	for i, k := range keys {
-		sorted[i] = k.annotation
+		sorted[i] = k.row
 	}
 	return sorted
 }

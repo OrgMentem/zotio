@@ -211,7 +211,7 @@ func TestImportDoiRequiresYesToCreate(t *testing.T) {
 		return out.Bytes()
 	}
 
-	defaultFlags := rootFlags{asJSON: true, via: "web", timeout: time.Second}
+	defaultFlags := rootFlags{asJSON: true, via: "web", timeout: time.Second, maxChanges: -1}
 	preview := run(defaultFlags)
 	if createRequests != 0 {
 		t.Fatalf("create requests without --yes = %d, want 0", createRequests)
@@ -297,8 +297,8 @@ func TestImportDoiRequiresYesToCreate(t *testing.T) {
 	}
 
 	for _, previewFlags := range []rootFlags{
-		{asJSON: true, yes: true, dryRun: true, via: "web", timeout: time.Second},
-		{asJSON: true, agent: true, via: "web", timeout: time.Second},
+		{asJSON: true, yes: true, dryRun: true, via: "web", timeout: time.Second, maxChanges: -1},
+		{asJSON: true, agent: true, via: "web", timeout: time.Second, maxChanges: -1},
 	} {
 		var previewEnv struct {
 			Mode string `json:"mode"`

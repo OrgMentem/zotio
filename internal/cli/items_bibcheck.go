@@ -121,15 +121,16 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dryRunOK(flags) {
-				return nil
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
-
-			gate := strings.ToLower(strings.TrimSpace(failOn))
-			switch gate {
-			case "", "none", sevHigh, "any":
-			default:
-				return usageErr(fmt.Errorf("invalid --fail-on %q: must be high, any, or none", failOn))
+			gate := ""
+			if strings.TrimSpace(failOn) != "" {
+				parsed, err := parseFailOnSeverity("fail-on", failOn)
+				if err != nil {
+					return err
+				}
+				gate = parsed
 			}
 
 			occurrences := make([]bibcheckOccurrence, 0)
@@ -165,8 +166,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			if err := requireBibcheckCitekeyPlane(cmd, flags, formats, rawDB.DB()); err != nil {
@@ -229,7 +229,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&failOnUnknown, "fail-on-unknown", false, "Exit 11 when any cited key is unknown or ambiguous")
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit 11 when findings reach this severity: high, any, or none")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit 11 when findings reach this severity: critical, high, info, any, or none")
 	cmd.Flags().BoolVar(&followIncludes, "follow-includes", false, "Also check .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \\input PATH, \\subfile, or \\import")
 	cmd.Flags().BoolVar(&checkRetractions, "check-retractions", false, "Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing")
 

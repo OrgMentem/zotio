@@ -52,7 +52,7 @@ func TestAuthLogoutClearsEveryCredentialSource(t *testing.T) {
 		t.Fatal("seeded store is unauthenticated; the test would pass vacuously")
 	}
 
-	out, err := runAuthLogoutCmd(t, &rootFlags{})
+	out, err := runAuthLogoutCmd(t, &rootFlags{yes: true, maxChanges: -1})
 	if err != nil {
 		t.Fatalf("auth logout: %v (output %q)", err, out)
 	}
@@ -99,7 +99,7 @@ func TestAuthLogoutFailsWhenCredentialsCannotBeRemoved(t *testing.T) {
 		t.Fatalf("write anchor: %v", err)
 	}
 
-	out, err := runAuthLogoutCmd(t, &rootFlags{})
+	out, err := runAuthLogoutCmd(t, &rootFlags{yes: true, maxChanges: -1})
 	if err == nil {
 		t.Fatalf("auth logout succeeded with an unremovable credentials dir (output %q)", out)
 	}
@@ -120,7 +120,7 @@ func TestAuthLogoutUnderAgentcookieMarker(t *testing.T) {
 		t.Fatalf("write marker: %v", err)
 	}
 
-	out, err := runAuthLogoutCmd(t, &rootFlags{})
+	out, err := runAuthLogoutCmd(t, &rootFlags{yes: true, maxChanges: -1})
 	if err != nil {
 		t.Fatalf("auth logout under marker: %v (output %q)", err, out)
 	}
@@ -158,7 +158,7 @@ func TestAuthLogoutScrubsConfigBeforeRemovingCredentials(t *testing.T) {
 		t.Fatalf("write anchor: %v", err)
 	}
 
-	out, err := runAuthLogoutCmd(t, &rootFlags{})
+	out, err := runAuthLogoutCmd(t, &rootFlags{yes: true, maxChanges: -1})
 	if err == nil {
 		t.Fatalf("auth logout succeeded with an unremovable credentials dir (output %q)", out)
 	}

@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,88 @@ func TestRankWhich_PriorGoodMatchesStillWin(t *testing.T) {
 		got := rankWhich(index, query, 3)
 		if len(got) == 0 || got[0].Entry.Command != want {
 			t.Errorf("query %q: want top match %q, got %+v", query, want, got)
+		}
+	}
+}
+
+// The README, SKILL, and AGENTS.md advertise these phrases as the way to find
+// a command. Each must resolve to the command that owns it, first.
+func TestRankWhich_AdvertisedPhrasesResolveFirst(t *testing.T) {
+	index := buildWhichIndex(RootCmd())
+	cases := []struct{ query, want string }{
+		{"export bibtex for a collection", "collections export"},
+		{"add a tag to an item", "items tags add"},
+		{"delete an item", "items delete"},
+		{"undo that Zotero change", "journal undo"},
+		{"find papers missing PDFs", "items missing-pdf"},
+		{"search my Zotero library", "search"},
+		{"create a collection", "collections create"},
+		{"add an item to a collection", "items add-to-collection"},
+		{"file a paper into a collection", "items move"},
+	}
+	for _, tc := range cases {
+		got := rankWhich(index, tc.query, 3)
+		if len(got) == 0 || got[0].Entry.Command != tc.want {
+			t.Errorf("query %q: want top match %q, got %+v", tc.query, tc.want, got)
+		}
+	}
+}
+
+// Each intent alias belongs to one command: a shared phrasing is the bug that
+// made `items move` and `items add-to-collection` tie for every query.
+func TestWhichAliasesAreNotShared(t *testing.T) {
+	owner := map[string]string{}
+	for command, aliases := range whichAliases {
+		for _, alias := range aliases {
+			key := strings.ToLower(strings.TrimSpace(alias))
+			if prior, ok := owner[key]; ok {
+				t.Errorf("alias %q belongs to both %q and %q", alias, prior, command)
+			}
+			owner[key] = command
+		}
+	}
+}
+
+// An alias counts once per command: a command with many phrasings must not
+// outscore a command whose text matches the query better.
+func TestRankWhich_AliasScoreCountsBestAliasOnly(t *testing.T) {
+	one := whichEntry{Command: "alpha", Aliases: []string{"file a paper into a collection"}}
+	many := whichEntry{Command: "alpha", Aliases: []string{
+		"file a paper into a collection",
+		"file an item into a collection",
+		"organise item into collection",
+		"put item in collection",
+	}}
+	query := "collection paper"
+	qTokens := strings.Fields(query)
+	if a, b := whichScoreEntry(one, query, qTokens), whichScoreEntry(many, query, qTokens); a != b {
+		t.Errorf("extra aliases changed the score: one alias = %d, many aliases = %d", a, b)
+	}
+}
+
+// A miss exits 2 in every output mode; under --json the empty matches
+// envelope is still printed.
+func TestWhichMissExitsTwoInEveryOutputMode(t *testing.T) {
+	for _, args := range [][]string{
+		{"which", "xyzzynonexistent"},
+		{"which", "--json", "xyzzynonexistent"},
+	} {
+		root, _, out, _ := newPreflightTestRoot(t)
+		root.SetArgs(args)
+		err := root.Execute()
+		if err == nil {
+			t.Fatalf("%v: a miss returned nil; want exit code 2", args)
+		}
+		if got := ExitCode(err); got != 2 {
+			t.Errorf("%v: exit code = %d, want 2", args, got)
+		}
+		if len(args) == 3 {
+			var env struct {
+				Matches []json.RawMessage `json:"matches"`
+			}
+			if jerr := json.Unmarshal(out.Bytes(), &env); jerr != nil || env.Matches == nil || len(env.Matches) != 0 {
+				t.Errorf("%v: output %q lacks the empty matches envelope", args, out.String())
+			}
 		}
 	}
 }

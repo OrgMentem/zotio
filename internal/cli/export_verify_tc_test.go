@@ -29,7 +29,7 @@ func TestExportSnapshotVerifyComparesAgainstRecordedScope(t *testing.T) {
 	}{
 		{
 			name:          "collection scope fetches only the collection",
-			scope:         "collection:COLL1",
+			scope:         "collection:CDEF2345",
 			lockItems:     []json.RawMessage{inScopeA, inScopeB},
 			wantDetection: "resolved",
 			wantSummary:   exportVerifySummary{Unchanged: 2},
@@ -57,7 +57,7 @@ func TestExportSnapshotVerifyComparesAgainstRecordedScope(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
-				case "/users/0/collections/COLL1/items":
+				case "/users/0/collections/CDEF2345/items":
 					_, _ = w.Write([]byte("[" + exportVerifyJoinRaw([]json.RawMessage{inScopeA, inScopeB}) + "]"))
 				case "/users/0/items":
 					if r.URL.Query().Get("tag") == "to-read" {

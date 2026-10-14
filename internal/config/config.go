@@ -565,6 +565,17 @@ func (c *Config) updateFileConfigField(field string) {
 
 func (c *Config) save() error {
 	persisted := c.configForSave()
+	// A save must never drop credentials present in the file: the persisted
+	// form omits them, so migrate inline credentials to the credentials store
+	// first, exactly as SaveCredential does.
+	if !c.AgentcookieManagedByExternalStore() && persisted.hasCredentialFields() && c.CredentialSource != "credentials file" {
+		if err := cliutil.SaveCredentials(persisted.credentials()); err != nil {
+			return err
+		}
+		if !strings.HasPrefix(c.CredentialSource, "env:") {
+			c.CredentialSource = "credentials file"
+		}
+	}
 	var persist any = persisted
 	if !c.AgentcookieManagedByExternalStore() {
 		persist = persisted.persisted()

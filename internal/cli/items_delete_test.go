@@ -7,6 +7,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -313,16 +314,23 @@ func TestDeletesFailHonestlyOnMissingVersionRead(t *testing.T) {
 	}
 }
 
-// Preview-first contract (0.11.0): a bare items delete/update/restore renders a
-// preview and issues no HTTP request; mutation happens only under --yes.
-func TestItemMutationsPreviewByDefault(t *testing.T) {
-	requests := 0
+// Preview-first contract: a bare items delete/update/restore renders a preview
+// and mutation happens only under --yes. The preview (default or --dry-run)
+// reads the target through the write plane, so it plans the item's real
+// version, and it never writes.
+func TestItemMutationsPreviewReadsTheTargetButNeverWrites(t *testing.T) {
+	var gets, writes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodGet {
+			writes++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		gets++
+		w.Header().Set("Last-Modified-Version", "42")
+		_, _ = w.Write([]byte(`{"key":"ITEMAAA2","version":42,"data":{}}`))
 	}))
 	defer srv.Close()
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
 	type execCmd interface {
 		SetOut(io.Writer)
@@ -332,32 +340,70 @@ func TestItemMutationsPreviewByDefault(t *testing.T) {
 	}
 	cases := []struct {
 		name string
-		cmd  execCmd
+		new  func(flags *rootFlags) execCmd
 		args []string
 	}{
-		{"delete", newItemsDeleteCmd(&rootFlags{asJSON: true}), []string{"K"}},
-		{"update", newItemsUpdateCmd(&rootFlags{asJSON: true}), []string{"K", "--title", "x"}},
-		{"restore", newItemsRestoreCmd(&rootFlags{asJSON: true}), []string{"K"}},
+		{"delete", func(f *rootFlags) execCmd { return newItemsDeleteCmd(f) }, []string{"ITEMAAA2"}},
+		{"update", func(f *rootFlags) execCmd { return newItemsUpdateCmd(f) }, []string{"ITEMAAA2", "--title", "x"}},
+		{"restore", func(f *rootFlags) execCmd { return newItemsRestoreCmd(f) }, []string{"ITEMAAA2"}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			requests = 0
-			var out bytes.Buffer
-			tc.cmd.SetOut(&out)
-			tc.cmd.SetErr(io.Discard)
-			tc.cmd.SetArgs(tc.args)
-			if err := tc.cmd.Execute(); err != nil {
-				t.Fatalf("%s preview: %v", tc.name, err)
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dryRun=%t", tc.name, dryRun), func(t *testing.T) {
+				gets, writes = 0, 0
+				t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+				cmd := tc.new(&rootFlags{asJSON: true, dryRun: dryRun, maxChanges: -1})
+				var out bytes.Buffer
+				cmd.SetOut(&out)
+				cmd.SetErr(io.Discard)
+				cmd.SetArgs(tc.args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("%s preview: %v", tc.name, err)
+				}
+				if gets == 0 || writes != 0 {
+					t.Fatalf("%s preview made %d GET and %d write requests, want reads only", tc.name, gets, writes)
+				}
+				var env mutation.Envelope
+				if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+					t.Fatalf("decode envelope: %v\noutput: %s", err, out.String())
+				}
+				if !env.OK || env.Mode != "preview" || env.Result != nil {
+					t.Fatalf("%s envelope = %+v, want an ok preview with no result", tc.name, env)
+				}
+				if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].ExpectedVersion != 42 {
+					t.Fatalf("%s plan = %+v, want expected_version 42 read from the item", tc.name, env.Plan.Operations)
+				}
+			})
+		}
+	}
+}
+
+// A preview of a missing item fails like the apply does: exit 3, never a plan
+// with expected_version 0.
+func TestItemMutationPreviewOfMissingItemExitsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	for name, newCmd := range map[string]func(*rootFlags) *cobra.Command{
+		"delete":  newItemsDeleteCmd,
+		"update":  newItemsUpdateCmd,
+		"restore": newItemsRestoreCmd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := []string{"MISSING2"}
+			if name == "update" {
+				args = append(args, "--title", "x")
 			}
-			if requests != 0 {
-				t.Fatalf("%s issued %d HTTP requests in preview mode, want 0", tc.name, requests)
-			}
-			// items delete now renders the shared mutation envelope like every
-			// other mutating command, which marks a preview with mode/preview_reason
-			// rather than the bespoke dry_run flag the others still emit.
-			if !bytes.Contains(out.Bytes(), []byte(`"dry_run"`)) &&
-				!bytes.Contains(out.Bytes(), []byte(`"mode": "preview"`)) {
-				t.Fatalf("%s preview output missing preview marker: %s", tc.name, out.String())
+			cmd := newCmd(&rootFlags{asJSON: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); ExitCode(err) != 3 {
+				t.Fatalf("ExitCode(%s preview of a missing item) = %d, want 3; err = %v", name, ExitCode(err), err)
 			}
 		})
 	}

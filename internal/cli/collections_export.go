@@ -27,7 +27,7 @@ func newCollectionsExportCmd(flags *rootFlags) *cobra.Command {
 	var flagFormat string
 	var flagOutput string
 	var flagFlat bool
-	var flagLimit int
+	var flagPageSize int
 
 	cmd := &cobra.Command{
 		Use:   "export <collectionKey>",
@@ -39,18 +39,27 @@ the top-level collection without recursing into subcollections.
 bibtex, ris, and csljson are rendered by Zotero's export translators, so they
 need Zotero desktop running. --format json emits the structured item JSON the
 synced mirror already holds, so it also works with Zotero closed
-(--data-source local, or auto once the local API stops answering).`,
+(--data-source local, or auto once the local API stops answering).
+
+The collection must exist: an unknown key exits 3 before anything is written.
+Under --json or --agent, bibtex and ris output is wrapped as
+{"format": ..., "content": ...}. With --output the file is replaced atomically
+and the result reports whether it replaced an existing file; with --dry-run
+nothing is written, not even a lock file, and the result reports what would be.`,
 		Example: `  # Export collection as BibTeX (default)
-  zotio collections export ABCD1234
+  zotio collections export ABCD2345
 
   # Export as RIS to a file
-  zotio collections export ABCD1234 --format ris --output refs.ris
+  zotio collections export ABCD2345 --format ris -o refs.ris
+
+  # Preview the file write without creating it
+  zotio collections export ABCD2345 -o refs.bib --dry-run
 
   # Export the whole subtree's item JSON from the synced mirror, Zotero closed
-  zotio collections export ABCD1234 --format json --data-source local
+  zotio collections export ABCD2345 --format json --data-source local
 
   # Export without descending into subcollections
-  zotio collections export ABCD1234 --flat`,
+  zotio collections export ABCD2345 --flat`,
 		// The capability registry declares live_local_api for the default
 		// (translator-rendered) route, but central preflight cannot read
 		// --format, so it would refuse the offline `--format json` route too.
@@ -69,22 +78,25 @@ synced mirror already holds, so it also works with Zotero closed
 			switch format {
 			case "bibtex", "ris", "csljson", exportFormatJSON:
 			default:
-				return fmt.Errorf("unknown format %q: use bibtex, ris, csljson, or json", format)
+				return usageErr(fmt.Errorf("unknown format %q: use bibtex, ris, csljson, or json", format))
+			}
+			if flagPageSize < 0 {
+				return usageErr(fmt.Errorf("invalid --page-size %d: must be 0 (default) or greater", flagPageSize))
 			}
 
 			if format == exportFormatJSON {
-				return runMirrorCollectionExport(cmd, flags, collKey, flagOutput, flagFlat, flagLimit)
+				return runMirrorCollectionExport(cmd, flags, collKey, flagOutput, flagFlat, flagPageSize)
 			}
 			if flags.dataSource == "local" {
 				return refuseTranslatorExport(cmd, flags, format, "--data-source local cannot reach Zotero's export translators")
 			}
-			return runTranslatorCollectionExport(cmd, flags, collKey, format, flagOutput, flagFlat, flagLimit)
+			return runTranslatorCollectionExport(cmd, flags, collKey, format, flagOutput, flagFlat, flagPageSize)
 		},
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "bibtex", "Export format: bibtex, ris, csljson, json (json is the offline-capable format)")
-	cmd.Flags().StringVar(&flagOutput, "output", "", "Write output to file instead of stdout")
+	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "Write output to this file instead of stdout (replaced atomically)")
 	cmd.Flags().BoolVar(&flagFlat, "flat", false, "Export only the top-level collection, skip subcollections")
-	cmd.Flags().IntVar(&flagLimit, "limit", zoteroPageMax, "Items fetched per API request (max 100); the export always walks every page")
+	cmd.Flags().IntVar(&flagPageSize, "page-size", zoteroPageMax, "Items fetched per API request (max 100); the export always walks every page")
 
 	return cmd
 }
@@ -94,13 +106,22 @@ synced mirror already holds, so it also works with Zotero closed
 // directly instead of resolveRead: an unreachable desktop becomes the same
 // precondition refusal rather than a mirror dump that could not carry the
 // rendering anyway.
-func runTranslatorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, format, output string, flat bool, limit int) error {
+func runTranslatorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, format, output string, flat bool, pageSize int) error {
 	c, err := flags.newClient()
 	if err != nil {
 		return err
 	}
-	err = writeCollectionExport(cmd, output, func(w io.Writer) error {
-		return exportCollection(c, w, collKey, format, flat, limit, map[string]bool{})
+	// Zotero's local API answers /collections/<unknown>/items with the whole
+	// library, so the collection is proven to exist before anything is read
+	// for the export or written.
+	if _, err := c.Get(replacePathParam("/collections/{collectionKey}", "collectionKey", collKey), nil); err != nil {
+		if isNetworkError(err) {
+			return refuseTranslatorExport(cmd, flags, format, "Zotero desktop's local API is unreachable")
+		}
+		return classifyAPIError(err, flags)
+	}
+	err = writeCollectionExport(cmd, flags, format, output, func(w io.Writer) error {
+		return exportCollection(c, w, collKey, format, flat, pageSize, map[string]bool{})
 	})
 	if isNetworkError(err) {
 		return refuseTranslatorExport(cmd, flags, format, "Zotero desktop's local API is unreachable")
@@ -111,7 +132,7 @@ func runTranslatorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey
 // runMirrorCollectionExport emits the structured item JSON of a collection
 // subtree through resolveRead, so --data-source, provenance, and the auto
 // fallback to the mirror match every other list read.
-func runMirrorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, output string, flat bool, limit int) error {
+func runMirrorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, output string, flat bool, pageSize int) error {
 	reader := &dataSourceItemReader{ctx: cmd.Context(), flags: flags}
 	if flags.dataSource != "local" {
 		c, err := flags.newClient()
@@ -120,9 +141,13 @@ func runMirrorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, ou
 		}
 		reader.c = c
 	}
+	if err := verifyCollectionExists(cmd.Context(), reader.c, flags, collKey); err != nil {
+		return err
+	}
 	items := make([]json.RawMessage, 0)
-	if err := writeCollectionExport(cmd, output, func(w io.Writer) error {
-		if err := collectCollectionItems(reader, collKey, "", flat, limit, map[string]bool{}, &items); err != nil {
+	if err := writeCollectionExport(cmd, flags, exportFormatJSON, output, func(w io.Writer) error {
+		items = items[:0]
+		if err := collectCollectionItems(reader, collKey, "", flat, pageSize, map[string]bool{}, &items); err != nil {
 			return err
 		}
 		return json.NewEncoder(w).Encode(items)
@@ -133,24 +158,108 @@ func runMirrorCollectionExport(cmd *cobra.Command, flags *rootFlags, collKey, ou
 	return nil
 }
 
+// collectionExportResult reports a collections export that targeted a file.
+// Replaced says whether a file already at Output was replaced; under --dry-run
+// it says whether one would be, and Bytes is what would be written.
+type collectionExportResult struct {
+	Output   string `json:"output"`
+	Format   string `json:"format"`
+	Bytes    int64  `json:"bytes"`
+	Replaced bool   `json:"replaced"`
+	DryRun   bool   `json:"dry_run,omitempty"`
+}
+
+func (r collectionExportResult) message() string {
+	switch {
+	case r.DryRun && r.Replaced:
+		return fmt.Sprintf("Dry run: would write %d bytes of %s to %s, replacing the existing file; nothing was written", r.Bytes, r.Format, r.Output)
+	case r.DryRun:
+		return fmt.Sprintf("Dry run: would write %d bytes of %s to new file %s; nothing was written", r.Bytes, r.Format, r.Output)
+	case r.Replaced:
+		return fmt.Sprintf("Exported %d bytes of %s to %s (replaced the existing file)", r.Bytes, r.Format, r.Output)
+	default:
+		return fmt.Sprintf("Exported %d bytes of %s to %s", r.Bytes, r.Format, r.Output)
+	}
+}
+
+// exportByteCounter counts the bytes written through it; a nil w discards them.
+type exportByteCounter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *exportByteCounter) Write(p []byte) (int, error) {
+	if c.w == nil {
+		c.n += int64(len(p))
+		return len(p), nil
+	}
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
 // writeCollectionExport publishes an export to stdout or, under --output, to a
-// file under a writer lock.
-func writeCollectionExport(cmd *cobra.Command, output string, emit func(io.Writer) error) error {
+// file under a writer lock. Under --dry-run it runs the export against a
+// discarding writer, so the reads happen and the result reports the size, but
+// no file, temporary file, or lock sibling is created.
+func writeCollectionExport(cmd *cobra.Command, flags *rootFlags, format, output string, emit func(io.Writer) error) error {
 	if output == "" {
+		if flags.asJSON && (format == "bibtex" || format == "ris") {
+			// A text payload is wrapped so --json/--agent always yields one
+			// JSON document. Nothing is printed unless the whole walk succeeds.
+			var buf bytes.Buffer
+			if err := emit(&buf); err != nil {
+				return err
+			}
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"format": format, "content": buf.String()}, flags)
+		}
 		// Stdout stays unbuffered: wrapping it would delay broken-pipe
 		// detection and keep fetching pages after the consumer exited.
 		return emit(cmd.OutOrStdout())
 	}
-	lockPath, canonicalTarget, err := outputWriterLockPath(output)
-	if err != nil {
-		return fmt.Errorf("resolving output path: %w", err)
+
+	result := collectionExportResult{Output: output, Format: format, DryRun: flags.dryRun}
+	if flags.dryRun {
+		replaced, err := checkAtomicOutputTarget(output)
+		if err != nil {
+			return err
+		}
+		counter := &exportByteCounter{}
+		if err := emit(counter); err != nil {
+			return err
+		}
+		result.Replaced, result.Bytes = replaced, counter.n
+	} else {
+		lockPath, canonicalTarget, err := outputWriterLockPath(output)
+		if err != nil {
+			return fmt.Errorf("resolving output path: %w", err)
+		}
+		// The lock precedes the first source read, and covers the atomic
+		// publication that keeps a mid-walk failure from replacing the
+		// previous artifact with a valid-looking partial bibliography.
+		if err := withPathWriterLock(cmd, lockPath, fmt.Sprintf("collections export to %q", canonicalTarget), func() error {
+			replaced, err := checkAtomicOutputTarget(output)
+			if err != nil {
+				return err
+			}
+			result.Replaced = replaced
+			return withAtomicOutputFile(output, exportOutputFileMode, func(w io.Writer) error {
+				counter := &exportByteCounter{w: w}
+				err := emit(counter)
+				result.Bytes = counter.n
+				return err
+			})
+		}); err != nil {
+			return err
+		}
 	}
-	// The lock precedes the first source read, and covers the atomic
-	// publication that keeps a mid-walk failure from replacing the
-	// previous artifact with a valid-looking partial bibliography.
-	return withPathWriterLock(cmd, lockPath, fmt.Sprintf("collections export to %q", canonicalTarget), func() error {
-		return withAtomicOutputFile(output, exportOutputFileMode, emit)
-	})
+	if flags.asJSON {
+		return printJSONFiltered(cmd.OutOrStdout(), result, flags)
+	}
+	if !flags.quiet {
+		fmt.Fprintln(cmd.ErrOrStderr(), result.message())
+	}
+	return nil
 }
 
 // refuseTranslatorExport refuses a rendered export that cannot reach Zotero,
@@ -229,12 +338,12 @@ func (r *dataSourceItemReader) recordProvenance(prov DataProvenance) {
 }
 
 // exportPageSize clamps the requested page size to what the API will actually
-// serve. --limit is a per-request page size, not a cap on the export.
-func exportPageSize(limit int) int {
-	if limit <= 0 || limit > zoteroPageMax {
+// serve. --page-size is a per-request page size, not a cap on the export.
+func exportPageSize(requested int) int {
+	if requested <= 0 || requested > zoteroPageMax {
 		return zoteroPageMax
 	}
-	return limit
+	return requested
 }
 
 // repeatedPage reports whether the API handed back the same bytes as the
@@ -260,24 +369,24 @@ func subcollectionKey(sub map[string]any) string {
 	return ""
 }
 
-func exportCollection(c collectionExportClient, out io.Writer, collKey, format string, flat bool, limit int, visited map[string]bool) error {
+func exportCollection(c collectionExportClient, out io.Writer, collKey, format string, flat bool, pageSize int, visited map[string]bool) error {
 	if format == "csljson" {
 		items := make([]json.RawMessage, 0)
-		if err := collectCollectionItems(c, collKey, format, flat, limit, visited, &items); err != nil {
+		if err := collectCollectionItems(c, collKey, format, flat, pageSize, visited, &items); err != nil {
 			return err
 		}
 		return json.NewEncoder(out).Encode(items)
 	}
-	return exportTextCollection(c, out, collKey, format, flat, limit, visited, make(map[string]bool))
+	return exportTextCollection(c, out, collKey, format, flat, pageSize, visited, make(map[string]bool))
 }
 
-func exportTextCollection(c collectionExportClient, out io.Writer, collKey, format string, flat bool, limit int, visited, citationKeys map[string]bool) error {
+func exportTextCollection(c collectionExportClient, out io.Writer, collKey, format string, flat bool, pageSize int, visited, citationKeys map[string]bool) error {
 	if visited[collKey] {
 		return nil
 	}
 	visited[collKey] = true
 
-	if err := forEachCollectionItemPage(c, collKey, format, limit, func(data json.RawMessage) error {
+	if err := forEachCollectionItemPage(c, collKey, format, pageSize, func(data json.RawMessage) error {
 		if format == "bibtex" {
 			data = json.RawMessage(deduplicateBibTeXCitationKeys(string(data), citationKeys))
 		}
@@ -296,7 +405,7 @@ func exportTextCollection(c collectionExportClient, out io.Writer, collKey, form
 		return err
 	}
 	for _, key := range subcols {
-		if err := exportTextCollection(c, out, key, format, flat, limit, visited, citationKeys); err != nil {
+		if err := exportTextCollection(c, out, key, format, flat, pageSize, visited, citationKeys); err != nil {
 			return fmt.Errorf("exporting subcollection %s: %w", key, err)
 		}
 	}
@@ -407,8 +516,8 @@ func bibTeXCitationKeyEnd(page string, start int) int {
 // keys at the next offset establish whether another page exists. Keys also
 // verify that a server honored start, because opaque export bytes can repeat
 // for distinct, unrenderable items.
-func forEachCollectionItemPage(c collectionExportClient, collKey, format string, limit int, emit func(json.RawMessage) error) error {
-	pageSize := exportPageSize(limit)
+func forEachCollectionItemPage(c collectionExportClient, collKey, format string, pageSize int, emit func(json.RawMessage) error) error {
+	pageSize = exportPageSize(pageSize)
 	// url-encode path param to prevent segment injection.
 	path := "/collections/" + url.PathEscape(collKey) + "/items"
 	seenPageKeys := make(map[string]bool)
@@ -508,13 +617,13 @@ func collectionKeyAt(c collectionExportClient, collKey string, start int) (strin
 // JSON both the live API and the synced mirror serve. An empty format is what
 // lets this walk run through resolveRead — the local item planner deliberately
 // refuses to serve a `format` it cannot render (see resolveLocalItemList).
-func collectCollectionItems(c collectionItemReader, collKey, format string, flat bool, limit int, visited map[string]bool, items *[]json.RawMessage) error {
+func collectCollectionItems(c collectionItemReader, collKey, format string, flat bool, pageSize int, visited map[string]bool, items *[]json.RawMessage) error {
 	if visited[collKey] {
 		return nil
 	}
 	visited[collKey] = true
 
-	pageSize := exportPageSize(limit)
+	pageSize = exportPageSize(pageSize)
 	// url-encode path param to prevent segment injection.
 	path := "/collections/" + url.PathEscape(collKey) + "/items"
 	var prev []byte
@@ -555,7 +664,7 @@ func collectCollectionItems(c collectionItemReader, collKey, format string, flat
 		return err
 	}
 	for _, key := range subcols {
-		if err := collectCollectionItems(c, key, format, flat, limit, visited, items); err != nil {
+		if err := collectCollectionItems(c, key, format, flat, pageSize, visited, items); err != nil {
 			return fmt.Errorf("exporting subcollection %s: %w", key, err)
 		}
 	}

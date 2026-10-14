@@ -64,9 +64,15 @@ func TestSnapshotScopePath(t *testing.T) {
 	}{
 		{in: "", wantPath: "/items", wantLabel: "library"},
 		{in: "library", wantPath: "/items", wantLabel: "library"},
-		{in: "collection:ABCD", wantPath: "/collections/ABCD/items", wantLabel: "collection:ABCD"},
+		{in: "collection:ABCD2345", wantPath: "/collections/ABCD2345/items", wantLabel: "collection:ABCD2345"},
 		{in: "tag:to-read", wantPath: "/items", wantTag: "to-read", wantLabel: "tag:to-read"},
+		{in: "collection:ABCD2345 AND tag:to-read", wantPath: "/collections/ABCD2345/items", wantTag: "to-read", wantLabel: "collection:ABCD2345 AND tag:to-read"},
+		{in: "tag:to-read AND collection:ABCD2345", wantPath: "/collections/ABCD2345/items", wantTag: "to-read", wantLabel: "tag:to-read AND collection:ABCD2345"},
 		{in: "collection:", wantErr: true},
+		{in: "collection:ABCD", wantErr: true},
+		{in: "collection:ABCD2345 AND tag:a AND tag:b", wantErr: true},
+		{in: "collection:ABCD2345 AND item:EFGH2345", wantErr: true},
+		{in: "query:psilocybin", wantErr: true},
 		{in: "item:X", wantErr: true},
 	}
 	for _, tc := range cases {

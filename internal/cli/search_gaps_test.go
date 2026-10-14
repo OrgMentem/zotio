@@ -227,7 +227,7 @@ func TestSearchCommandAutoFallsBackToLocalOnNetworkError(t *testing.T) {
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 50 * time.Millisecond, rateLimit: 0}
 	cmd := newSearchCmd(flags)
-	cmd.SetArgs([]string{"fallbackneedle", "--type", "papers", "--db", dbPath, "--limit", "5"})
+	cmd.SetArgs([]string{"fallbackneedle", "--db", dbPath, "--limit", "5"})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
@@ -326,7 +326,7 @@ func TestSearchCommandFulltextReturnsParentContext(t *testing.T) {
 	}
 }
 
-func TestSearchCommandFulltextRejectsLiveAndTypeModes(t *testing.T) {
+func TestSearchCommandFulltextRejectsLiveMode(t *testing.T) {
 	tests := []struct {
 		name       string
 		dataSource string
@@ -334,7 +334,6 @@ func TestSearchCommandFulltextRejectsLiveAndTypeModes(t *testing.T) {
 		want       string
 	}{
 		{name: "live", dataSource: "live", args: []string{"term", "--fulltext"}, want: "requires synced local data"},
-		{name: "type", dataSource: "local", args: []string{"term", "--fulltext", "--type", "items"}, want: "cannot be combined with --type"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -374,7 +373,7 @@ func TestSearchCommandLocalProvenanceMatchesListCommands(t *testing.T) {
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second})
-	cmd.SetArgs([]string{"provenanceneedle", "--type", "papers", "--db", dbPath})
+	cmd.SetArgs([]string{"provenanceneedle", "--db", dbPath})
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -401,15 +400,13 @@ func TestSearchCommandLocalProvenanceMatchesListCommands(t *testing.T) {
 	if got.Meta.Source != "local" || got.Meta.Reason != "user_requested" {
 		t.Fatalf("meta = %+v, want a user-requested local read", got.Meta)
 	}
-	// The query and type filter were applied, so this is a reproduced scope,
+	// The query was applied, so this is a reproduced scope,
 	// not the generic dump the flag exists to distinguish (ADR-0002).
 	if !got.Meta.Scoped {
 		t.Fatalf("meta.scoped = false; a filtered FTS read is a scoped local read: %+v", got.Meta)
 	}
-	// The resource type names the mirror that answered, so synced_at reports
-	// the freshness of the data actually searched.
-	if got.Meta.ResourceType != "papers" || got.Meta.SyncedAt == "" {
-		t.Fatalf("meta = %+v, want resource_type papers with a synced_at", got.Meta)
+	if got.Meta.ResourceType != "search" {
+		t.Fatalf("meta = %+v, want resource_type search", got.Meta)
 	}
 }
 

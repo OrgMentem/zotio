@@ -60,12 +60,24 @@ instead of the run stopping at the first rejection.`,
 			filePath := args[0]
 			content, err := os.ReadFile(filePath)
 			if err != nil {
-				return fmt.Errorf("reading import file: %w", err)
+				return usageErr(fmt.Errorf("reading import file: %w", err))
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
 			}
 
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
 			if format == "" {
 				format = detectImportFileFormat(filePath)
+			}
+			if flags.via != "connector" {
+				switch format {
+				case "bibtex", "ris":
+				case "csljson":
+					return usageErr(fmt.Errorf("CSL JSON import requires Zotero's translator; re-run with --via connector"))
+				default:
+					return usageErr(fmt.Errorf("unknown format %q: use --format bibtex, ris, or csljson", format))
+				}
 			}
 
 			if flags.via == "connector" {
@@ -100,19 +112,16 @@ instead of the run stopping at the first rejection.`,
 			env, runErr := runMutation(cmd.Context(), flags, "import.file", ops, func(o *mutation.Options) {
 				o.ContinueOnError = true
 			})
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
 			if runErr != nil && env.Result != nil && env.Result.Summary.Failed > 0 {
 				// Zotero answers a batched write with HTTP 200 even when it
 				// rejected elements; that stays exit 13, not a hard failure.
-				return degradedErr(runErr)
+				runErr = degradedErr(runErr)
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "", "Input format (bibtex, ris, csljson; csljson requires --via connector)")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add imported items to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add imported items to")
 
 	return cmd
 }
@@ -274,10 +283,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, "import.file", ops)
-	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-		return renderErr
-	}
-	return runErr
+	return renderMutationResult(cmd, flags, env, runErr, nil)
 }
 
 // importFileConnectorSession performs the one-shot desktop translator import on

@@ -38,7 +38,12 @@ type Op struct {
 	Changes         []Change                                      `json:"changes"`
 	Destructive     bool                                          `json:"destructive,omitempty"`
 	Apply           func() (status string, reason any, err error) `json:"-"`
-	NoOpReason      any                                           `json:"-"`
+	// InvalidReason, when non-empty, marks the op's local input as invalid
+	// (missing file, malformed URL). Plan builders set it so a preview refuses
+	// with the same result as apply: Run counts the op in plan.summary.invalid,
+	// returns ok:false with error code "invalid_input", and never applies.
+	InvalidReason string `json:"invalid_reason,omitempty"`
+	NoOpReason    any    `json:"-"`
 	// Dispatched, when set, reports whether this op's write already left the
 	// process inside an earlier op's Apply (a shared save session or batch
 	// request). After the run stops, for cancellation or a failure limit, such
@@ -221,14 +226,19 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		Journal: nil,
 	}
 
-	if !mode.Apply {
-		env.OK = true
-		return env, nil
+	if invalid := firstInvalid(ops); invalid != nil {
+		env.OK = false
+		env.Error = invalid
+		return env, invalid
 	}
 	if gateErr := CheckGates(o, ops); gateErr != nil {
 		env.OK = false
 		env.Error = gateErr
 		return env, gateErr
+	}
+	if !mode.Apply {
+		env.OK = true
+		return env, nil
 	}
 
 	result := Result{Items: make([]ResultItem, 0, len(ops))}
@@ -336,15 +346,38 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		if canceled && o.Context != nil && o.Context.Err() != nil {
 			return env, fmt.Errorf("mutation incomplete: %w", o.Context.Err())
 		}
-		return env, errors.New("mutation incomplete")
+		return env, ErrIncomplete
 	}
 	return env, nil
+}
+
+// ErrIncomplete is returned when a multi-operation apply finished with a
+// conflict, a failure, or operations that were not attempted. The envelope
+// carries the per-operation outcomes.
+var ErrIncomplete = errors.New("mutation incomplete")
+
+// CodeInvalidInput is the envelope error code for a plan whose local input
+// failed validation (missing file, malformed URL) before any write.
+const CodeInvalidInput = "invalid_input"
+
+// firstInvalid reports the first operation marked invalid, or nil.
+func firstInvalid(ops []Op) *Error {
+	for _, op := range ops {
+		if op.InvalidReason != "" {
+			return &Error{Code: CodeInvalidInput, Message: op.InvalidReason}
+		}
+	}
+	return nil
 }
 
 // Summarize counts operations for the plan preview.
 func Summarize(ops []Op) PlanSummary {
 	summary := PlanSummary{Selected: len(ops)}
 	for _, op := range ops {
+		if op.InvalidReason != "" {
+			summary.Invalid++
+			continue
+		}
 		if len(op.Changes) == 0 {
 			summary.NoOp++
 		} else {

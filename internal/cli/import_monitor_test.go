@@ -74,7 +74,7 @@ func TestImportMonitorAuthorDedupeAndResolve(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, crossRef.URL)
 
 	path := filepath.Join(t.TempDir(), "monitor.json")
-	report, err := runImportMonitorTest(t, "--author", "0000-0002-1825-0097", "--query", "citation graphs", "--since", "2026-01-01", "--until", "2026-08-31", "--out", path)
+	report, err := runImportMonitorTest(t, "--author", "0000-0002-1825-0097", "--query", "citation graphs", "--since", "2026-01-01", "--until", "2026-08-31", "--output", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +112,14 @@ func TestImportMonitorAuthorDedupeAndResolve(t *testing.T) {
 func TestImportMonitorInvalidAuthorAndNoStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.json")
 	for _, input := range []string{"Some Name", "https://orcid.org/A5023888391", "http://openalex.org/A5023888391"} {
-		_, err := runImportMonitorTest(t, "--author", input, "--since", "2026-01-01", "--out", path)
+		_, err := runImportMonitorTest(t, "--author", input, "--since", "2026-01-01", "--output", path)
 		if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "ORCID") || !strings.Contains(err.Error(), "OpenAlex author ID") {
 			t.Fatalf("invalid author %q = %v (exit %d)", input, err, ExitCode(err))
 		}
 	}
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTIO_DATA_DIR", t.TempDir())
-	_, err := runImportMonitorTest(t, "--query", "bibliometrics", "--since", "2026-01-01", "--out", path)
+	_, err := runImportMonitorTest(t, "--query", "bibliometrics", "--since", "2026-01-01", "--output", path)
 	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "zotio sync") {
 		t.Fatalf("missing local store = %v (exit %d)", err, ExitCode(err))
 	}
@@ -136,7 +136,7 @@ func TestImportMonitorProviderFailureDoesNotPublish(t *testing.T) {
 	t.Cleanup(server.Close)
 	withBase(t, &enrichOpenAlexBase, server.URL)
 	path := filepath.Join(t.TempDir(), "m.json")
-	_, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--out", path)
+	_, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--output", path)
 	if err == nil || ExitCode(err) != 5 || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("provider failure = %v (exit %d)", err, ExitCode(err))
 	}
@@ -148,7 +148,7 @@ func TestImportMonitorProviderFailureDoesNotPublish(t *testing.T) {
 	}))
 	t.Cleanup(malformed.Close)
 	withBase(t, &enrichOpenAlexBase, malformed.URL)
-	_, err = runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--out", path)
+	_, err = runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--output", path)
 	if err == nil || ExitCode(err) != 5 {
 		t.Fatalf("malformed provider response = %v (exit %d)", err, ExitCode(err))
 	}
@@ -172,7 +172,7 @@ func TestImportMonitorLimitPaginationAndEmpty(t *testing.T) {
 	t.Cleanup(server.Close)
 	withBase(t, &enrichOpenAlexBase, server.URL)
 	path := filepath.Join(t.TempDir(), "m.json")
-	report, err := runImportMonitorTest(t, "--author", "A5023888391", "--since", "2026-01-01", "--limit", "1", "--out", path)
+	report, err := runImportMonitorTest(t, "--author", "A5023888391", "--since", "2026-01-01", "--limit", "1", "--output", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestImportMonitorLimitPaginationAndEmpty(t *testing.T) {
 	t.Cleanup(empty.Close)
 	withBase(t, &enrichOpenAlexBase, empty.URL)
 	emptyPath := filepath.Join(t.TempDir(), "empty.json")
-	report, err = runImportMonitorTest(t, "--query", "no results", "--since", "2026-01-01", "--out", emptyPath)
+	report, err = runImportMonitorTest(t, "--query", "no results", "--since", "2026-01-01", "--output", emptyPath)
 	if err != nil || report.Emitted != 0 || report.Truncated {
 		t.Fatalf("empty feed = %+v, %v", report, err)
 	}
@@ -217,7 +217,7 @@ func TestImportMonitorPageCapReportsIncompleteFeed(t *testing.T) {
 	t.Cleanup(server.Close)
 	withBase(t, &enrichOpenAlexBase, server.URL)
 	path := filepath.Join(t.TempDir(), "cap.json")
-	report, err := runImportMonitorTest(t, "--query", "many works", "--since", "2026-01-01", "--out", path)
+	report, err := runImportMonitorTest(t, "--query", "many works", "--since", "2026-01-01", "--output", path)
 	if err != nil || requests != 20 || report.WorksSeen != requests || !report.Truncated || !strings.Contains(report.TruncationReason, "page cap") {
 		t.Fatalf("page-cap report = %+v; requests=%d; err=%v", report, requests, err)
 	}
@@ -244,7 +244,7 @@ func TestImportMonitorFreshOnRepeatedScheduledRun(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, server.URL)
 	path := filepath.Join(t.TempDir(), "feed.json")
 	flags := &rootFlags{asJSON: true, timeout: time.Second} // Cache enabled, as on a scheduled run.
-	args := []string{"--query", "graphs", "--since", "2026-08-01", "--out", path}
+	args := []string{"--query", "graphs", "--since", "2026-08-01", "--output", path}
 	first, err := runImportMonitorTestWithFlags(t, flags, args...)
 	if err != nil || first.Emitted != 1 {
 		t.Fatalf("first run = %+v, %v", first, err)

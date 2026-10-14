@@ -40,7 +40,7 @@ type collectionGapsSummary struct {
 type collectionGapsReport struct {
 	CollectionKey string                `json:"collection_key"`
 	Summary       collectionGapsSummary `json:"summary"`
-	Rows          []collectionGapRow    `json:"rows"`
+	Rows          []collectionGapRow    `json:"results"`
 }
 
 func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
@@ -50,14 +50,21 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "gaps <collectionKey>",
 		Short:       "Find highly cited DOI references missing from a collection's library",
+		Example:     "  zotio collections gaps ABCD2345 --limit 100 --top 10",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if flagLimit < 0 {
-				return usageErr(fmt.Errorf("--limit must be >= 0"))
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
 			}
-			if flagTop < 1 {
-				return usageErr(fmt.Errorf("--top must be >= 1"))
+			if err := validateLimitFlag("--top", flagTop); err != nil {
+				return err
+			}
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -65,22 +72,25 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				return preconditionErr(fmt.Errorf("run 'zotio sync' first to enable collection gap analysis"))
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
+			if err := verifyMirrorCollectionExists(cmd.Context(), rawDB, args[0]); err != nil {
+				return err
+			}
 
 			report, err := buildCollectionGapsReportWithCache(cmd.Context(), localQueryStore{rawDB}, &http.Client{Timeout: enrichTimeout(flags.timeout)}, newProviderJSONCache(flags.noCache), args[0], flagLimit, flagTop)
 			if err != nil {
 				return err
 			}
-			if flags.asJSON {
-				return printCommandJSON(cmd.OutOrStdout(), report, flags)
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+				return printJSONFiltered(cmd.OutOrStdout(), report, flags)
 			}
 			return printCollectionGapsReport(cmd, report)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum DOI-bearing collection items to scan (0 = all)")
-	cmd.Flags().IntVar(&flagTop, "top", 20, "Number of citation gaps to show")
+	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum DOI-bearing collection items to scan (0 = no limit)")
+	cmd.Flags().IntVar(&flagTop, "top", 20, "Number of citation gaps to show (0 = no limit)")
 	return cmd
 }
 
@@ -113,7 +123,7 @@ func buildCollectionGapsReportWithCache(ctx context.Context, db localQueryStore,
 		}
 		candidates = append(candidates, collectionGapRow{Count: candidate.Count, DOI: candidate.DOI, Title: candidate.Title, Action: gapImportActionPrefix + candidate.DOI})
 	}
-	if top > len(candidates) {
+	if top <= 0 || top > len(candidates) {
 		top = len(candidates)
 	}
 	rows := candidates[:top]

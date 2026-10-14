@@ -91,7 +91,7 @@ func TestItemsCreateConnectorDryRunDoesNotWrite(t *testing.T) {
 		return nil
 	}
 
-	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), dryRun: true}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), dryRun: true, maxChanges: -1}
 	cmd := newItemsCreateCmd(flags)
 	var out bytes.Buffer
 	cmd.SetOut(&out)

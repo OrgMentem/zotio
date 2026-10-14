@@ -66,6 +66,9 @@ type creatorsAuditORCIDSummary struct {
 	Lookups  int  `json:"lookups"`
 	Captured int  `json:"captured"`
 	Failed   int  `json:"failed"`
+	// DryRun is true when --dry-run found ORCID matches but did not persist
+	// them to the creator_orcids table.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 type creatorsAuditReport struct {
@@ -132,14 +135,20 @@ no creator ORCID field.`,
   zotio creators audit --orcid --json`,
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, ok, err := runCreatorsAuditWithOptions(cmd.Context(), flags, flagScope, flagORCID, flagIncludeAmbiguous)
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			report, err := runCreatorsAuditWithOptions(cmd, cmd.Context(), flags, flagScope, flagORCID, flagIncludeAmbiguous)
 			if err != nil {
 				return err
 			}
-			if !ok {
+			if flags.quiet {
 				return nil
 			}
-			if flags.asJSON {
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				return printCommandJSON(cmd.OutOrStdout(), report, flags)
 			}
 			return printCreatorsAuditReport(cmd, report)
@@ -152,21 +161,24 @@ no creator ORCID field.`,
 	return cmd
 }
 
-func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExpr string, withORCID, includeAmbiguous bool) (creatorsAuditReport, bool, error) {
+func runCreatorsAuditWithOptions(cmd *cobra.Command, ctx context.Context, flags *rootFlags, scopeExpr string, withORCID, includeAmbiguous bool) (creatorsAuditReport, error) {
 	rawDB, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
-		return creatorsAuditReport{}, false, fmt.Errorf("opening local database: %w", err)
+		return creatorsAuditReport{}, fmt.Errorf("opening local database: %w", err)
 	}
 	if rawDB == nil {
-		return creatorsAuditReport{}, false, nil
+		return creatorsAuditReport{}, errUnsyncedStoreFor(cmd, flags)
 	}
-	if withORCID {
+	// --dry-run performs no write of any kind, so the ORCID sidecar table is
+	// only opened for writing on a real run; the lookups still run and the
+	// evidence still appears in the report.
+	if withORCID && !flags.dryRun {
 		if err := rawDB.Close(); err != nil {
-			return creatorsAuditReport{}, false, fmt.Errorf("closing local database: %w", err)
+			return creatorsAuditReport{}, fmt.Errorf("closing local database: %w", err)
 		}
 		rawDB, err = openStoreForWrite(ctx, "zotio")
 		if err != nil {
-			return creatorsAuditReport{}, false, fmt.Errorf("opening local database for ORCID evidence: %w", err)
+			return creatorsAuditReport{}, fmt.Errorf("opening local database for ORCID evidence: %w", err)
 		}
 	}
 	defer rawDB.Close()
@@ -174,27 +186,27 @@ func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExp
 	db := localQueryStore{rawDB}
 	spec, err := parseScopeSpec(scopeExpr)
 	if err != nil {
-		return creatorsAuditReport{}, false, usageErr(err)
+		return creatorsAuditReport{}, usageErr(err)
 	}
 	scope, err := resolveScopeLive(ctx, flags, db, spec)
 	if err != nil {
-		return creatorsAuditReport{}, false, err
+		return creatorsAuditReport{}, err
 	}
 	if scope.Precondition != "" {
-		return creatorsAuditReport{}, false, scopePreconditionErr(ctx, nil, flags, "creators audit", scope)
+		return creatorsAuditReport{}, scopePreconditionErr(ctx, nil, flags, "creators audit", scope)
 	}
 
 	occurrences, err := queryCreatorAuditOccurrences(db, scope)
 	if err != nil {
-		return creatorsAuditReport{}, false, fmt.Errorf("querying creators: %w", err)
+		return creatorsAuditReport{}, fmt.Errorf("querying creators: %w", err)
 	}
 
 	groups := buildCreatorVariantGroups(occurrences)
 	var orcidSummary creatorsAuditORCIDSummary
 	if withORCID {
-		orcidSummary, err = captureCreatorAuditORCIDs(ctx, db, occurrences, groups, flags.timeout)
+		orcidSummary, err = captureCreatorAuditORCIDs(ctx, db, occurrences, groups, flags.timeout, !flags.dryRun)
 		if err != nil {
-			return creatorsAuditReport{}, false, err
+			return creatorsAuditReport{}, err
 		}
 		groups = buildCreatorVariantGroups(occurrences)
 	}
@@ -206,7 +218,7 @@ func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExp
 
 	_, syncedAt, _, err := rawDB.GetSyncState("items")
 	if err != nil {
-		return creatorsAuditReport{}, false, fmt.Errorf("querying sync state: %w", err)
+		return creatorsAuditReport{}, fmt.Errorf("querying sync state: %w", err)
 	}
 	source := FindingSource{Kind: "local"}
 	if !syncedAt.IsZero() {
@@ -223,7 +235,7 @@ func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExp
 	if report.Findings == nil {
 		report.Findings = []Finding{}
 	}
-	return report, true, nil
+	return report, nil
 }
 
 func queryCreatorAuditOccurrences(db localQueryStore, scope scopeResult) ([]*creatorOccurrence, error) {
@@ -852,8 +864,8 @@ func creatorTierRank(tier creatorVariantTier) int {
 	}
 }
 
-func captureCreatorAuditORCIDs(ctx context.Context, db localQueryStore, occurrences []*creatorOccurrence, groups []creatorVariantGroup, timeout time.Duration) (creatorsAuditORCIDSummary, error) {
-	summary := creatorsAuditORCIDSummary{Enabled: true}
+func captureCreatorAuditORCIDs(ctx context.Context, db localQueryStore, occurrences []*creatorOccurrence, groups []creatorVariantGroup, timeout time.Duration, persist bool) (creatorsAuditORCIDSummary, error) {
+	summary := creatorsAuditORCIDSummary{Enabled: true, DryRun: !persist}
 	candidateItems := make(map[string]bool)
 	for _, group := range groups {
 		if group.Tier != creatorVariantTierInitials && group.Tier != creatorVariantTierAmbiguous {
@@ -900,8 +912,10 @@ func captureCreatorAuditORCIDs(ctx context.Context, db localQueryStore, occurren
 			continue
 		}
 		for _, match := range matchCrossRefCreatorORCIDs(work.Author, occurrencesByItem[itemKey]) {
-			if err := upsertCreatorORCID(ctx, db, match, capturedAt); err != nil {
-				return summary, err
+			if persist {
+				if err := upsertCreatorORCID(ctx, db, match, capturedAt); err != nil {
+					return summary, err
+				}
 			}
 			match.occurrence.ORCIDs = append(match.occurrence.ORCIDs, creatorORCIDAttribution{
 				ORCID:        match.orcid,

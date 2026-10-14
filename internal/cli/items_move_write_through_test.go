@@ -28,7 +28,7 @@ func TestItemsMoveWritesThroughToLocalMirror(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":24,"data":{"key":"K1","itemType":"journalArticle","title":"Paper","collections":[]}}`),
+		json.RawMessage(`{"key":"KEYAAAA2","version":24,"data":{"key":"KEYAAAA2","itemType":"journalArticle","title":"Paper","collections":[]}}`),
 	}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
@@ -40,20 +40,20 @@ func TestItemsMoveWritesThroughToLocalMirror(t *testing.T) {
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = nil })
 
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "24"}, map[string][]string{"K1": {}})
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	srv := newItemMoveTestServer(t, map[string]string{"KEYAAAA2": "24"}, map[string][]string{"KEYAAAA2": {}})
+	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET22", "KEYAAAA2")
 	if env.Result == nil || env.Result.Summary.Applied != 1 {
 		t.Fatalf("env = %+v, want one applied move", env)
 	}
-	if srv.patchCounts["K1"] != 1 {
-		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["K1"])
+	if srv.patchCounts["KEYAAAA2"] != 1 {
+		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["KEYAAAA2"])
 	}
 
 	// The mirror must reflect the write with no intervening sync, or the next
 	// read contradicts the write that just succeeded.
-	mirrored := mirroredCollections(t, dbPath, "K1")
-	if len(mirrored) != 1 || mirrored[0] != "TARGET" {
-		t.Fatalf("mirror collections after move = %v, want [TARGET]", mirrored)
+	mirrored := mirroredCollections(t, dbPath, "KEYAAAA2")
+	if len(mirrored) != 1 || mirrored[0] != "TARGET22" {
+		t.Fatalf("mirror collections after move = %v, want [TARGET22]", mirrored)
 	}
 
 	// And the envelope must carry the post-write state so an agent needs no
@@ -63,8 +63,8 @@ func TestItemsMoveWritesThroughToLocalMirror(t *testing.T) {
 	}
 	data, _ := env.Result.Items[0].Item["data"].(map[string]any)
 	cols, _ := data["collections"].([]any)
-	if len(cols) != 1 || cols[0] != "TARGET" {
-		t.Fatalf("envelope post-write collections = %v, want [TARGET]", data["collections"])
+	if len(cols) != 1 || cols[0] != "TARGET22" {
+		t.Fatalf("envelope post-write collections = %v, want [TARGET22]", data["collections"])
 	}
 }
 
@@ -83,7 +83,7 @@ func TestItemsMoveSurvivesASyncFromTheStaleReadPlane(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":24,"data":{"key":"K1","itemType":"journalArticle","title":"Paper","collections":[]}}`),
+		json.RawMessage(`{"key":"KEYAAAA2","version":24,"data":{"key":"KEYAAAA2","itemType":"journalArticle","title":"Paper","collections":[]}}`),
 	}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
@@ -94,15 +94,15 @@ func TestItemsMoveSurvivesASyncFromTheStaleReadPlane(t *testing.T) {
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = nil })
 
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "24"}, map[string][]string{"K1": {}})
-	if env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1"); env.Result.Summary.Applied != 1 {
+	srv := newItemMoveTestServer(t, map[string]string{"KEYAAAA2": "24"}, map[string][]string{"KEYAAAA2": {}})
+	if env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET22", "KEYAAAA2"); env.Result.Summary.Applied != 1 {
 		t.Fatalf("env = %+v, want one applied move", env)
 	}
 
 	// Now sync from a read plane that still reports the pre-write membership.
 	readPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"key":"K1","version":25,"data":{"key":"K1","itemType":"journalArticle","title":"Paper","collections":[]}}]`))
+		_, _ = w.Write([]byte(`[{"key":"KEYAAAA2","version":25,"data":{"key":"KEYAAAA2","itemType":"journalArticle","title":"Paper","collections":[]}}]`))
 	}))
 	defer readPlane.Close()
 
@@ -117,8 +117,8 @@ func TestItemsMoveSurvivesASyncFromTheStaleReadPlane(t *testing.T) {
 		t.Fatalf("close sync store: %v", err)
 	}
 
-	if mirrored := mirroredCollections(t, dbPath, "K1"); len(mirrored) != 1 || mirrored[0] != "TARGET" {
-		t.Fatalf("collections after move+sync = %v, want [TARGET]", mirrored)
+	if mirrored := mirroredCollections(t, dbPath, "KEYAAAA2"); len(mirrored) != 1 || mirrored[0] != "TARGET22" {
+		t.Fatalf("collections after move+sync = %v, want [TARGET22]", mirrored)
 	}
 }
 
@@ -133,7 +133,7 @@ func TestItemsMoveRemovalWritesThroughToLocalMirror(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":24,"data":{"key":"K1","itemType":"journalArticle","title":"Paper","collections":["SOURCE","KEEP"]}}`),
+		json.RawMessage(`{"key":"KEYAAAA2","version":24,"data":{"key":"KEYAAAA2","itemType":"journalArticle","title":"Paper","collections":["SRCAAAA2","KEEP2222"]}}`),
 	}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
@@ -144,15 +144,15 @@ func TestItemsMoveRemovalWritesThroughToLocalMirror(t *testing.T) {
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = nil })
 
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "24"}, map[string][]string{"K1": {"SOURCE", "KEEP"}})
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "K1")
+	srv := newItemMoveTestServer(t, map[string]string{"KEYAAAA2": "24"}, map[string][]string{"KEYAAAA2": {"SRCAAAA2", "KEEP2222"}})
+	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SRCAAAA2", "KEYAAAA2")
 	if env.Result == nil || env.Result.Summary.Applied != 1 {
 		t.Fatalf("env = %+v, want one applied removal", env)
 	}
 
-	mirrored := mirroredCollections(t, dbPath, "K1")
-	if len(mirrored) != 1 || mirrored[0] != "KEEP" {
-		t.Fatalf("mirror collections after removal = %v, want [KEEP]", mirrored)
+	mirrored := mirroredCollections(t, dbPath, "KEYAAAA2")
+	if len(mirrored) != 1 || mirrored[0] != "KEEP2222" {
+		t.Fatalf("mirror collections after removal = %v, want [KEEP2222]", mirrored)
 	}
 }
 

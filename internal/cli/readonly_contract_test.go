@@ -2,7 +2,8 @@
 //
 // A command annotated mcp:read-only=true is trusted in two independent places:
 // the MCP surface exposes it to agents as safe to call, and workflow_run.go
-// injects --dry-run into every workflow step EXCEPT the ones marked read-only
+// injects --dry-run into every workflow step EXCEPT the ones that change
+// nothing: read-only and not mcp:writes-files
 // (workflowRunStepIsReadOnlyWithRoot). --dry-run itself is honoured in exactly
 // one place, internal/client, and only for mutating HTTP methods, so nothing
 // outside the HTTP path is covered by it.
@@ -63,11 +64,11 @@ var readOnlyWriters = map[string]string{
 	// ~/.local/share/zotio/schema-baseline.json unconditionally on first run
 	// (schema_drift.go, the !ok branch) and again under --update, to a default
 	// path the user never names. It is mcp:hidden so it is not on the MCP tool
-	// surface, but workflow_run.go keys on mcp:read-only alone, so a
-	// `schema drift --update` step inside `workflow run --dry-run` rewrites the
-	// baseline for real. Deciding whether a preview should capture a baseline is
-	// a product call; until it is made, this entry documents the gap.
-	"newSchemaDriftCmd": "writes the schema baseline to a default path; see the note above, this exception is unresolved",
+	// surface. It carries mcp:writes-files, so a `schema drift --update` step
+	// inside `workflow run` preview gets --dry-run injected; whether that
+	// command honours --dry-run for the baseline is the command's own
+	// contract (decided standard 3: --dry-run performs no write of any kind).
+	"newSchemaDriftCmd": "writes the schema baseline to a default path; a workflow preview injects --dry-run into it",
 }
 
 // readOnlyDispatchers reach write sinks only through the commands they build

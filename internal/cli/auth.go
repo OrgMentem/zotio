@@ -41,9 +41,9 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 			header := cfg.AuthHeader()
 			authed := header != ""
-			// JSON envelope: {authenticated, verified, source, config}. When not
-			// authenticated, write the envelope first then return authErr
-			// so exit code carries the auth-failure signal.
+			// A keyless config is fine for the local desktop API, which needs
+			// no key; doctor reports the same state as "not required".
+			optional := !authed && isLocalZoteroAPI(cfg.BaseURL)
 			if flags.asJSON {
 				out := map[string]any{
 					"authenticated": authed,
@@ -51,12 +51,20 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					"source":        cfg.AuthSource,
 					"config":        cfg.Path,
 				}
+				if optional {
+					out["api_key"] = "not set (optional for the local API)"
+				}
 				if printErr := printJSONFiltered(w, out, flags); printErr != nil {
 					return printErr
 				}
-				if !authed {
+				if !authed && !optional {
 					return authErr(fmt.Errorf("no credentials configured"))
 				}
+				return nil
+			}
+			if optional {
+				fmt.Fprintln(w, "api_key: not set (optional for the local API)")
+				fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
 				return nil
 			}
 			if !authed {
@@ -84,7 +92,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return fmt.Errorf("refusing token on command line; pipe it with --stdin")
+				return usageErr(fmt.Errorf("refusing token on command line; pipe it with --stdin"))
 			}
 			return nil
 		},
@@ -98,7 +106,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// keys as positional arguments, where they leak via shell history and
 			// process listings. Read the secret from stdin only.
 			if !fromStdin {
-				return authErr(fmt.Errorf("refusing token on command line; pipe it with --stdin"))
+				return usageErr(fmt.Errorf("refusing token on command line; pipe it with --stdin"))
 			}
 			tokenBytes, readErr := io.ReadAll(cmd.InOrStdin())
 			if readErr != nil {
@@ -149,29 +157,33 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		Short:   "Clear stored credentials",
-		Long:    "Clears the stored API key from the config file and removes the credentials file. --dry-run reports what would be cleared and writes nothing.",
-		Example: "  zotio auth logout",
+		Long:    "Previews by default: shows what would be cleared and changes nothing. Pass --yes to clear the stored API key from the config file and remove the credentials file.",
+		Example: "  zotio auth logout\n  zotio auth logout --yes",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
 			}
 
-			// --dry-run reports what would be cleared and writes nothing.
-			if flags.dryRun {
+			// Preview by default; --yes applies. --dry-run always previews.
+			if !flags.yes || flags.dryRun {
 				credentialsPath, err := cliutil.CredentialsFilePath()
 				if err != nil {
 					return configErr(fmt.Errorf("resolving credentials path: %w", err))
 				}
 				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					out := map[string]any{
 						"cleared":          false,
-						"dry_run":          true,
+						"preview":          true,
 						"config_path":      cfg.Path,
 						"credentials_path": credentialsPath,
-					}, flags)
+					}
+					if flags.dryRun {
+						out["dry_run"] = true
+					}
+					return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would clear stored credentials in %s and remove %s; nothing written\n", cfg.Path, credentialsPath)
+				fmt.Fprintf(cmd.OutOrStdout(), "Preview: would clear stored credentials in %s and remove %s. Pass --yes to apply.\n", cfg.Path, credentialsPath)
 				return nil
 			}
 

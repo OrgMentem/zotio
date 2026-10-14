@@ -216,7 +216,7 @@ func TestImportURLPreviewsWithoutWriting(t *testing.T) {
 			flags := tc.flags
 			cmd := newImportUrlCmd(&flags)
 			cmd.SilenceErrors, cmd.SilenceUsage = true, true
-			cmd.SetArgs([]string{pagesrv.URL + "/article", "--collection", "COL9"})
+			cmd.SetArgs([]string{pagesrv.URL + "/article", "--to", "ABCD2345"})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
@@ -263,7 +263,7 @@ func TestImportURLPreviewsWithoutWriting(t *testing.T) {
 			if item["title"] != pagesrv.URL+"/article" {
 				t.Errorf("item title = %v", item["title"])
 			}
-			// --collection assignment preserved in the previewed body.
+			// --to assignment preserved in the previewed body.
 			if _, ok := item["collections"]; !ok {
 				t.Errorf("collections not preserved: %v", item)
 			}
@@ -278,7 +278,7 @@ func TestImportDoiDryRun(t *testing.T) {
 	defer crsrv.Close()
 	withBase(t, &enrichCrossRefBase, crsrv.URL)
 
-	flags := &rootFlags{asJSON: true, dryRun: true, timeout: 5 * time.Second}
+	flags := &rootFlags{asJSON: true, dryRun: true, timeout: 5 * time.Second, maxChanges: -1}
 	cmd := newImportDoiCmd(flags)
 	cmd.SetArgs([]string{"10.1/x"})
 	var out bytes.Buffer

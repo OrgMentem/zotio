@@ -20,17 +20,22 @@ func TestCollectionsTagsAutoWriteThroughTargetsTags(t *testing.T) {
 	collChildCacheIsolateMirror(t)
 	const tagPayload = `{"tag":"AutoTag","meta":{"type":0,"numItems":1}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/collections/COL1/tags" {
-			t.Errorf("path = %q, want /collections/COL1/tags", r.URL.Path)
+		switch r.URL.Path {
+		case "/collections/CLCTAB23":
+			// The existence check every collection-scoped command runs first.
+			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`))
+		case "/collections/CLCTAB23/tags":
+			_, _ = w.Write([]byte(`[` + tagPayload + `]`))
+		default:
+			t.Errorf("path = %q, want the collection or its tags", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`[` + tagPayload + `]`))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL)
 
 	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
 	cmd := newCollectionsTagsCmd(flags)
-	cmd.SetArgs([]string{"COL1"})
+	cmd.SetArgs([]string{"CLCTAB23"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -46,8 +51,8 @@ func TestCollectionsTagsAutoWriteThroughTargetsTags(t *testing.T) {
 	}
 
 	mirror := collChildCacheOpenMirror(t, helpersTestDefaultDBPath(t, "zotio"))
-	if n, err := mirror.Count("collections"); err != nil || n != 0 {
-		t.Fatalf("collections rows = %d, err = %v; want no tag payload under collections", n, err)
+	if n, err := mirror.Count("collections"); err != nil || n != 1 {
+		t.Fatalf("collections rows = %d, err = %v; want only the verified collection, no tag payload", n, err)
 	}
 	rows, err := mirror.List("tags", 0)
 	if err != nil {
@@ -57,10 +62,14 @@ func TestCollectionsTagsAutoWriteThroughTargetsTags(t *testing.T) {
 		t.Fatalf("tags rows = %q, want exactly the live AutoTag row", rows)
 	}
 
-	// A local collections list against this mirror reports no local data
-	// rather than exposing the cached tag row as a collection.
+	// A local collections list against this mirror holds the verified
+	// collection and never exposes the cached tag row as a collection.
 	localFlags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
-	if _, _, err := resolveRead(context.Background(), nil, localFlags, "collections", false, "/collections", nil, nil); err == nil {
-		t.Fatal("local collections list succeeded with only tag rows cached; want a no-local-data error")
+	localData, _, err := resolveRead(context.Background(), nil, localFlags, "collections", false, "/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("local collections list: %v", err)
+	}
+	if !strings.Contains(string(localData), "CLCTAB23") || strings.Contains(string(localData), "AutoTag") {
+		t.Fatalf("local collections = %s, want only the verified collection", localData)
 	}
 }

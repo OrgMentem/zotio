@@ -21,11 +21,11 @@ func TestItemsOpenAnnotationsAreNotReadOnly(t *testing.T) {
 }
 
 func TestItemsOpenDefaultPrintsZoteroURI(t *testing.T) {
-	stdout, stderr, err := executeItemsOpen("ABC123")
+	stdout, stderr, err := executeItemsOpen("ABCD2345")
 	if err != nil {
 		t.Fatalf("items open returned error: %v", err)
 	}
-	if stdout != "zotero://select/library/items/ABC123\n" {
+	if stdout != "zotero://select/library/items/ABCD2345\n" {
 		t.Fatalf("stdout: want Zotero URI, got %q", stdout)
 	}
 	if stderr != "" {
@@ -36,11 +36,11 @@ func TestItemsOpenDefaultPrintsZoteroURI(t *testing.T) {
 func TestItemsOpenVerifyEnvLaunchPrintsWouldOpen(t *testing.T) {
 	t.Setenv(cliutil.VerifyEnvVar, "1")
 
-	stdout, stderr, err := executeItemsOpen("--launch", "ABC123")
+	stdout, stderr, err := executeItemsOpen("--launch", "ABCD2345")
 	if err != nil {
 		t.Fatalf("items open --launch returned error: %v", err)
 	}
-	if stdout != "would open: zotero://select/library/items/ABC123\n" {
+	if stdout != "would open: zotero://select/library/items/ABCD2345\n" {
 		t.Fatalf("stdout: want verify dry-run message, got %q", stdout)
 	}
 	if stderr != "" {
@@ -95,7 +95,7 @@ func TestZoteroDeepLinkRejectsUnknownType(t *testing.T) {
 
 // --agent/--json emits the {uri,target_type,library_scope,launched} envelope.
 func TestItemsOpenJSONEnvelope(t *testing.T) {
-	stdout, _, err := executeItemsOpenWith(&rootFlags{asJSON: true}, "--type", "collection", "COLL1")
+	stdout, _, err := executeItemsOpenWith(&rootFlags{asJSON: true}, "--target", "collection", "CDEF2345")
 	if err != nil {
 		t.Fatalf("items open --agent returned error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestItemsOpenJSONEnvelope(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatalf("json output %q: %v", stdout, err)
 	}
-	if env["uri"] != "zotero://select/library/collections/COLL1" {
+	if env["uri"] != "zotero://select/library/collections/CDEF2345" {
 		t.Errorf("uri = %v", env["uri"])
 	}
 	if env["target_type"] != "collection" {
@@ -123,11 +123,11 @@ func TestItemsOpenGroupScopeURI(t *testing.T) {
 	t.Cleanup(func() { setActiveGroupID(saved) })
 	setActiveGroupID("12345")
 
-	stdout, _, err := executeItemsOpen("ABC123")
+	stdout, _, err := executeItemsOpen("ABCD2345")
 	if err != nil {
 		t.Fatalf("items open returned error: %v", err)
 	}
-	if stdout != "zotero://select/groups/12345/items/ABC123\n" {
+	if stdout != "zotero://select/groups/12345/items/ABCD2345\n" {
 		t.Fatalf("stdout: want group-scoped URI, got %q", stdout)
 	}
 }

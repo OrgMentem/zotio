@@ -51,7 +51,7 @@ var readingListTransitionCases = []struct {
 }{
 	{
 		name:      "add",
-		args:      []string{"add", "K1"},
+		args:      []string{"add", "KEYAAAA2"},
 		seedTags:  []map[string]any{{"tag": "existing", "type": float64(0)}},
 		operation: "reading-list.add",
 		kind:      "reading.enqueue",
@@ -60,7 +60,7 @@ var readingListTransitionCases = []struct {
 	},
 	{
 		name:       "start",
-		args:       []string{"start", "K1"},
+		args:       []string{"start", "KEYAAAA2"},
 		seedTags:   []map[string]any{{"tag": "to-read", "type": float64(0)}, {"tag": "keep", "type": float64(0)}},
 		operation:  "reading-list.start",
 		kind:       "reading.start",
@@ -70,7 +70,7 @@ var readingListTransitionCases = []struct {
 	},
 	{
 		name:       "done",
-		args:       []string{"done", "K1"},
+		args:       []string{"done", "KEYAAAA2"},
 		seedTags:   []map[string]any{{"tag": "to-read", "type": float64(0)}, {"tag": "reading", "type": float64(0)}, {"tag": "keep", "type": float64(0)}},
 		operation:  "reading-list.done",
 		kind:       "reading.done",
@@ -83,7 +83,7 @@ var readingListTransitionCases = []struct {
 func TestReadingListTransitionsApplies(t *testing.T) {
 	for _, tc := range readingListTransitionCases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{"K1": tc.seedTags})
+			srv := newItemTagTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]map[string]any{"KEYAAAA2": tc.seedTags})
 
 			env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tc.args...)
 			if !env.OK || env.Operation != tc.operation || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
@@ -92,13 +92,13 @@ func TestReadingListTransitionsApplies(t *testing.T) {
 			if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Kind != tc.kind {
 				t.Fatalf("operations = %+v, want one %s", env.Plan.Operations, tc.kind)
 			}
-			if srv.patchCounts["K1"] != 1 {
-				t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["K1"])
+			if srv.patchCounts["KEYAAAA2"] != 1 {
+				t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["KEYAAAA2"])
 			}
-			if srv.patchHeaders["K1"] != "42" {
-				t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["K1"])
+			if srv.patchHeaders["KEYAAAA2"] != "42" {
+				t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["KEYAAAA2"])
 			}
-			body := srv.patchBodies["K1"]
+			body := srv.patchBodies["KEYAAAA2"]
 			for _, tag := range slices.Concat(tc.wantAdd, tc.preserved) {
 				if !patchBodyHasTag(body, tag) {
 					t.Errorf("PATCH body = %+v, want tag %q", body, tag)
@@ -128,19 +128,19 @@ func TestReadingListIdempotentReRunIsNoOp(t *testing.T) {
 	}{
 		{
 			name:      "start",
-			args:      []string{"start", "K1"},
+			args:      []string{"start", "KEYAAAA2"},
 			operation: "reading-list.start",
 			seedTags:  []map[string]any{{"tag": "reading", "type": float64(0)}},
 		},
 		{
 			name:      "done",
-			args:      []string{"done", "K1"},
+			args:      []string{"done", "KEYAAAA2"},
 			operation: "reading-list.done",
 			seedTags:  []map[string]any{{"tag": "read", "type": float64(0)}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{"K1": tc.seedTags})
+			srv := newItemTagTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]map[string]any{"KEYAAAA2": tc.seedTags})
 
 			env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tc.args...)
 			if !env.OK || env.Operation != tc.operation || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Summary.Applied != 0 {
@@ -152,34 +152,34 @@ func TestReadingListIdempotentReRunIsNoOp(t *testing.T) {
 			if got, _ := env.Result.Items[0].Reason.(string); got != "reading tags already in requested state" {
 				t.Fatalf("reason = %q, want the reading-list no_op reason", env.Result.Items[0].Reason)
 			}
-			if srv.patchCounts["K1"] != 0 {
-				t.Fatalf("PATCH count = %d, want 0: an idempotent re-run must not bump the item version", srv.patchCounts["K1"])
+			if srv.patchCounts["KEYAAAA2"] != 0 {
+				t.Fatalf("PATCH count = %d, want 0: an idempotent re-run must not bump the item version", srv.patchCounts["KEYAAAA2"])
 			}
 		})
 	}
 }
 
 func TestReadingListPreviewWritesNothing(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
-		"K1": {{"tag": "to-read", "type": float64(0)}},
+	srv := newItemTagTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]map[string]any{
+		"KEYAAAA2": {{"tag": "to-read", "type": float64(0)}},
 	})
 
-	env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "start", "K1")
+	env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "start", "KEYAAAA2")
 	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 		t.Fatalf("env = %+v, want preview plan with one change", env)
 	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	if srv.patchCounts["KEYAAAA2"] != 0 {
+		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["KEYAAAA2"])
 	}
 }
 
 func TestReadingListBulkKeysFrom(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42", "K2": "43"}, map[string][]map[string]any{
-		"K1": {{"tag": "to-read", "type": float64(0)}},
-		"K2": {{"tag": "to-read", "type": float64(0)}},
+	srv := newItemTagTestServer(t, map[string]string{"KEYAAAA2": "42", "KEYAAAA3": "43"}, map[string][]map[string]any{
+		"KEYAAAA2": {{"tag": "to-read", "type": float64(0)}},
+		"KEYAAAA3": {{"tag": "to-read", "type": float64(0)}},
 	})
 	keysPath := filepath.Join(t.TempDir(), "keys.txt")
-	if err := os.WriteFile(keysPath, []byte("K1\nK2\n"), 0o600); err != nil {
+	if err := os.WriteFile(keysPath, []byte("KEYAAAA2\nKEYAAAA3\n"), 0o600); err != nil {
 		t.Fatalf("write keys file: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestReadingListBulkKeysFrom(t *testing.T) {
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 2 || len(env.Result.Items) != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
-	for _, key := range []string{"K1", "K2"} {
+	for _, key := range []string{"KEYAAAA2", "KEYAAAA3"} {
 		if srv.patchCounts[key] != 1 {
 			t.Fatalf("%s PATCH count = %d, want 1", key, srv.patchCounts[key])
 		}
@@ -210,18 +210,13 @@ func changeSets(changes []mutation.Change) (added, removed []string) {
 	return added, removed
 }
 
-// A dry-run client answers every request locally, GET included, so reading the
-// live item to diff its tags returned {"dry_run": true} and failed the command
-// on "item response missing data object": add, start, and done were all
-// unusable with --dry-run. The plan has to come from the transition instead,
-// and it must not touch the network at all.
-func TestReadingListTransitionsPlanUnderDryRunWithoutCallingTheAPI(t *testing.T) {
+// Preview and apply run the same algorithm: --dry-run reads the item through
+// the write plane (reads still run under --dry-run), plans the same tag delta
+// the applied run performs for the same item, and writes nothing.
+func TestReadingListTransitionsDryRunPlansFromTheLiveItem(t *testing.T) {
 	for _, tc := range readingListTransitionCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Seeded with the queue tag on purpose, not with tc.seedTags: the
-			// dry-run plan is an upper bound, so "add" must still report Add
-			// to-read for an item that already carries it.
-			srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{"K1": {{"tag": "to-read", "type": float64(0)}}})
+			srv := newItemTagTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]map[string]any{"KEYAAAA2": tc.seedTags})
 
 			env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, tc.args...)
 			if !env.OK || env.Operation != tc.operation {
@@ -236,6 +231,9 @@ func TestReadingListTransitionsPlanUnderDryRunWithoutCallingTheAPI(t *testing.T)
 			if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Kind != tc.kind {
 				t.Fatalf("operations = %+v, want one %s", env.Plan.Operations, tc.kind)
 			}
+			if env.Plan.Operations[0].ExpectedVersion != 42 {
+				t.Errorf("expected_version = %d, want the item's version 42", env.Plan.Operations[0].ExpectedVersion)
+			}
 
 			added, removed := changeSets(env.Plan.Operations[0].Changes)
 			if !slices.Equal(added, tc.wantAdd) {
@@ -245,8 +243,8 @@ func TestReadingListTransitionsPlanUnderDryRunWithoutCallingTheAPI(t *testing.T)
 				t.Errorf("removed = %v, want %v", removed, tc.wantRemove)
 			}
 
-			if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
-				t.Errorf("dry run made %d GET and %d PATCH requests, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
+			if srv.getCounts["KEYAAAA2"] != 1 || srv.patchCounts["KEYAAAA2"] != 0 {
+				t.Errorf("dry run made %d GET and %d PATCH requests, want 1 GET and no PATCH", srv.getCounts["KEYAAAA2"], srv.patchCounts["KEYAAAA2"])
 			}
 		})
 	}

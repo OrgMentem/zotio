@@ -94,7 +94,7 @@ func TestVaultResolveDirectionValidation(t *testing.T) {
 		{[]string{"smith2024"}, "without a direction"},
 	}
 	for _, tc := range cases {
-		cmd := newVaultResolveCmd(&rootFlags{})
+		cmd := newVaultResolveCmd(&rootFlags{maxChanges: -1, allowDestructive: true})
 		cmd.SetArgs(tc.args)
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)

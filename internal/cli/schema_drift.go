@@ -67,7 +67,7 @@ per-item-type fields and creator types from Zotero in parallel by default. Pass
 snapshot must be complete and match Zotero's live schema version. Refresh it in
 two steps: 'zotio sync --resources schema', then 'zotio sync --resources
 schema-item-type-fields,schema-item-type-creator-types'. The baseline is stored
-at ~/.local/share/zotio/schema-baseline.json (override with --baseline) and is
+as schema-baseline.json in the zotio data directory (override with --baseline) and is
 shared across libraries because the schema is global to the Zotero install.`,
 		Example: `  # Capture a baseline on the current Zotero version
   zotio schema drift
@@ -79,7 +79,7 @@ shared across libraries because the schema is global to the Zotero install.`,
   zotio schema drift --deep
 
   # Use an explicitly synced deep snapshot instead
-  zotio schema drift --deep --db ~/.local/share/zotio/data.db
+  zotio schema drift --deep --db ./data.db
 
   # Re-baseline to the current schema
   zotio schema drift --update`,
@@ -227,7 +227,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 	}
 	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff per-item-type field and creator-type validity (live by default; use --db for an explicit cache)")
 	cmd.Flags().BoolVar(&update, "update", false, "Adopt the current live schema as the new baseline after reporting")
-	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: ~/.local/share/zotio/schema-baseline.json)")
+	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: schema-baseline.json in the zotio data directory)")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Read the deep schema from this explicitly synced database instead of Zotero")
 	return cmd
 }
@@ -507,11 +507,11 @@ func sortedKeys(m map[string][]string) []string {
 // stores. It is intentionally not group-scoped: the Zotero schema is global to
 // the install, identical across personal and group libraries.
 func schemaBaselinePath() (string, error) {
-	home, err := cliutil.HomeDir()
+	dir, err := cliutil.DataDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving schema baseline path: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json"), nil
+	return filepath.Join(dir, "schema-baseline.json"), nil
 }
 
 // libraryPrefixRE matches the /users/<id> or /groups/<id> library segment of a
@@ -577,14 +577,14 @@ func saveSchemaBaseline(path string, snap schemaSnapshot) error {
 func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, deltas []schemaDelta, path string, live schemaSnapshot) error {
 	if flags.asJSON {
 		payload := map[string]any{
-			"baseline_captured": captured && !flags.dryRun,
-			"drift":             len(deltas) > 0,
-			"deltas":            deltas,
-			"baseline_path":     path,
-			"schema_version":    live.SchemaVersion,
-			"item_types":        len(live.ItemTypes),
-			"item_fields":       len(live.ItemFields),
-			"creator_fields":    len(live.CreatorFields),
+			"baseline_captured":     captured && !flags.dryRun,
+			"drift":                 len(deltas) > 0,
+			"deltas":                deltas,
+			"baseline_path":         path,
+			"zotero_schema_version": live.SchemaVersion,
+			"item_types":            len(live.ItemTypes),
+			"item_fields":           len(live.ItemFields),
+			"creator_fields":        len(live.CreatorFields),
 		}
 		if flags.dryRun {
 			payload["dry_run"] = true

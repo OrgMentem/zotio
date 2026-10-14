@@ -8,11 +8,15 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"zotio/internal/config"
@@ -169,8 +173,8 @@ func resolveWebWriteBase(ctx context.Context, cfg *config.Config, group string, 
 // config save outside the installation writer lock, so two concurrent reads can
 // race their saves and a concurrent auth/profile/config writer's unrelated fields
 // can be clobbered by a stale snapshot. Atomic temp+rename prevents torn files,
-// not lost updates. Writes keep using resolveWebWriteBase, which persists under
-// the writer lock so the ID is still cached after the first mutating command.
+// not lost updates. Only an apply (--yes without --dry-run) uses
+// resolveWebWriteBase, which persists, so every preview resolves via this one.
 func resolveWebWriteBaseWithoutPersist(ctx context.Context, cfg *config.Config, group string, timeout time.Duration) (string, error) {
 	if cfg == nil || cfg.AuthHeader() == "" {
 		return "", nil
@@ -191,6 +195,25 @@ func resolveWebWriteBaseWithoutPersist(ctx context.Context, cfg *config.Config, 
 		cfg.UserID = id
 	}
 	return zoteroWebAPIBase + "/users/" + id, nil
+}
+
+// keyMetadataStatusError is a non-200 answer from keys/current.
+type keyMetadataStatusError struct{ status int }
+
+func (e *keyMetadataStatusError) Error() string {
+	return fmt.Sprintf("keys/current returned HTTP %d", e.status)
+}
+
+// routeResolutionErr classifies a failure to resolve the Web write route:
+// 401/403 from keys/current is an auth failure (exit 4); any other failure
+// (transport, 429, 5xx) is a precondition (exit 9) with a recovery hint.
+func routeResolutionErr(err error) error {
+	wrapped := fmt.Errorf("could not resolve Zotero Web API write route: %w", err)
+	var statusErr *keyMetadataStatusError
+	if errors.As(err, &statusErr) && (statusErr.status == http.StatusUnauthorized || statusErr.status == http.StatusForbidden) {
+		return authErr(wrapped)
+	}
+	return preconditionErr(fmt.Errorf("%w; cannot reach the Zotero Web API to resolve your user ID; check the network, or set ZOTERO_USER_ID", wrapped))
 }
 
 const maxKeyMetadataResponseBytes int64 = 1 << 20
@@ -214,7 +237,7 @@ func fetchCurrentKeyMetadata(ctx context.Context, cfg *config.Config, timeout ti
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("keys/current returned HTTP %d", resp.StatusCode)
+		return nil, &keyMetadataStatusError{status: resp.StatusCode}
 	}
 	body, err := readCappedExternalBody(resp.Body, maxKeyMetadataResponseBytes)
 	if err != nil {
@@ -223,9 +246,24 @@ func fetchCurrentKeyMetadata(ctx context.Context, cfg *config.Config, timeout ti
 	return body, nil
 }
 
+// userIDCache memoizes resolved user IDs for the life of the process, keyed by
+// API origin plus a hash of the credential, so repeated previews (and the
+// workflow/MCP in-process runs) do not hit keys/current every time. The key
+// itself is never stored or logged; persistence stays apply-only.
+var userIDCache sync.Map // string -> string
+
+func userIDCacheKey(cfg *config.Config) string {
+	sum := sha256.Sum256([]byte(cfg.AuthHeader()))
+	return zoteroWebAPIBase + "|" + hex.EncodeToString(sum[:])
+}
+
 // fetchZoteroUserID resolves the numeric Zotero user ID for the configured key via
-// the Web API keys/current endpoint.
+// the Web API keys/current endpoint, memoized in-process.
 func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Duration) (string, error) {
+	cacheKey := userIDCacheKey(cfg)
+	if v, ok := userIDCache.Load(cacheKey); ok {
+		return v.(string), nil
+	}
 	body, err := fetchCurrentKeyMetadata(ctx, cfg, timeout)
 	if err != nil {
 		return "", fmt.Errorf("resolving Zotero user ID: %w", err)
@@ -239,6 +277,7 @@ func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Dur
 	if meta.UserID.String() == "" {
 		return "", fmt.Errorf("keys/current returned no userID")
 	}
+	userIDCache.Store(cacheKey, meta.UserID.String())
 	return meta.UserID.String(), nil
 }
 

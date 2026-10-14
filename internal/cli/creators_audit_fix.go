@@ -61,20 +61,14 @@ version precondition, preserving creatorType, creator order, and unrelated
 creators. Applied creator renames are journaled for audit history, but journal
 undo does not reverse them because ordered creator-array inverses are not
 supported.`,
-		Example: `  zotio creators audit fix
-  zotio creators audit fix --map "J. Smith=John Smith"
-  zotio creators audit fix --scope collection:ABCD1234 --yes`,
-		Annotations: map[string]string{
-			"zotio:endpoint":                   "creators.audit.fix",
-			"zotio:method":                     "PATCH",
-			"zotio:path":                       "/items/{itemKey}",
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
-		},
+		Example: `  # Previews also need --allow-destructive to show ok:true
+  zotio creators audit fix --allow-destructive
+  zotio creators audit fix --map "J. Smith=John Smith" --allow-destructive
+  zotio creators audit fix --scope collection:ABCD2345 --allow-destructive --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			explicitMaps, err := parseCreatorAuditFixMaps(flagMaps)
 			if err != nil {
 				return usageErr(err)
@@ -135,17 +129,13 @@ supported.`,
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "creators.audit.fix", ops)
-			renderErr := renderMutation(cmd, flags, env, func(env mutation.Envelope) string {
+			return renderMutationResult(cmd, flags, env, runErr, func(env mutation.Envelope) string {
 				action := "would fix"
 				if env.Mode == "apply" {
 					action = "fixed"
 				}
 				return fmt.Sprintf("%s %d creator item write(s)", action, env.Plan.Summary.Planned)
 			})
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
@@ -303,7 +293,7 @@ func buildCreatorAuditFixOps(db localQueryStore, plans []creatorAuditFixPlan, ap
 			Kind:            "creator_rename",
 			ExpectedVersion: mutationExpectedVersion(update.version),
 			Changes:         update.changes,
-			Destructive:     false,
+			Destructive:     true,
 			Apply: func() (string, any, error) {
 				return apply(updateForApply)
 			},

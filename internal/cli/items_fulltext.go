@@ -39,9 +39,9 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 				if err != nil || db == nil {
 					if flags.dataSource == "local" {
 						if err != nil {
-							return fmt.Errorf("opening local database: %w\nRun 'zotio sync --fulltext' first.", err)
+							return preconditionErr(fmt.Errorf("opening local database: %w\nRun 'zotio sync --fulltext' first.", err))
 						}
-						return fmt.Errorf("no local data. Run 'zotio sync --fulltext' first")
+						return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync --fulltext' first"))
 					}
 				} else {
 					defer db.Close()
@@ -60,7 +60,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 						return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 					}
 					if flags.dataSource == "local" {
-						return fmt.Errorf("no local full text for item %s. Run 'zotio sync --fulltext' first", itemKey)
+						return notFoundErr(fmt.Errorf("no local full text for item %s. Run 'zotio sync --fulltext' first", itemKey))
 					}
 				}
 			}
@@ -69,18 +69,21 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			if _, err := c.Get(replacePathParam("/items/{itemKey}", "itemKey", itemKey), nil); err != nil {
+				return classifyAPIError(err, flags)
+			}
 			childrenPath := "/items/{itemKey}/children"
 			childrenPath = replacePathParam(childrenPath, "itemKey", itemKey)
 			children, err := c.Get(childrenPath, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			pdfKey, err := findPDFAttachmentKey(children)
+			pdfKey, err := findPDFAttachmentKeyForParent(children, itemKey)
 			if err != nil {
 				return err
 			}
 			if pdfKey == "" {
-				return fmt.Errorf("no PDF attachment found for item %s", itemKey)
+				return notFoundErr(fmt.Errorf("no PDF attachment found for item %s", itemKey))
 			}
 
 			fulltextPath := "/items/{pdfKey}/fulltext"
@@ -123,6 +126,14 @@ func localPDFFulltext(ctx context.Context, db *store.Store, itemKey string) (jso
 }
 
 func findPDFAttachmentKey(data json.RawMessage) (string, error) {
+	return findPDFAttachmentKeyForParent(data, "")
+}
+
+// findPDFAttachmentKeyForParent returns the first PDF attachment key in data.
+// When parentKey is not empty, only attachments whose parentItem equals
+// parentKey qualify, so a response that lists other items' attachments (the
+// Zotero local API does this for an unknown parent) cannot leak their text.
+func findPDFAttachmentKeyForParent(data json.RawMessage, parentKey string) (string, error) {
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err != nil {
 		return "", fmt.Errorf("parsing child items response: %w", err)
@@ -132,6 +143,9 @@ func findPDFAttachmentKey(data json.RawMessage) (string, error) {
 			continue
 		}
 		if jsonStringField(item, "contentType") != "application/pdf" {
+			continue
+		}
+		if parentKey != "" && jsonStringField(item, "parentItem") != parentKey {
 			continue
 		}
 		if key := jsonStringField(item, "key"); key != "" {

@@ -50,13 +50,15 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
   zotio items citekey-conflicts --conflicts --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -67,7 +69,9 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			out := buildCitekeyConflictRowsFromItems(items, flagMissing, flagConflicts)
-			if flags.asJSON {
+			// One shape per flag set: piped output and --json both give the
+			// findings object; rows are for a terminal, --plain and --csv.
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(FindingsReport{Findings: citekeyConflictFindings(out)})
 				if err != nil {
 					return err

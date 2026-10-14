@@ -15,7 +15,7 @@ func newTagsGetCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "get <tagName>",
 		Short:       "Get a specific tag by name",
-		Example:     "  zotio tags get example-resource",
+		Example:     "  zotio tags get \"machine learning\"",
 		Annotations: map[string]string{"zotio:endpoint": "tags.get", "zotio:method": "GET", "zotio:path": "/tags/{tagName}", "mcp:read-only": "true"},
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `tags get A B` used to read A and drop B on the
@@ -42,11 +42,9 @@ func newTagsGetCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

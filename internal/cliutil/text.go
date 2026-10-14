@@ -45,6 +45,9 @@ const (
 	HTTPErrForbidden
 	HTTPErrNotFound
 	HTTPErrRateLimited
+	// HTTPErrBadRequest is a 400 that is not an auth rejection: a client value
+	// the server refused, which the CLI reports as a usage error.
+	HTTPErrBadRequest
 )
 
 // ClassifyHTTPError maps an error message to an HTTPErrorKind by the HTTP
@@ -64,6 +67,8 @@ func ClassifyHTTPError(msg string) HTTPErrorKind {
 		return HTTPErrNotFound
 	case strings.Contains(msg, "HTTP 429"):
 		return HTTPErrRateLimited
+	case strings.Contains(msg, "HTTP 400"):
+		return HTTPErrBadRequest
 	default:
 		return HTTPErrOther
 	}

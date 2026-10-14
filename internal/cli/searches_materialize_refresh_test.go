@@ -33,10 +33,12 @@ func TestSearchesMaterializeRefresh(t *testing.T) {
 			var patches []string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/users/0/searches/SK/items":
+				case "/users/0/searches/SEARCH22/items":
 					_, _ = fmt.Fprint(w, `[{"key":"A"},{"key":"B"}]`)
-				case "/users/0/collections/TARGET/items":
-					_, _ = fmt.Fprint(w, `[{"key":"B","data":{"collections":["TARGET"]}},{"key":"C","data":{"collections":["OTHER","TARGET"]}}]`)
+				case "/users/0/collections/TARGET22":
+					_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+				case "/users/0/collections/TARGET22/items":
+					_, _ = fmt.Fprint(w, `[{"key":"B","data":{"collections":["TARGET22"]}},{"key":"C","data":{"collections":["OTHER","TARGET22"]}}]`)
 				case "/users/0/items/A", "/users/0/items/C":
 					key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
 					switch r.Method {
@@ -44,7 +46,7 @@ func TestSearchesMaterializeRefresh(t *testing.T) {
 						w.Header().Set("Last-Modified-Version", "12")
 						collections := `["OTHER"]`
 						if key == "C" {
-							collections = `["OTHER","TARGET"]`
+							collections = `["OTHER","TARGET22"]`
 						}
 						_, _ = fmt.Fprintf(w, `{"key":%q,"version":12,"data":{"collections":%s}}`, key, collections)
 					case http.MethodPatch:
@@ -57,7 +59,7 @@ func TestSearchesMaterializeRefresh(t *testing.T) {
 						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 							t.Errorf("decode PATCH: %v", err)
 						}
-						want := []string{"OTHER", "TARGET"}
+						want := []string{"OTHER", "TARGET22"}
 						if key == "C" {
 							want = []string{"OTHER"}
 						}
@@ -83,7 +85,7 @@ func TestSearchesMaterializeRefresh(t *testing.T) {
 				mutationJournalRecorder = recordMutationJournal
 				t.Cleanup(func() { mutationJournalRecorder = nil })
 			}
-			args := append([]string{"SK", "--to", "TARGET"}, tc.args...)
+			args := append([]string{"SEARCH22", "--to", "TARGET22"}, tc.args...)
 			env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &tc.flags, args...)
 			var keys, kinds []string
 			for _, op := range env.Plan.Operations {
@@ -99,7 +101,7 @@ func TestSearchesMaterializeRefresh(t *testing.T) {
 			}
 			if len(kinds) == 2 {
 				remove := env.Plan.Operations[1]
-				if remove.Destructive || len(remove.Changes) != 1 || remove.Changes[0].Remove != "TARGET" {
+				if remove.Destructive || len(remove.Changes) != 1 || remove.Changes[0].Remove != "TARGET22" {
 					t.Errorf("removal not reversible like items move --from: %+v", remove)
 				}
 			}
@@ -132,22 +134,24 @@ func TestSearchesMaterializePruneOnlySingleOperationText(t *testing.T) {
 		wantText  string
 		wantPatch int
 	}{
-		{"preview", false, "would remove C from TARGET", 0},
-		{"apply", true, "removed C from TARGET", 1},
+		{"preview", false, "would remove C from TARGET22", 0},
+		{"apply", true, "removed C from TARGET22", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var patches int
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/users/0/searches/SK/items":
-					_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET"]}}]`)
-				case "/users/0/collections/TARGET/items":
-					_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET"]}},{"key":"C","data":{"collections":["TARGET"]}}]`)
+				case "/users/0/searches/SEARCH22/items":
+					_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET22"]}}]`)
+				case "/users/0/collections/TARGET22":
+					_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+				case "/users/0/collections/TARGET22/items":
+					_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET22"]}},{"key":"C","data":{"collections":["TARGET22"]}}]`)
 				case "/users/0/items/C":
 					switch r.Method {
 					case http.MethodGet:
 						w.Header().Set("Last-Modified-Version", "12")
-						_, _ = fmt.Fprint(w, `{"key":"C","data":{"collections":["TARGET"]}}`)
+						_, _ = fmt.Fprint(w, `{"key":"C","data":{"collections":["TARGET22"]}}`)
 					case http.MethodPatch:
 						patches++
 						w.WriteHeader(http.StatusNoContent)
@@ -160,11 +164,11 @@ func TestSearchesMaterializePruneOnlySingleOperationText(t *testing.T) {
 			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 			env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd,
-				&rootFlags{asJSON: true, yes: tc.yes, maxChanges: -1}, "SK", "--to", "TARGET", "--prune")
+				&rootFlags{asJSON: true, yes: tc.yes, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
 			if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "C" || env.Plan.Operations[0].Kind != "collection_remove" || patches != tc.wantPatch {
 				t.Fatalf("plan=%+v patches=%d, want one C removal and %d writes", env.Plan, patches, tc.wantPatch)
 			}
-			if text := searchesMaterializeSingleLine("TARGET")(env); text != tc.wantText {
+			if text := searchesMaterializeSingleLine("TARGET22")(env); text != tc.wantText {
 				t.Fatalf("terminal line = %q, want %q", text, tc.wantText)
 			}
 		})
@@ -180,10 +184,12 @@ func TestSearchesMaterializeSkipsChildrenAndUnfiledCollectionRows(t *testing.T) 
 			return
 		}
 		switch r.URL.Path {
-		case "/users/0/searches/SK/items":
-			_, _ = fmt.Fprint(w, `[{"key":"P","data":{"itemType":"book","collections":["TARGET"]}},{"key":"CH","data":{"itemType":"attachment","parentItem":"P","collections":[]}}]`)
-		case "/users/0/collections/TARGET/items":
-			_, _ = fmt.Fprint(w, `[{"key":"P","data":{"collections":["TARGET"]}},{"key":"G","data":{"itemType":"attachment","parentItem":"UNRELATED","collections":[]}}]`)
+		case "/users/0/searches/SEARCH22/items":
+			_, _ = fmt.Fprint(w, `[{"key":"P","data":{"itemType":"book","collections":["TARGET22"]}},{"key":"CH","data":{"itemType":"attachment","parentItem":"P","collections":[]}}]`)
+		case "/users/0/collections/TARGET22":
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+		case "/users/0/collections/TARGET22/items":
+			_, _ = fmt.Fprint(w, `[{"key":"P","data":{"collections":["TARGET22"]}},{"key":"G","data":{"itemType":"attachment","parentItem":"UNRELATED","collections":[]}}]`)
 		default:
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 		}
@@ -192,7 +198,7 @@ func TestSearchesMaterializeSkipsChildrenAndUnfiledCollectionRows(t *testing.T) 
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd,
-		&rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET", "--prune")
+		&rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
 	summary, ok := env.Journal.(map[string]any)
 	if !ok || len(env.Plan.Operations) != 0 || summary["unchanged_count"] != float64(1) ||
 		summary["stale_count"] != float64(0) || summary["skipped_child_count"] != float64(1) ||
@@ -211,7 +217,7 @@ func TestSearchesMaterializeRefusesUnsafePruneAndUnreadableCollection(t *testing
 		want             string
 		code             int
 	}{
-		{"empty_search", `[{"key":"C","data":{"collections":["TARGET"]}}]`, nil, true, "pruning would empty collection", 9},
+		{"empty_search", `[{"key":"C","data":{"collections":["TARGET22"]}}]`, nil, true, "pruning would empty collection", 9},
 		{"collection_missing", "missing", []string{"A"}, false, "cannot read target collection", 3},
 		{"collection_failure", "unavailable", []string{"A"}, true, "cannot read target collection", 5},
 	} {
@@ -224,13 +230,22 @@ func TestSearchesMaterializeRefusesUnsafePruneAndUnreadableCollection(t *testing
 					return
 				}
 				switch r.URL.Path {
-				case "/users/0/searches/SK/items":
+				case "/users/0/searches/SEARCH22/items":
 					items := make([]map[string]string, 0, len(tc.search))
 					for _, key := range tc.search {
 						items = append(items, map[string]string{"key": key})
 					}
 					_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
-				case "/users/0/collections/TARGET/items":
+				case "/users/0/collections/TARGET22":
+					switch tc.collection {
+					case "missing":
+						http.Error(w, "not found", http.StatusNotFound)
+					case "unavailable":
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					default:
+						_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+					}
+				case "/users/0/collections/TARGET22/items":
 					switch tc.collection {
 					case "missing":
 						http.Error(w, "not found", http.StatusNotFound)
@@ -251,7 +266,7 @@ func TestSearchesMaterializeRefusesUnsafePruneAndUnreadableCollection(t *testing
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
-			args := []string{"SK", "--to", "TARGET"}
+			args := []string{"SEARCH22", "--to", "TARGET22"}
 			if tc.prune {
 				args = append(args, "--prune")
 			}
@@ -265,8 +280,8 @@ func TestSearchesMaterializeRefusesUnsafePruneAndUnreadableCollection(t *testing
 }
 
 func TestSearchesMaterializeEmptySearchReportsStaleWithoutPrune(t *testing.T) {
-	srv := newSearchesMaterializeTestServer(t, nil, map[string]string{"C": "12"}, map[string][]string{"C": {"TARGET"}})
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	srv := newSearchesMaterializeTestServer(t, nil, map[string]string{"C": "12"}, map[string][]string{"C": {"TARGET22"}})
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22")
 	summary, ok := env.Journal.(map[string]any)
 	if !ok || !reflect.DeepEqual(summary["stale_keys"], []any{"C"}) || summary["stale_count"] != float64(1) || len(env.Plan.Operations) != 0 || srv.patchCounts["C"] != 0 {
 		t.Fatalf("empty search must leave stale C alone, plan=%+v summary=%+v patches=%v", env.Plan, env.Journal, srv.patchCounts)
@@ -275,7 +290,7 @@ func TestSearchesMaterializeEmptySearchReportsStaleWithoutPrune(t *testing.T) {
 
 func TestSearchesMaterializePruneEmptyCollectionIsSafe(t *testing.T) {
 	newSearchesMaterializeTestServer(t, nil, map[string]string{}, map[string][]string{})
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET", "--prune")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
 	if !env.OK || env.Mode != "apply" || len(env.Plan.Operations) != 0 || env.Result == nil || env.Result.Summary.Applied != 0 {
 		t.Fatalf("empty search and empty collection should allow an empty apply: %+v", env)
 	}
@@ -295,9 +310,11 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/users/0/searches/SK/items":
+		case "/users/0/searches/SEARCH22/items":
 			_, _ = fmt.Fprint(w, `[{"key":"A"}]`)
-		case "/users/0/collections/TARGET/items":
+		case "/users/0/collections/TARGET22":
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+		case "/users/0/collections/TARGET22/items":
 			start, _ := strconv.Atoi(r.URL.Query().Get("start"))
 			starts = append(starts, start)
 			if r.URL.Query().Get("limit") != "100" {
@@ -313,7 +330,7 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 			}
 			items := make([]map[string]any, 0, end-start)
 			for _, key := range collection[start:end] {
-				items = append(items, map[string]any{"key": key, "data": map[string]any{"collections": []string{"TARGET"}}})
+				items = append(items, map[string]any{"key": key, "data": map[string]any{"collections": []string{"TARGET22"}}})
 			}
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 		default:
@@ -323,7 +340,7 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, dryRun: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET", "--prune")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, dryRun: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
 	if env.Plan.Summary.Planned != zoteroPageMax+2 || !reflect.DeepEqual(starts, []int{0, zoteroPageMax}) {
 		t.Fatalf("planned=%d collection starts=%v", env.Plan.Summary.Planned, starts)
 	}
@@ -333,7 +350,7 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"SK", "--to", "TARGET", "--prune"})
+	cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22", "--prune"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "max_changes_exceeded") {
 		t.Fatalf("expected combined change cap refusal, err=%v output=%q", err, out.String())
 	}
@@ -360,9 +377,11 @@ func TestSearchesMaterializeCollectionCrossPageRepeatRefuses(t *testing.T) {
 	var collectionPages int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/users/0/searches/SK/items":
+		case "/users/0/searches/SEARCH22/items":
 			_, _ = fmt.Fprint(w, `[{"key":"A"}]`)
-		case "/users/0/collections/TARGET/items":
+		case "/users/0/collections/TARGET22":
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+		case "/users/0/collections/TARGET22/items":
 			collectionPages++
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, keys))
 		default:
@@ -376,8 +395,8 @@ func TestSearchesMaterializeCollectionCrossPageRepeatRefuses(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"SK", "--to", "TARGET", "--prune"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "pagination for collection TARGET ignored start 100") || collectionPages != 2 {
+	cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22", "--prune"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "pagination for collection TARGET22 ignored start 100") || collectionPages != 2 {
 		t.Fatalf("repeating collection pages should refuse: err=%v pages=%d", err, collectionPages)
 	}
 }

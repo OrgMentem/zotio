@@ -1409,6 +1409,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			Body:       truncateBody(respBody),
 		}
 
+		// Zotero answers an unknown tag name and a nonexistent collection's
+		// child-collection list with an empty-bodied HTTP 500. That is a
+		// permanent "not found", so it is not retried and is reported as 404.
+		if method == http.MethodGet && resp.StatusCode == 500 && len(bytes.TrimSpace(respBody)) == 0 && zoteroEmpty500IsNotFound(path) {
+			apiErr.StatusCode = 404
+			apiErr.Body = "not found (Zotero answered an empty HTTP 500 for an object that does not exist)"
+			return nil, 404, resp.Header, wrapAmbiguous(attempt+1, apiErr)
+		}
+
 		// Rate limited - adjust adaptive limiter and retry
 		if rateLimitRetrySafe && resp.StatusCode == 429 && attempt < maxRetries {
 			c.limiter.OnRateLimit()
@@ -1465,6 +1474,18 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	}
 
 	return nil, 0, nil, wrapAmbiguous(maxRetries+1, lastErr)
+}
+
+// zoteroEmpty500IsNotFound reports whether path has one of the two shapes for
+// which Zotero signals a missing object with an empty HTTP 500:
+// .../tags/<name> and .../collections/<key>/collections.
+func zoteroEmpty500IsNotFound(path string) bool {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	n := len(segs)
+	if n >= 2 && segs[n-2] == "tags" && segs[n-1] != "" {
+		return true
+	}
+	return n >= 3 && segs[n-3] == "collections" && segs[n-2] != "" && segs[n-1] == "collections"
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {

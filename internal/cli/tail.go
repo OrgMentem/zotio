@@ -69,14 +69,14 @@ retried, so upserts may repeat.
 
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
-		Example: `  # Tail all changes every 10 seconds
-  zotio tail --interval 10s
+		Example: `  # Tail item changes every 10 seconds
+  zotio tail items --interval 10s
 
   # Tail a specific resource
-  zotio tail messages --interval 5s
+  zotio tail collections --interval 5s
 
   # Pipe to jq for filtering
-  zotio tail events --interval 30s | jq 'select(.type == "error")'`,
+  zotio tail items --interval 30s | jq 'select(.event == "upsert")'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --interval feeds time.NewTicker below, which panics on a
 			// non-positive duration, so reject it as usage input rather
@@ -108,7 +108,7 @@ native streaming instead of polling.`,
 				}, flags)
 			}
 			if resource == "" {
-				return fmt.Errorf("resource name required (e.g., 'tail items')")
+				return usageErr(fmt.Errorf("resource name required (e.g., 'tail items')"))
 			}
 
 			c, err := flags.newClient()

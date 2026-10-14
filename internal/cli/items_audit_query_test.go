@@ -84,11 +84,17 @@ func TestQueryMissingPDFItems_IndexedColumns(t *testing.T) {
 		t.Errorf("missing-PDF COL1 items = %v, want [P1]", collection)
 	}
 
-	keys, err := parseMissingPDFKeys("P3,P3")
+	parsed, err := parseMissingPDFKeys("ABCD2345,ABCD2345")
 	if err != nil {
 		t.Fatal(err)
 	}
-	exact, err := queryMissingPDFItemsForKeys(db, "", 0, "", keys)
+	if len(parsed) != 1 || parsed[0] != "ABCD2345" {
+		t.Fatalf("parseMissingPDFKeys = %v, want one deduplicated key", parsed)
+	}
+	if _, err := parseMissingPDFKeys("P3"); ExitCode(err) != 2 {
+		t.Fatalf("parseMissingPDFKeys(P3) error = %v, want a usage error (exit 2)", err)
+	}
+	exact, err := queryMissingPDFItemsForKeys(db, "", 0, "", []string{"P3"})
 	if err != nil {
 		t.Fatalf("queryMissingPDFItemsForKeys: %v", err)
 	}

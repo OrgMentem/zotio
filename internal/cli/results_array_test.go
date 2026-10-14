@@ -294,7 +294,7 @@ func TestAnalyticsGainsResultsWrapper(t *testing.T) {
 		want  string
 	}{
 		{"group-by year", []string{"--db", dbPath, "--type", "items", "--group-by", "year"}, "value", "2019"},
-		{"type journalArticle", []string{"--db", dbPath, "--type", "journalArticle"}, "resource_type", "items"},
+		{"type journalArticle", []string{"--db", dbPath, "--item-type", "journalArticle"}, "resource_type", "items"},
 		{"breakdown", []string{"--db", dbPath}, "resource_type", "items"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,12 +370,16 @@ func TestAnnotationsSearchResultsIsArray(t *testing.T) {
 }
 func TestAnnotationsTimelineResultsIsArray(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/users/0/items" {
+		switch r.URL.Path {
+		case "/users/0/items":
+			_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
+		case "/users/0/items/PARENT1":
+			// The annotation's attachment is a standalone file: its own owner.
+			_, _ = w.Write([]byte(`{"key":"PARENT1","data":{"key":"PARENT1","itemType":"attachment","title":"Paper PDF"}}`))
+		default:
 			t.Errorf("unexpected request path %q", r.URL.Path)
 			http.Error(w, "unexpected request path", http.StatusBadRequest)
-			return
 		}
-		_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")

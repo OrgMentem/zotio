@@ -50,7 +50,7 @@ func seedUnfiledSuggestions(t *testing.T) {
 	addItem("C3", "COLC", "history", "His Archive", "Past Review", "journalArticle")
 	addItem("D1", "DELETED", "botany", "Ada Leaf", "Plant Review", "journalArticle")
 	addItem("P1", "PENDING", "botany", "Ada Leaf", "Plant Review", "journalArticle")
-	addItem("UA", "", "botany", "Ada Leaf", "Plant Review", "journalArticle")
+	addItem("UAAA2345", "", "botany", "Ada Leaf", "Plant Review", "journalArticle")
 	addItem("UB", "", "astronomy", "Bea Star", "Space Review", "book")
 	addItem("NONE", "", "chemistry", "Cal Stone", "Chemistry Review", "journalArticle")
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -107,7 +107,7 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 	if len(envelope.Results) != 3 {
 		t.Fatalf("results: %+v", envelope.Results)
 	}
-	want := map[string]string{"UA": "COLA", "UB": "COLB"}
+	want := map[string]string{"UAAA2345": "COLA", "UB": "COLB"}
 	for _, row := range envelope.Results {
 		if row.Key == "NONE" {
 			if row.Suggestions == nil || len(row.Suggestions) != 0 || row.Action != "" {
@@ -121,7 +121,7 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 		}
 		// UA's tag, creator and venue all occur in COLA and COLC, so each
 		// vote is split in two; UB's signals occur only in COLB.
-		wantScore := map[string]float64{"UA": 0.5, "UB": 1}[row.Key]
+		wantScore := map[string]float64{"UAAA2345": 0.5, "UB": 1}[row.Key]
 		if row.Suggestions[0].Score != wantScore || row.Suggestions[0].Name == "" {
 			t.Fatalf("score/name for %s: %+v", row.Key, row.Suggestions[0])
 		}
@@ -131,7 +131,7 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 				t.Errorf("%s reasons %q lack %q", row.Key, reasons, signal)
 			}
 		}
-		if row.Key == "UA" && (len(row.Suggestions) != 2 ||
+		if row.Key == "UAAA2345" && (len(row.Suggestions) != 2 ||
 			row.Suggestions[1].Collection != "COLC" || row.Suggestions[1].Score != 0.17) {
 			t.Fatalf("top-three voting did not discount the one-hit collection: %+v", row)
 		}
@@ -154,7 +154,7 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys, err := resolveKeys(nil, "-", bytes.NewReader(pipe))
-	if err != nil || !reflect.DeepEqual(keys, []string{"UA"}) {
+	if err != nil || !reflect.DeepEqual(keys, []string{"UAAA2345"}) {
 		t.Fatalf("move --keys-from pipe: %v, %v", keys, err)
 	}
 }
@@ -211,7 +211,7 @@ func TestItemsUnfiledSuggestKeepsBestThreeAmongManyTies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range envelope.Results {
-		if row.Key != "UA" {
+		if row.Key != "UAAA2345" {
 			continue
 		}
 		for _, suggestion := range row.Suggestions {
@@ -241,7 +241,7 @@ func TestItemsUnfiledSuggestIsOptInAndRespectsFilters(t *testing.T) {
 	if bytes.Contains(plain, []byte(`"suggestions"`)) || bytes.Contains(plain, []byte(`"recommended_action"`)) {
 		t.Fatalf("plain output gained suggestion fields: %s", plain)
 	}
-	filtered, err := runUnfiledSuggestCommand(t, "--suggest", "--type", "book", "--limit", "1", "--suggest-limit", "1")
+	filtered, err := runUnfiledSuggestCommand(t, "--suggest", "--item-type", "book", "--limit", "1", "--suggest-limit", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestItemsUnfiledSuggestIsOptInAndRespectsFilters(t *testing.T) {
 func TestItemsUnfiledSuggestNeedsLocalStore(t *testing.T) {
 	isolateItemsSimilarStore(t)
 	_, err := runUnfiledSuggestCommand(t, "--suggest")
-	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "run 'zotio sync' first to enable collection suggestions") {
+	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "synced_store") {
 		t.Fatalf("missing local store exit 9: %v", err)
 	}
 }

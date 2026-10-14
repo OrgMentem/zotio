@@ -3,18 +3,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
-	"zotio/internal/cliutil"
 )
 
 type annotationExportItem struct {
@@ -35,8 +33,8 @@ type annotationSummary struct {
 	Text       string `json:"text"`
 	Comment    string `json:"comment"`
 	Page       string `json:"page"`
-	// ItemKey and ItemTitle name the bibliographic item the annotation
-	// belongs to (the attachment's parent). Only local search fills them.
+	// ItemKey and ItemTitle name the top-level item the annotation belongs to
+	// (the attachment's parent), filled whenever the owner could be read.
 	ItemKey   string `json:"item_key,omitempty"`
 	ItemTitle string `json:"item_title,omitempty"`
 }
@@ -45,25 +43,104 @@ type zoteroGetter interface {
 	Get(path string, params map[string]string) (json.RawMessage, error)
 }
 
+// annotationsExportFileResult reports an `annotations export --output` run.
+// Replaced says whether a file already at Output was replaced; under
+// --dry-run it says whether one would be, and nothing was written.
+type annotationsExportFileResult struct {
+	Output      string `json:"output"`
+	Format      string `json:"format"`
+	Items       int    `json:"items"`
+	Annotations int    `json:"annotations"`
+	Replaced    bool   `json:"replaced"`
+	DryRun      bool   `json:"dry_run,omitempty"`
+}
+
+func (r annotationsExportFileResult) message() string {
+	switch {
+	case r.DryRun && r.Replaced:
+		return fmt.Sprintf("Dry run: would export %d annotations from %d items to %s, replacing the existing file; nothing was written", r.Annotations, r.Items, r.Output)
+	case r.DryRun:
+		return fmt.Sprintf("Dry run: would export %d annotations from %d items to new file %s; nothing was written", r.Annotations, r.Items, r.Output)
+	case r.Replaced:
+		return fmt.Sprintf("Exported %d annotations from %d items to %s (replaced the existing file)", r.Annotations, r.Items, r.Output)
+	default:
+		return fmt.Sprintf("Exported %d annotations from %d items to %s", r.Annotations, r.Items, r.Output)
+	}
+}
+
+// groupAnnotationRows groups rows by the top-level item that owns them, in
+// order of first appearance. A row whose owner could not be read is grouped
+// under its attachment key.
+func groupAnnotationRows(rows []annotationRow) []annotationExportItem {
+	exports := make([]annotationExportItem, 0)
+	index := make(map[string]int)
+	for _, row := range rows {
+		key := row.Summary.ItemKey
+		if key == "" {
+			key = row.Summary.ParentItem
+		}
+		i, ok := index[key]
+		if !ok {
+			item := annotationExportItem{Key: key, Annotations: []annotationSummary{}}
+			if row.Owner != nil {
+				item.Title = zoteroString(row.Owner, "title")
+				item.Year = zoteroItemYear(row.Owner)
+				item.Authors = zoteroItemAuthors(row.Owner)
+				item.DOI = zoteroString(row.Owner, "DOI")
+			}
+			exports = append(exports, item)
+			i = len(exports) - 1
+			index[key] = i
+		}
+		summary := row.Summary
+		summary.ItemKey, summary.ItemTitle = "", ""
+		exports[i].Annotations = append(exports[i].Annotations, summary)
+	}
+	return exports
+}
+
 func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 	var flagTag string
+	var flagScope string
 	var flagOutput string
 	var flagFormat string
 	var flagLimit int
-	// prefer the local store unless --refresh.
+	// bypass the mirror fallback and read live only.
 	var refresh bool
 
 	cmd := &cobra.Command{
-		Use:         "export",
-		Short:       "Export annotations as markdown or JSON",
+		Use:   "export",
+		Short: "Export annotations as markdown or JSON",
+		Long: `Export annotations grouped by the top-level item that owns them. --limit caps
+the number of annotations exported, not the number of items scanned.
+--collection and --tag are shorthand for --scope collection:KEY and
+--scope tag:NAME; together they intersect.
+
+With --data-source auto (the default) the command reads live and serves the
+local mirror when Zotero is unreachable. --format json returns the
+{meta, results} envelope; under --json or --agent, --format markdown returns
+{"format", "content"}. With --output the result goes to the file and stdout
+reports what was written; under --dry-run nothing is written.`,
+		Example: `  zotio annotations export --collection ABCD2345 --output notes.md
+  zotio annotations export --scope "collection:ABCD2345 AND tag:to-read" --format json
+  zotio annotations export --limit 200 --output annotations.md --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if flagCollection != "" && flagTag != "" {
-				return usageErr(fmt.Errorf("use only one of --collection or --tag"))
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			scopeExpr, err := annotationScopeExpr(flagScope,
+				scopeSugarFor("collection", "collection", flagCollection),
+				scopeSugarFor("tag", "tag", flagTag))
+			if err != nil {
+				return err
+			}
+			if err := validateAnnotationScope(scopeExpr); err != nil {
+				return err
 			}
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
-			if flags.asJSON && !cmd.Flags().Changed("format") {
+			if !cmd.Flags().Changed("format") && (flags.asJSON || (flagOutput == "" && wantsJSONEnvelope(cmd.OutOrStdout(), flags))) {
 				format = "json"
 			}
 			switch format {
@@ -71,7 +148,6 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			default:
 				return usageErr(fmt.Errorf("invalid --format value %q: must be markdown or json", flagFormat))
 			}
-
 			if refresh && flags.dataSource == "local" {
 				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
 			}
@@ -86,114 +162,90 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			// Everything from here on reads the source and publishes. It runs
-			// under the output writer lock when --output names a file, so the
-			// lock precedes the first source read.
-			run := func() error {
-				path := "/items/top"
-				params := map[string]string{}
-				if flagCollection != "" {
-					path = "/collections/" + url.PathEscape(flagCollection) + "/items"
-				} else if flagTag != "" {
-					path = "/items"
-					params["tag"] = flagTag
-				}
-				items, _, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
+			collect := func() ([]annotationExportItem, DataProvenance, int, error) {
+				reader := newAnnotationReader(cmd, flags, readFlags, c)
+				result, err := reader.collect(cmd.Context(), annotationReadQuery{Scope: scopeExpr, Limit: flagLimit})
 				if err != nil {
-					return classifyAPIError(err, flags)
+					return nil, DataProvenance{}, 0, err
 				}
+				return groupAnnotationRows(result.Rows), result.Prov, len(result.Rows), nil
+			}
 
-				// fetch each candidate item's annotations
-				// in parallel instead of one sequential Get per item. The per-item
-				// Get goes through the client's shared (now race-safe) rate limiter,
-				// and FanoutRun returns results in source order so export ordering
-				// stays stable.
-				var candidates []map[string]any
-				for _, item := range items {
-					if zoteroItemHasChildren(item) && zoteroString(item, "key") != "" {
-						candidates = append(candidates, item)
-					}
+			if flagOutput == "" {
+				exports, prov, count, err := collect()
+				if err != nil {
+					return err
 				}
-				results, errs := cliutil.FanoutRun(cmd.Context(), candidates,
-					func(item map[string]any) string { return zoteroString(item, "key") },
-					func(fctx context.Context, item map[string]any) (annotationExportItem, error) {
-						key := zoteroString(item, "key")
-						childPath := "/items/" + url.PathEscape(key) + "/children"
-						data, _, err := resolveRead(fctx, c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
-						if err != nil {
-							return annotationExportItem{}, err
-						}
-						childItems, err := decodeZoteroItems(data)
-						if err != nil {
-							return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
-						}
-						annotations := annotationSummariesFromItems(childItems)
-						if len(annotations) == 0 {
-							return annotationExportItem{}, nil
-						}
-						return annotationExportItem{
-							Key:         key,
-							Title:       zoteroString(item, "title"),
-							Year:        zoteroItemYear(item),
-							Authors:     zoteroItemAuthors(item),
-							DOI:         zoteroString(item, "DOI"),
-							Annotations: annotations,
-						}, nil
-					})
-				if len(errs) > 0 {
-					e := errs[0].Err
-					var apiErr *client.APIError
-					if errors.As(e, &apiErr) {
-						return classifyAPIError(e, flags)
-					}
-					return e
-				}
-				exports := make([]annotationExportItem, 0, len(results))
-				for _, r := range results {
-					if len(r.Value.Annotations) == 0 {
-						continue
-					}
-					exports = append(exports, r.Value)
-				}
-
-				var out []byte
+				noteEmptyLocalAnnotations(cmd, prov, count)
 				if format == "json" {
-					out, err = json.MarshalIndent(exports, "", "  ")
-					if err != nil {
-						return err
-					}
-					out = append(out, '\n')
-				} else {
-					out = []byte(formatAnnotationExportMarkdown(exports))
+					return printCommandJSONEnvelope(cmd.OutOrStdout(), exports, flags, prov)
 				}
-				if flagOutput != "" {
-					// os.WriteFile left an existing file's mode alone, so preserve it
-					// rather than silently tightening permissions the user chose.
-					return withAtomicOutputFile(flagOutput, publishedOutputMode(flagOutput, 0o600), func(w io.Writer) error {
+				return printTextPayload(cmd, flags, "markdown", formatAnnotationExportMarkdown(exports))
+			}
+
+			result := annotationsExportFileResult{Output: flagOutput, Format: format, DryRun: flags.dryRun}
+			if flags.dryRun {
+				// --dry-run still reads the source so the preview reports real
+				// counts, but it creates no file: no output, no temporary and
+				// no <target>.lock sibling.
+				if result.Replaced, err = checkAtomicOutputTarget(flagOutput); err != nil {
+					return err
+				}
+				exports, prov, count, err := collect()
+				if err != nil {
+					return err
+				}
+				noteEmptyLocalAnnotations(cmd, prov, count)
+				result.Items, result.Annotations = len(exports), count
+			} else {
+				lockPath, canonicalTarget, err := outputWriterLockPath(flagOutput)
+				if err != nil {
+					return fmt.Errorf("resolving output path: %w", err)
+				}
+				// The lock is taken before the first source read so a busy
+				// target costs no API traffic, and it covers the publication.
+				if err := withPathWriterLock(cmd, lockPath, fmt.Sprintf("annotations export to %q", canonicalTarget), func() error {
+					var lockedErr error
+					if result.Replaced, lockedErr = checkAtomicOutputTarget(flagOutput); lockedErr != nil {
+						return lockedErr
+					}
+					exports, prov, count, lockedErr := collect()
+					if lockedErr != nil {
+						return lockedErr
+					}
+					noteEmptyLocalAnnotations(cmd, prov, count)
+					var out []byte
+					if format == "json" {
+						out, lockedErr = annotationEnvelopeJSON(exports, flags, prov)
+						if lockedErr != nil {
+							return lockedErr
+						}
+					} else {
+						out = []byte(formatAnnotationExportMarkdown(exports))
+					}
+					result.Items, result.Annotations = len(exports), count
+					return withAtomicOutputFile(flagOutput, publishedOutputMode(flagOutput, exportOutputFileMode), func(w io.Writer) error {
 						_, writeErr := w.Write(out)
 						return writeErr
 					})
+				}); err != nil {
+					return err
 				}
-				_, err = cmd.OutOrStdout().Write(out)
-				return err
 			}
-			if flagOutput == "" {
-				return run()
+			if flags.asJSON {
+				return printCommandJSON(cmd.OutOrStdout(), result, flags)
 			}
-			lockPath, canonicalTarget, err := outputWriterLockPath(flagOutput)
-			if err != nil {
-				return fmt.Errorf("resolving output path: %w", err)
-			}
-			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("annotations export to %q", canonicalTarget), run)
+			fmt.Fprintln(cmd.ErrOrStderr(), result.message())
+			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope to items in this collection key")
-	cmd.Flags().StringVar(&flagTag, "tag", "", "Scope to items with this tag")
-	cmd.Flags().StringVar(&flagOutput, "output", "", "Output file path (default: stdout)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Only annotations of items in this collection key (same as --scope collection:KEY)")
+	cmd.Flags().StringVar(&flagTag, "tag", "", "Only annotations of items with this tag (same as --scope tag:NAME)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
+	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "Output file path (default: stdout)")
 	cmd.Flags().StringVar(&flagFormat, "format", "markdown", "Output format (markdown or json)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of items to process")
-	// bypass the local store and fetch live.
-	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
+	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to export (0 = no limit)")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Read live only, with no local mirror fallback (same as --data-source live)")
 
 	return cmd
 }
@@ -289,24 +341,41 @@ func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *root
 	return all, provenance, nil
 }
 
-func printCommandJSONEnvelope(w io.Writer, v any, flags *rootFlags, prov DataProvenance) error {
+// annotationEnvelopeJSON renders v in the {meta, results} read envelope as
+// indented JSON. --select and --compact apply to the rows before wrapping, so
+// meta is never stripped.
+func annotationEnvelopeJSON(v any, flags *rootFlags, prov DataProvenance) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if flags.selectFields != "" {
-		data = filterFields(data, flags.selectFields)
-	} else if flags.compact {
-		data = compactFields(data)
-	}
-	wrapped, err := wrapWithProvenance(json.RawMessage(data), attachFreshness(prov, flags))
+	data, err = applyFieldFlags(data, flags)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	wrapped, err := wrapWithProvenance(data, attachFreshness(prov, flags))
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(wrapped); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func printCommandJSONEnvelope(w io.Writer, v any, flags *rootFlags, prov DataProvenance) error {
 	if flags.quiet {
 		return nil
 	}
-	return printOutput(w, wrapped, true)
+	out, err := annotationEnvelopeJSON(v, flags, prov)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(out)
+	return err
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

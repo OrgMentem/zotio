@@ -65,8 +65,8 @@ func TestItemsUnfiledCommandUsesLocalStore(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cmd := newItemsUnfiledCmd(&rootFlags{asJSON: true})
-	cmd.SetArgs([]string{"--type", "book"})
+	cmd := newItemsUnfiledCmd(&rootFlags{asJSON: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--item-type", "book"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})

@@ -140,8 +140,8 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 		item := items[0]
 		if item["itemType"] != "attachment" {
 			f.parentCreates++
-			f.parentKey = "PARENT1"
-			_, _ = fmt.Fprint(w, `{"success":{"0":"PARENT1"}}`)
+			f.parentKey = "PARENTAB"
+			_, _ = fmt.Fprint(w, `{"success":{"0":"PARENTAB"}}`)
 			return
 		}
 		linkMode, _ := item["linkMode"].(string)
@@ -322,11 +322,11 @@ func applyFlags() *rootFlags {
 const uploadFixturePDF = "%PDF-1.4\nstored upload fixture body\n%%EOF\n"
 
 func TestAttachmentsAddPreviewPlansWithoutDialing(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("preview: %v; stderr=%s", err, stderr)
 	}
@@ -344,12 +344,12 @@ func TestAttachmentsAddPreviewPlansWithoutDialing(t *testing.T) {
 }
 
 func TestAttachmentsAddStoredUploadsExactlyOnceAndRetryNoOps(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	pdf := []byte(uploadFixturePDF)
 	path := writeUploadFixture(t, "paper.pdf", pdf)
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("apply: %v; stderr=%s", err, stderr)
 	}
@@ -377,7 +377,7 @@ func TestAttachmentsAddStoredUploadsExactlyOnceAndRetryNoOps(t *testing.T) {
 	}
 
 	// Identical retry must reconcile to a no-op: no new child, no new upload.
-	env2, stderr2, err2 := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env2, stderr2, err2 := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err2 != nil {
 		t.Fatalf("retry: %v; stderr=%s", err2, stderr2)
 	}
@@ -440,12 +440,12 @@ func TestAttachmentsAddStoredReconcilesBeyondFirstChildPage(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFakeZoteroUpload(t, "PARENT1")
+			f := newFakeZoteroUpload(t, "PARENTAB")
 			f.children = pageTwoUploadChildren(tc.match)
 			setUploadTestEnv(t, f)
 			path := writeUploadFixture(t, "paper.pdf", pdf)
 
-			env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+			env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %v; stderr=%s", err, tc.wantErr, stderr)
 			}
@@ -471,14 +471,14 @@ func TestAttachmentsAddStoredReconcilesBeyondFirstChildPage(t *testing.T) {
 }
 
 func TestAttachmentsAddLinkedReconcilesBeyondFirstChildPage(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 	f.children = pageTwoUploadChildren(fakeUploadChild{
 		Key: "MATCH004", LinkMode: "linked_file", Path: path,
 	})
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
 	if err != nil {
 		t.Fatalf("linked reconciliation: %v; stderr=%s", err, stderr)
 	}
@@ -495,7 +495,7 @@ func TestAttachmentsAddLinkedReconcilesBeyondFirstChildPage(t *testing.T) {
 // bytes. A source that grows after preflight must fail before that early
 // acknowledgement can authorize registration of a truncated, wrong envelope.
 func TestRegisterStoredFileRefusesSourceGrownAfterPreflight(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.children = append(f.children, fakeUploadChild{Key: "ATT1", Filename: "paper.pdf"})
 	original := []byte(uploadFixturePDF)
 	req := uploadRequestFor(t, original)
@@ -523,13 +523,13 @@ func TestRegisterStoredFileRefusesSourceGrownAfterPreflight(t *testing.T) {
 }
 
 func TestAttachmentsAddResumesPendingChildWithoutDuplicateCreate(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	// A crashed earlier run created the child but never registered a file.
 	f.children = append(f.children, fakeUploadChild{Key: "ATT9", Filename: "paper.pdf"})
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("resume: %v; stderr=%s", err, stderr)
 	}
@@ -545,12 +545,12 @@ func TestAttachmentsAddResumesPendingChildWithoutDuplicateCreate(t *testing.T) {
 }
 
 func TestAttachmentsAddExistsShortCircuitsPayloadUpload(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.existsOnAuth = true
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("exists apply: %v; stderr=%s", err, stderr)
 	}
@@ -564,12 +564,12 @@ func TestAttachmentsAddExistsShortCircuitsPayloadUpload(t *testing.T) {
 }
 
 func TestAttachmentsAddConflictOnDifferentContentSameFilename(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.children = append(f.children, fakeUploadChild{Key: "USER1", Filename: "paper.pdf", MD5: "feedfacefeedfacefeedfacefeedface"})
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err == nil || !strings.Contains(err.Error(), "mutation incomplete") {
 		t.Fatalf("err = %v, want mutation incomplete from conflict", err)
 	}
@@ -591,7 +591,7 @@ func TestAttachmentsAddStoredReuseWinsOverEarlierConflict(t *testing.T) {
 	pdf := []byte(uploadFixturePDF)
 	digest := md5.Sum(pdf) //nolint:gosec // Zotero identifies stored files by MD5.
 	md5hex := hex.EncodeToString(digest[:])
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.children = []fakeUploadChild{
 		{Key: "USER1", Filename: "paper.pdf", MD5: "feedfacefeedfacefeedfacefeedface"},
 		{Key: "ATT1", Filename: "paper.pdf", MD5: md5hex},
@@ -599,7 +599,7 @@ func TestAttachmentsAddStoredReuseWinsOverEarlierConflict(t *testing.T) {
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", pdf)
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("reuse despite earlier conflict: %v; stderr=%s", err, stderr)
 	}
@@ -617,12 +617,12 @@ func TestAttachmentsAddStoredReuseWinsOverEarlierConflict(t *testing.T) {
 }
 
 func TestAttachmentsAddQuotaFailureIsActionable(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.quotaOnAuth = true
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err == nil {
 		t.Fatalf("want quota failure, got success: %+v", env)
 	}
@@ -638,12 +638,12 @@ func TestAttachmentsAddQuotaFailureIsActionable(t *testing.T) {
 
 func TestAttachmentsAddRateLimitedAuthorizationRetries(t *testing.T) {
 	fastRetryBackoff(t)
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	f.rateLimitOnce = true
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err != nil {
 		t.Fatalf("rate-limited apply: %v; stderr=%s", err, stderr)
 	}
@@ -657,7 +657,7 @@ func TestAttachmentsAddRateLimitedAuthorizationRetries(t *testing.T) {
 }
 
 func TestAttachmentsAddWriteTokenReplayReconcilesPendingChild(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
@@ -671,7 +671,7 @@ func TestAttachmentsAddWriteTokenReplayReconcilesPendingChild(t *testing.T) {
 	// other.pdf does not match paper.pdf, so reconcile finds nothing, create
 	// hits the replayed token, and the second reconcile still finds nothing:
 	// this must surface as a conflict for review, never a duplicate create.
-	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err == nil {
 		t.Fatalf("want conflict from burned write token, got %+v", env)
 	}
@@ -684,7 +684,7 @@ func TestAttachmentsAddWriteTokenReplayReconcilesPendingChild(t *testing.T) {
 	f.mu.Lock()
 	f.children = append(f.children, fakeUploadChild{Key: "ATT8", Filename: "paper.pdf"})
 	f.mu.Unlock()
-	env2, stderr2, err2 := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	env2, stderr2, err2 := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
 	if err2 != nil {
 		t.Fatalf("replay resume: %v; stderr=%s", err2, stderr2)
 	}
@@ -700,26 +700,26 @@ func TestAttachmentsAddWriteTokenReplayReconcilesPendingChild(t *testing.T) {
 }
 
 func TestAttachmentsAddMissingParentFailsWithNotFound(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "NOPE1234", path})
+	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "NPEABCDE", path})
 	if err == nil {
 		t.Fatalf("want missing-parent failure, got %+v", env)
 	}
 	item := env.Result.Items[0]
-	if item.Status != "failed" || !strings.Contains(fmt.Sprint(item.Reason), "parent item NOPE1234 not found") {
+	if item.Status != "failed" || !strings.Contains(fmt.Sprint(item.Reason), "parent item NPEABCDE not found") {
 		t.Fatalf("result item = %+v, want parent-not-found failure", item)
 	}
 }
 
 func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
 	if err != nil {
 		t.Fatalf("linked apply: %v; stderr=%s", err, stderr)
 	}
@@ -729,7 +729,7 @@ func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
 		t.Fatalf("linked result = %+v", item)
 	}
 
-	retry, retryStderr, retryErr := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	retry, retryStderr, retryErr := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
 	if retryErr != nil {
 		t.Fatalf("linked retry: %v; stderr=%s", retryErr, retryStderr)
 	}
@@ -757,7 +757,7 @@ func TestNewLinkedFileRequestDoesNotBufferWholeFile(t *testing.T) {
 		t.Fatalf("close large attachment: %v", err)
 	}
 
-	req, err := newLinkedFileRequest("PARENT1", path, "")
+	req, err := newLinkedFileRequest("PARENTAB", path, "")
 	if err != nil {
 		t.Fatalf("new linked request: %v", err)
 	}
@@ -923,21 +923,21 @@ func TestPostUploadPayloadSendsTheWholeEnvelopeWithADeclaredLength(t *testing.T)
 }
 
 func TestAttachmentsAddUsageValidation(t *testing.T) {
-	f := newFakeZoteroUpload(t, "PARENT1")
+	f := newFakeZoteroUpload(t, "PARENTAB")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", path, "--mode", "copy"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--mode must be stored or linked-file") {
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", path, "--mode", "copy"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--mode must be stored or linked-file") {
 		t.Fatalf("mode err = %v, want mode usage error", err)
 	}
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "../etc", path}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid parent item key") {
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "../etc", path}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid Zotero item key") {
 		t.Fatalf("key err = %v, want invalid-key usage error", err)
 	}
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", filepath.Join(t.TempDir(), "missing.pdf")}); err == nil || ExitCode(err) != 2 {
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", filepath.Join(t.TempDir(), "missing.pdf")}); err == nil || ExitCode(err) != 2 {
 		t.Fatalf("missing file err = %v, want usage error", err)
 	}
 	empty := writeUploadFixture(t, "empty.pdf", nil)
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", empty}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "is empty") {
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", empty}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "is empty") {
 		t.Fatalf("empty file err = %v, want usage error", err)
 	}
 }
@@ -1012,7 +1012,7 @@ func TestNewStoredUploadRequestDoesNotRetainFileContents(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	req, err := newStoredUploadRequest("PARENT1", path, "")
+	req, err := newStoredUploadRequest("PARENTAB", path, "")
 	if err != nil {
 		t.Fatalf("new stored request: %v", err)
 	}

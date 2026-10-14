@@ -650,13 +650,13 @@ func TestSyncIncrementalBatchesMemberRefetch(t *testing.T) {
 func TestSyncReapParsePlaneKeySet(t *testing.T) {
 	syncTestWithHumanFriendly(t, false)
 
-	keys, ok := parsePlaneKeySet(json.RawMessage("A1B2C3D4\nE5F6G7H8"))
-	if !ok || len(keys) != 2 || keys[0] != "A1B2C3D4" || keys[1] != "E5F6G7H8" {
-		t.Errorf("two lines = %v,%v, want [A1B2C3D4 E5F6G7H8],true", keys, ok)
+	keys, ok := parsePlaneKeySet(json.RawMessage("ABCD2345\nEFGH6789"))
+	if !ok || len(keys) != 2 || keys[0] != "ABCD2345" || keys[1] != "EFGH6789" {
+		t.Errorf("two lines = %v,%v, want [ABCD2345 EFGH6789],true", keys, ok)
 	}
-	keys, ok = parsePlaneKeySet(json.RawMessage("A1B2C3D4\n"))
-	if !ok || len(keys) != 1 || keys[0] != "A1B2C3D4" {
-		t.Errorf("trailing newline = %v,%v, want [A1B2C3D4],true", keys, ok)
+	keys, ok = parsePlaneKeySet(json.RawMessage("ABCD2345\n"))
+	if !ok || len(keys) != 1 || keys[0] != "ABCD2345" {
+		t.Errorf("trailing newline = %v,%v, want [ABCD2345],true", keys, ok)
 	}
 	keys, ok = parsePlaneKeySet(json.RawMessage(""))
 	if !ok || len(keys) != 0 {
@@ -667,13 +667,13 @@ func TestSyncReapParsePlaneKeySet(t *testing.T) {
 		t.Errorf("blank body = %v,%v, want [],true", keys, ok)
 	}
 	for name, body := range map[string]string{
-		"json array":   `["A1B2C3D4"]`,
-		"json object":  `{"key":"A1B2C3D4"}`,
+		"json array":   `["ABCD2345"]`,
+		"json object":  `{"key":"ABCD2345"}`,
 		"garbage":      `not json`,
-		"junk line":    "A1B2C3D4\nnot-a-key!",
+		"junk line":    "ABCD2345\nnot-a-key!",
 		"short key":    "SHORT",
 		"lowercase":    "a1b2c3d4",
-		"empty middle": "A1B2C3D4\n\n\n",
+		"empty middle": "ABCD2345\n\n\n",
 	} {
 		_, ok := parsePlaneKeySet(json.RawMessage(body))
 		if name == "empty middle" {
@@ -731,7 +731,7 @@ func TestSyncReapKeysListingSingleRequest(t *testing.T) {
 
 	t.Run("totalResultsMismatch", func(t *testing.T) {
 		stub := &syncReapStubClient{
-			bodies:      []string{"A1B2C3D4\nE5F6G7H8"},
+			bodies:      []string{"ABCD2345\nEFGH6789"},
 			headerValue: "5",
 		}
 		var out incrementalReapOutcome
@@ -742,7 +742,7 @@ func TestSyncReapKeysListingSingleRequest(t *testing.T) {
 
 	t.Run("totalResultsMatch", func(t *testing.T) {
 		stub := &syncReapStubClient{
-			bodies:      []string{"A1B2C3D4\nE5F6G7H8"},
+			bodies:      []string{"ABCD2345\nEFGH6789"},
 			headerValue: "2",
 		}
 		var out incrementalReapOutcome
@@ -755,7 +755,7 @@ func TestSyncReapKeysListingSingleRequest(t *testing.T) {
 	t.Run("missingHeader", func(t *testing.T) {
 		// No Total-Results at all is missing evidence, even with keys present.
 		stub := &syncReapStubClient{
-			bodies: []string{"A1B2C3D4\nE5F6G7H8"},
+			bodies: []string{"ABCD2345\nEFGH6789"},
 		}
 		var out incrementalReapOutcome
 		if _, complete := fetchPlaneKeySet(ctx, stub, "/collections", "collections", &out); complete {
@@ -785,9 +785,10 @@ func TestSyncReapKeysListingSingleRequest(t *testing.T) {
 
 // validReapKeys101 returns 101 distinct valid Zotero keys.
 func validReapKeys101() []string {
+	const alphabet = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
 	keys := make([]string, 0, 101)
 	for i := range 101 {
-		keys = append(keys, "KAAAAA"+string(rune('A'+i/26))+string(rune('A'+i%26)))
+		keys = append(keys, "KAAAAA"+string(alphabet[i/len(alphabet)])+string(alphabet[i%len(alphabet)]))
 	}
 	return keys
 }

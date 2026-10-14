@@ -34,7 +34,7 @@ type groupByResult struct {
 
 func runGroupByJSON(t *testing.T, db *store.Store, resourceType, field string) []groupByResult {
 	t.Helper()
-	rows, err := analyticsGroupRows(db, resourceType, field, 0)
+	rows, err := analyticsGroupRows(db, resourceType, "", field, 0)
 	if err != nil {
 		t.Fatalf("analyticsGroupRows: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestAnalyticsTypeFiltersItemsAndRejectsUnknown(t *testing.T) {
 		}
 	}
 
-	scope, err := analyticsScopeForType(db, "journalArticle")
+	scope, err := analyticsScopeForType(db, "", "journalArticle")
 	if err != nil {
 		t.Fatalf("journalArticle scope: %v", err)
 	}
@@ -194,17 +194,17 @@ func TestAnalyticsTypeFiltersItemsAndRejectsUnknown(t *testing.T) {
 	if scope.resourceType != "items" || scope.itemType != "journalArticle" {
 		t.Fatalf("scope = %+v, want items filtered to journalArticle", scope)
 	}
-	_, err = analyticsScopeForType(db, "bogusType")
-	if err == nil || !strings.Contains(err.Error(), "unknown analytics type") {
-		t.Fatalf("bogusType error = %v, want unknown analytics type", err)
+	_, err = analyticsScopeForType(db, "", "bogusType")
+	if err == nil || !strings.Contains(err.Error(), "unknown --item-type") {
+		t.Fatalf("bogusType error = %v, want unknown --item-type", err)
 	}
 	// A wrong --type is operator input, so it exits as a usage error and
 	// names the accepted values instead of leaving the next try to guesswork.
 	if got := ExitCode(err); got != 2 {
 		t.Fatalf("bogusType exit code = %d, want 2 (usage)", got)
 	}
-	if !strings.Contains(err.Error(), "journalArticle") || !strings.Contains(err.Error(), "collections") {
-		t.Fatalf("bogusType error = %q, want the valid item types and resource kinds listed", err)
+	if !strings.Contains(err.Error(), "journalArticle") {
+		t.Fatalf("bogusType error = %q, want the valid item types listed", err)
 	}
 }
 
@@ -219,7 +219,7 @@ func TestAnalyticsGroupByCollectionHonorsLimit(t *testing.T) {
 			t.Fatalf("seed item: %v", err)
 		}
 	}
-	rows, err := analyticsGroupRows(db, "items", "collection", 1)
+	rows, err := analyticsGroupRows(db, "items", "", "collection", 1)
 	if err != nil {
 		t.Fatalf("collection grouping: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestAnalyticsCommandReportsFilteredItemTypeCount(t *testing.T) {
 	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--db", dbPath, "--type", "journalArticle"})
+	cmd.SetArgs([]string{"--db", dbPath, "--item-type", "journalArticle"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics command: %v", err)
 	}
@@ -346,9 +346,10 @@ func TestAnalyticsCommandRejectsInvalidLimit(t *testing.T) {
 	cmd := newAnalyticsCmd(&rootFlags{})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--limit", "0"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--limit must be greater than zero") {
-		t.Fatalf("invalid limit error = %v", err)
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year", "--limit", "-1"})
+	err = cmd.Execute()
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("negative limit error = %v (exit %d), want usage exit 2", err, ExitCode(err))
 	}
 }
 
@@ -380,103 +381,20 @@ type nonexistentDBTestCase struct {
 	check  func(t *testing.T, out string)
 }
 
+// A missing mirror is an unsynced store: exit 9, not an empty report.
+func TestAnalyticsMissingMirrorIsPrecondition(t *testing.T) {
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "missing.db"), "--type", "items"})
+	if code := ExitCode(cmd.Execute()); code != 9 {
+		t.Fatalf("exit = %d, want 9 (precondition)", code)
+	}
+}
+
 func TestNonexistentDB_ReportsNoData(t *testing.T) {
 	cases := []nonexistentDBTestCase{
-		{
-			name:   "analytics/human/empty",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
-				if len(env.Results) != 0 {
-					t.Fatalf("results = %v; want empty array", env.Results)
-				}
-			},
-		},
-		{
-			name:   "analytics/json/empty",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{asJSON: true},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
-				if len(env.Results) != 0 {
-					t.Fatalf("results = %v; want empty array", env.Results)
-				}
-			},
-		},
-		{
-			name:   "analytics/human/type/items",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items"} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
-				if len(env.Results) != 1 {
-					t.Fatalf("results len = %d, want 1 zero row: %s", len(env.Results), out)
-				}
-				row := env.Results[0]
-				if got := analyticsIntFromAny(row["count"]); got != 0 {
-					t.Fatalf("count = %v; want 0", row["count"])
-				}
-				if got := row["resource_type"]; got != "items" {
-					t.Fatalf("resource_type = %v; want items", got)
-				}
-			},
-		},
-		{
-			name:   "analytics/json/type/journalArticle",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{asJSON: true},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "journalArticle"} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, []byte(out))
-				if len(env.Results) != 1 {
-					t.Fatalf("results len = %d, want 1: %s", len(env.Results), out)
-				}
-				row := env.Results[0]
-				if got := analyticsIntFromAny(row["count"]); got != 0 {
-					t.Fatalf("count = %v; want 0", got)
-				}
-				if got := row["resource_type"]; got != "items" {
-					t.Fatalf("resource_type = %v; want items", got)
-				}
-				if got := row["item_type"]; got != "journalArticle" {
-					t.Fatalf("item_type = %v; want journalArticle", got)
-				}
-			},
-		},
-		{
-			name:   "analytics/json/group-by/year",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{asJSON: true},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items", "--group-by", "year"} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
-				if len(env.Results) != 0 {
-					t.Fatalf("group-by JSON results = %v; want empty array", env.Results)
-				}
-			},
-		},
-		{
-			name:   "analytics/piped_default/group-by/year",
-			newCmd: newAnalyticsCmd,
-			flags:  &rootFlags{},
-			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items", "--group-by", "year"} },
-			check: func(t *testing.T, out string) {
-				t.Helper()
-				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
-				if len(env.Results) != 0 {
-					t.Fatalf("piped default group-by results = %v; want empty array", env.Results)
-				}
-			},
-		},
 		{
 			name:   "workflow/human/no-data",
 			newCmd: newWorkflowStatusCmd,

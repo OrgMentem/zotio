@@ -13,7 +13,7 @@ import (
 // account, so a vault note recorded for users/111 must not take the text of a
 // same-key note the desktop serves from users/222.
 func TestFxdVaultRefusesNoteServedFromAnotherLibrary(t *testing.T) {
-	yes := rootFlags{yes: true, maxChanges: -1, asJSON: true}
+	yes := rootFlags{yes: true, maxChanges: -1, allowDestructive: true, asJSON: true}
 	for _, tc := range []struct {
 		name   string
 		region string
@@ -36,7 +36,7 @@ func TestFxdVaultRefusesNoteServedFromAnotherLibrary(t *testing.T) {
 			outDir := t.TempDir()
 			path, before := vltWriteNote(t, outDir, "users/111", tc.region)
 
-			args := append(append([]string(nil), tc.args...), "--out", outDir)
+			args := append(append([]string(nil), tc.args...), "--vault", outDir)
 			if _, err := vltRun(t, tc.newCmd, yes, args...); err == nil {
 				t.Fatal("run succeeded, want a refusal for a note served from another library")
 			}

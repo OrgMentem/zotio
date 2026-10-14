@@ -1,7 +1,8 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // One write protocol, asserted once over every command that implements it:
-// plan without --yes, touch no network under --dry-run, and refuse to write
-// when the write plane reports no version to precondition on.
+// plan without --yes, send no mutating request under --dry-run (reads still
+// run, so the plan reports real versions and no-ops), and refuse to write when
+// the write plane reports no version to precondition on.
 //
 // These are properties of the write-safety contract, not of any one command,
 // so a command joins by adding a row here. Each command used to carry its own
@@ -24,12 +25,12 @@ import (
 // writeCommandCase is one command's binding to the shared protocol.
 type writeCommandCase struct {
 	name string
-	// newServer builds the K1 fixture whose write plane reports version.
+	// newServer builds the KEYAAAA2 fixture whose write plane reports version.
 	newServer func(t *testing.T, version string) *writePlaneTestServer
 	// run executes the command. A mutation-incomplete error is tolerated only
 	// when the envelope carries a Result for the caller to assert against.
 	run func(t *testing.T, srv *writePlaneTestServer, flags *rootFlags, args ...string) mutation.Envelope
-	// argSets each plan exactly one change against item K1.
+	// argSets each plan exactly one change against item KEYAAAA2.
 	argSets []writeCommandArgs
 }
 
@@ -50,8 +51,8 @@ func writeCommandCases() []writeCommandCase {
 			name: "items move",
 			newServer: func(t *testing.T, version string) *writePlaneTestServer {
 				return writePlaneTestNewItemServer(t, "collections",
-					map[string]string{"K1": version},
-					map[string][]string{"K1": {"SOURCE"}})
+					map[string]string{"KEYAAAA2": version},
+					map[string][]string{"KEYAAAA2": {"SRCAAAA2"}})
 			},
 			run: func(t *testing.T, _ *writePlaneTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 				t.Helper()
@@ -61,14 +62,14 @@ func writeCommandCases() []writeCommandCase {
 				}
 				return env
 			},
-			argSets: []writeCommandArgs{{args: []string{"--to", "TARGET", "K1"}}},
+			argSets: []writeCommandArgs{{args: []string{"--to", "TARGET22", "KEYAAAA2"}}},
 		},
 		{
 			name: "items tags",
 			newServer: func(t *testing.T, version string) *writePlaneTestServer {
 				return writePlaneTestNewItemServer(t, "tags",
-					map[string]string{"K1": version},
-					map[string][]map[string]any{"K1": {{"tag": "existing", "type": float64(0)}}})
+					map[string]string{"KEYAAAA2": version},
+					map[string][]map[string]any{"KEYAAAA2": {{"tag": "existing", "type": float64(0)}}})
 			},
 			run: func(t *testing.T, srv *writePlaneTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 				t.Helper()
@@ -77,9 +78,9 @@ func writeCommandCases() []writeCommandCase {
 			},
 			// Add and remove reach the write plane by different plan paths.
 			argSets: []writeCommandArgs{
-				{args: []string{"add", "--tag", "fresh", "K1"}},
-				{args: []string{"add", "--automatic", "--tag", "fresh", "K1"}, wantTagType: 1},
-				{args: []string{"remove", "--tag", "existing", "K1"}},
+				{args: []string{"add", "--tag", "fresh", "KEYAAAA2"}},
+				{args: []string{"add", "--automatic", "--tag", "fresh", "KEYAAAA2"}, wantTagType: 1},
+				{args: []string{"remove", "--tag", "existing", "KEYAAAA2"}},
 			},
 		},
 	}
@@ -96,18 +97,17 @@ func TestWriteCommandsPreviewWriteNothing(t *testing.T) {
 				if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 					t.Fatalf("env = %+v, want preview plan with one change", env)
 				}
-				if srv.patchCounts["K1"] != 0 {
-					t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+				if srv.patchCounts["KEYAAAA2"] != 0 {
+					t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["KEYAAAA2"])
 				}
 			})
 		}
 	}
 }
 
-// --dry-run must not reach the network at all, not even for the version read
-// that a real write needs. A dry run that fetches versions is a dry run that
-// fails when the API is down, which is when people reach for it.
-func TestWriteCommandsDryRunTouchesNoNetwork(t *testing.T) {
+// --dry-run reads (the same reads as the apply, so the plan carries real
+// versions and real no-ops) but sends no mutating request.
+func TestWriteCommandsDryRunReadsButNeverWrites(t *testing.T) {
 	for _, tc := range writeCommandCases() {
 		for _, set := range tc.argSets {
 			t.Run(tc.name+" "+strings.Join(set.args, " "), func(t *testing.T) {
@@ -119,8 +119,11 @@ func TestWriteCommandsDryRunTouchesNoNetwork(t *testing.T) {
 				if set.wantTagType != 0 && env.Plan.Operations[0].Changes[0].TagType != set.wantTagType {
 					t.Fatalf("planned tag type = %d, want %d", env.Plan.Operations[0].Changes[0].TagType, set.wantTagType)
 				}
-				if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
-					t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
+				if srv.getCounts["KEYAAAA2"] == 0 || srv.patchCounts["KEYAAAA2"] != 0 {
+					t.Fatalf("requests: GET=%d PATCH=%d, want the planning read and no write", srv.getCounts["KEYAAAA2"], srv.patchCounts["KEYAAAA2"])
+				}
+				if env.Plan.Operations[0].ExpectedVersion != 42 {
+					t.Fatalf("expected_version = %d, want the item's version 42 from the read", env.Plan.Operations[0].ExpectedVersion)
 				}
 			})
 		}
@@ -142,8 +145,8 @@ func TestWriteCommandsFailClosedOnZeroVersion(t *testing.T) {
 			if env.Result.Items[0].Status != "failed" {
 				t.Fatalf("status = %q, want failed (zero version must fail closed)", env.Result.Items[0].Status)
 			}
-			if srv.patchCounts["K1"] != 0 {
-				t.Fatalf("PATCH count = %d, want 0 (no request when version is 0)", srv.patchCounts["K1"])
+			if srv.patchCounts["KEYAAAA2"] != 0 {
+				t.Fatalf("PATCH count = %d, want 0 (no request when version is 0)", srv.patchCounts["KEYAAAA2"])
 			}
 		})
 	}
@@ -160,7 +163,7 @@ func TestWritePlanePatchHelpersRefuseAbsentVersion(t *testing.T) {
 		{
 			name: "patchItemCollections",
 			patch: func(c *client.Client, path string) (string, any, error) {
-				return patchItemCollections(c, path, 0, []string{"TARGET"})
+				return patchItemCollections(c, path, 0, []string{"TARGET22"})
 			},
 		},
 		{
@@ -179,7 +182,7 @@ func TestWritePlanePatchHelpersRefuseAbsentVersion(t *testing.T) {
 			c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
 			c.NoCache = true
 
-			status, reason, err := tc.patch(c, "/users/0/items/K1")
+			status, reason, err := tc.patch(c, "/users/0/items/KEYAAAA2")
 			if err == nil {
 				t.Fatalf("%s with version 0: err = nil, want error", tc.name)
 			}

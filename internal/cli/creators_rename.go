@@ -29,21 +29,15 @@ The rename PATCHes each affected item with its full creators array and a
 version precondition, preserving creatorType, creator order, and unrelated
 creators. It handles both creator shapes: firstName/lastName and a single name
 field.`,
-		Example: `  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock"
-  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --yes
-  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD1234`,
-		Annotations: map[string]string{
-			"zotio:endpoint":                   "creators.rename",
-			"zotio:method":                     "PATCH",
-			"zotio:path":                       "/items/{itemKey}",
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
-		},
+		Example: `  # Without --allow-destructive the preview is refused (ok:false, destructive_opt_in_required)
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive --yes
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD2345 --allow-destructive`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			if flagFrom == "" {
 				return usageErr(fmt.Errorf("required flag %q not set", "from"))
 			}
@@ -105,11 +99,7 @@ field.`,
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "creators.rename", ops)
-			renderErr := renderMutation(cmd, flags, env, creatorRenameSingleLine(flagFrom, flagTo))
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, creatorRenameSingleLine(flagFrom, flagTo))
 		},
 	}
 	cmd.Flags().StringVar(&flagFrom, "from", "", "Old creator display name")

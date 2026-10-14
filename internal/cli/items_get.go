@@ -17,7 +17,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 		Use:   "get <itemKey>",
 		Short: "Get a single item by key",
 		// Use an item-key placeholder, not an API-token placeholder.
-		Example:     "  zotio items get ABCD1234",
+		Example:     "  zotio items get ABCD2345",
 		Annotations: map[string]string{"zotio:endpoint": "items.get", "zotio:method": "GET", "zotio:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `items get K1 K2` used to read K1 and drop K2 on
@@ -26,6 +26,9 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 		// request that exits 0.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateEnumFlag("--format", flagFormat, itemsFormatValues); err != nil {
+				return err
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -49,11 +52,12 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, ferr := applyFieldFlags(data, flags)
+				if ferr != nil {
+					return ferr
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

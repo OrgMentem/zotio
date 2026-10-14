@@ -14,7 +14,7 @@ func TestClassifyHTTPError(t *testing.T) {
 	}{
 		{"fetching items: HTTP 409: conflict", HTTPErrConflict},
 		{"HTTP 400: missing api key", HTTPErrBadRequestAuth},
-		{"HTTP 400: malformed cursor", HTTPErrOther}, // 400 without auth signal
+		{"HTTP 400: malformed cursor", HTTPErrBadRequest}, // 400 without auth signal
 		{"HTTP 401: unauthorized", HTTPErrUnauthorized},
 		{"HTTP 403: forbidden by resource ACL", HTTPErrForbidden},
 		{"HTTP 404: not found", HTTPErrNotFound},

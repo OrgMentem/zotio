@@ -34,31 +34,21 @@ type tagRenameUpdate struct {
 func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	var flagFrom string
 	var flagTo string
-	var flagLimit int
+	var flagPageSize int
 
 	cmd := &cobra.Command{
 		Use:   "rename --from <oldTag> --to <newTag>",
 		Short: "Rename a tag across matching items",
-		Annotations: map[string]string{
-			"zotio:endpoint":                   "tags.rename",
-			"zotio:method":                     "PATCH",
-			"zotio:path":                       "/items/{itemKey}",
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
-		},
-		Args: cobra.NoArgs,
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagFrom == "" {
-				return fmt.Errorf("required flag %q not set", "from")
+				return usageErr(fmt.Errorf("required flag %q not set", "from"))
 			}
 			if flagTo == "" {
-				return fmt.Errorf("required flag %q not set", "to")
+				return usageErr(fmt.Errorf("required flag %q not set", "to"))
 			}
-			if flagLimit <= 0 {
-				return fmt.Errorf("--limit must be greater than zero")
+			if flagPageSize <= 0 {
+				return usageErr(fmt.Errorf("invalid --page-size %d: must be greater than zero", flagPageSize))
 			}
 			// Renaming a tag to itself used to PATCH every carrier: item versions
 			// bumped, the journal gained a meaningless run, and other clients saw
@@ -93,7 +83,7 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				}
 				// --dry-run controls the mutation engine, not the discovery GETs.
 				selectClient.DryRun = false
-				updates, matched, selectErr = listTagRenameUpdates(selectClient, flagFrom, flagTo, flagLimit)
+				updates, matched, selectErr = listTagRenameUpdates(selectClient, flagFrom, flagTo, flagPageSize)
 				if selectErr != nil {
 					return classifyAPIError(selectErr, flags)
 				}
@@ -129,16 +119,12 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "tags.rename", ops)
-			renderErr := renderMutation(cmd, flags, env, tagRenameSingleLine(flagFrom, flagTo))
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, tagRenameSingleLine(flagFrom, flagTo))
 		},
 	}
 	cmd.Flags().StringVar(&flagFrom, "from", "", "Old tag name")
 	cmd.Flags().StringVar(&flagTo, "to", "", "New tag name")
-	cmd.Flags().IntVar(&flagLimit, "limit", 100, "Maximum number of items to process per page")
+	cmd.Flags().IntVar(&flagPageSize, "page-size", 100, "Items to fetch per page while selecting carriers of the tag (1-100)")
 
 	return cmd
 }

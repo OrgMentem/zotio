@@ -28,9 +28,8 @@ func newCollectionMoveTestServer(t *testing.T) *collectionMoveTestServer {
 	ts := &collectionMoveTestServer{}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ts.requestPaths = append(ts.requestPaths, r.Method+" "+r.URL.Path)
-		if r.URL.Path != "/users/0/collections/COLL" {
-			t.Errorf("unexpected request path %q", r.URL.Path)
-			http.NotFound(w, r)
+		if r.URL.Path != "/users/0/collections/CLCTAB23" && r.URL.Path != "/users/0/collections/PRNTAB23" {
+			http.Error(w, "Collection not found", http.StatusNotFound)
 			return
 		}
 		switch r.Method {
@@ -38,7 +37,7 @@ func newCollectionMoveTestServer(t *testing.T) *collectionMoveTestServer {
 			ts.getCount++
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Last-Modified-Version", "77")
-			_, _ = w.Write([]byte(`{"key":"COLL","version":77,"data":{"key":"COLL","name":"Child","parentCollection":false}}`))
+			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":77,"data":{"key":"CLCTAB23","name":"Child","parentCollection":false}}`))
 		case http.MethodPut:
 			ts.putCount++
 			ts.putHeader = r.Header.Get("If-Unmodified-Since-Version")
@@ -71,30 +70,30 @@ func runCollectionsMoveTestCmd(t *testing.T, srv *collectionMoveTestServer, flag
 }
 
 // TestCollectionsMovePreviewWritesNothing pins one contract across every
-// preview mode: emit the shared preview envelope (nothing under --quiet) and
-// issue not one HTTP request.
+// preview mode: emit the shared preview envelope (nothing under --quiet), run
+// the same reads as apply (the collection and the new parent), and write nothing.
 func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
 	tests := []struct {
 		name      string
 		flags     *rootFlags
 		wantEmpty bool
 	}{
-		{name: "default_preview", flags: &rootFlags{}},
-		{name: "dry_run", flags: &rootFlags{dryRun: true}},
-		{name: "agent_preview", flags: &rootFlags{asJSON: true, agent: true}},
-		{name: "quiet_preview", flags: &rootFlags{quiet: true}, wantEmpty: true},
+		{name: "default_preview", flags: &rootFlags{maxChanges: -1}},
+		{name: "dry_run", flags: &rootFlags{dryRun: true, maxChanges: -1}},
+		{name: "agent_preview", flags: &rootFlags{asJSON: true, agent: true, maxChanges: -1}},
+		{name: "quiet_preview", flags: &rootFlags{quiet: true, maxChanges: -1}, wantEmpty: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newCollectionMoveTestServer(t)
 
-			out, stderr, err := runCollectionsMoveTestCmd(t, srv, tt.flags, "--to", "PARENT", "COLL")
+			out, stderr, err := runCollectionsMoveTestCmd(t, srv, tt.flags, "--to", "PRNTAB23", "CLCTAB23")
 			if err != nil {
 				t.Fatalf("collections move preview: %v; stderr=%s", err, stderr)
 			}
-			if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
-				t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
+			if got, want := strings.Join(srv.requestPaths, ","), "GET /users/0/collections/CLCTAB23,GET /users/0/collections/PRNTAB23"; got != want {
+				t.Fatalf("requests = %q, want the same reads as apply and no write: %q", got, want)
 			}
 			if tt.wantEmpty {
 				if out != "" {
@@ -102,22 +101,21 @@ func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(out, "COLL") || !strings.Contains(out, "PARENT") {
+			if !strings.Contains(out, "CLCTAB23") || !strings.Contains(out, "PRNTAB23") {
 				t.Fatalf("preview %q does not show the planned move", out)
 			}
 			if tt.flags.asJSON {
-				var env struct {
-					Action  string         `json:"action"`
-					Key     string         `json:"key"`
-					Body    map[string]any `json:"body"`
-					DryRun  bool           `json:"dry_run"`
-					Success bool           `json:"success"`
-				}
+				var env mutation.Envelope
 				if err := json.Unmarshal([]byte(out), &env); err != nil {
 					t.Fatalf("preview is not valid JSON: %v\n%s", err, out)
 				}
-				if env.Action != "move" || env.Key != "COLL" || !env.DryRun || env.Success || env.Body["parentCollection"] != "PARENT" {
-					t.Fatalf("envelope = %+v, want planned move of COLL under PARENT", env)
+				if !env.OK || env.Mode != "preview" || env.Operation != "collections.move" || len(env.Plan.Operations) != 1 {
+					t.Fatalf("envelope = %+v, want an ok collections.move preview with one operation", env)
+				}
+				op := env.Plan.Operations[0]
+				body, _ := op.Changes[0].Add.(map[string]any)
+				if op.Key != "CLCTAB23" || body["parentCollection"] != "PRNTAB23" {
+					t.Fatalf("operation = %+v, want planned move of CLCTAB23 under PRNTAB23", op)
 				}
 			}
 		})
@@ -127,21 +125,21 @@ func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
 func TestCollectionsMoveApplyGetsThenPutsWithVersionPrecondition(t *testing.T) {
 	srv := newCollectionMoveTestServer(t)
 
-	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PRNTAB23", "CLCTAB23")
 	if err != nil {
 		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
 	}
-	if srv.getCount != 1 || srv.putCount != 1 {
-		t.Fatalf("GET=%d PUT=%d requests=%v, want one GET then one PUT", srv.getCount, srv.putCount, srv.requestPaths)
+	if srv.getCount != 2 || srv.putCount != 1 {
+		t.Fatalf("GET=%d PUT=%d requests=%v, want the collection and parent reads then one PUT", srv.getCount, srv.putCount, srv.requestPaths)
 	}
-	if got, want := strings.Join(srv.requestPaths, ","), "GET /users/0/collections/COLL,PUT /users/0/collections/COLL"; got != want {
+	if got, want := strings.Join(srv.requestPaths, ","), "GET /users/0/collections/CLCTAB23,GET /users/0/collections/PRNTAB23,PUT /users/0/collections/CLCTAB23"; got != want {
 		t.Fatalf("request order = %q, want %q", got, want)
 	}
 	if srv.putHeader != "77" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want 77", srv.putHeader)
 	}
-	if srv.putBody["parentCollection"] != "PARENT" {
-		t.Fatalf("PUT body = %+v, want parentCollection PARENT", srv.putBody)
+	if srv.putBody["parentCollection"] != "PRNTAB23" {
+		t.Fatalf("PUT body = %+v, want parentCollection PRNTAB23", srv.putBody)
 	}
 }
 
@@ -156,7 +154,7 @@ func TestCollectionsMoveIsJournaled(t *testing.T) {
 
 	srv := newCollectionMoveTestServer(t)
 
-	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PRNTAB23", "CLCTAB23")
 	if err != nil {
 		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
 	}
@@ -177,7 +175,7 @@ func TestCollectionsMoveIsJournaled(t *testing.T) {
 func TestCollectionsMoveHonorsMaxChanges(t *testing.T) {
 	srv := newCollectionMoveTestServer(t)
 
-	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: 0}, "--to", "PARENT", "COLL")
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: 0}, "--to", "PRNTAB23", "CLCTAB23")
 	if err == nil {
 		t.Fatalf("collections move at cap 0 = nil error, want max-changes refusal; stderr=%s", stderr)
 	}
@@ -187,13 +185,13 @@ func TestCollectionsMoveHonorsMaxChanges(t *testing.T) {
 }
 
 // TestCollectionsMoveSendsVersionHeader confirms the version-read precondition
-// survives the runMutation rewrite: the read must stay outside the gated
-// Apply closure, still land the If-Unmodified-Since-Version header on the
-// PUT, and a failing version read must abort before any PUT is attempted.
+// survives the runMutation rewrite: the version read happens before the plan
+// is built (preview and apply alike), the If-Unmodified-Since-Version header
+// lands on the PUT, and a failing version read aborts before any PUT.
 func TestCollectionsMoveSendsVersionHeader(t *testing.T) {
 	srv := newCollectionMoveTestServer(t)
 
-	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PRNTAB23", "CLCTAB23")
 	if err != nil {
 		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
 	}
@@ -217,11 +215,26 @@ func TestCollectionsMoveSendsVersionHeader(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--to", "PARENT", "COLL"})
+	cmd.SetArgs([]string{"--to", "PRNTAB23", "CLCTAB23"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("collections move with failing version GET = nil error, want failure")
 	}
 	if putAttempted {
 		t.Fatal("PUT was attempted despite a failed version GET")
+	}
+}
+
+// A collection that does not exist is exit 3 in preview and apply alike, so a
+// preview never says ok for a move the apply would refuse.
+func TestCollectionsMoveMissingCollectionIsNotFound(t *testing.T) {
+	for _, flags := range []*rootFlags{{maxChanges: -1}, {yes: true, maxChanges: -1}} {
+		srv := newCollectionMoveTestServer(t)
+		out, _, err := runCollectionsMoveTestCmd(t, srv, flags, "--to", "PRNTAB23", "MISSAB23")
+		if err == nil || ExitCode(err) != 3 {
+			t.Fatalf("yes=%v: error = %v, exit=%d; want not found (exit 3)", flags.yes, err, ExitCode(err))
+		}
+		if out != "" || srv.putCount != 0 {
+			t.Fatalf("yes=%v: out=%q puts=%d, want no envelope and no write", flags.yes, out, srv.putCount)
+		}
 	}
 }

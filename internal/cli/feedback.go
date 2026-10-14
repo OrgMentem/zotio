@@ -153,7 +153,7 @@ maintainer sees it.`,
 			}
 			text = strings.TrimSpace(text)
 			if text == "" {
-				return fmt.Errorf("feedback text is empty (pass arguments or --stdin)")
+				return usageErr(fmt.Errorf("feedback text is empty (pass arguments or --stdin)"))
 			}
 			truncated := false
 			if len(text) > feedbackMaxTextLen {
@@ -167,6 +167,25 @@ maintainer sees it.`,
 				Version:   version,
 				AgentID:   strings.TrimSpace(agentID),
 				Timestamp: time.Now().UTC(),
+			}
+			// --dry-run records nothing and sends nothing.
+			if flags.dryRun {
+				willSend := send || feedbackAutoSend()
+				if flags.asJSON {
+					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"recorded":   false,
+						"dry_run":    true,
+						"truncated":  truncated,
+						"would_send": willSend,
+						"entry":      entry,
+					}, flags)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would record feedback locally (%d chars%s)", len(text), map[bool]string{true: ", truncated"}[truncated])
+				if willSend {
+					fmt.Fprint(cmd.OutOrStdout(), " and POST it upstream")
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "; nothing was written or sent")
+				return nil
 			}
 			if err := withInstallationWriterLock(cmd, flags, "feedback", func() error {
 				return appendFeedback(entry)
@@ -249,6 +268,9 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
   zotio feedback list --limit 5
   zotio feedback list --json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
+			}
 			p, err := feedbackFilePath()
 			if err != nil {
 				return err
@@ -259,6 +281,7 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 					if flags.asJSON {
 						return printJSONFiltered(cmd.OutOrStdout(), []FeedbackEntry{}, flags)
 					}
+					fmt.Fprintln(cmd.OutOrStdout(), "No feedback entries found.")
 					return nil
 				}
 				return err
@@ -297,6 +320,6 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 			return printJSONFiltered(cmd.OutOrStdout(), entries, flags)
 		},
 	}
-	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of recent entries to return")
+	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of recent entries to return (0 = no limit)")
 	return cmd
 }

@@ -16,7 +16,7 @@ func newSearchesGetCmd(flags *rootFlags) *cobra.Command {
 		Use:   "get <searchKey>",
 		Short: "Get a specific saved search",
 		// use a saved-search key placeholder, not a token.
-		Example:     "  zotio searches get SEARCHKEY",
+		Example:     "  zotio searches get ABCD2345",
 		Annotations: map[string]string{"zotio:endpoint": "searches.get", "zotio:method": "GET", "zotio:path": "/searches/{searchKey}", "mcp:read-only": "true"},
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `searches get K1 K2` used to read K1 and drop K2 on
@@ -43,11 +43,9 @@ func newSearchesGetCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

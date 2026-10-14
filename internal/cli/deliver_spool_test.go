@@ -314,29 +314,9 @@ func TestDeliverSpoolZeroByteWriteFailureWarns(t *testing.T) {
 		t.Fatalf("captured length = %d, want zero after failed first write", spool.Len())
 	}
 
-	oldStderr := os.Stderr
-	stderrR, stderrW, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = stderrW
-	t.Cleanup(func() {
-		os.Stderr = oldStderr
-		_ = stderrR.Close()
-		_ = stderrW.Close()
-	})
-
-	deliverCapturedOutput(nil, context.Background(), DeliverSink{Scheme: "file", Target: target}, spool, false)
-	if err := stderrW.Close(); err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = oldStderr
-	stderr, err := io.ReadAll(stderrR)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(stderr), "warning: deliver to file:"+target+" failed:") {
-		t.Fatalf("stderr = %q, want delivery failure warning", stderr)
+	derr := deliverCapturedOutput(nil, context.Background(), DeliverSink{Scheme: "file", Target: target}, spool, false)
+	if derr == nil || !strings.Contains(derr.Error(), "deliver to file:"+target+" failed:") {
+		t.Fatalf("deliverCapturedOutput error = %v, want delivery failure", derr)
 	}
 }
 

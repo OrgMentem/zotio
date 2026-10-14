@@ -78,7 +78,7 @@ type pushResult struct {
 func newVaultPushCmd(flags *rootFlags) *cobra.Command {
 	var flagOut string
 	cmd := &cobra.Command{
-		Use:   "push [--out <dir>]",
+		Use:   "push [--vault <dir>]",
 		Short: "Write each note's \"## Notes\" region back to a Zotero child note",
 		Long: `Push the user-owned Notes region of each vault note to a single managed Zotero
 child note (Obsidian -> Zotero). Reads stay local; writes go to the Web API (an
@@ -91,7 +91,7 @@ Previews by default; nothing is written until you pass --yes. --dry-run always
 wins, even together with --yes. Each note write (create, update, or conflict)
 counts against --max-changes.`,
 		Example: `  zotio vault push --dry-run
-  zotio vault push --yes --out ~/vault/refs`,
+  zotio vault push --yes --vault ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -109,7 +109,7 @@ counts against --max-changes.`,
 			return withVaultWriterLock(cmd, outDir, "pushing vault", run)
 		},
 	}
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
 }
 
@@ -159,14 +159,10 @@ func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 	for _, n := range notes {
 		plan = append(plan, pushOne(c, outDir, targetLib, n, versions, flags, true))
 	}
-	if preview {
-		return printVaultWriteReport(cmd, plan, outDir, flags, preview, "Pushed", "Would push", warnings)
-	}
-
 	writeCount := 0
 	for _, r := range plan {
 		switch r.Status {
-		case "would create", "would update", "would conflict":
+		case "would_create", "would_update", "would_conflict":
 			writeCount++
 		}
 	}
@@ -174,8 +170,12 @@ func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 	for i := range ops {
 		ops[i] = mutation.Op{Kind: "vault_note_write", Changes: []mutation.Change{{Field: "note"}}}
 	}
-	if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-		return fmt.Errorf("%s", gateFailure.Message)
+	// A preview evaluates the same gate so it predicts what apply refuses.
+	if gateErr := vaultGateFailure(cmd, flags, "vault_push", ops); gateErr != nil {
+		return gateErr
+	}
+	if preview {
+		return printVaultWriteReport(cmd, plan, outDir, flags, preview, "Pushed", "Would push", warnings)
 	}
 
 	results := make([]pushResult, 0, len(notes))
@@ -238,12 +238,12 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 			return res
 		}
 		if preview {
-			res.Status = "would create"
+			res.Status = "would_create"
 			return res
 		}
 		created, err := createChildNote(c, n.itemKey, desiredHTML)
 		if err != nil {
-			res.Status = "error"
+			res.Status = "failed"
 			res.Note = pushErr(err, flags)
 			var conflict *childNoteCreateConflict
 			if errors.As(err, &conflict) {
@@ -262,7 +262,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 			}
 		}
 		if err := finalizeState(n, created.Key, srcHash, c); err != nil {
-			res.Status = "error"
+			res.Status = "failed"
 			res.Note = err.Error()
 			return res
 		}
@@ -300,17 +300,17 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 	// sending the write, so a copied or stale binding never overwrites a note
 	// that belongs to another item.
 	if _, _, err := getNote(c, n.state.NoteKey, n.itemKey, n.library); err != nil {
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = pushErr(err, flags)
 		return res
 	}
 
 	if preview {
 		if liveVer != n.state.NoteVersion {
-			res.Status = "would conflict"
+			res.Status = "would_conflict"
 			res.Note = "local and remote both changed"
 		} else {
-			res.Status = "would update"
+			res.Status = "would_update"
 		}
 		return res
 	}
@@ -326,7 +326,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	reconciled, err := patchNote(c, n.state.NoteKey, desiredHTML, n.state.NoteVersion)
 	if err == nil {
 		if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
-			res.Status = "error"
+			res.Status = "failed"
 			res.Note = ferr.Error()
 			return res
 		}
@@ -338,7 +338,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		return res
 	}
 	if apiStatus(err) != 412 {
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = pushErr(err, flags)
 		return res
 	}
@@ -346,7 +346,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	// Stale precondition. Read the live note and classify.
 	liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey, n.itemKey, n.library)
 	if gerr != nil {
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = pushErr(gerr, flags)
 		return res
 	}
@@ -356,7 +356,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		reconciled, rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer)
 		if rerr == nil {
 			if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
-				res.Status = "error"
+				res.Status = "failed"
 				res.Note = ferr.Error()
 				return res
 			}
@@ -378,7 +378,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		if sha256hex(liveHTML) == sha256hex(desiredHTML) {
 			return convergeNote(n, res, liveVer, liveHTML, srcHash)
 		}
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = pushErr(rerr, flags)
 		return res
 	case sha256hex(liveHTML) == sha256hex(desiredHTML):
@@ -406,7 +406,7 @@ func convergeNote(n *pushNote, res pushResult, liveVer int, liveHTML, srcHash st
 	n.state.RemoteHash = sha256hex(liveHTML)
 	n.state.SourceHash = srcHash
 	if werr := writeNoteState(n.path, n.state); werr != nil {
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = werr.Error()
 		return res
 	}
@@ -437,11 +437,14 @@ func finalizeState(n *pushNote, noteKey, srcHash string, c *client.Client) error
 func newVaultConflictsCmd(flags *rootFlags) *cobra.Command {
 	var flagOut string
 	cmd := &cobra.Command{
-		Use:         "conflicts [--out <dir>]",
+		Use:         "conflicts [--vault <dir>]",
 		Short:       "List unresolved Zotero note write-back conflicts",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
 				return err
@@ -477,7 +480,7 @@ func newVaultConflictsCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
 }
 
@@ -491,7 +494,7 @@ func newVaultResolveCmd(flags *rootFlags) *cobra.Command {
 		flagRecreate   bool
 	)
 	cmd := &cobra.Command{
-		Use:   "resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--out <dir>]",
+		Use:   "resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--vault <dir>]",
 		Short: "Resolve a note write-back conflict by keeping the vault or the remote copy",
 		Long: `Resolve a conflict (or a remotely-deleted note) by choosing a direction:
 
@@ -516,13 +519,13 @@ against --max-changes.`,
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagKeepVault && flagKeepRemote {
-				return fmt.Errorf("--keep-vault and --keep-remote are opposite directions; pass only one")
+				return usageErr(fmt.Errorf("--keep-vault and --keep-remote are opposite directions; pass only one"))
 			}
 			if flagKeepRemote && flagRecreate {
-				return fmt.Errorf("--recreate re-creates the remote note from the vault copy; not valid with --keep-remote")
+				return usageErr(fmt.Errorf("--recreate re-creates the remote note from the vault copy; not valid with --keep-remote"))
 			}
 			if !flagKeepVault && !flagKeepRemote && !flagRecreate {
-				return fmt.Errorf("refusing to resolve without a direction: pass --keep-vault, --keep-remote (or --recreate)")
+				return usageErr(fmt.Errorf("refusing to resolve without a direction: pass --keep-vault, --keep-remote (or --recreate)"))
 			}
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
@@ -547,7 +550,7 @@ against --max-changes.`,
 					}
 				}
 				if n == nil {
-					return fmt.Errorf("no vault note matches %q (by citekey, item key, or note key)", target)
+					return notFoundErr(fmt.Errorf("no vault note matches %q (by citekey, item key, or note key)", target))
 				}
 				if !n.hasRegion {
 					return fmt.Errorf("note %s has no notes region", filepath.Base(n.path))
@@ -570,11 +573,17 @@ against --max-changes.`,
 				}
 
 				out := cmd.OutOrStdout()
-				report := vaultResolveReport{DryRun: preview, CiteKey: n.citekey, ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
+				row := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 				emit := func(status, text string) error {
-					report.Status = status
+					row.Status = status
+					row.Note = text
 					if flags.asJSON {
-						data, merr := json.Marshal(report)
+						data, merr := json.Marshal(vaultWriteReport{
+							Out:     outDir,
+							DryRun:  preview,
+							Counts:  map[string]int{status: 1},
+							Results: []pushResult{row},
+						})
 						if merr != nil {
 							return merr
 						}
@@ -583,12 +592,17 @@ against --max-changes.`,
 					_, werr := fmt.Fprintln(out, text)
 					return werr
 				}
+				// gate evaluates --max-changes and --allow-destructive in
+				// preview and apply alike. A direction that overwrites the
+				// remote note or discards local edits is destructive.
+				gate := func(destructive bool) error {
+					return vaultGateFailure(cmd, flags, "vault_resolve", vaultResolveGateOps(destructive))
+				}
 
 				// --keep-remote pulls the remote note over the vault Notes region
 				// (discards local edits), the mirror of --keep-vault. Reads remote
 				// and writes locally; never writes to Zotero.
 				if flagKeepRemote {
-					report.Direction = "keep-remote"
 					if n.state.NoteKey == "" {
 						return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
 					}
@@ -599,16 +613,15 @@ against --max-changes.`,
 						}
 						return vaultNoteReadErr(gerr, flags)
 					}
+					if gateErr := gate(true); gateErr != nil {
+						return gateErr
+					}
 					if preview {
 						return emit("would_resolve", fmt.Sprintf("Would resolve %s: remote note %s would be pulled into vault (local Notes changes discarded)", n.citekey, n.state.NoteKey))
-					}
-					if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
-						return fmt.Errorf("%s", gateFailure.Message)
 					}
 					if rerr := keepRemoteResolve(outDir, n, liveVer, liveHTML); rerr != nil {
 						return rerr
 					}
-					report.VaultChanged = true
 					return emit("resolved", fmt.Sprintf("Resolved %s: remote note %s pulled into vault (local Notes changes discarded)", n.citekey, n.state.NoteKey))
 				}
 
@@ -617,12 +630,11 @@ against --max-changes.`,
 				desiredHTML := markdownToNoteHTML(n.citekey, region)
 
 				if n.state.NoteKey == "" || flagRecreate {
-					report.Direction = "recreate"
+					if gateErr := gate(false); gateErr != nil {
+						return gateErr
+					}
 					if preview {
 						return emit("would_resolve", fmt.Sprintf("Would resolve %s: child note would be (re)created under item %s", n.citekey, n.itemKey))
-					}
-					if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
-						return fmt.Errorf("%s", gateFailure.Message)
 					}
 					created, cerr := createChildNote(c, n.itemKey, desiredHTML)
 					if cerr != nil {
@@ -632,8 +644,7 @@ against --max-changes.`,
 						return ferr
 					}
 					removeConflictArtifacts(outDir, n)
-					report.NoteKey = created.Key
-					report.ZoteroChanged = true
+					row.NoteKey = created.Key
 					verb, status := "Recreated", "recreated"
 					if created.Reconciled {
 						verb, status = "Reconciled", "reconciled"
@@ -642,16 +653,15 @@ against --max-changes.`,
 				}
 
 				// --keep-vault: overwrite remote using the live version as precondition.
-				report.Direction = "keep-vault"
 				liveVer, _, gerr := getNote(c, n.state.NoteKey, n.itemKey, n.library)
 				if gerr != nil {
 					return vaultNoteReadErr(gerr, flags)
 				}
+				if gateErr := gate(true); gateErr != nil {
+					return gateErr
+				}
 				if preview {
 					return emit("would_resolve", fmt.Sprintf("Would resolve %s: vault copy would be written to Zotero note %s", n.citekey, n.state.NoteKey))
-				}
-				if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
-					return fmt.Errorf("%s", gateFailure.Message)
 				}
 				if _, perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
 					return classifyAPIError(perr, flags)
@@ -660,7 +670,6 @@ against --max-changes.`,
 					return ferr
 				}
 				removeConflictArtifacts(outDir, n)
-				report.ZoteroChanged = true
 				return emit("resolved", fmt.Sprintf("Resolved %s: vault copy written to Zotero note %s", n.citekey, n.state.NoteKey))
 			}
 			if preview {
@@ -669,7 +678,7 @@ against --max-changes.`,
 			return withVaultWriterLock(cmd, outDir, "resolving vault", run)
 		},
 	}
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	cmd.Flags().BoolVar(&flagKeepVault, "keep-vault", false, "Write the vault copy over the Zotero note (required direction)")
 	cmd.Flags().BoolVar(&flagKeepRemote, "keep-remote", false, "Pull the Zotero note over the vault Notes region (discards local edits)")
 	cmd.Flags().BoolVar(&flagRecreate, "recreate", false, "Re-create a child note deleted in Zotero")
@@ -679,23 +688,22 @@ against --max-changes.`,
 // vaultResolveGateOps is the single synthetic op vault resolve charges against
 // --max-changes: exactly one note is ever created, patched, or pulled per
 // invocation, so one op with one Change is enough for CheckGates to count it.
-func vaultResolveGateOps() []mutation.Op {
-	return []mutation.Op{{Kind: "vault_note_resolve", Changes: []mutation.Change{{Field: "note"}}}}
+// destructive marks directions that overwrite the remote note or discard the
+// vault's local edits, which need --allow-destructive.
+func vaultResolveGateOps(destructive bool) []mutation.Op {
+	return []mutation.Op{{Kind: "vault_note_resolve", Destructive: destructive, Changes: []mutation.Change{{Field: "note"}}}}
 }
 
-// vaultResolveReport is the --json/--agent result of vault resolve. Status is
-// would_resolve (preview), resolved, recreated, or reconciled (a lost create
-// response adopted). VaultChanged reports that the vault Notes region was
-// replaced; ZoteroChanged that the Zotero child note was written.
-type vaultResolveReport struct {
-	DryRun        bool   `json:"dry_run"`
-	Direction     string `json:"direction"`
-	Status        string `json:"status"`
-	CiteKey       string `json:"citekey"`
-	ItemKey       string `json:"item_key"`
-	NoteKey       string `json:"note_key"`
-	VaultChanged  bool   `json:"vault_changed"`
-	ZoteroChanged bool   `json:"zotero_changed"`
+// vaultGateFailure evaluates the --max-changes and --allow-destructive gates
+// for ops. It returns nil when they pass. When a gate refuses, it renders the
+// mutation envelope (ok:false with error{code,message}) and returns the typed
+// gate error marked rendered, so a preview exits exactly as apply would.
+func vaultGateFailure(cmd *cobra.Command, flags *rootFlags, operation string, ops []mutation.Op) error {
+	if mutation.CheckGates(mutationOptions(flags), ops) == nil {
+		return nil
+	}
+	env, runErr := mutation.Run(mutationOptions(flags), operation, ops)
+	return renderMutationResult(cmd, flags, env, classifyMutationErr(env, runErr), nil)
 }
 
 // vaultNoteReadErr maps a getNote failure in vault resolve to its CLI error: a
@@ -985,7 +993,7 @@ func createChildNote(c *client.Client, parentKey, noteHTML string) (childNoteCre
 }
 
 func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr error) (childNoteCreateResult, error) {
-	if err := validateZoteroKey(parentKey); err != nil {
+	if err := validateKeyArg("item", parentKey); err != nil {
 		return childNoteCreateResult{}, errors.Join(createErr, err)
 	}
 	const pageSize = 100
@@ -1022,7 +1030,7 @@ func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, crea
 			if !isManagedNoteHTML(row.Data.Note) || sha256hex(row.Data.Note) != desiredHash {
 				continue
 			}
-			if err := validateZoteroKey(row.Key); err != nil {
+			if err := validateKeyArg("item", row.Key); err != nil {
 				continue
 			}
 			matches = append(matches, row.Key)
@@ -1046,24 +1054,10 @@ func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, crea
 	}
 }
 
-// validateZoteroKey rejects state-derived note keys that cannot be Zotero item-key
-// path segments before any API path is built.
-func validateZoteroKey(key string) error {
-	if len(key) != 8 {
-		return fmt.Errorf("invalid Zotero item key %q", key)
-	}
-	for _, r := range key {
-		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
-			return fmt.Errorf("invalid Zotero item key %q", key)
-		}
-	}
-	return nil
-}
-
 func patchNote(c *client.Client, noteKey, noteHTML string, version int) (bool, error) {
 	// Note keys come from vault state comments; encode the path segment before
 	// building the Zotero API path.
-	if err := validateZoteroKey(noteKey); err != nil {
+	if err := validateKeyArg("item", noteKey); err != nil {
 		return false, err
 	}
 	path := "/items/" + url.PathEscape(noteKey)
@@ -1092,7 +1086,7 @@ var errNoteBindingMismatch = errors.New("vault note binding does not match Zoter
 func getNote(c *client.Client, noteKey, parentKey, library string) (int, string, error) {
 	// Encode the state-derived note key as one path segment rather than allowing
 	// slashes/dots to reshape the URL.
-	if err := validateZoteroKey(noteKey); err != nil {
+	if err := validateKeyArg("item", noteKey); err != nil {
 		return 0, "", err
 	}
 	data, ver, err := c.GetWithVersion("/items/"+url.PathEscape(noteKey), nil)
@@ -1176,7 +1170,7 @@ func fetchNoteVersions(c *client.Client, keys []string) (map[string]int, error) 
 			end = len(keys)
 		}
 		for _, key := range keys[start:end] {
-			if err := validateZoteroKey(key); err != nil {
+			if err := validateKeyArg("item", key); err != nil {
 				return nil, err
 			}
 		}
@@ -1297,7 +1291,7 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 		}
 	}
 	if outDir == "" {
-		return "", fmt.Errorf("no vault directory: pass --out <dir> or set [vault].root in config")
+		return "", usageErr(fmt.Errorf("no vault directory: pass --vault <dir> or set [vault].root in config"))
 	}
 	return outDir, nil
 }
@@ -1356,18 +1350,42 @@ func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir stri
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
 		}
 	}
-	issues := counts["error"] + counts["conflict"] + counts["remote_deleted"]
-	if len(warnings) > 0 || issues > 0 {
-		reasons := make([]string, 0, 2)
-		if len(warnings) > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d warnings", len(warnings)))
-		}
-		if issues > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d note failures", issues))
-		}
-		return degradedErr(fmt.Errorf("vault %s: %s; results incomplete", cmd.Name(), strings.Join(reasons, ", ")))
+	return markRendered(vaultReportExit(cmd.Name(), counts, len(warnings)))
+}
+
+// vaultAppliedStatuses are the result words that mean a note write landed.
+var vaultAppliedStatuses = []string{"created", "updated", "converged", "pulled", "recreated", "reconciled", "resolved"}
+
+// vaultReportExit maps a vault write report to its exit error. A conflict
+// (conflict, would_conflict: a lost precondition) exits 1 everywhere. Exit 13
+// means part of the run landed and part failed for a non-conflict reason
+// (failed, remote_deleted) or part of the vault was unreadable (warnings).
+// Nothing applied and a hard failure is a plain failure (exit 1).
+func vaultReportExit(name string, counts map[string]int, warnings int) error {
+	conflicts := counts["conflict"] + counts["would_conflict"]
+	hard := counts["failed"] + counts["remote_deleted"]
+	if warnings == 0 && hard == 0 && conflicts == 0 {
+		return nil
 	}
-	return nil
+	applied := 0
+	for _, status := range vaultAppliedStatuses {
+		applied += counts[status]
+	}
+	reasons := make([]string, 0, 3)
+	if warnings > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d warnings", warnings))
+	}
+	if hard > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d note failures", hard))
+	}
+	if conflicts > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d conflicts", conflicts))
+	}
+	err := fmt.Errorf("vault %s: %s; results incomplete", name, strings.Join(reasons, ", "))
+	if warnings > 0 || (hard > 0 && applied > 0) {
+		return degradedErr(err)
+	}
+	return err
 }
 
 func summarizeCounts(counts map[string]int) string {

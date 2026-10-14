@@ -85,23 +85,60 @@ var whichIndex = []whichEntry{
 // curated or generic, so an alias works even for a command with no
 // curated write-up.
 var whichAliases = map[string][]string{
+	// items move and items add-to-collection own disjoint phrasings: filing
+	// into or out of a collection names add-to-collection or move, never both.
 	"items move": {
-		"add item to collection",
-		"add a paper to a collection",
+		"move an item to another collection",
+		"move a paper to another collection",
 		"file a paper into a collection",
 		"file an item into a collection",
-		"put item in collection",
-		"tag item into collection",
 		"organise item into collection",
+		"remove an item from a collection",
 	},
 	"items add-to-collection": {
+		"add an item to a collection",
 		"add item to collection",
 		"add a paper to a collection",
-		"file a paper into a collection",
-		"file an item into a collection",
 		"put item in collection",
+		"put a paper in a collection",
 		"tag item into collection",
-		"organise item into collection",
+	},
+	"collections export": {
+		"export bibtex for a collection",
+		"export a collection",
+		"export collection as bibtex",
+		"export collection to csl-json",
+	},
+	"collections create": {
+		"create a collection",
+		"make a new collection",
+	},
+	"items tags add": {
+		"add a tag to an item",
+		"tag an item",
+		"label an item with a tag",
+	},
+	"items delete": {
+		"delete an item",
+		"trash an item",
+		"move an item to the trash",
+		"remove an item from my library",
+	},
+	"journal undo": {
+		"undo that zotero change",
+		"undo a zotero change",
+		"undo the last zotero write",
+		"roll back a zotero change",
+	},
+	"items missing-pdf": {
+		"find papers missing pdfs",
+		"find papers without a pdf",
+		"which papers have no pdf",
+	},
+	"search": {
+		"search my zotero library",
+		"search my library",
+		"find a paper in my zotero library",
 	},
 	"desktop status": {
 		"is zotero running",
@@ -166,6 +203,11 @@ func buildWhichIndex(rootCmd *cobra.Command) []whichEntry {
 	return out
 }
 
+// whichExactAliasScore is the score an intent alias earns when it equals the
+// whole query. It outweighs every incidental keyword overlap, so a phrase the
+// docs and the skill advertise always resolves to the command that owns it.
+const whichExactAliasScore = 50
+
 // whichMatch pairs an index entry with its ranking score for a query.
 // Higher score means stronger match. The ranker is naive (exact token
 // then substring then group tag) because 20-40 entries do not need
@@ -186,7 +228,10 @@ type whichMatch struct {
 //	+1  group tag contains a query token
 //	+6  the query and a curated intent alias are substrings of each other
 //	+3  per meaningful query token shared with a curated intent alias
+//	+50 the query equals a curated intent alias exactly
 //	+1  curated (hero-feature) entry, once any of the above matched
+//
+// Alias points count once per command, from its best-matching alias.
 //
 // The ranker scores each meaningful query token over the description and
 // why-it-matters so goal-phrase queries like "retracted papers" and
@@ -286,16 +331,23 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	}
 	// Intent alias match: a curated phrasing of this operation that shares
 	// no words with the command's own name or description (see the
-	// whichAliases doc comment). Each alias is scored independently so
-	// several near-duplicate phrasings reinforce the same command rather
-	// than canceling out.
+	// whichAliases doc comment). Only the best-matching alias counts: a
+	// command with many near-duplicate phrasings must not outscore the right
+	// command because one query token matched in every alias. An alias equal
+	// to the whole query is a curated answer for that exact phrase and wins.
+	normalizedQuery := strings.Join(qTokens, " ")
+	bestAlias := 0
 	for _, alias := range e.Aliases {
 		alias = strings.ToLower(alias)
 		if alias == "" {
 			continue
 		}
+		aliasScore := 0
+		if strings.Join(strings.Fields(alias), " ") == normalizedQuery {
+			aliasScore += whichExactAliasScore
+		}
 		if strings.Contains(alias, query) || strings.Contains(query, alias) {
-			score += 6
+			aliasScore += 6
 		}
 		aliasTokens := strings.Fields(alias)
 		for _, qt := range qTokens {
@@ -304,12 +356,16 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 			}
 			for _, at := range aliasTokens {
 				if qt == at {
-					score += 3
+					aliasScore += 3
 					break
 				}
 			}
 		}
+		if aliasScore > bestAlias {
+			bestAlias = aliasScore
+		}
 	}
+	score += bestAlias
 	// Curated (hero-feature) entries get a small tie-breaking boost over a
 	// generic entry with equal keyword overlap, but only once something
 	// else already matched - an unrelated query must not surface every
@@ -328,22 +384,29 @@ func newWhichCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{
 			"zotio:typed-exit-codes": "0,2",
 		},
-		Long: `which resolves a natural-language capability query (for example, "search messages" or "stale tickets") to the best matching command from this CLI's curated feature index.
+		Long: `which resolves a natural-language capability query (for example, "export bibtex for a collection" or "find papers missing PDFs") to the best matching command from this CLI's curated feature index.
 
 Exit codes:
   0  at least one match found
-  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search' if this CLI has one`,
-		Example: `  zotio which "stale tickets"
-  zotio which "bottleneck"
-  zotio which --limit 1 "send message"
+  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search'. Under --json or --agent the output is {"matches":[]}`,
+		Example: `  zotio which "export bibtex for a collection"
+  zotio which "find papers missing PDFs"
+  zotio which --limit 1 "undo that Zotero change"
   zotio which                                # list the full capability index`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
+			}
 			index := buildWhichIndex(cmd.Root())
 			if len(index) == 0 {
 				return usageErr(fmt.Errorf("this CLI has no curated capability index; run '--help' to see every command"))
 			}
 			query := strings.Join(args, " ")
-			matches := rankWhich(index, query, limit)
+			rankLimit := limit
+			if rankLimit == 0 {
+				rankLimit = len(index)
+			}
+			matches := rankWhich(index, query, rankLimit)
 
 			// Empty query returns the whole index at score 0 (listing mode).
 			if strings.TrimSpace(query) == "" {
@@ -351,21 +414,26 @@ Exit codes:
 			}
 
 			if len(matches) == 0 {
-				// Under --json, return an empty matches envelope at exit 0
-				// so agents can branch on `matches.length == 0` instead of
-				// parsing a usage error message. Non-JSON keeps the typed
-				// exit-2 path so terminal users see the help hint.
+				// A miss exits 2 in every output mode. Under --json the empty
+				// matches envelope is printed first, so agents can read
+				// `matches.length == 0` without parsing an error message; the
+				// error is marked rendered so the central printer does not add a
+				// second JSON object.
+				missErr := usageErr(fmt.Errorf("no match for %q; try '%s --help' for the full command list", query, cmd.Root().Name()))
 				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"matches": []whichMatch{},
-					}, flags)
+					}, flags); err != nil {
+						return err
+					}
+					return markRendered(missErr)
 				}
-				return usageErr(fmt.Errorf("no match for %q; try '%s --help' for the full command list", query, cmd.Root().Name()))
+				return missErr
 			}
 			return renderWhich(cmd, flags, matches)
 		},
 	}
-	cmd.Flags().IntVar(&limit, "limit", 3, "Maximum number of matches to return")
+	cmd.Flags().IntVar(&limit, "limit", 3, "Maximum number of matches to return (0 = no limit)")
 	return cmd
 }
 

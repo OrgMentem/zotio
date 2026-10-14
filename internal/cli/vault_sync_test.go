@@ -97,17 +97,17 @@ func TestVaultSyncSameDirectoryReturnsBusyWhileDryRunRemainsAvailable(t *testing
 	vault := filepath.Join(t.TempDir(), "vault")
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", vault})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	waitForVaultLock(t, started)
 
-	second := newVaultSyncCmd(&rootFlags{yes: true, maxChanges: -1})
+	second := newVaultSyncCmd(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true})
 	second.SilenceErrors, second.SilenceUsage = true, true
-	second.SetArgs([]string{"--out", vault})
+	second.SetArgs([]string{"--vault", vault})
 	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
 		t.Fatalf("second sync error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
 	}
 
-	dryRun := startVaultSyncForLockTest(&rootFlags{dryRun: true}, []string{"--out", vault})
+	dryRun := startVaultSyncForLockTest(&rootFlags{dryRun: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	select {
 	case err := <-dryRun:
 		if err != nil {
@@ -127,7 +127,7 @@ func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 	started, release := blockFirstVaultSyncAfterLock(t)
-	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", vault})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	waitForVaultLock(t, started)
 
 	for _, tc := range []struct {
@@ -137,9 +137,9 @@ func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
 	}{
 		// push, pull, and resolve only take the vault lock when applying, so
 		// they must be --yes here to contend for it.
-		{name: "push", cmd: newVaultPushCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
-		{name: "pull", cmd: newVaultPullCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
-		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"K1", "--keep-vault", "--out", vault}},
+		{name: "push", cmd: newVaultPushCmd(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}), args: []string{"--vault", vault}},
+		{name: "pull", cmd: newVaultPullCmd(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}), args: []string{"--vault", vault}},
+		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}), args: []string{"K1", "--keep-vault", "--vault", vault}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cmd.SilenceErrors, tc.cmd.SilenceUsage = true, true
@@ -160,9 +160,9 @@ func TestVaultSyncDifferentDirectoriesRunConcurrently(t *testing.T) {
 	seedVaultStore(t)
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", filepath.Join(t.TempDir(), "first")})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", filepath.Join(t.TempDir(), "first")})
 	waitForVaultLock(t, started)
-	second := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", filepath.Join(t.TempDir(), "second")})
+	second := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", filepath.Join(t.TempDir(), "second")})
 	select {
 	case err := <-second:
 		if err != nil {
@@ -187,9 +187,9 @@ func TestVaultSyncDifferentConfigsSameDirectoryConflict(t *testing.T) {
 	writeFile(t, configB, fmt.Sprintf("[vault]\nroot = %q\n", vault))
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{configPath: configA, yes: true, maxChanges: -1}, nil)
+	first := startVaultSyncForLockTest(&rootFlags{configPath: configA, yes: true, maxChanges: -1, allowDestructive: true}, nil)
 	waitForVaultLock(t, started)
-	second := newVaultSyncCmd(&rootFlags{configPath: configB, yes: true, maxChanges: -1})
+	second := newVaultSyncCmd(&rootFlags{configPath: configB, yes: true, maxChanges: -1, allowDestructive: true})
 	second.SilenceErrors, second.SilenceUsage = true, true
 	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
 		t.Fatalf("second config sync error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
@@ -246,16 +246,16 @@ func TestVaultSyncCreatesObsidianNote(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	var report struct {
-		Created int `json:"created"`
+		Counts  map[string]int `json:"counts"`
 		Results []vaultSyncResult
 	}
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("decode report %q: %v", out, err)
 	}
-	if report.Created != 1 {
-		t.Fatalf("created = %d, want 1 (attachment/annotation excluded)", report.Created)
+	if report.Counts["created"] != 1 {
+		t.Fatalf("created = %d, want 1 (attachment/annotation excluded)", report.Counts["created"])
 	}
 
 	body, err := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
@@ -292,17 +292,15 @@ func TestVaultSyncIdempotent(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	first, _ := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
 
-	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	var report struct {
-		Created   int `json:"created"`
-		Updated   int `json:"updated"`
-		Unchanged int `json:"unchanged"`
+		Counts map[string]int `json:"counts"`
 	}
 	_ = json.Unmarshal([]byte(out), &report)
-	if report.Unchanged != 1 || report.Created != 0 || report.Updated != 0 {
+	if report.Counts["unchanged"] != 1 || report.Counts["created"] != 0 || report.Counts["updated"] != 0 {
 		t.Errorf("second run = %+v, want unchanged=1", report)
 	}
 	second, _ := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
@@ -315,14 +313,14 @@ func TestVaultSyncDryRunWritesNothing(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	out := runVaultSync(t, &rootFlags{asJSON: true, dryRun: true}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault})
 	var report struct {
-		Created int  `json:"created"`
-		DryRun  bool `json:"dry_run"`
+		Counts map[string]int `json:"counts"`
+		DryRun bool           `json:"dry_run"`
 	}
 	_ = json.Unmarshal([]byte(out), &report)
-	if !report.DryRun || report.Created != 1 {
-		t.Errorf("dry-run report = %+v, want dry_run + created=1", report)
+	if !report.DryRun || report.Counts["would_create"] != 1 {
+		t.Errorf("dry-run report = %+v, want dry_run + would_create=1", report)
 	}
 	if _, err := os.Stat(filepath.Join(vault, "vaswani2017.md")); !os.IsNotExist(err) {
 		t.Errorf("dry-run wrote a file")
@@ -337,24 +335,24 @@ func TestVaultSyncPreviewsWithoutWriting(t *testing.T) {
 		name  string
 		flags rootFlags
 	}{
-		{name: "bare", flags: rootFlags{asJSON: true}},
-		{name: "agent", flags: rootFlags{asJSON: true, agent: true}},
+		{name: "bare", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true, maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seedVaultStore(t)
 			vault := filepath.Join(t.TempDir(), "vault")
 
 			flags := tc.flags
-			out := runVaultSync(t, &flags, []string{"--out", vault})
+			out := runVaultSync(t, &flags, []string{"--vault", vault})
 			var report struct {
-				Created int  `json:"created"`
-				DryRun  bool `json:"dry_run"`
+				Counts map[string]int `json:"counts"`
+				DryRun bool           `json:"dry_run"`
 			}
 			if err := json.Unmarshal([]byte(out), &report); err != nil {
 				t.Fatalf("decode report %q: %v", out, err)
 			}
-			if !report.DryRun || report.Created != 1 {
-				t.Errorf("%s report = %+v, want dry_run + created=1", tc.name, report)
+			if !report.DryRun || report.Counts["would_create"] != 1 {
+				t.Errorf("%s report = %+v, want dry_run + would_create=1", tc.name, report)
 			}
 			if _, err := os.Stat(vault); !os.IsNotExist(err) {
 				t.Errorf("%s: preview created the vault directory", tc.name)
@@ -527,7 +525,7 @@ func TestSplitObsidianFrontmatterLFUnchanged(t *testing.T) {
 func TestVaultSyncLogseqCreate(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
-	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault, "--format", "logseq"})
 
 	body, err := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
 	if err != nil {
@@ -544,18 +542,16 @@ func TestVaultSyncLogseqCreate(t *testing.T) {
 func TestVaultSyncLogseqIdempotent(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
-	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault, "--format", "logseq"})
 
-	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, []string{"--vault", vault, "--format", "logseq"})
 	var report struct {
-		Created   int `json:"created"`
-		Updated   int `json:"updated"`
-		Unchanged int `json:"unchanged"`
+		Counts map[string]int `json:"counts"`
 	}
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}
-	if report.Created != 0 || report.Updated != 0 || report.Unchanged != 1 {
+	if report.Counts["created"] != 0 || report.Counts["updated"] != 0 || report.Counts["unchanged"] != 1 {
 		t.Fatalf("second Logseq sync = %+v, want one unchanged note", report)
 	}
 	entries, err := os.ReadDir(vault)
@@ -574,18 +570,27 @@ func TestVaultSyncLogseqIdempotent(t *testing.T) {
 }
 
 func TestVaultSyncReportFailsForIssues(t *testing.T) {
-	for _, status := range []string{"error", "file_busy"} {
-		t.Run(status, func(t *testing.T) {
-			cmd := newVaultSyncCmd(&rootFlags{asJSON: true})
+	for _, tc := range []struct {
+		name     string
+		results  []vaultSyncResult
+		wantExit int
+	}{
+		{"failed alone", []vaultSyncResult{{File: "note.md", Status: "failed"}}, 1},
+		{"file_busy alone", []vaultSyncResult{{File: "note.md", Status: "file_busy"}}, 1},
+		{"failed with applied", []vaultSyncResult{{File: "a.md", Status: "created"}, {File: "b.md", Status: "failed"}}, 13},
+		{"file_busy with applied", []vaultSyncResult{{File: "a.md", Status: "updated"}, {File: "b.md", Status: "file_busy"}}, 13},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newVaultSyncCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 
-			err := printVaultSyncReport(cmd, []vaultSyncResult{{File: "note.md", Status: status}}, "vault", "obsidian", &rootFlags{asJSON: true})
-			if code := ExitCode(err); code != 13 {
-				t.Fatalf("exit code = %d, want 13 (err=%v)", code, err)
+			err := printVaultSyncReport(cmd, tc.results, "vault", "obsidian", &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
+			if code := ExitCode(err); code != tc.wantExit {
+				t.Fatalf("exit code = %d, want %d (err=%v)", code, tc.wantExit, err)
 			}
-			if !strings.Contains(out.String(), status) {
-				t.Fatalf("report did not render %q: %s", status, out.String())
+			if !strings.Contains(out.String(), tc.results[len(tc.results)-1].Status) {
+				t.Fatalf("report did not render the issue status: %s", out.String())
 			}
 		})
 	}
@@ -608,13 +613,13 @@ func TestSanitizeVaultFilename(t *testing.T) {
 
 func TestVaultSyncRequiresOut(t *testing.T) {
 	seedVaultStore(t)
-	cmd := newVaultSyncCmd(&rootFlags{})
+	cmd := newVaultSyncCmd(&rootFlags{maxChanges: -1, allowDestructive: true})
 	cmd.SetArgs(nil)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := cmd.Execute(); err == nil {
-		t.Error("expected error when --out is missing")
+		t.Error("expected error when --vault is missing")
 	}
 }
 
@@ -660,8 +665,8 @@ func seedVaultScopeStore(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"V1","version":1,"data":{"key":"V1","itemType":"journalArticle","title":"Alpha","citationKey":"alpha2020","collections":["COLV"],"tags":[{"tag":"AI"}]}}`),
-		json.RawMessage(`{"key":"V2","version":1,"data":{"key":"V2","itemType":"book","title":"Beta","citationKey":"beta2021","collections":["COLV"]}}`),
+		json.RawMessage(`{"key":"V1","version":1,"data":{"key":"V1","itemType":"journalArticle","title":"Alpha","citationKey":"alpha2020","collections":["CLVAB234"],"tags":[{"tag":"AI"}]}}`),
+		json.RawMessage(`{"key":"V2","version":1,"data":{"key":"V2","itemType":"book","title":"Beta","citationKey":"beta2021","collections":["CLVAB234"]}}`),
 		json.RawMessage(`{"key":"V3","version":1,"data":{"key":"V3","itemType":"journalArticle","title":"Gamma","citationKey":"gamma2022","tags":[{"tag":"AI"}]}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -692,8 +697,8 @@ func TestVaultSyncScopeCollectionMatchesCollectionFlag(t *testing.T) {
 	vault := filepath.Join(t.TempDir(), "vault")
 	flags := &rootFlags{asJSON: true, maxChanges: -1}
 
-	viaFlag := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--collection", "COLV"}))
-	viaScope := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--scope", "collection:COLV"}))
+	viaFlag := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--vault", vault, "--collection", "CLVAB234"}))
+	viaScope := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--vault", vault, "--scope", "collection:CLVAB234"}))
 	if len(viaFlag) != 2 {
 		t.Fatalf("--collection classified %v, want the two collection members", viaFlag)
 	}
@@ -711,12 +716,12 @@ func TestVaultSyncBespokeFiltersStillCombine(t *testing.T) {
 	flags := &rootFlags{asJSON: true, maxChanges: -1}
 
 	names := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{
-		"--out", vault,
-		"--collection", "COLV",
+		"--vault", vault,
+		"--collection", "CLVAB234",
 		"--tag", "AI",
 		"--item-type", "journalArticle",
 	}))
-	// Only V1 is in COLV and tagged AI and a journalArticle. V2 fails tag and
+	// Only V1 is in CLVAB234 and tagged AI and a journalArticle. V2 fails tag and
 	// type, V3 fails the collection.
 	if len(names) != 1 || !names["alpha2020.md"] {
 		t.Fatalf("combined filters classified %v, want only alpha2020.md", names)
@@ -740,7 +745,7 @@ func TestVaultSyncScopeRefusesUnreconcilableFilters(t *testing.T) {
 
 	// --item-type has no arm in the grammar at all, so no expression could ever
 	// agree with it.
-	err := run("--out", vault, "--scope", "collection:COLV", "--item-type", "journalArticle")
+	err := run("--vault", vault, "--scope", "collection:CLVAB234", "--item-type", "journalArticle")
 	if err == nil {
 		t.Fatal("--scope with --item-type was accepted")
 	}
@@ -750,7 +755,7 @@ func TestVaultSyncScopeRefusesUnreconcilableFilters(t *testing.T) {
 
 	// --tag does have an arm, so this is a disagreement rather than a missing
 	// spelling, and it says so.
-	err = run("--out", vault, "--scope", "collection:COLV", "--tag", "AI")
+	err = run("--vault", vault, "--scope", "collection:CLVAB234", "--tag", "AI")
 	if err == nil {
 		t.Fatal("--scope with a different --tag cohort was accepted")
 	}
@@ -758,7 +763,7 @@ func TestVaultSyncScopeRefusesUnreconcilableFilters(t *testing.T) {
 		t.Fatalf("error = %v (exit %d), want a usage refusal naming the disagreement", err, ExitCode(err))
 	}
 
-	if err := run("--out", vault, "--scope", "tag:AI", "--tag", "AI"); err != nil {
+	if err := run("--vault", vault, "--scope", "tag:AI", "--tag", "AI"); err != nil {
 		t.Fatalf("agreeing --scope/--tag was refused: %v", err)
 	}
 }
@@ -770,12 +775,12 @@ func TestVaultSyncScopeAppliesLimitAfterCohortFilter(t *testing.T) {
 	vault := filepath.Join(t.TempDir(), "vault")
 	flags := &rootFlags{asJSON: true, maxChanges: -1}
 
-	names := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--scope", "collection:COLV", "--limit", "1"}))
+	names := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--vault", vault, "--scope", "collection:CLVAB234", "--limit", "1"}))
 	if len(names) != 1 {
 		t.Fatalf("limited cohort classified %v, want exactly one note", names)
 	}
 	if !names["alpha2020.md"] && !names["beta2021.md"] {
-		t.Fatalf("limited cohort classified %v, want a COLV member", names)
+		t.Fatalf("limited cohort classified %v, want a CLVAB234 member", names)
 	}
 }
 
@@ -796,7 +801,7 @@ func TestVaultSyncMissingMirrorIsPreconditionError(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--out", vault})
+	cmd.SetArgs([]string{"--vault", vault})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("vault sync with no mirror succeeded, want a precondition error so automation cannot mistake it for publication")

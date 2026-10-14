@@ -165,27 +165,49 @@ func TestExecuteDeliverSkipsUsageErrors(t *testing.T) {
 	}
 }
 
-func TestExecuteDeliverFailureWarnsAndPreservesCommandOutcome(t *testing.T) {
+func TestExecuteDeliverFailureKeepsCommandOutcome(t *testing.T) {
 	home := seedBaselineHealthCommandStore(t)
 	targetDir := filepath.Join(home, "deliver-target-dir")
 	if err := os.Mkdir(targetDir, 0o755); err != nil {
 		t.Fatalf("mkdir deliver target: %v", err)
 	}
 
-	_, stderr, err := executeRootForDeliverTest(t,
+	_, _, err := executeRootForDeliverTest(t,
 		"--json",
 		"--deliver", "file:"+targetDir,
 		"library", "health",
 		"--for", "citation",
 	)
+	// The command's own failure wins over a delivery failure.
 	if code := ExitCode(err); code != 11 {
 		t.Fatalf("ExitCode(err) = %d (%v), want original quality gate exit 11 despite delivery failure", code, err)
 	}
 	if !strings.Contains(err.Error(), "library health gate failed") {
 		t.Fatalf("err = %v, want original health gate error", err)
 	}
-	if !strings.Contains(stderr, "warning: deliver to file:"+targetDir+" failed:") {
-		t.Fatalf("stderr = %q, want delivery failure warning", stderr)
+}
+
+func TestExecuteDeliverFailureOnSuccessfulCommandIsNonZero(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	targetDir := filepath.Join(home, "deliver-target-dir")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir deliver target: %v", err)
+	}
+
+	_, _, err := executeRootForDeliverTest(t, "--json", "--deliver", "file:"+targetDir, "which", "citation")
+	if err == nil {
+		t.Fatal("a failed delivery exited 0")
+	}
+}
+
+func TestExecuteDeliverIsOutputRoutingUnderDryRun(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+	_, _, err := executeRootForDeliverTest(t, "--dry-run", "--deliver", "file:"+target, "which", "citation")
+	if err != nil {
+		t.Fatalf("dry-run deliver: %v", err)
+	}
+	if data, readErr := os.ReadFile(target); readErr != nil || len(data) == 0 {
+		t.Fatalf("--deliver under --dry-run wrote %q (err %v), want the command output", data, readErr)
 	}
 }
 

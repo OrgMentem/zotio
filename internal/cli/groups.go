@@ -35,16 +35,17 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
   zotio search --group <id> <query>`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLiveGroupsSource(flags, "groups list"); err != nil {
+				return err
+			}
 			data, err := fetchAccessibleGroups(flags, "list groups")
 			if err != nil {
 				return err
 			}
 			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, err := wrapWithProvenance(filtered, DataProvenance{Source: "live", ResourceType: "groups"})
 				if err != nil {
@@ -64,11 +65,19 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
 
 func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:         "inspect <group-id>",
-		Short:       "Check whether a Zotero group library is accessible and writable",
+		Use:   "inspect <group-id>",
+		Short: "Check whether a Zotero group library is accessible and writable",
+		Long: `Probes one group library. The command always exits 0 when the probe itself
+works: "found": false means the group is not accessible (not a member, or the
+API key lacks access), not that the command failed. Read "found",
+"ready_for_read" and "ready_for_write" in the output.`,
+		Example:     "  zotio groups inspect 1234567 --json",
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLiveGroupsSource(flags, "groups inspect"); err != nil {
+				return err
+			}
 			groupID := args[0]
 			data, err := fetchAccessibleGroups(flags, "inspect groups")
 			if err != nil {
@@ -86,7 +95,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				"found":           false,
 				"name":            "",
 				"type":            "",
-				"num_items":       "",
+				"num_items":       0,
 				"library_reading": "",
 				"library_editing": "",
 				"file_editing":    "",
@@ -120,7 +129,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				report["found"] = true
 				report["name"] = groupFieldString(g, "name")
 				report["type"] = groupFieldString(g, "type")
-				report["num_items"] = groupFieldString(g, "numItems")
+				report["num_items"] = groupFieldInt(g, "numItems")
 				report["library_reading"] = groupFieldString(g, "libraryReading")
 				report["library_editing"] = libraryEditing
 				report["file_editing"] = groupFieldString(g, "fileEditing")
@@ -142,7 +151,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), report["note"])
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "group %s %s: read=%t write=%t, %s items\n",
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "group %s %s: read=%t write=%t, %d items\n",
 				groupID,
 				report["name"],
 				report["ready_for_read"],
@@ -153,6 +162,25 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// requireLiveGroupsSource rejects --data-source local: group discovery reads
+// the Zotero Web API only, and no mirror holds the group list.
+func requireLiveGroupsSource(flags *rootFlags, cmdPath string) error {
+	if flags != nil && flags.dataSource == "local" {
+		return usageErr(fmt.Errorf("%s reads the Zotero Web API only; --data-source local is not supported (use auto or live)", cmdPath))
+	}
+	return nil
+}
+
+// groupFieldInt resolves a numeric group field; a missing or non-numeric
+// value is 0.
+func groupFieldInt(g map[string]any, field string) int {
+	n, err := strconv.Atoi(groupFieldString(g, field))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func groupTableRows(data json.RawMessage) ([][]string, error) {

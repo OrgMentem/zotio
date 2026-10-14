@@ -35,20 +35,22 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			normalizedQuery, err := query.normalized()
 			if err != nil {
 				return err
 			}
 			if normalizedQuery.empty() {
-				return fmt.Errorf("at least one of --doi, --arxiv, --isbn, --pmid, --citekey, --url, --openalex, or --title is required")
+				return usageErr(fmt.Errorf("at least one of --doi, --arxiv, --isbn, --pmid, --citekey, --url, --openalex, or --title is required"))
 			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable item lookup.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{Store: rawDB}
@@ -148,11 +150,12 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				// Sibling keys, never inside .results: the envelope invariant
 				// is that .results holds items matched by identity.
@@ -681,7 +684,7 @@ func (q findItemsQuery) normalized() (findItemsQuery, error) {
 	rawArXiv := strings.TrimSpace(q.ArXiv)
 	q.ArXiv = normalizeFindArxivID(rawArXiv)
 	if rawArXiv != "" && q.ArXiv == "" {
-		return findItemsQuery{}, fmt.Errorf("--arxiv must be an ID such as 2401.00001 or an arxiv.org abs/pdf URL")
+		return findItemsQuery{}, usageErr(fmt.Errorf("--arxiv must be an ID such as 2401.00001 or an arxiv.org abs/pdf URL"))
 	}
 	q.ISBN = strings.TrimSpace(q.ISBN)
 	q.PMID = strings.TrimSpace(q.PMID)
@@ -690,7 +693,7 @@ func (q findItemsQuery) normalized() (findItemsQuery, error) {
 	rawOpenAlex := strings.TrimSpace(q.OpenAlex)
 	q.OpenAlex = normalizeOpenAlexWorkID(rawOpenAlex)
 	if rawOpenAlex != "" && q.OpenAlex == "" {
-		return findItemsQuery{}, fmt.Errorf("--openalex must be a work ID such as W2741809807 or an openalex.org work URL")
+		return findItemsQuery{}, usageErr(fmt.Errorf("--openalex must be a work ID such as W2741809807 or an openalex.org work URL"))
 	}
 	q.Title = strings.TrimSpace(q.Title)
 	return q, nil

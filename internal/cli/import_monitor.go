@@ -27,7 +27,7 @@ var (
 )
 
 type importMonitorReport struct {
-	Out                          string `json:"out"`
+	Out                          string `json:"output"`
 	Replaced                     bool   `json:"replaced"`
 	DryRun                       bool   `json:"dry_run,omitempty"`
 	WorksSeen                    int    `json:"works_seen"`
@@ -115,8 +115,8 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 			"OpenAlex publication-date filters cannot reliably find newly indexed or backdated works, so this is not a complete feed of newly indexed records. " +
 			"Review the manifest with import resolve, then write it with import apply. " +
 			"Works without a DOI are counted but omitted because import resolve needs a DOI to fetch their metadata.",
-		Example: "  zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --out new-works.json\n" +
-			"  zotio import monitor --query \"bayesian inference\" --author A5023888391 --since 2026-09-01 --out feed.json\n" +
+		Example: "  zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --output new-works.json\n" +
+			"  zotio import monitor --query \"bayesian inference\" --author A5023888391 --since 2026-09-01 --output feed.json\n" +
 			"  zotio import resolve new-works.json > reviewed.json && zotio import apply reviewed.json",
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
@@ -125,10 +125,13 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("at least one of --author or --query is required"))
 			}
 			if strings.TrimSpace(out) == "" {
-				return usageErr(fmt.Errorf("--out is required"))
+				return usageErr(fmt.Errorf("--output is required"))
 			}
-			if limit < 1 {
-				return usageErr(fmt.Errorf("--limit must be >= 1"))
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
 			if err := monitorDate(since); err != nil {
 				return usageErr(fmt.Errorf("--since is required in YYYY-MM-DD format: %w", err))
@@ -163,7 +166,7 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("writing manifest: %w", err)
 				}
 				if exists && !overwrite {
-					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --out", out))
+					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --output", out))
 				}
 				manifest, report, err := buildImportMonitorManifest(cmd.Context(), flags, authors, strings.TrimSpace(query), since, until, limit, out)
 				if err != nil {
@@ -208,9 +211,9 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&query, "query", "", "Free-text topic search; with --author, match both")
 	cmd.Flags().StringVar(&since, "since", "", "Required publication date lower bound (YYYY-MM-DD, inclusive)")
 	cmd.Flags().StringVar(&until, "until", "", "Publication date upper bound (YYYY-MM-DD, inclusive)")
-	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum manifest entries to write")
-	cmd.Flags().StringVar(&out, "out", "", "Required reviewable import manifest output path")
-	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "Replace an existing manifest at --out; review edits in it are lost")
+	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum manifest entries to write (0 = no limit)")
+	cmd.Flags().StringVarP(&out, "output", "o", "", "Required reviewable import manifest output path")
+	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "Replace an existing manifest at --output; review edits in it are lost")
 	return cmd
 }
 
@@ -365,7 +368,7 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 			continue
 		}
 		seen.mark(doi, title)
-		if len(manifest.Entries) >= limit {
+		if limit > 0 && len(manifest.Entries) >= limit {
 			report.Truncated = true
 			report.TruncationReason = "--limit reached; more new works are available"
 			continue

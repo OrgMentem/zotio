@@ -73,19 +73,34 @@ func newCollectionsBundleCmd(flags *rootFlags) *cobra.Command {
 collection: synthesis context, annotations, and compact bibliography. This command
 never writes to Zotero; run sync first if local data is missing.
 
-Re-running into the same --out replaces the package; the result names every
+Re-running into the same --output-dir replaces the package; the result names every
 existing file it replaced. ` + collectionBundleCommitName + ` is written last and lists each
 file's size and SHA-256: the package is complete only while that file is
 present and matches. With --dry-run nothing is written; the result lists the
 files that would be written and replaced.`,
+		Example:     "  zotio collections bundle ABCD2345 --output-dir ./research/ethics\n  zotio collections bundle ABCD2345 --output-dir ./research/ethics --dry-run",
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(outDir) == "" {
-				return usageErr(fmt.Errorf("--out is required"))
+				return usageErr(fmt.Errorf("--output-dir is required"))
+			}
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
 
-			// --dry-run creates nothing, not even the <out>.lock sibling.
+			// A missing mirror or collection is refused before the writer lock
+			// exists, so a refused run leaves no <output-dir>.lock sibling.
+			precheck, err := openCollectionBundleStore(cmd, flags, args[0])
+			if err != nil {
+				return err
+			}
+			_ = precheck.Close()
+
+			// --dry-run creates nothing, not even the <output-dir>.lock sibling.
 			if flags.dryRun {
 				return runCollectionsBundle(cmd, flags, args[0], outDir)
 			}
@@ -98,35 +113,50 @@ files that would be written and replaced.`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for the research package")
-	_ = cmd.MarkFlagRequired("out")
+	cmd.Flags().StringVar(&outDir, "output-dir", "", "Output directory for the research package")
+	_ = cmd.MarkFlagRequired("output-dir")
 	return cmd
 }
 
-func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, outDir string) error {
+// openCollectionBundleStore opens the mirror and proves it can bundle the
+// collection: it is synced and holds that collection. The caller closes it.
+func openCollectionBundleStore(cmd *cobra.Command, flags *rootFlags, collectionKey string) (*store.Store, error) {
 	db, err := openStoreForRead(cmd.Context(), "zotio")
+	if err != nil {
+		return nil, err
+	}
+	if db == nil {
+		return nil, errUnsyncedStoreFor(cmd, flags)
+	}
+	itemCount, err := db.Count("items")
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("checking local item store: %w", err)
+	}
+	if itemCount == 0 {
+		_ = db.Close()
+		return nil, errUnsyncedStoreFor(cmd, flags)
+	}
+	if err := verifyMirrorCollectionExists(cmd.Context(), db, collectionKey); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, outDir string) error {
+	db, err := openCollectionBundleStore(cmd, flags, collectionKey)
 	if err != nil {
 		return err
 	}
-	if db == nil {
-		return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first."))
-	}
 	defer db.Close()
-
-	itemCount, err := db.Count("items")
-	if err != nil {
-		return fmt.Errorf("checking local item store: %w", err)
-	}
-	if itemCount == 0 {
-		return preconditionErr(fmt.Errorf("local store is empty. Run 'zotio sync' first."))
-	}
 
 	manifest, err := writeCollectionBundle(cmd.Context(), db, collectionKey, outDir, flags.dryRun)
 	if err != nil {
 		return err
 	}
-	if flags.asJSON {
-		return printCommandJSON(cmd.OutOrStdout(), manifest, flags)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), manifest, flags)
 	}
 	out := cmd.OutOrStdout()
 	verb, replacedNote := "Wrote", "replaced the existing file"

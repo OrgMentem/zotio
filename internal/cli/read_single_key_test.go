@@ -94,11 +94,11 @@ func TestItemsOpenRefusesMoreThanOneKey(t *testing.T) {
 	}
 
 	// The single-key path still prints the deep link unchanged.
-	stdout, _, err := executeItemsOpen("ABC123")
+	stdout, _, err := executeItemsOpen("ABCD2345")
 	if err != nil {
 		t.Fatalf("items open with one key = %v, want the deep link", err)
 	}
-	if stdout != "zotero://select/library/items/ABC123\n" {
+	if stdout != "zotero://select/library/items/ABCD2345\n" {
 		t.Errorf("stdout = %q, want the Zotero URI for the one key", stdout)
 	}
 }

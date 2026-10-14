@@ -117,6 +117,28 @@ func TestWorkflowRunReportsSuccessfulSteps(t *testing.T) {
 	}
 }
 
+// A step whose command rejects --dry-run (sync, watch, init) is skipped in a
+// preview with an explicit reason, and later steps still run. Running it would
+// perform the write; injecting --dry-run would fail the preview with exit 2.
+func TestWorkflowRunPreviewSkipsStepsThatCannotPreview(t *testing.T) {
+	report, stderr, err := runWorkflowRunTestCmd(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Name: "refresh", Args: []string{"sync"}},
+		{Name: "after", Args: []string{"version"}},
+	}})
+	if err != nil {
+		t.Fatalf("preview with a sync step: %v; stderr=%s", err, stderr)
+	}
+	if !report.OK || len(report.Steps) != 2 {
+		t.Fatalf("report = %+v, want ok with 2 steps", report)
+	}
+	if got := report.Steps[0]; !got.OK || got.Status != "skipped" || got.Reason != workflowRunNotPreviewableReason {
+		t.Fatalf("sync step = %+v, want skipped with reason %q", got, workflowRunNotPreviewableReason)
+	}
+	if got := report.Steps[1]; !got.OK || got.Status != "ok" {
+		t.Fatalf("step after sync = %+v, want it to run", got)
+	}
+}
+
 func TestWorkflowRunStopsAfterFailureByDefault(t *testing.T) {
 	report, _, err := runWorkflowRunTestCmd(t, workflowRunSpec{Steps: []workflowRunStepSpec{
 		{Args: []string{"definitely-not-a-command"}},
@@ -184,6 +206,15 @@ func TestWorkflowRunTransformsStepArgsByMode(t *testing.T) {
 	}
 	if workflowRunStepIsReadOnlyWithRoot(RootCmd(), mutatingArgs) {
 		t.Fatalf("mutating step %q was resolved as read-only", mutatingArgs)
+	}
+	for _, fileWriterArgs := range [][]string{
+		{"export", "snapshot", "--output", "x.jsonl"},
+		{"library", "wrapped", "--card", "c.svg"},
+		{"collections", "export", "ABCD2345", "--output", "c.bib"},
+	} {
+		if workflowRunStepIsReadOnlyWithRoot(RootCmd(), fileWriterArgs) {
+			t.Fatalf("file-writing step %q was resolved as read-only; the preview would write the file", fileWriterArgs)
+		}
 	}
 
 	readOnlyValueFlagArgs := []string{"items", "list", "--limit", "5", "--format", "bibtex"}

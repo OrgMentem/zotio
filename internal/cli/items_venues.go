@@ -11,29 +11,34 @@ import (
 )
 
 func newItemsVenuesCmd(flags *rootFlags) *cobra.Command {
-	var flagTop int
-	var flagType string
+	var flagLimit int
+	var flagItemType string
 
 	cmd := &cobra.Command{
 		Use:   "venues",
 		Short: "Count synced items by publication venue",
 		Example: `  zotio items venues
-  zotio items venues --top 10
-  zotio items venues --type journalArticle --json`,
+  zotio items venues --limit 10
+  zotio items venues --item-type journalArticle --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := queryItemVenues(db, flagType, flagTop)
+			rows, err := queryItemVenues(db, flagItemType, flagLimit)
 			if err != nil {
 				return fmt.Errorf("querying venues: %w", err)
 			}
@@ -41,29 +46,13 @@ func newItemsVenuesCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Local-mirror read: same envelope pipeline as every other read
-			// command, so `.results` stays a JSON array (this used to print a
-			// bare top-level array).
 			prov := localProvenance(rawDB, "items", "local_only")
 			printProvenance(cmd, len(rows), prov)
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			return printMirrorRows(cmd, flags, data, prov)
 		},
 	}
-	cmd.Flags().IntVar(&flagTop, "top", 20, "Maximum number of venues to return")
-	cmd.Flags().StringVar(&flagType, "type", "", "Filter by Zotero itemType")
+	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of venues to return (0 = no limit)")
+	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by Zotero item type")
 
 	return cmd
 }

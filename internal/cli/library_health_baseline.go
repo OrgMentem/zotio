@@ -25,6 +25,7 @@ type healthBaselineFile struct {
 // healthBaselineReport is the JSON report block for baseline-aware health runs.
 type healthBaselineReport struct {
 	Established   bool      `json:"established"`
+	Status        string    `json:"status"`
 	New           []Finding `json:"new"`
 	ResolvedCount int       `json:"resolved_count"`
 	BaselinePath  string    `json:"baseline_path"`
@@ -46,14 +47,25 @@ func applyHealthBaseline(report *healthReport, path string) error {
 		currentIDs[watchHealthFindingKey(finding)] = struct{}{}
 	}
 
+	status := "not_found"
+	if established {
+		status = "found"
+	}
 	out := &healthBaselineReport{
 		Established:   established,
+		Status:        status,
 		New:           make([]Finding, 0),
 		BaselinePath:  path,
 		NewIDs:        make(map[string]struct{}),
 		RecordedCount: len(currentIDs),
 	}
 	if !established {
+		// A baseline file that does not exist cannot gate anything. Under
+		// --fail-on-new a pass would be a lie, so refuse; otherwise report
+		// plainly that no baseline was found and diff nothing.
+		if report.baselineGate != "" {
+			return preconditionErr(fmt.Errorf("--fail-on-new needs an existing baseline, but %s was not found; create one first with --write-baseline %s", path, path))
+		}
 		report.Baseline = out
 		return nil
 	}

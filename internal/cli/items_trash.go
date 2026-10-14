@@ -25,6 +25,9 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotio items trash",
 		Annotations: map[string]string{"zotio:endpoint": "items.trash", "zotio:method": "GET", "zotio:path": "/items/trash", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -79,11 +82,12 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -107,7 +111,7 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
 
 	return cmd
@@ -177,7 +181,9 @@ func fetchAllLiveTrash(ctx context.Context, c *client.Client, flags *rootFlags, 
 		return nil, DataProvenance{}, err
 	}
 	prov := attachFreshness(DataProvenance{Source: "live"}, flags)
-	writeThroughCache(ctx, "items-trash", marshaled)
+	if !flags.dryRun {
+		writeThroughCache(ctx, "items-trash", marshaled)
+	}
 	return marshaled, prov, nil
 }
 

@@ -24,7 +24,7 @@ import (
 func newVaultPullCmd(flags *rootFlags) *cobra.Command {
 	var flagOut string
 	cmd := &cobra.Command{
-		Use:   "pull [--out <dir>]",
+		Use:   "pull [--vault <dir>]",
 		Short: "Bring remote Zotero child-note edits into the \"## Notes\" region (fast-forward)",
 		Long: `Pull edits made to a managed Zotero child note back into the vault note's
 "## Notes" region. This is fast-forward only: a note is updated only when its
@@ -38,7 +38,7 @@ always wins over --yes. Each note write it plans (a pull or a conflict
 artifact) counts as one change against --max-changes.`,
 		Example: `  zotio vault pull --dry-run
   zotio vault pull --yes
-  zotio vault pull --yes --out ~/vault/refs`,
+  zotio vault pull --yes --vault ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,7 +58,7 @@ artifact) counts as one change against --max-changes.`,
 			return withVaultWriterLock(cmd, outDir, "pulling vault", run)
 		},
 	}
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
 }
 
@@ -86,30 +86,32 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 		remotes[i] = &remoteNoteState{}
 		results = append(results, pullOne(c, outDir, targetLib, n, flags, true, remotes[i]))
 	}
+	// Gate on the writes this run actually plans (pulls and conflict
+	// artifacts) before touching disk. A preview evaluates the same gate so it
+	// predicts what apply would refuse.
+	writes := 0
+	for _, r := range results {
+		if r.Status == "would_pull" || r.Status == "would_conflict" {
+			writes++
+		}
+	}
+	ops := make([]mutation.Op, writes)
+	for i := range ops {
+		ops[i] = mutation.Op{
+			ID:      fmt.Sprintf("vault-pull-%d", i),
+			Kind:    "vault_note_write",
+			Changes: []mutation.Change{{Field: "note"}},
+		}
+	}
+	if gateErr := vaultGateFailure(cmd, flags, "vault_pull", ops); gateErr != nil {
+		return gateErr
+	}
 	if !preview {
-		// Gate on the writes this run actually plans (pulls and conflict
-		// artifacts) before touching disk, then repeat the pass to apply them.
-		writes := 0
-		for _, r := range results {
-			if r.Status == "would pull" || r.Status == "would conflict" {
-				writes++
-			}
-		}
-		ops := make([]mutation.Op, writes)
-		for i := range ops {
-			ops[i] = mutation.Op{
-				ID:      fmt.Sprintf("vault-pull-%d", i),
-				Kind:    "vault_note_write",
-				Changes: []mutation.Change{{Field: "note"}},
-			}
-		}
-		if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-			return fmt.Errorf("%s", gateFailure.Message)
-		}
+		// Repeat the pass to apply the gated writes.
 		applied := make([]pushResult, 0, len(notes))
 		for i, n := range notes {
 			switch results[i].Status {
-			case "would pull", "would conflict":
+			case "would_pull", "would_conflict":
 				// These are the only statuses that reach a write below;
 				// apply against the exact remote state classified above,
 				// not a second fetch.
@@ -178,7 +180,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 				res.Note = "child note missing remotely; nothing to pull"
 				return res
 			}
-			res.Status = "error"
+			res.Status = "failed"
 			res.Note = pushErr(err, flags)
 			return res
 		}
@@ -196,7 +198,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 	// Remote moved. A clean fast-forward is only safe when the local region has
 	// not changed since the last sync; otherwise both sides diverged.
 	if sha256hex(strings.TrimSpace(n.region)) != n.state.SourceHash {
-		res.Status = "would conflict"
+		res.Status = "would_conflict"
 		res.Note = "local and remote both changed"
 		if !preview {
 			artifact, werr := writeConflictArtifact(outDir, n, liveVer, liveHTML)
@@ -218,7 +220,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 
 	newRegion := htmlNoteToMarkdown(liveHTML)
 	if preview {
-		res.Status = "would pull"
+		res.Status = "would_pull"
 		return res
 	}
 	st := pushState{
@@ -230,7 +232,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 		Renderer:    vaultRenderer,
 	}
 	if aerr := applyPulledRegion(n.path, newRegion, st); aerr != nil {
-		res.Status = "error"
+		res.Status = "failed"
 		res.Note = aerr.Error()
 		return res
 	}

@@ -96,6 +96,9 @@ WHERE a.resource_type='items'
 // the GROUP BY key, so trimming after the scan would keep the grouping on
 // untrimmed text and split "Nature" from "\tNature" into two venues.
 func queryCollectionTopVenues(db localQueryStore, collKey string, top int) ([]map[string]any, error) {
+	if top <= 0 {
+		top = -1 // SQLite: a negative LIMIT is no limit.
+	}
 	return db.QueryRaw(`
 SELECT
   COALESCE(
@@ -123,20 +126,29 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "stats <collectionKey>",
 		Short:       "Show analytics for a collection (item count, PDF coverage, year range, top journals)",
+		Example:     "  zotio collections stats ABCD2345 --top 10",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collKey := args[0]
+			if err := validateLimitFlag("--top", flagTop); err != nil {
+				return err
+			}
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable collection analytics.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
+			if err := verifyMirrorCollectionExists(cmd.Context(), rawDB, collKey); err != nil {
+				return err
+			}
 			db := localQueryStore{rawDB}
 
 			total, minYear, maxYear, err := queryCollectionStatsSummary(db, collKey)
@@ -214,7 +226,7 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&flagTop, "top", 5, "Number of top venues to show")
+	cmd.Flags().IntVar(&flagTop, "top", 5, "Number of top venues to show (0 = no limit)")
 
 	return cmd
 }

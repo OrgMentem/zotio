@@ -317,15 +317,16 @@ func TestItemsUpdateAndRestoreRefuseMoreThanOneKey(t *testing.T) {
 				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", g.requests)
 			}
 
-			// The single-key path still previews unchanged: no error and no HTTP call.
+			// The single-key path still previews unchanged: no error, and one
+			// read of the target (preview and apply run the same reads) but no write.
 			singleGuard := newItemsUpdateArgGuardServer(t)
 			single := tt.new(&rootFlags{asJSON: true, maxChanges: -1})
 			single.SilenceErrors, single.SilenceUsage = true, true
 			if err := runItemsUpdateArgGuardCmd(t, singleGuard, single, tt.singleArgs...); err != nil {
 				t.Fatalf("items %s with one key = %v, want the preview envelope", tt.name, err)
 			}
-			if singleGuard.requests != 0 {
-				t.Errorf("requests = %d, want 0: the preview must not reach the library", singleGuard.requests)
+			if singleGuard.requests != 1 {
+				t.Errorf("requests = %d, want 1: the preview reads the target once and writes nothing", singleGuard.requests)
 			}
 		})
 	}

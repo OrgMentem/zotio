@@ -143,7 +143,7 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 			if err != nil {
 				return "failed", nil, err
 			}
-			res, err = routeCreateItem(cmd.Context(), flags, c, spec.item, itemCreateSourceURI(spec.item), cmd.Flags().Changed("collection"))
+			res, err = routeCreateItem(cmd.Context(), flags, c, spec.item, itemCreateSourceURI(spec.item), cmd.Flags().Changed("to"))
 			return singleItemCreateApplyResult(res, err, spec.key)
 		},
 	}}

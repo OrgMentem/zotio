@@ -73,7 +73,7 @@ type vaultSyncResult struct {
 	Key     string `json:"key"`
 	CiteKey string `json:"citekey,omitempty"`
 	File    string `json:"file"`
-	Status  string `json:"status"` // created | updated | unchanged | file_busy | needs_notes_boundary
+	Status  string `json:"status"` // created | updated | unchanged | would_create | would_update | failed | file_busy
 	Note    string `json:"note,omitempty"`
 }
 
@@ -103,7 +103,7 @@ func newVaultSyncCmd(flags *rootFlags) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "sync [--out <dir>]",
+		Use:   "sync [--vault <dir>]",
 		Short: "Create/update one Markdown note per item in a vault (idempotent)",
 		Long: `Materialize literature notes into an Obsidian or Logseq vault from the local
 store (run 'sync' first). Notes are named from the citation key, carry zotero://
@@ -125,15 +125,23 @@ refused alongside a filter that means a different cohort: --item-type has no
 --scope arm, and --collection or --tag must match the scope or be one of its
 AND arms.`,
 		Example: `  zotio vault sync                 # uses [vault] root/notes_dir from config
-  zotio vault sync --out ~/vault/refs --yes
-  zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
-  zotio vault sync --out ~/vault/refs --scope query:transformer --dry-run`,
+  zotio vault sync --vault ~/vault/refs --yes
+  zotio vault sync --vault ~/vault/refs --collection ABCD2345 --dry-run
+  zotio vault sync --vault ~/vault/refs --scope query:transformer --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if flagCollection != "" {
+				if err := validateKeyArg("collection", flagCollection); err != nil {
+					return err
+				}
+			}
 			outDir := strings.TrimSpace(flagOut)
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
-			// Fall back to [vault] config so --out/--format are optional once
+			// Fall back to [vault] config so --vault/--format are optional once
 			// configured; explicit flags always win.
 			if vc := vaultConfig(flags); vc != nil {
 				if outDir == "" {
@@ -151,10 +159,10 @@ AND arms.`,
 				format = "obsidian"
 			}
 			if format != "obsidian" && format != "logseq" {
-				return fmt.Errorf("invalid format %q: must be obsidian or logseq", format)
+				return usageErr(fmt.Errorf("invalid format %q: must be obsidian or logseq", format))
 			}
 			if outDir == "" {
-				return fmt.Errorf("no output directory: pass --out <dir> or set [vault].root in config")
+				return usageErr(fmt.Errorf("no vault directory: pass --vault <dir> or set [vault].root in config"))
 			}
 			flagOut = outDir
 
@@ -191,7 +199,7 @@ AND arms.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	cmd.Flags().StringVar(&flagFormat, "format", "obsidian", "Note format: obsidian or logseq")
 	// --collection and --tag predate --scope and stay supported; they lower to
 	// --scope collection:KEY / tag:NAME (see reconcileScopeFlags). --item-type has
@@ -320,17 +328,27 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 		results = append(results, res)
 	}
 
-	if !preview {
-		// One synthetic op per note write; CheckGates only inspects Changes
-		// and Destructive, so ID/Key/Kind carry no runtime meaning here.
-		ops := make([]mutation.Op, writes)
-		for i := range ops {
-			ops[i] = mutation.Op{Kind: "vault_note_write", Changes: []mutation.Change{{Field: "note"}}}
-		}
-		if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-			return fmt.Errorf("%s", gateFailure.Message)
-		}
+	// One synthetic op per note write; CheckGates only inspects Changes
+	// and Destructive, so ID/Key/Kind carry no runtime meaning here. A preview
+	// evaluates the same gate so it predicts what apply refuses.
+	ops := make([]mutation.Op, writes)
+	for i := range ops {
+		ops[i] = mutation.Op{Kind: "vault_note_write", Changes: []mutation.Change{{Field: "note"}}}
+	}
+	if gateErr := vaultGateFailure(cmd, flags, "vault_sync", ops); gateErr != nil {
+		return gateErr
+	}
 
+	if preview {
+		for i := range results {
+			switch results[i].Status {
+			case "created":
+				results[i].Status = "would_create"
+			case "updated":
+				results[i].Status = "would_update"
+			}
+		}
+	} else {
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
 			return fmt.Errorf("creating vault dir: %w", err)
 		}
@@ -358,7 +376,7 @@ func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, fil
 
 	existing, readErr := readVaultFile(path)
 	if readErr != nil {
-		return vaultSyncResult{Key: meta.Key, CiteKey: meta.CiteKey, File: filename, Status: "error", Note: readErr.Error()}, nil
+		return vaultSyncResult{Key: meta.Key, CiteKey: meta.CiteKey, File: filename, Status: "failed", Note: readErr.Error()}, nil
 	}
 
 	content, boundary := buildVaultNote(existing, meta, annBlock, format)
@@ -1368,17 +1386,14 @@ func sanitizeVaultFilename(s string) string {
 }
 
 func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir, format string, flags *rootFlags) error {
-	var created, updated, unchanged, issues int
+	counts := map[string]int{}
+	issues := 0
 	for _, r := range results {
+		counts[r.Status]++
 		switch r.Status {
-		case "created":
-			created++
-		case "updated":
-			updated++
-		case "unchanged":
-			unchanged++
+		case "created", "updated", "unchanged", "would_create", "would_update":
 		default:
-			issues++ // file_busy, error
+			issues++ // file_busy, failed
 		}
 	}
 
@@ -1389,14 +1404,12 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 
 	if flags.asJSON {
 		report := map[string]any{
-			"out":       outDir,
-			"format":    format,
-			"dry_run":   preview,
-			"created":   created,
-			"updated":   updated,
-			"unchanged": unchanged,
-			"issues":    issues,
-			"results":   results,
+			"out":     outDir,
+			"format":  format,
+			"dry_run": preview,
+			"counts":  counts,
+			"issues":  issues,
+			"results": results,
 		}
 		data, err := json.Marshal(report)
 		if err != nil {
@@ -1412,12 +1425,7 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 		if preview {
 			verb = "Would sync"
 		}
-		summary := fmt.Sprintf("%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged",
-			verb, len(results), outDir, format, created, updated, unchanged)
-		if issues > 0 {
-			summary += fmt.Sprintf(", %d issue(s)", issues)
-		}
-		fmt.Fprintln(out, summary)
+		fmt.Fprintf(out, "%s %d note(s) to %s [%s]: %s\n", verb, len(results), outDir, format, summarizeCounts(counts))
 		for _, r := range results {
 			if r.Status == "unchanged" && r.Note == "" {
 				continue
@@ -1430,7 +1438,11 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 		}
 	}
 	if issues > 0 {
-		return degradedErr(fmt.Errorf("vault sync: %d issue(s); results incomplete", issues))
+		err := fmt.Errorf("vault sync: %d issue(s); results incomplete", issues)
+		if counts["created"]+counts["updated"] > 0 {
+			return markRendered(degradedErr(err))
+		}
+		return markRendered(err)
 	}
 	return nil
 }

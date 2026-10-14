@@ -11,7 +11,7 @@
 
 ## Configure once
 
-Set defaults in `~/.config/zotio/config.toml` instead of passing `--out` every run:
+Set defaults in `~/.config/zotio/config.toml` instead of passing `--vault` every run:
 
 ```toml
 [vault]
@@ -20,7 +20,7 @@ notes_dir = "Zotero"    # notes land in <root>/<notes_dir>
 format = "obsidian"     # or "logseq"
 ```
 
-`--out` / `--format` flags still override the config.
+`--vault` / `--format` flags still override the config.
 
 ## `vault sync` — Zotero → vault
 
@@ -28,7 +28,7 @@ Materialize or refresh one Markdown note per item.
 
 ```bash
 zotio sync                    # refresh the local mirror first
-zotio vault sync --dry-run    # preview created / updated / unchanged
+zotio vault sync --dry-run    # preview would_create / would_update / unchanged
 zotio vault sync --yes        # write notes (uses [vault] config)
 ```
 
@@ -52,16 +52,18 @@ zotio vault pull --yes        # fold edits made in the Zotero app back in
 - **Verbatim renderer.** Markdown is reproduced with everything HTML-escaped and nothing interpreted — wikilinks, tables, callouts, and code survive exactly.
 
 !!! warning "Conflicts are never auto-merged"
-    A note is pushed only when its `## Notes` region changed *and* the remote note hasn't diverged. If both sides changed, nothing is overwritten — a conflict file lands under `_vault-zotero-conflicts/` and is reported.
+    A note is pushed only when its `## Notes` region changed *and* the remote note hasn't diverged. If both sides changed, nothing is overwritten — a conflict file lands under `_vault-zotero-conflicts/` and is reported. A preview reports it as `would_conflict`; conflicts count as issues and exit 1 in preview and apply alike.
 
 ## Recover from conflicts
 
 ```bash
 zotio vault conflicts                       # list unresolved artifacts
-zotio vault resolve <citekey> --keep-vault --yes  # republish vault copy over remote
-zotio vault resolve <citekey> --keep-remote --yes # pull remote over the vault region
+zotio vault resolve <citekey> --keep-vault --allow-destructive --yes  # republish vault copy over remote
+zotio vault resolve <citekey> --keep-remote --allow-destructive --yes # pull remote over the vault region
 zotio vault resolve <citekey> --recreate --yes    # re-create a note deleted in Zotero
 ```
+
+`--keep-vault` and `--keep-remote` overwrite one side, so they need `--allow-destructive` to apply. Without it the preview prints `ok:false` with `destructive_opt_in_required` and exits non-zero. Previews also evaluate `--max-changes` like apply.
 
 ## Note format contract
 
@@ -82,7 +84,7 @@ zotio vault push --dry-run                    # preview Obsidian → Zotero
 zotio vault push --yes                        # publish
 zotio vault pull --yes                        # fold app-side edits back in
 zotio vault conflicts                         # if anything conflicted
-zotio vault resolve <citekey> --keep-vault --yes    # ...or --keep-remote --yes
+zotio vault resolve <citekey> --keep-vault --allow-destructive --yes    # ...or --keep-remote
 ```
 
 !!! note "Mental model"

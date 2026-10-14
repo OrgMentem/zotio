@@ -271,7 +271,7 @@ func TestAuthAndProfileWritersShareInstallationLockScope(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"--config", configPath, "auth", "logout"},
+		{"--config", configPath, "--yes", "auth", "logout"},
 		{"--config", configPath, "profile", "save", "writer-lock-test", "--json"},
 	} {
 		root := newRootCmd(&rootFlags{})
@@ -280,6 +280,18 @@ func TestAuthAndProfileWritersShareInstallationLockScope(t *testing.T) {
 		err := root.ExecuteContext(context.Background())
 		if ExitCode(err) != 9 {
 			t.Fatalf("%s exit code = %d, want 9 (err = %v)", strings.Join(args[2:], " "), ExitCode(err), err)
+		}
+	}
+
+	// Commands that cannot preview reject --dry-run with exit 2 before the
+	// lock is consulted, even while another writer holds it.
+	for _, name := range []string{"sync", "watch", "init"} {
+		root := newRootCmd(&rootFlags{})
+		root.SilenceErrors, root.SilenceUsage = true, true
+		root.SetArgs([]string{"--config", configPath, "--dry-run", name})
+		err := root.ExecuteContext(context.Background())
+		if ExitCode(err) != 2 {
+			t.Fatalf("%s --dry-run exit code = %d, want 2 (err = %v)", name, ExitCode(err), err)
 		}
 	}
 
@@ -671,9 +683,14 @@ func TestInstallationWriterLockCandidatesResolve(t *testing.T) {
 			t.Errorf("explicit writer path %q was not installed", path)
 		}
 	}
-	for _, path := range []string{"auth set-token", "auth logout", "profile save", "profile delete"} {
+	for _, path := range []string{"auth set-token", "profile save"} {
 		if modes[path] != writerLockOnNotDryRun {
 			t.Errorf("%s writer mode = %d, want installation lock on every non-dry-run invocation", path, modes[path])
+		}
+	}
+	for _, path := range []string{"auth logout", "profile delete"} {
+		if modes[path] != writerLockOnApply {
+			t.Errorf("%s writer mode = %d, want installation lock only when applying (--yes)", path, modes[path])
 		}
 	}
 

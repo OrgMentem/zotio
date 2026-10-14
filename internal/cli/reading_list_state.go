@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"zotio/internal/client"
 	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
@@ -90,50 +89,39 @@ func newReadingListDoneCmd(flags *rootFlags) *cobra.Command {
 
 func readingListWriteAnnotations() map[string]string {
 	return map[string]string{
-		"mcp:read-only":                    "false",
-		"zotio:destructive":                "false",
-		"zotio:supports-dry-run":           "true",
-		"zotio:requires-allow-destructive": "false",
-		"zotio:default-max-changes":        "500",
+		"mcp:read-only": "false",
 	}
 }
 
 func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom string, args []string, transition readingListTransition) error {
 	keys, err := resolveKeys(args, keysFrom, cmd.InOrStdin())
 	if err != nil {
-		return err
+		return usageErr(err)
 	}
 
+	// Preview and apply read each item through the write plane, so the plan
+	// reports real no-ops and a missing key exits 3 in both. The client
+	// resolves the Web route without persisting or announcing it unless this
+	// run applies.
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return err
 	}
-
-	// A dry-run client answers every request, GET included, with the
-	// {"dry_run": true} envelope, so reading the live item to diff its tags
-	// fails the whole command on "item response missing data object". Plan the
-	// transition from the request instead, the way items move does.
-	if flags.dryRun {
-		ops := make([]mutation.Op, 0, len(keys))
-		for _, key := range keys {
-			ops = append(ops, mutation.Op{
-				ID:      transition.operation + ":" + key,
-				Key:     key,
-				Kind:    transition.kind,
-				Changes: readingListPlannedChanges(transition),
-			})
-		}
-		return renderReadingListMutation(cmd, flags, transition, ops)
+	// One list request per 50 keys replaces a GET per item, and the list is
+	// never served from the response cache: a stale version would turn every
+	// write into a 412.
+	c.NoCache = true
+	snapshots, err := fetchItemSnapshots(c, keys, flags)
+	if err != nil {
+		return err
 	}
 
 	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
-		data, version, err := c.GetWithVersion(path, nil)
-		if err != nil {
-			return classifyAPIError(err, flags)
-		}
-		currentTags, err := itemDataTags(data)
+		snapshot := snapshots[key]
+		version := snapshot.version
+		currentTags, err := itemDataTags(snapshot.data)
 		if err != nil {
 			return err
 		}
@@ -142,6 +130,7 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 		pathCopy := path
 		removeCopy := append([]string(nil), transition.remove...)
 		addCopy := append([]string(nil), transition.add...)
+		nextTags := readingListNextTags(currentTags, removeCopy, addCopy)
 		op := mutation.Op{
 			ID:              transition.operation + ":" + keyCopy,
 			Key:             keyCopy,
@@ -155,13 +144,13 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 			// version-skipped or a naturally empty transition.
 			NoOpReason: "reading tags already in requested state",
 		}
-		if transition.addOnly {
-			op.Apply = func() (string, any, error) {
-				return applyItemTagAdd(c, pathCopy, addCopy, false)
-			}
+		if nextTags == nil {
+			op.Changes = nil
 		} else {
+			// The write sends the array computed from the planned read under
+			// that read's version, so a concurrent edit is a conflict.
 			op.Apply = func() (string, any, error) {
-				return applyReadingListTagTransition(c, pathCopy, removeCopy, addCopy)
+				return patchItemTags(c, pathCopy, version, nextTags)
 			}
 		}
 		ops = append(ops, op)
@@ -172,31 +161,7 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 
 func renderReadingListMutation(cmd *cobra.Command, flags *rootFlags, transition readingListTransition, ops []mutation.Op) error {
 	env, runErr := runMutation(cmd.Context(), flags, transition.operation, ops)
-	renderErr := renderMutation(cmd, flags, env, readingListTransitionSingleLine(transition))
-	if renderErr != nil {
-		return renderErr
-	}
-	return runErr
-}
-
-// readingListPlannedChanges describes the transition without the live item.
-// A dry run cannot know which tags the item already carries, so it reports the
-// upper bound: every tag the transition would remove and every tag it adds.
-func readingListPlannedChanges(transition readingListTransition) []mutation.Change {
-	addSet := readingListTagSet(transition.add)
-	changes := make([]mutation.Change, 0, len(transition.remove)+len(transition.add))
-	if !transition.addOnly {
-		for _, tagName := range transition.remove {
-			if _, keep := addSet[tagName]; keep {
-				continue
-			}
-			changes = append(changes, mutation.Change{Field: "tags", Remove: tagName})
-		}
-	}
-	for _, tagName := range transition.add {
-		changes = append(changes, mutation.Change{Field: "tags", Add: tagName})
-	}
-	return changes
+	return renderMutationResult(cmd, flags, env, runErr, readingListTransitionSingleLine(transition))
 }
 
 func readingListTagChanges(currentTags []map[string]any, removeTags []string, addTags []string) []mutation.Change {
@@ -218,16 +183,9 @@ func readingListTagChanges(currentTags []map[string]any, removeTags []string, ad
 	return changes
 }
 
-func applyReadingListTagTransition(c *client.Client, path string, removeTags []string, addTags []string) (string, any, error) {
-	currentData, currentVersion, err := c.GetWithVersion(path, nil)
-	if err != nil {
-		return "failed", err.Error(), err
-	}
-	currentTags, err := itemDataTags(currentData)
-	if err != nil {
-		return "failed", err.Error(), err
-	}
-
+// readingListNextTags applies the transition to the item's current tags and
+// returns the full array to write, or nil when nothing would change.
+func readingListNextTags(currentTags []map[string]any, removeTags []string, addTags []string) []map[string]any {
 	removeSet := readingListTagSet(removeTags)
 	addSet := readingListTagSet(addTags)
 	nextTags := make([]map[string]any, 0, len(currentTags)+len(addTags))
@@ -254,9 +212,9 @@ func applyReadingListTagTransition(c *client.Client, path string, removeTags []s
 		added++
 	}
 	if removed == 0 && added == 0 {
-		return "no_op", "reading tags already in requested state", nil
+		return nil
 	}
-	return patchItemTags(c, path, currentVersion, nextTags)
+	return nextTags
 }
 
 func readingListTagSet(tags []string) map[string]struct{} {

@@ -105,8 +105,8 @@ func TestWriteToken(t *testing.T) {
 	}
 }
 func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
-	const parentKey = "PARENT01"
-	const noteKey = "NOTE0001"
+	const parentKey = "PARENTK2"
+	const noteKey = "NTKEYAB2"
 	const citekey = "smith2024"
 	const region = "recovered notes"
 	desiredHTML := markdownToNoteHTML(citekey, region)
@@ -159,7 +159,7 @@ func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
 		path: notePath, citekey: citekey, itemKey: parentKey,
 		region: region, hasRegion: true,
 	}
-	result := pushOne(c, dir, "", n, nil, &rootFlags{}, false)
+	result := pushOne(c, dir, "", n, nil, &rootFlags{maxChanges: -1, allowDestructive: true}, false)
 	if result.Status != "converged" || result.NoteKey != noteKey {
 		t.Fatalf("push result = %+v, want the committed child adopted", result)
 	}
@@ -173,21 +173,21 @@ func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
 		t.Fatalf("vault state = %+v, %v; want recovered key", state, err)
 	}
 
-	second := pushOne(c, dir, "", n, map[string]int{noteKey: 7}, &rootFlags{}, false)
+	second := pushOne(c, dir, "", n, map[string]int{noteKey: 7}, &rootFlags{maxChanges: -1, allowDestructive: true}, false)
 	if second.Status != "unchanged" || posts != 2 {
 		t.Fatalf("second push = %+v, posts=%d; want no duplicate create", second, posts)
 	}
 }
 
 func TestCreateChildNoteRefusesUnresolvedOrAmbiguousReplay(t *testing.T) {
-	const parentKey = "PARENT01"
+	const parentKey = "PARENTK2"
 	const noteHTML = "<h1>Obsidian notes — cite</h1><p><em>Managed from the vault by zotio. Edit in Obsidian.</em></p><p>body</p>"
 	for _, tc := range []struct {
 		name string
 		keys []string
 	}{
 		{name: "zero matches"},
-		{name: "multiple matches", keys: []string{"NOTE0001", "NOTE0002"}},
+		{name: "multiple matches", keys: []string{"NTKEYAB2", "NTKEYAB3"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var posts, childReads int
@@ -262,20 +262,20 @@ func TestWriteNoteStateAppendThenReplace(t *testing.T) {
 }
 
 func TestResolveVaultOutDir(t *testing.T) {
-	// Explicit --out wins.
-	if got, err := resolveVaultOutDir(&rootFlags{}, "/x/y"); err != nil || got != "/x/y" {
+	// Explicit --vault wins.
+	if got, err := resolveVaultOutDir(&rootFlags{maxChanges: -1, allowDestructive: true}, "/x/y"); err != nil || got != "/x/y" {
 		t.Errorf("flag out = (%q,%v), want /x/y", got, err)
 	}
 	// Config fallback.
 	root := t.TempDir()
 	cfg := filepath.Join(t.TempDir(), "config.toml")
 	writeFile(t, cfg, fmt.Sprintf("[vault]\nroot = %q\nnotes_dir = \"refs\"\n", root))
-	if got, err := resolveVaultOutDir(&rootFlags{configPath: cfg}, ""); err != nil || got != filepath.Join(root, "refs") {
+	if got, err := resolveVaultOutDir(&rootFlags{configPath: cfg, maxChanges: -1, allowDestructive: true}, ""); err != nil || got != filepath.Join(root, "refs") {
 		t.Errorf("config out = (%q,%v), want %s/refs", got, err, root)
 	}
 	// Neither -> error.
-	if _, err := resolveVaultOutDir(&rootFlags{configPath: filepath.Join(t.TempDir(), "missing.toml")}, ""); err == nil {
-		t.Errorf("expected error with no --out and no config")
+	if _, err := resolveVaultOutDir(&rootFlags{configPath: filepath.Join(t.TempDir(), "missing.toml"), maxChanges: -1, allowDestructive: true}, ""); err == nil {
+		t.Errorf("expected error with no --vault and no config")
 	}
 }
 
@@ -335,18 +335,31 @@ func TestParsePushNoteLogseqProperties(t *testing.T) {
 }
 
 func TestVaultPushReportFailsForNoteFailures(t *testing.T) {
-	for _, status := range []string{"error", "conflict", "remote_deleted"} {
-		t.Run(status, func(t *testing.T) {
-			cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+	for _, tc := range []struct {
+		name     string
+		results  []pushResult
+		wantExit int
+		wantWord string
+	}{
+		{"failed alone", []pushResult{{File: "note.md", Status: "failed"}}, 1, "failed"},
+		{"conflict", []pushResult{{File: "note.md", Status: "conflict"}}, 1, "conflict"},
+		{"would_conflict", []pushResult{{File: "note.md", Status: "would_conflict"}}, 1, "would_conflict"},
+		{"remote_deleted alone", []pushResult{{File: "note.md", Status: "remote_deleted"}}, 1, "remote_deleted"},
+		{"failed with applied", []pushResult{{File: "a.md", Status: "updated"}, {File: "b.md", Status: "failed"}}, 13, "failed"},
+		{"remote_deleted with applied", []pushResult{{File: "a.md", Status: "created"}, {File: "b.md", Status: "remote_deleted"}}, 13, "remote_deleted"},
+		{"conflict with applied", []pushResult{{File: "a.md", Status: "updated"}, {File: "b.md", Status: "conflict"}}, 1, "conflict"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newVaultPushCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 
-			err := printVaultWriteReport(cmd, []pushResult{{File: "note.md", Status: status}}, "vault", &rootFlags{asJSON: true}, false, "Pushed", "Would push")
-			if code := ExitCode(err); code != 13 {
-				t.Fatalf("exit code = %d, want 13 (err=%v)", code, err)
+			err := printVaultWriteReport(cmd, tc.results, "vault", &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, false, "Pushed", "Would push")
+			if code := ExitCode(err); code != tc.wantExit {
+				t.Fatalf("exit code = %d, want %d (err=%v)", code, tc.wantExit, err)
 			}
-			if !strings.Contains(out.String(), status) {
-				t.Fatalf("report did not render %q: %s", status, out.String())
+			if !strings.Contains(out.String(), tc.wantWord) {
+				t.Fatalf("report did not render %q: %s", tc.wantWord, out.String())
 			}
 		})
 	}
@@ -370,7 +383,7 @@ func TestVaultPushReportsUnreadableNotes(t *testing.T) {
 	// MISSING file, which readVaultFile legitimately treats as absent. This is
 	// the swallowed-read-failure the fix must surface.
 	unreadable := filepath.Join(dir, "unreadable.md")
-	writeFile(t, unreadable, "---\nzotero_key: ABCD1234\n---\nbody")
+	writeFile(t, unreadable, "---\nzotero_key: ABCD2345\n---\nbody")
 	if err := os.Chmod(unreadable, 0o000); err != nil {
 		t.Fatalf("chmod unreadable note: %v", err)
 	}
@@ -388,12 +401,12 @@ func TestVaultPushReportsUnreadableNotes(t *testing.T) {
 		t.Fatalf("warning does not name unreadable note: %q", warnings[0])
 	}
 
-	cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+	cmd := newVaultPushCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--out", dir})
+	cmd.SetArgs([]string{"--vault", dir})
 	err = cmd.Execute()
 	if code := ExitCode(err); code != 13 {
 		t.Fatalf("vault push exit code = %d, want 13 (err=%v)", code, err)
@@ -419,10 +432,10 @@ func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "plain.md"), "not a managed note")
-	cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+	cmd := newVaultPushCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--out", dir})
+	cmd.SetArgs([]string{"--vault", dir})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("vault push with readable note: %v", err)
 	}
@@ -460,7 +473,7 @@ func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags
 	notePath, before := writeFixture(t, outDir)
 
 	cmd := newCmd(&flags)
-	cmd.SetArgs([]string{"--out", outDir})
+	cmd.SetArgs([]string{"--vault", outDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -502,8 +515,8 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 		name  string
 		flags rootFlags
 	}{
-		{name: "bare", flags: rootFlags{asJSON: true}},
-		{name: "agent", flags: rootFlags{asJSON: true, agent: true}},
+		{name: "bare", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true, maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writeFixture := func(t *testing.T, outDir string) (string, []byte) {
@@ -511,7 +524,7 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 				region := "updated local notes"
 				state := pushState{
 					Schema:      noteStateSchema,
-					NoteKey:     "NOTEKEY1",
+					NoteKey:     "NTKEYAB2",
 					NoteVersion: 5,
 					SourceHash:  sha256hex("original notes"),
 					RemoteHash:  sha256hex(markdownToNoteHTML("cite1", "original notes")),
@@ -527,9 +540,9 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 				return notePath, before
 			}
 			runVaultPreviewWithoutWriting(t, "push", tc.name, tc.flags, newVaultPushCmd, map[string][]byte{
-				"/users/0/items":          []byte(`{"NOTEKEY1":5}`),
-				"/users/0/items/NOTEKEY1": []byte(`{"version":5,"data":{"itemType":"note","parentItem":"K1","note":"<p>remote</p>"}}`),
-			}, writeFixture, "would update")
+				"/users/0/items":          []byte(`{"NTKEYAB2":5}`),
+				"/users/0/items/NTKEYAB2": []byte(`{"version":5,"data":{"itemType":"note","parentItem":"K1","note":"<p>remote</p>"}}`),
+			}, writeFixture, "would_update")
 		})
 	}
 }
@@ -538,11 +551,11 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 // a bare invocation nor --agent applies a write, even though --keep-vault
 // targets a note whose vault region differs from the last-pushed baseline (so
 // the apply branch would PATCH). The fixture note key must be exactly 8
-// uppercase-alphanumeric characters — validateZoteroKey rejects anything
+// uppercase-alphanumeric characters — validateKeyArg rejects anything
 // shorter before the gate is ever reached. --yes must still apply.
 func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 	const citekey = "cite1"
-	const noteKey = "NOTEKEY1" // validateZoteroKey: exactly 8 uppercase-alnum chars
+	const noteKey = "NTKEYAB2" // validateKeyArg: exactly 8 uppercase-alnum chars
 	const region = "vault copy wins"
 
 	newFixture := func(t *testing.T) (outDir, notePath string, before []byte, artifact string) {
@@ -580,8 +593,8 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 		name  string
 		flags rootFlags
 	}{
-		{name: "bare", flags: rootFlags{}},
-		{name: "agent", flags: rootFlags{agent: true}},
+		{name: "bare", flags: rootFlags{maxChanges: -1, allowDestructive: true}},
+		{name: "agent", flags: rootFlags{agent: true, maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var violation string
@@ -603,7 +616,7 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 
 			flags := tc.flags
 			cmd := newVaultResolveCmd(&flags)
-			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--vault", outDir})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
@@ -653,9 +666,9 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 
 		outDir, notePath, before, artifact := newFixture(t)
 
-		flags := rootFlags{yes: true, maxChanges: -1}
+		flags := rootFlags{yes: true, maxChanges: -1, allowDestructive: true}
 		cmd := newVaultResolveCmd(&flags)
-		cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+		cmd.SetArgs([]string{citekey, "--keep-vault", "--vault", outDir})
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
 		if err := cmd.Execute(); err != nil {
@@ -689,15 +702,15 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 // Both --dry-run and a bare invocation must surface the read error instead.
 func TestVaultResolvePreviewDetectsRemotelyDeletedNote(t *testing.T) {
 	const citekey = "cite1"
-	const noteKey = "NOTEKEY1" // validateZoteroKey: exactly 8 uppercase-alnum chars
+	const noteKey = "NTKEYAB2" // validateKeyArg: exactly 8 uppercase-alnum chars
 	const region = "vault copy wins"
 
 	for _, tc := range []struct {
 		name  string
 		flags rootFlags
 	}{
-		{name: "dry-run", flags: rootFlags{dryRun: true}},
-		{name: "bare", flags: rootFlags{}},
+		{name: "dry-run", flags: rootFlags{dryRun: true, maxChanges: -1, allowDestructive: true}},
+		{name: "bare", flags: rootFlags{maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var nonGET string
@@ -728,7 +741,7 @@ func TestVaultResolvePreviewDetectsRemotelyDeletedNote(t *testing.T) {
 
 			flags := tc.flags
 			cmd := newVaultResolveCmd(&flags)
-			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--vault", outDir})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
@@ -754,15 +767,15 @@ func TestVaultResolvePreviewDetectsRemotelyDeletedNote(t *testing.T) {
 // performs no requests.
 func TestVaultResolvePreviewPerformsLiveRead(t *testing.T) {
 	const citekey = "cite1"
-	const noteKey = "NOTEKEY1"
+	const noteKey = "NTKEYAB2"
 	const region = "vault copy wins"
 
 	for _, tc := range []struct {
 		name  string
 		flags rootFlags
 	}{
-		{name: "dry-run", flags: rootFlags{dryRun: true}},
-		{name: "bare", flags: rootFlags{}},
+		{name: "dry-run", flags: rootFlags{dryRun: true, maxChanges: -1, allowDestructive: true}},
+		{name: "bare", flags: rootFlags{maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotLiveGET bool
@@ -798,7 +811,7 @@ func TestVaultResolvePreviewPerformsLiveRead(t *testing.T) {
 
 			flags := tc.flags
 			cmd := newVaultResolveCmd(&flags)
-			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--vault", outDir})
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
@@ -824,9 +837,9 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 	// The PATCH 500 case walks the client's 5xx retry ladder; keep it in
 	// milliseconds so this table does not sleep out seven real seconds.
 	fastRetryBackoff(t)
-	const noteKey = "ABCD1234"
+	const noteKey = "ABCD2345"
 	const citekey = "smith2024"
-	const itemKey = "ITEMKEY1"
+	const itemKey = "ITEMKEY2"
 
 	baselineRegion := "baseline notes"
 	baselineHTML := markdownToNoteHTML(citekey, baselineRegion)
@@ -891,7 +904,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
 		if res.Status != "updated" {
 			t.Fatalf("status = %q (%s), want updated", res.Status, res.Note)
 		}
@@ -921,9 +934,9 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
-		if res.Status != "error" {
-			t.Fatalf("status = %q (%s), want error", res.Status, res.Note)
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
+		if res.Status != "failed" {
+			t.Fatalf("status = %q (%s), want failed", res.Status, res.Note)
 		}
 		if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
 			t.Fatalf("error must not create conflict dir: %v", err)
@@ -969,7 +982,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
 		if res.Status != "updated" {
 			t.Fatalf("status = %q (%s), want updated", res.Status, res.Note)
 		}
@@ -1024,9 +1037,9 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
-		if res.Status != "error" {
-			t.Fatalf("status = %q (%s), want error: a failed retry is a failed write", res.Status, res.Note)
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
+		if res.Status != "failed" {
+			t.Fatalf("status = %q (%s), want failed: a failed retry is a failed write", res.Status, res.Note)
 		}
 		after, _ := os.ReadFile(n.path)
 		if !bytes.Equal(before, after) {
@@ -1073,7 +1086,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		// desired == baseline, so the retry arm is entered AND its hashes match.
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, baselineHTML, &rootFlags{})
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, baselineHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
 		if patchCount < 2 {
 			t.Fatalf("PATCH attempts = %d, want a retry: this subtest must exercise the post-retry arm", patchCount)
 		}
@@ -1114,7 +1127,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
 		if !sawPatch {
 			t.Fatal("expected initial PATCH")
 		}
@@ -1176,7 +1189,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{maxChanges: -1, allowDestructive: true})
 		// Read the production code and assert what it actually does: the
 		// second switch arm hashes desiredHTML vs liveHTML, so an already-
 		// applied remote converges by fast-forwarding the baseline without a

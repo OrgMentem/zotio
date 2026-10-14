@@ -75,7 +75,7 @@ func TestLibraryStatsRejectsUnknownAddedBy(t *testing.T) {
 	cmd := newLibraryStatsCmd(&rootFlags{})
 	cmd.SetArgs([]string{"--added-by", "week"})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "--added-by must be month or year") {
+	if err == nil || !strings.Contains(err.Error(), "invalid --added-by") {
 		t.Fatalf("Execute() error = %v", err)
 	}
 }

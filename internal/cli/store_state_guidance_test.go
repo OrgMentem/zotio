@@ -13,7 +13,8 @@ import (
 )
 
 // TestStoreStateGuidance pins the consumer-visible store-state contract in
-// one place: a missing store guides the operator to sync, while a corrupt
+// one place: a missing store is a precondition error (exit 9) that guides the
+// operator to sync, while a corrupt
 // store reports a contextual open failure and must never look missing. Every
 // local command that opens the store owes the same two behaviors.
 func TestStoreStateGuidance(t *testing.T) {
@@ -21,7 +22,7 @@ func TestStoreStateGuidance(t *testing.T) {
 		"items summarize": func(t *testing.T) *cobra.Command {
 			t.Helper()
 			cmd := newItemsSummarizeCmd(&rootFlags{})
-			cmd.SetArgs([]string{"ITEM0001"})
+			cmd.SetArgs([]string{"ABCD2345"})
 			return cmd
 		},
 	}
@@ -32,11 +33,12 @@ func TestStoreStateGuidance(t *testing.T) {
 			cmd.SilenceErrors, cmd.SilenceUsage = true, true
 			var out bytes.Buffer
 			cmd.SetOut(&out)
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("%s with missing store: %v", name, err)
+			err := cmd.Execute()
+			if ExitCode(err) != 9 || err == nil || !strings.Contains(err.Error(), "zotio sync") {
+				t.Fatalf("%s with missing store: err = %v (exit %d), want precondition (9) guiding to 'zotio sync'", name, err, ExitCode(err))
 			}
-			if got := out.String(); got != "Run 'zotio sync' first.\n" {
-				t.Fatalf("stdout = %q, want sync guidance", got)
+			if out.Len() != 0 {
+				t.Fatalf("stdout = %q, want nothing", out.String())
 			}
 		})
 		t.Run("corrupt store does not look missing/"+name, func(t *testing.T) {

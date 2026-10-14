@@ -25,7 +25,7 @@ func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if len(args) > 1 {
-				return fmt.Errorf("expected at most one item key")
+				return usageErr(fmt.Errorf("expected at most one item key"))
 			}
 			fmt.Fprintln(cmd.ErrOrStderr(), `note: "items tags <key>" is deprecated; use "items tags list <key>"`)
 			return runItemTagsRead(cmd, flags, args[0])
@@ -81,11 +81,9 @@ func runItemTagsRead(cmd *cobra.Command, flags *rootFlags, itemKey string) error
 	// --select wins over --compact when both are set; --compact only runs when
 	// no explicit fields were requested.
 	if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-		filtered := data
-		if flags.selectFields != "" {
-			filtered = filterFields(filtered, flags.selectFields)
-		} else if flags.compact {
-			filtered = compactFields(filtered)
+		filtered, fieldErr := applyFieldFlags(data, flags)
+		if fieldErr != nil {
+			return fieldErr
 		}
 		wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 		if wrapErr != nil {

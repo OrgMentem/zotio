@@ -253,15 +253,17 @@ func TestItemsAuditVerifyFilesPropagatesAttachmentRequestError(t *testing.T) {
 	if !strings.Contains(err.Error(), "resolving attachment PDF1 file status") {
 		t.Fatalf("error = %v, want attachment request context", err)
 	}
+	var buf bytes.Buffer
+	PrintErrorJSON(&buf, err)
 	var envelope struct {
-		Error string `json:"error"`
-		Code  int    `json:"code"`
+		Message string `json:"message"`
+		Code    int    `json:"code"`
 	}
-	if decodeErr := json.Unmarshal([]byte(out), &envelope); decodeErr != nil {
-		t.Fatalf("decode API error envelope %q: %v", out, decodeErr)
+	if decodeErr := json.Unmarshal(buf.Bytes(), &envelope); decodeErr != nil {
+		t.Fatalf("decode API error object %q: %v", buf.String(), decodeErr)
 	}
-	if envelope.Code != 5 || envelope.Error != err.Error() {
-		t.Fatalf("API error envelope = %+v, want code=5 error=%q", envelope, err)
+	if envelope.Code != 5 || !strings.Contains(envelope.Message, "resolving attachment PDF1 file status") {
+		t.Fatalf("API error object = %+v, want code=5 and attachment request context", envelope)
 	}
 	if strings.Contains(out, `"broken"`) {
 		t.Fatalf("request failure became a broken-file report: %s", out)
@@ -350,11 +352,27 @@ func TestItemsAuditCmd(t *testing.T) {
 			t.Fatalf("findings is nil, want empty slice")
 		}
 		// Human summary path (non-JSON) should print counts via printItemsAuditSummary.
+		// Piped (non-TTY) output without --json is the same JSON summary.
 		flags2 := &rootFlags{timeout: 2 * time.Second}
-		humanOut, _, err := runItemsAudit(t, flags2)
+		pipedOut, _, err := runItemsAudit(t, flags2)
 		if err != nil {
-			t.Fatalf("audit default human: %v", err)
+			t.Fatalf("audit default piped: %v", err)
 		}
+		var pipedSummary itemsAuditSummary
+		if err := json.Unmarshal([]byte(pipedOut), &pipedSummary); err != nil {
+			t.Fatalf("decode piped summary %q: %v", pipedOut, err)
+		}
+		if pipedSummary.TopLevelItems != 2 || pipedSummary.Findings == nil {
+			t.Fatalf("piped summary = %+v, want the same object as --json", pipedSummary)
+		}
+		// Human text comes from printItemsAuditSummary (terminal only).
+		var humanBuf bytes.Buffer
+		humanCmd := &cobra.Command{}
+		humanCmd.SetOut(&humanBuf)
+		if err := printItemsAuditSummary(humanCmd, summary); err != nil {
+			t.Fatalf("printItemsAuditSummary: %v", err)
+		}
+		humanOut := humanBuf.String()
 		if !strings.Contains(humanOut, "Scope:") || !strings.Contains(humanOut, "top-level items") {
 			t.Fatalf("human summary %q missing Scope line", humanOut)
 		}
@@ -772,11 +790,12 @@ func TestItemsAuditCmd(t *testing.T) {
 		if cleanExitCode != 0 {
 			t.Fatalf("clean exit code = %d, want 0: %v; stdout=%q stderr=%q", cleanExitCode, errClean, outClean, stderrClean)
 		}
-		if !strings.Contains(outClean, "Scope:") {
-			t.Fatalf("clean human output %q missing Scope", outClean)
+		var cleanSum itemsAuditSummary
+		if err := json.Unmarshal([]byte(outClean), &cleanSum); err != nil {
+			t.Fatalf("clean piped output %q is not the JSON summary: %v", outClean, err)
 		}
-		if !strings.Contains(outClean, "missing-pdf") {
-			t.Fatalf("clean human output %q missing check names", outClean)
+		if cleanSum.TopLevelItems != 1 || cleanSum.MissingPDF != 0 {
+			t.Fatalf("clean summary = %+v, want 1 item and no missing PDF", cleanSum)
 		}
 
 		// Library with findings should still exit 0 but human output reflects counts >0.
@@ -794,8 +813,12 @@ func TestItemsAuditCmd(t *testing.T) {
 		if dirtyExitCode != 0 {
 			t.Fatalf("dirty exit code = %d, want 0: %v; stdout=%q stderr=%q", dirtyExitCode, errDirty, outDirty, stderrDirty)
 		}
-		if !strings.Contains(outDirty, "Scope:") {
-			t.Fatalf("dirty human output %q missing Scope", outDirty)
+		var dirtySum itemsAuditSummary
+		if err := json.Unmarshal([]byte(outDirty), &dirtySum); err != nil {
+			t.Fatalf("dirty piped output %q is not the JSON summary: %v", outDirty, err)
+		}
+		if dirtySum.MissingPDF != 1 {
+			t.Fatalf("dirty summary missing_pdf = %d, want 1", dirtySum.MissingPDF)
 		}
 		// JSON summary for dirty should show missing_pdf 1.
 		auditIsolateEnv(t, "")
@@ -933,7 +956,7 @@ func scopeAdopters(vault string) []scopeAdopter {
 			return []string{"--scope", scope}
 		}},
 		{"vault sync", newVaultSyncCmd, func(scope string) []string {
-			return []string{"--out", vault, "--scope", scope}
+			return []string{"--vault", vault, "--scope", scope}
 		}},
 	}
 }

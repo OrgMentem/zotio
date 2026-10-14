@@ -402,6 +402,12 @@ desktop or CrossRef network access respectively; pass --verify-files and/or
 its precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			// the badge is already JSON, so refuse ambiguous output modes.
 			if flagBadge && flags.asJSON {
 				return usageErr(fmt.Errorf("--badge cannot be combined with --json"))
@@ -425,27 +431,36 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if flagCheckRetractions && !slices.Contains(kinds, "retracted_item") {
 				kinds = append(slices.Clone(kinds), "retracted_item")
 			}
+			// --verify-files names the live attachment check, so it joins any
+			// preset that does not already select it.
+			if flagVerifyFiles && !slices.Contains(kinds, "broken_attachment_file") {
+				kinds = append(slices.Clone(kinds), "broken_attachment_file")
+			}
 
-			failOn := strings.ToLower(strings.TrimSpace(flagFailOn))
+			failOn := ""
 			if flagFailOn == "" {
 				failOn = healthPresetFailOn[preset]
-			}
-			// "none" disables the absolute gate (overrides the
-			// preset default) so baseline mode can gate on new findings only.
-			if failOn == "none" {
-				failOn = ""
-			}
-			switch failOn {
-			case "", sevCritical, sevHigh, sevInfo, "any":
-			default:
-				return usageErr(fmt.Errorf("invalid --fail-on %q: must be critical, high, info, any, or none", flagFailOn))
+			} else {
+				parsed, perr := parseFailOnSeverity("fail-on", flagFailOn)
+				if perr != nil {
+					return perr
+				}
+				// "none" disables the absolute gate (overrides the
+				// preset default) so baseline mode can gate on new findings only.
+				if parsed != "none" {
+					failOn = parsed
+				}
 			}
 			// --fail-on-new shares the health gate threshold vocabulary.
-			failOnNew := strings.ToLower(strings.TrimSpace(flagFailOnNew))
-			switch failOnNew {
-			case "", sevCritical, sevHigh, sevInfo, "any":
-			default:
-				return usageErr(fmt.Errorf("invalid --fail-on-new %q: must be critical, high, info, or any", flagFailOnNew))
+			failOnNew := ""
+			if flagFailOnNew != "" {
+				parsed, perr := parseFailOnSeverity("fail-on-new", flagFailOnNew)
+				if perr != nil {
+					return perr
+				}
+				if parsed != "none" {
+					failOnNew = parsed
+				}
 			}
 			baselinePath := strings.TrimSpace(flagBaseline)
 			if failOnNew != "" && baselinePath == "" {
@@ -459,8 +474,8 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if cmd.Flags().Changed("write-baseline") && writeBaselinePath == "" {
 				return usageErr(fmt.Errorf("--write-baseline requires a non-empty path"))
 			}
-			if flagLimit < 0 {
-				return usageErr(fmt.Errorf("--limit must be zero or greater"))
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -478,8 +493,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				if flagBadge {
 					return notSyncedBadge("local store is not synced")
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -531,6 +545,22 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			report, err := assembleHealthReport(db, ctx, preset, kinds, failOn, scope)
 			if err != nil {
 				return err
+			}
+			// An explicit --verify-files that could not run is a precondition
+			// failure (exit 9), the same as `items audit --verify-files`, not a
+			// skipped[] entry on an exit-0 report.
+			if flagVerifyFiles {
+				for _, skip := range report.Skipped {
+					if skip.Kind != "broken_attachment_file" {
+						continue
+					}
+					out := cmd.OutOrStdout()
+					if flags.quiet {
+						out = nil
+					}
+					return emitPreconditionUnmetWithRemediation(out, flags, commandRegistryPath(cmd), preconditionLiveLocalAPI, skip.Detail,
+						remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI))
+				}
 			}
 			// Named sidecars join the output collision namespace (ADR-0005):
 			// the whole deduplicated, canonically-sorted lock set is acquired
@@ -593,7 +623,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				if err := printHealthBadge(cmd, healthBadgeForReport(report, flagBadgeLabel)); err != nil {
 					return err
 				}
-			} else if flags.asJSON {
+			} else if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(report)
 				if err != nil {
 					return err
@@ -622,9 +652,9 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 	cmd.Flags().DurationVar(&flagRequireFresh, "require-fresh", 0, "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled")
 	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
 	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")
-	cmd.Flags().StringVar(&flagBaseline, "baseline", "", "Read health finding identities from this baseline JSON; missing file establishes a baseline")
+	cmd.Flags().StringVar(&flagBaseline, "baseline", "", "Read health finding identities from this baseline JSON. A missing file is reported as 'baseline: not found' and nothing is diffed; with --fail-on-new it exits 9. Create one with --write-baseline")
 	cmd.Flags().StringVar(&flagWriteBaseline, "write-baseline", "", "Write current health finding identities to this baseline JSON after checks")
-	cmd.Flags().StringVar(&flagFailOnNew, "fail-on-new", "", "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline)")
+	cmd.Flags().StringVar(&flagFailOnNew, "fail-on-new", "", "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any; none disables (requires --baseline, which must exist: a missing baseline exits 9)")
 	cmd.Flags().StringVar(&flagReport, "report", "", "Write the full JSON health report to this file in addition to stdout/badge output")
 	return cmd
 }
@@ -1490,7 +1520,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		if report.Baseline.Established {
 			fmt.Fprintf(out, "New since baseline: %d (resolved %d)\n", len(report.Baseline.New), report.Baseline.ResolvedCount)
 		} else {
-			fmt.Fprintf(out, "Baseline established (%d findings recorded)\n", report.Baseline.RecordedCount)
+			fmt.Fprintf(out, "baseline: not found (%s)\n", report.Baseline.BaselinePath)
 		}
 	}
 

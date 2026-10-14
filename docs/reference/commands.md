@@ -30,7 +30,7 @@ These flags are available on every command.
 | `--continue-on-error` | `bool` | `false` | On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first |
 | `--csv` | `bool` | `false` | Output as CSV (table and array responses) |
 | `--data-source` | `string` | `auto` | Data source for read commands: auto (live with local fallback), live (API only), local (synced data only) |
-| `--deliver` | `string` |  | Route output to a sink: stdout (default), file:<path>, webhook:<url> |
+| `--deliver` | `string` |  | Also write output to a sink (output still goes to stdout): file:<path> or webhook:<url>; stdout is the default |
 | `--dry-run` | `bool` | `false` | Preview writes without sending them; read requests still run |
 | `--group` | `string` |  | Operate on a Zotero group library by numeric group ID, or 'all' to fan one read/diagnostic out across the personal library and every accessible group (default: personal library) |
 | `--human-friendly` | `bool` | `false` | Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win) |
@@ -44,7 +44,7 @@ These flags are available on every command.
 | `--no-input` | `bool` | `false` | Disable all interactive prompts (for CI/agents) |
 | `--plain` | `bool` | `false` | Output as plain tab-separated text |
 | `--profile` | `string` |  | Apply values from a saved profile (see 'zotio profile list') |
-| `--quiet` | `bool` | `false` | Bare output, one value per line |
+| `--quiet` | `bool` | `false` | Print nothing; the exit code is the answer |
 | `--rate-limit` | `float64` | `0` | Max requests per second (0 to disable) |
 | `--select` | `string` |  | Comma-separated fields to include in output (e.g. --select id,name,status) |
 | `--timeout` | `duration` | `30s` | Request timeout |
@@ -89,9 +89,10 @@ Analyze a synced Zotero library
 Analyze locally synced Zotero data.
 
 --type accepts a mirrored resource kind (such as items or collections) for
-resource counts, or a Zotero item type (such as journalArticle or book) to
-count only matching rows in the items mirror. When --group-by is supplied,
-the item rows are grouped by year, itemType, collection, creator, or tag.
+resource counts. --item-type accepts a Zotero item type (such as journalArticle
+or book) to count only matching rows in the items mirror. When --group-by is
+supplied, the item rows are grouped by year, itemType, collection, creator, or
+tag. --limit caps the groups shown (0 = no limit).
 
 ```
 zotio analytics [flags]
@@ -102,7 +103,7 @@ Examples:
 ```bash
 # Count all items and only journal articles
   zotio analytics --type items
-  zotio analytics --type journalArticle --json
+  zotio analytics --item-type journalArticle --json
 
   # Group items by publication year or collection
   zotio analytics --type items --group-by year
@@ -113,8 +114,9 @@ Examples:
 | --- | --- | --- | --- |
 | `--db` | `string` |  | Database path |
 | `--group-by` | `string` |  | Group items by year, itemType, collection, creator, or tag |
-| `--limit` | `int` | `25` | Maximum groups to show with --group-by |
-| `--type` | `string` |  | Resource kind or Zotero item type to analyze |
+| `--item-type` | `string` |  | Zotero item type to count or group (journalArticle, book, ...) |
+| `--limit` | `int` | `25` | Maximum groups to show with --group-by (0 = no limit) |
+| `--type` | `string` |  | Mirrored resource kind to count (items, collections, tags, ...) |
 
 ## `zotio annotations`
 
@@ -128,18 +130,38 @@ zotio annotations
 
 Export annotations as markdown or JSON
 
+Export annotations grouped by the top-level item that owns them. --limit caps
+the number of annotations exported, not the number of items scanned.
+--collection and --tag are shorthand for --scope collection:KEY and
+--scope tag:NAME; together they intersect.
+
+With --data-source auto (the default) the command reads live and serves the
+local mirror when Zotero is unreachable. --format json returns the
+{meta, results} envelope; under --json or --agent, --format markdown returns
+{"format", "content"}. With --output the result goes to the file and stdout
+reports what was written; under --dry-run nothing is written.
+
 ```
 zotio annotations export [flags]
 ```
 
+Examples:
+
+```bash
+zotio annotations export --collection ABCD2345 --output notes.md
+  zotio annotations export --scope "collection:ABCD2345 AND tag:to-read" --format json
+  zotio annotations export --limit 200 --output annotations.md --dry-run
+```
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Scope to items in this collection key |
+| `--collection` | `string` |  | Only annotations of items in this collection key (same as --scope collection:KEY) |
 | `--format` | `string` | `markdown` | Output format (markdown or json) |
-| `--limit` | `int` | `50` | Maximum number of items to process |
-| `--output` | `string` |  | Output file path (default: stdout) |
-| `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
-| `--tag` | `string` |  | Scope to items with this tag |
+| `--limit` | `int` | `50` | Maximum number of annotations to export (0 = no limit) |
+| `--refresh` | `bool` | `false` | Read live only, with no local mirror fallback (same as --data-source live) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
+| `--tag` | `string` |  | Only annotations of items with this tag (same as --scope tag:NAME) |
+| `-o, --output` | `string` |  | Output file path (default: stdout) |
 
 ### `zotio annotations search`
 
@@ -147,28 +169,52 @@ Search annotations by text
 
 Search annotation text, comments and tags.
 
-With the local store (the default), matching uses the full-text index:
-word stems match ("trust" finds "trusted"), "quoted phrases" match
-exactly, and AND, OR, NOT and parentheses combine terms. Results are
-ranked by relevance and include the key and title of the item the
-annotation belongs to. --refresh searches live through the Zotero API:
-each word or "quoted phrase" must appear, in any letter case, in the
-annotation's text, comment or tags; stems and operators do not apply.
+By default the search uses the local store's full-text index: word stems match
+("trust" finds "trusted"), "quoted phrases" match exactly, AND, OR, NOT and
+parentheses combine terms, and results are ranked by relevance. Live search has
+none of that, which is why this command reads the local store first, unlike
+annotations timeline and annotations export, which read live first. With no
+synced local store the search runs live instead: each word or "quoted phrase"
+must appear, in any letter case, in the annotation's text, comment or tags;
+stems and operators do not apply. meta.source and meta.reason say which path
+answered.
+
+--data-source local searches the index only. --data-source live (or --refresh)
+searches live only.
+
+Results include the key and title of the top-level item each annotation
+belongs to. --scope names top-level items, as it does for annotations export
+and annotations timeline.
 
 ```
 zotio annotations search <query> [flags]
 ```
 
+Examples:
+
+```bash
+zotio annotations search "working memory"
+  zotio annotations search trust --scope collection:ABCD2345 --color yellow
+  zotio annotations search "effect size" --data-source local --limit 20
+```
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--color` | `string` |  | Filter by annotation color (yellow, red, green, blue, purple, orange) |
-| `--limit` | `int` | `50` | Maximum number of annotations to return |
-| `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
+| `--limit` | `int` | `50` | Maximum number of annotations to return (0 = no limit) |
+| `--refresh` | `bool` | `false` | Search live only, skipping the local index (same as --data-source live) |
 | `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio annotations timeline`
 
 List annotations sorted by creation date
+
+List annotations newest first. --item names the top-level item that owns the
+annotations, never the attachment that holds them. --collection and --item are
+shorthand for --scope collection:KEY and --scope item:KEY.
+
+With --data-source auto (the default) the command reads live and serves the
+local mirror when Zotero is unreachable.
 
 ```
 zotio annotations timeline [flags]
@@ -179,15 +225,17 @@ Examples:
 ```bash
 zotio annotations timeline --limit 50
   zotio annotations timeline --since 2024-01-01
-  zotio annotations timeline --item ABCD1234 --json
+  zotio annotations timeline --item ABCD2345 --json
+  zotio annotations timeline --scope "collection:ABCD2345 AND tag:to-read"
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Scope to items in this collection key |
-| `--item` | `string` |  | Scope to annotations of a specific parent item key |
-| `--limit` | `int` | `50` | Maximum number of annotations to return |
-| `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
+| `--collection` | `string` |  | Only annotations of items in this collection key (same as --scope collection:KEY) |
+| `--item` | `string` |  | Only annotations of this top-level item key (same as --scope item:KEY) |
+| `--limit` | `int` | `50` | Maximum number of annotations to return (0 = no limit) |
+| `--refresh` | `bool` | `false` | Read live only, with no local mirror fallback (same as --data-source live) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--since` | `string` |  | ISO date string; include annotations after this date |
 
 ## `zotio attachments`
@@ -256,7 +304,7 @@ zotio auth
 
 Clear stored credentials
 
-Clears the stored API key from the config file and removes the credentials file. --dry-run reports what would be cleared and writes nothing.
+Previews by default: shows what would be cleared and changes nothing. Pass --yes to clear the stored API key from the config file and remove the credentials file.
 
 ```
 zotio auth logout
@@ -266,6 +314,7 @@ Examples:
 
 ```bash
 zotio auth logout
+  zotio auth logout --yes
 ```
 
 ### `zotio auth set-token`
@@ -313,6 +362,10 @@ Commands with more than one write route carry a routes list where each route
 names its own preconditions; the top-level requires and write_target describe
 the default route (the first entry in routes).
 
+A destructive command makes a change "journal undo" cannot reverse. A command
+that writes local files you name (an export, a report, a baseline) keeps
+operation read and reports write_target local_file.
+
 ```
 zotio capabilities [flags]
 ```
@@ -359,7 +412,7 @@ Assemble a self-contained research package from the local store for a
 collection: synthesis context, annotations, and compact bibliography. This command
 never writes to Zotero; run sync first if local data is missing.
 
-Re-running into the same --out replaces the package; the result names every
+Re-running into the same --output-dir replaces the package; the result names every
 existing file it replaced. zotio-bundle.json is written last and lists each
 file's size and SHA-256: the package is complete only while that file is
 present and matches. With --dry-run nothing is written; the result lists the
@@ -369,9 +422,16 @@ files that would be written and replaced.
 zotio collections bundle <collectionKey> [flags]
 ```
 
+Examples:
+
+```bash
+zotio collections bundle ABCD2345 --output-dir ./research/ethics
+  zotio collections bundle ABCD2345 --output-dir ./research/ethics --dry-run
+```
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--out` | `string` |  | Output directory for the research package |
+| `--output-dir` | `string` |  | Output directory for the research package |
 
 ### `zotio collections create`
 
@@ -384,7 +444,7 @@ zotio collections create [flags]
 Examples:
 
 ```bash
-zotio collections create --name example-resource
+zotio collections create --name "Reading list" --parent-collection ABCD2345
 ```
 
 | Flag | Type | Default | Description |
@@ -404,7 +464,7 @@ zotio collections delete <collectionKey>
 Examples:
 
 ```bash
-zotio collections delete COLLECTIONKEY
+zotio collections delete ABCD2345
 ```
 
 ### `zotio collections export`
@@ -420,6 +480,12 @@ need Zotero desktop running. --format json emits the structured item JSON the
 synced mirror already holds, so it also works with Zotero closed
 (--data-source local, or auto once the local API stops answering).
 
+The collection must exist: an unknown key exits 3 before anything is written.
+Under --json or --agent, bibtex and ris output is wrapped as
+{"format": ..., "content": ...}. With --output the file is replaced atomically
+and the result reports whether it replaced an existing file; with --dry-run
+nothing is written, not even a lock file, and the result reports what would be.
+
 ```
 zotio collections export <collectionKey> [flags]
 ```
@@ -428,24 +494,27 @@ Examples:
 
 ```bash
 # Export collection as BibTeX (default)
-  zotio collections export ABCD1234
+  zotio collections export ABCD2345
 
   # Export as RIS to a file
-  zotio collections export ABCD1234 --format ris --output refs.ris
+  zotio collections export ABCD2345 --format ris -o refs.ris
+
+  # Preview the file write without creating it
+  zotio collections export ABCD2345 -o refs.bib --dry-run
 
   # Export the whole subtree's item JSON from the synced mirror, Zotero closed
-  zotio collections export ABCD1234 --format json --data-source local
+  zotio collections export ABCD2345 --format json --data-source local
 
   # Export without descending into subcollections
-  zotio collections export ABCD1234 --flat
+  zotio collections export ABCD2345 --flat
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--flat` | `bool` | `false` | Export only the top-level collection, skip subcollections |
 | `--format` | `string` | `bibtex` | Export format: bibtex, ris, csljson, json (json is the offline-capable format) |
-| `--limit` | `int` | `100` | Items fetched per API request (max 100); the export always walks every page |
-| `--output` | `string` |  | Write output to file instead of stdout |
+| `--page-size` | `int` | `100` | Items fetched per API request (max 100); the export always walks every page |
+| `-o, --output` | `string` |  | Write output to this file instead of stdout (replaced atomically) |
 
 ### `zotio collections gaps`
 
@@ -455,10 +524,16 @@ Find highly cited DOI references missing from a collection's library
 zotio collections gaps <collectionKey> [flags]
 ```
 
+Examples:
+
+```bash
+zotio collections gaps ABCD2345 --limit 100 --top 10
+```
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `50` | Maximum DOI-bearing collection items to scan (0 = all) |
-| `--top` | `int` | `20` | Number of citation gaps to show |
+| `--limit` | `int` | `50` | Maximum DOI-bearing collection items to scan (0 = no limit) |
+| `--top` | `int` | `20` | Number of citation gaps to show (0 = no limit) |
 
 ### `zotio collections get`
 
@@ -471,7 +546,7 @@ zotio collections get <collectionKey>
 Examples:
 
 ```bash
-zotio collections get COLLECTIONKEY
+zotio collections get ABCD2345
 ```
 
 ### `zotio collections items`
@@ -485,13 +560,13 @@ zotio collections items <collectionKey> [flags]
 Examples:
 
 ```bash
-zotio collections items COLLECTIONKEY
+zotio collections items ABCD2345 --limit 25
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` |  | Response format (json, bibtex, ris, etc.) |
-| `--limit` | `int` | `0` | Maximum number of items to return |
+| `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--start` | `int` | `0` | Pagination offset |
 
 ### `zotio collections list`
@@ -505,12 +580,12 @@ zotio collections list [flags]
 Examples:
 
 ```bash
-zotio collections list
+zotio collections list --limit 50
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number of collections to return |
+| `--limit` | `int` | `0` | Maximum number of collections to return (0 = no limit) |
 | `--start` | `int` | `0` | Pagination offset |
 
 ### `zotio collections move`
@@ -519,6 +594,13 @@ Move a collection under a new parent
 
 ```
 zotio collections move <collectionKey> --to <parentKey> [flags]
+```
+
+Examples:
+
+```bash
+zotio collections move ABCD2345 --to EFGH6789
+  zotio collections move ABCD2345 --to root
 ```
 
 | Flag | Type | Default | Description |
@@ -533,9 +615,15 @@ Show analytics for a collection (item count, PDF coverage, year range, top journ
 zotio collections stats <collectionKey> [flags]
 ```
 
+Examples:
+
+```bash
+zotio collections stats ABCD2345 --top 10
+```
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--top` | `int` | `5` | Number of top venues to show |
+| `--top` | `int` | `5` | Number of top venues to show (0 = no limit) |
 
 ### `zotio collections subcollections`
 
@@ -548,7 +636,7 @@ zotio collections subcollections <collectionKey>
 Examples:
 
 ```bash
-zotio collections subcollections COLLECTIONKEY
+zotio collections subcollections ABCD2345
 ```
 
 ### `zotio collections tags`
@@ -562,12 +650,12 @@ zotio collections tags <collectionKey> [flags]
 Examples:
 
 ```bash
-zotio collections tags COLLECTIONKEY
+zotio collections tags ABCD2345 --query ethics
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number of tags to return |
+| `--limit` | `int` | `0` | Maximum number of tags to return (0 = no limit) |
 | `--query` | `string` |  | Filter tags by name substring |
 | `--query-mode` | `string` | `contains` | Tag query mode: contains or startsWith |
 | `--start` | `int` | `0` | Pagination offset |
@@ -583,12 +671,12 @@ zotio collections top [flags]
 Examples:
 
 ```bash
-zotio collections top
+zotio collections top --limit 20
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number to return |
+| `--limit` | `int` | `0` | Maximum number of collections to return (0 = no limit) |
 
 ### `zotio collections update`
 
@@ -601,7 +689,7 @@ zotio collections update <collectionKey> [flags]
 Examples:
 
 ```bash
-zotio collections update COLLECTIONKEY
+zotio collections update ABCD2345 --name "Reading list"
 ```
 
 | Flag | Type | Default | Description |
@@ -677,9 +765,10 @@ zotio creators audit fix [flags]
 Examples:
 
 ```bash
-zotio creators audit fix
-  zotio creators audit fix --map "J. Smith=John Smith"
-  zotio creators audit fix --scope collection:ABCD1234 --yes
+# Previews also need --allow-destructive to show ok:true
+  zotio creators audit fix --allow-destructive
+  zotio creators audit fix --map "J. Smith=John Smith" --allow-destructive
+  zotio creators audit fix --scope collection:ABCD2345 --allow-destructive --yes
 ```
 
 | Flag | Type | Default | Description |
@@ -709,9 +798,10 @@ zotio creators rename --from <oldName> --to <newName> [flags]
 Examples:
 
 ```bash
-zotio creators rename --from "Adam J Rock" --to "Adam J. Rock"
-  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --yes
-  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD1234
+# Without --allow-destructive the preview is refused (ok:false, destructive_opt_in_required)
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive --yes
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD2345 --allow-destructive
 ```
 
 | Flag | Type | Default | Description |
@@ -918,8 +1008,8 @@ zotio doctor
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--ensure-live` | `bool` | `false` | Check the Zotero desktop local API is reachable; exit 9 if not |
-| `--fail-on` | `string` |  | Exit non-zero when a health level is reached: stale, error. Default is never. |
+| `--ensure-live` | `bool` | `false` | Check the Zotero desktop local API is reachable; exit 9 if not. Prints {"status":"reachable"} under --json instead of the full report |
+| `--fail-on` | `string` |  | Exit non-zero when a health level is reached: stale (exit 12 when the cache is stale, 11 on an error) or error (exit 11). Default is never. |
 | `--launch` | `bool` | `false` | With --ensure-live, launch Zotero and wait up to 15s for the local API |
 
 ## `zotio export`
@@ -944,13 +1034,13 @@ Examples:
   zotio export items --limit 1000
 
   # Pipe to another tool
-  zotio export items | jq '.id'
+  zotio export items | jq '.key'
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` | `jsonl` | Output format: jsonl or json |
-| `--limit` | `int` | `0` | Maximum records to export (0 = unlimited) |
+| `--limit` | `int` | `0` | Maximum records to export (0 = no limit) |
 | `-o, --output` | `string` |  | Output file path (default: stdout) |
 
 ### `zotio export snapshot`
@@ -963,7 +1053,11 @@ item's key, version, and canonical data hash for drift detection. An
 interrupted run continues with --resume using <output>.checkpoint.json.
 Translator formats need Zotero to return the requested include field.
 
-Scope is one of: library (default), collection:KEY, or tag:NAME.
+Scope uses the shared --scope grammar: library (default), collection:KEY,
+tag:NAME, or collection:KEY AND tag:NAME. The data file and the manifest are
+each published atomically (a temporary file renamed into place), so a failed
+run keeps the previous snapshot. A JSONL run keeps its in-progress data in
+<output>.partial until it finishes.
 
 ```
 zotio export snapshot [scope] [flags]
@@ -974,14 +1068,15 @@ Examples:
 ```bash
 zotio export snapshot --output backup.jsonl
   zotio export snapshot --format bibtex --output library.bib
-  zotio export snapshot collection:ABCD1234 --format ris --output coll.ris
+  zotio export snapshot collection:ABCD2345 --format ris --output coll.ris
+  zotio export snapshot "collection:ABCD2345 AND tag:to-read" --output subset.jsonl
   zotio export snapshot --format csljson --output library.json --resume
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` | `jsonl` | Snapshot format: jsonl, bibtex, ris, or csljson |
-| `--limit` | `int` | `0` | Maximum items to export (0 = all) |
+| `--limit` | `int` | `0` | Maximum items to export (0 = no limit) |
 | `--page-size` | `int` | `100` | Items per API page (1-100) |
 | `--resume` | `bool` | `false` | Resume an interrupted snapshot from its checkpoint sidecar |
 | `-o, --output` | `string` |  | Output data file (required); the manifest is written to <output>.manifest.json |
@@ -1065,7 +1160,7 @@ zotio feedback list
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `20` | Maximum number of recent entries to return |
+| `--limit` | `int` | `20` | Maximum number of recent entries to return (0 = no limit) |
 
 ## `zotio groups`
 
@@ -1079,8 +1174,19 @@ zotio groups
 
 Check whether a Zotero group library is accessible and writable
 
+Probes one group library. The command always exits 0 when the probe itself
+works: "found": false means the group is not accessible (not a member, or the
+API key lacks access), not that the command failed. Read "found",
+"ready_for_read" and "ready_for_write" in the output.
+
 ```
 zotio groups inspect <group-id>
+```
+
+Examples:
+
+```bash
+zotio groups inspect 1234567 --json
 ```
 
 ### `zotio groups list`
@@ -1132,7 +1238,6 @@ Examples:
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--batch-size` | `int` | `1` | Records per batch (future: batch API support) |
 | `-i, --input` | `string` |  | Input JSONL file path (use - for stdin) |
 
 ### `zotio import apply`
@@ -1168,7 +1273,7 @@ a canceled run still reports every entry the session already saved, and
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
 
---collection KEY files every created item into that collection. It overrides
+--to KEY files every created item into that collection. It overrides
 the manifest's "collection" default for this run; an entry's own "collection"
 still wins over both. The destination applies to created items, including the
 item Zotero's recognizer makes from a "recognize" entry, which its own save
@@ -1186,8 +1291,8 @@ zotio import apply <manifest> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--attach-mode` | `string` | `none` | Attachment handling: none, linked-file, or stored |
-| `--collection` | `string` |  | Collection key to file created items into (overrides the manifest default; attach entries are not re-filed) |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to file created items into (overrides the manifest default; attach entries are not re-filed) |
 
 ### `zotio import arxiv`
 
@@ -1204,8 +1309,8 @@ zotio import arxiv <id> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add the item to |
 
 ### `zotio import discover`
 
@@ -1219,11 +1324,11 @@ zotio import discover [flags]
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Default destination collection key recorded in the manifest for created items |
 | `--direction` | `string` | `backward` | Citation chase direction: backward, forward, or both |
-| `--limit` | `int` | `25` | Maximum manifest entries to emit |
+| `--limit` | `int` | `25` | Maximum manifest entries to emit (0 = no limit) |
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
-| `--out` | `string` |  | Path to write the reviewable import manifest |
-| `--overwrite` | `bool` | `false` | Replace an existing manifest at --out; review edits in it are lost |
+| `--overwrite` | `bool` | `false` | Replace an existing manifest at --output; review edits in it are lost |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (required) |
+| `-o, --output` | `string` |  | Path to write the reviewable import manifest |
 
 ### `zotio import doi`
 
@@ -1247,8 +1352,8 @@ zotio import doi <doi> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add the item to |
 
 ### `zotio import file`
 
@@ -1269,8 +1374,8 @@ zotio import file <path> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add imported items to |
 | `--format` | `string` |  | Input format (bibtex, ris, csljson; csljson requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add imported items to |
 
 ### `zotio import isbn`
 
@@ -1287,8 +1392,8 @@ zotio import isbn <isbn> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add the item to |
 
 ### `zotio import monitor`
 
@@ -1305,20 +1410,20 @@ zotio import monitor [flags]
 Examples:
 
 ```bash
-zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --out new-works.json
-  zotio import monitor --query "bayesian inference" --author A5023888391 --since 2026-09-01 --out feed.json
+zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --output new-works.json
+  zotio import monitor --query "bayesian inference" --author A5023888391 --since 2026-09-01 --output feed.json
   zotio import resolve new-works.json > reviewed.json && zotio import apply reviewed.json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--author` | `stringArray` | `[]` | Author ORCID or OpenAlex author ID (or their https URL); repeat to match any author |
-| `--limit` | `int` | `25` | Maximum manifest entries to write |
-| `--out` | `string` |  | Required reviewable import manifest output path |
-| `--overwrite` | `bool` | `false` | Replace an existing manifest at --out; review edits in it are lost |
+| `--limit` | `int` | `25` | Maximum manifest entries to write (0 = no limit) |
+| `--overwrite` | `bool` | `false` | Replace an existing manifest at --output; review edits in it are lost |
 | `--query` | `string` |  | Free-text topic search; with --author, match both |
 | `--since` | `string` |  | Required publication date lower bound (YYYY-MM-DD, inclusive) |
 | `--until` | `string` |  | Publication date upper bound (YYYY-MM-DD, inclusive) |
+| `-o, --output` | `string` |  | Required reviewable import manifest output path |
 
 ### `zotio import pdf`
 
@@ -1339,11 +1444,12 @@ Before importing, each PDF is classified against your synced library the same wa
 synced library is required for that check, and its absence only disables the check,
 never the import.
 
---collection <key|name> files the created item into a collection after import,
-creating a same-named collection when one doesn't already exist (like 'items
-add-to-collection'). This is a separate step, not part of the connector call: the
-saveStandaloneAttachment endpoint saves into whatever the desktop pane currently
-targets and accepts no collection parameter.
+--to <key> files the created item into the collection with that key after import.
+--collection-name <name> does the same by exact name, creating the collection
+when it does not exist (like 'items add-to-collection'). Pass at most one. This
+is a separate step, not part of the connector call: the saveStandaloneAttachment
+endpoint saves into whatever the desktop pane currently targets and accepts no
+collection parameter.
 
 --via connector hands work to the running Zotero desktop, which surfaces its
 own progress UI; zotio cannot dismiss it and the connector protocol exposes no
@@ -1362,8 +1468,9 @@ zotio import pdf <path...> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key or name to file the created item into (the name is created if it doesn't exist) |
+| `--collection-name` | `string` |  | Exact collection name to file the created item into (created if absent) |
 | `--on-duplicate` | `string` | `skip` | How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create |
+| `--to` | `string` |  | Destination collection key to file the created item into |
 
 ### `zotio import pmid`
 
@@ -1380,8 +1487,8 @@ zotio import pmid <pmid> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add the item to |
 
 ### `zotio import resolve`
 
@@ -1393,7 +1500,7 @@ zotio import resolve <dir-or-manifest> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `200` | Scan at most N PDFs when resolving a directory |
+| `--limit` | `int` | `0` | Scan at most N PDFs when resolving a directory (0 = no limit) |
 
 ### `zotio import scan`
 
@@ -1430,7 +1537,7 @@ zotio import scan ~/Downloads/papers
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Scan at most N PDFs (0 = all) |
+| `--limit` | `int` | `0` | Scan at most N PDFs (0 = no limit) |
 | `--resolve` | `bool` | `false` | Fetch titles for 'new' PDFs from CrossRef, then DataCite (network) |
 
 ### `zotio import targets`
@@ -1438,7 +1545,7 @@ zotio import scan ~/Downloads/papers
 List Zotero desktop Connector save targets
 
 List Zotero desktop Connector save targets for connector-backed imports.
-Use the id column (for example C78) with --connector-target when --collection is
+Use the id column (for example C78) with --connector-target when --to is
 ambiguous or the local Web API collection key cannot be mapped automatically.
 
 ```
@@ -1478,8 +1585,8 @@ zotio import url <url> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+| `--to` | `string` |  | Destination collection key to add the item to |
 
 ## `zotio init`
 
@@ -1519,13 +1626,20 @@ collection when no collection of that name exists.
 Prefer this when you know the collection by name. When you already have the
 collection key, or need to move many items at once or remove a membership, use
 'zotio items move --to <collectionKey>' (also --from, --keys-from); this command
-resolves the name and then delegates the membership change to it.
+resolves the name and then applies the same membership change.
 
-Apply mode journals two writes for one invocation when the collection has to be
-created — a collection create plus an item move — because two writes happen.
+The plan holds two operations when the collection has to be created -- a
+collection create plus an item membership change -- because two writes happen.
 
 ```
 zotio items add-to-collection <itemKey> [flags]
+```
+
+Examples:
+
+```bash
+zotio items add-to-collection ABCD2345 --collection-name "Reading list"
+  zotio items add-to-collection ABCD2345 --collection-name "Reading list" --yes
 ```
 
 | Flag | Type | Default | Description |
@@ -1542,8 +1656,8 @@ zotio items annotations <itemKey> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--annotation-type` | `string` |  | Filter by annotation type (highlight, note, image) |
 | `--color` | `string` |  | Filter by annotation color (yellow, red, green, blue, purple, orange) |
-| `--type` | `string` |  | Filter by annotation type (highlight, note, image) |
 
 ### `zotio items audit`
 
@@ -1575,9 +1689,10 @@ zotio items authors [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Filter to items in this collection key |
-| `--top` | `int` | `20` | Maximum number of authors to return |
-| `--type` | `string` |  | Filter by creatorType (for example author or editor) |
+| `--collection` | `string` |  | Filter to items in this collection key (same as --scope collection:KEY) |
+| `--creator-type` | `string` |  | Filter by creatorType (for example author or editor) |
+| `--limit` | `int` | `20` | Maximum number of authors to return (0 = no limit) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio items bibcheck`
 
@@ -1600,7 +1715,7 @@ zotio items bibcheck paper.tex
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--check-retractions` | `bool` | `false` | Also look up the DOI of every cited library item at CrossRef (network) and report retracted works (critical) and expressions of concern (high) at the manuscript line that cites them. Off by default; a lookup that fails is reported as skipped and, under --fail-on, exits 9 instead of passing |
-| `--fail-on` | `string` |  | Exit 11 when findings reach this severity: high, any, or none |
+| `--fail-on` | `string` |  | Exit 11 when findings reach this severity: critical, high, info, any, or none |
 | `--fail-on-unknown` | `bool` | `false` | Exit 11 when any cited key is unknown or ambiguous |
 | `--follow-includes` | `bool` | `false` | Also check .tex files pulled in by \input{PATH} and \include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \input PATH, \subfile, or \import |
 
@@ -1640,10 +1755,10 @@ zotio items bibliography [flags]
 Examples:
 
 ```bash
-zotio items bibliography --scope collection:ABCD1234 --style apa
+zotio items bibliography --scope collection:ABCD2345 --style apa
   zotio items bibliography --scope tag:to-submit --format csljson
-  zotio items bibliography --scope collection:ABCD1234 --format bibtex
-  zotio items bibliography --scope item:ABCD1234 --json
+  zotio items bibliography --scope collection:ABCD2345 --format bibtex
+  zotio items bibliography --scope item:ABCD2345 --json
   zotio items bibliography --manuscript paper.tex --format biblatex
   zotio items bibliography --manuscript thesis.tex --follow-includes --format bibtex
   zotio items bibliography --manuscript intro.md --manuscript methods.md --format csljson
@@ -1668,7 +1783,7 @@ zotio items children <itemKey> [flags]
 Examples:
 
 ```bash
-zotio items children ABC12345
+zotio items children ABCD2345
 ```
 
 | Flag | Type | Default | Description |
@@ -1691,9 +1806,9 @@ zotio items cite <itemKey> [flags]
 Examples:
 
 ```bash
-zotio items cite ABCD1234
-  zotio items cite ABCD1234 --style apa
-  zotio items cite ABCD1234 --style bibtex
+zotio items cite ABCD2345
+  zotio items cite ABCD2345 --style apa
+  zotio items cite ABCD2345 --style bibtex --json
 ```
 
 | Flag | Type | Default | Description |
@@ -1752,7 +1867,7 @@ zotio items create [flags]
 Examples:
 
 ```bash
-zotio items create
+zotio items create --items '[{"itemType":"journalArticle","title":"A title"}]'
 ```
 
 | Flag | Type | Default | Description |
@@ -1818,7 +1933,7 @@ Examples:
 zotio items duplicates resolve
   zotio items duplicates resolve --doi
   zotio items duplicates resolve --title
-  zotio items duplicates resolve --doi --title --yes
+  zotio items duplicates resolve --doi --title --yes --allow-destructive
 ```
 
 | Flag | Type | Default | Description |
@@ -1893,7 +2008,7 @@ zotio items enrich [flags]
 | `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf), the OpenAlex polite pool and NCBI PubMed for --missing-mesh (both optional); or set UNPAYWALL_EMAIL |
 | `--keys` | `string` |  | Comma-separated exact item keys to enrich |
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |
-| `--limit` | `int` | `25` | Maximum items to process per category |
+| `--limit` | `int` | `25` | Maximum items to process per category (0 = no limit) |
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
 | `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
@@ -1928,10 +2043,10 @@ Examples:
 
 ```bash
 # Path of an item's PDF
-  zotio items file ABCD1234
+  zotio items file ABCD2345
 
   # JSON envelope (item key, resolved attachment key, url, path)
-  zotio items file ABCD1234 --json
+  zotio items file ABCD2345 --json
 ```
 
 ### `zotio items find`
@@ -1988,7 +2103,7 @@ zotio items get <itemKey> [flags]
 Examples:
 
 ```bash
-zotio items get ABCD1234
+zotio items get ABCD2345
 ```
 
 | Flag | Type | Default | Description |
@@ -2006,17 +2121,18 @@ zotio items list [flags]
 Examples:
 
 ```bash
-zotio items list
+zotio items list --limit 20 --item-type journalArticle
+  zotio items list --query "deep learning" --sort dateModified --direction desc
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--direction` | `string` |  | Sort direction (asc or desc) |
 | `--format` | `string` |  | Response format (json, atom, bib, bibtex, bookmarks, coins, csljson, mods, refer, rdf_bibliontology, rdf_dc,... |
-| `--item-type` | `string` |  | Filter by item type (journalArticle, book, bookSection, conferencePaper, etc.) |
-| `--limit` | `int` | `0` | Maximum number of items to return (max 100) |
-| `--query` | `string` |  | Quick search across title, creator, and year |
-| `--since` | `int` | `0` | Return only items modified after this library version number |
+| `--item-type` | `string` |  | Filter by item type, for example journalArticle or book (not validated client-side; see 'zotio schema item-types') |
+| `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
+| `--query` | `string` |  | Quick search across title, creator, and year; quote multi-word queries |
+| `--since-version` | `int` | `0` | Return only items modified after this library version number |
 | `--sort` | `string` |  | Sort field (dateAdded, dateModified, title, creator, type, date, publisher, publicationTitle, journalAbbreviation,... |
 | `--start` | `int` | `0` | Pagination offset (zero-based) |
 | `--tag` | `string` |  | Filter by tag name |
@@ -2031,10 +2147,11 @@ zotio items missing-pdf [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Filter to an exact Zotero collection key |
+| `--collection` | `string` |  | Filter to an exact Zotero collection key (same as --scope collection:KEY) |
+| `--item-type` | `string` |  | Filter to a specific Zotero item type |
 | `--keys` | `string` |  | Comma-separated exact parent item keys |
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
-| `--type` | `string` |  | Filter to a specific Zotero item type |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio items move`
 
@@ -2076,10 +2193,10 @@ zotio items new --item-type <type> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Collection key to add the item to |
 | `--field` | `stringArray` | `[]` | Item field assignment name=value (repeatable) |
 | `--item-type` | `string` |  | Zotero item type to create (e.g. journalArticle) |
 | `--stdin` | `bool` | `false` | Read a JSON object of item fields from stdin |
+| `--to` | `string` |  | Collection key to add the item to (e.g. ABCD2345) |
 
 ### `zotio items note-template`
 
@@ -2092,9 +2209,9 @@ zotio items note-template <itemKey> [flags]
 Examples:
 
 ```bash
-zotio items note-template ABCD1234
-  zotio items note-template ABCD1234 --format obsidian
-  zotio items note-template ABCD1234 --format logseq
+zotio items note-template ABCD2345
+  zotio items note-template ABCD2345 --format obsidian
+  zotio items note-template ABCD2345 --format logseq --json
 ```
 
 | Flag | Type | Default | Description |
@@ -2106,7 +2223,7 @@ zotio items note-template ABCD1234
 Print or launch a Zotero desktop deep link (item, collection, or PDF)
 
 Build a zotero:// desktop deep link for an item (default), a collection
-(--type collection), or a PDF attachment (--type attachment), then print it or
+(--target collection), or a PDF attachment (--target attachment), then print it or
 launch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,
 rundll32 on Windows).
 
@@ -2121,7 +2238,7 @@ zotio items open <key> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--launch` | `bool` | `false` | Launch the deep link via the OS handler (open/xdg-open/rundll32) |
-| `--type` | `string` | `item` | Target type: item, collection, or attachment (PDF) |
+| `--target` | `string` | `item` | Target type: item, collection, or attachment (PDF) |
 
 ### `zotio items preprint-check`
 
@@ -2157,9 +2274,9 @@ zotio items recent [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--days` | `int` | `0` | Return only items added in the last N days |
-| `--limit` | `int` | `20` | Maximum number of items to return |
-| `--type` | `string` |  | Filter by item type |
+| `--days` | `int` | `0` | Return only items added in the last N days (0 = no date filter) |
+| `--item-type` | `string` |  | Filter by Zotero item type |
+| `--limit` | `int` | `20` | Maximum number of items to return (0 = no limit) |
 
 ### `zotio items related`
 
@@ -2172,8 +2289,8 @@ zotio items related <itemKey>
 Examples:
 
 ```bash
-zotio items related ABC12345
-  zotio items related ABC12345 --json
+zotio items related ABCD2345
+  zotio items related ABCD2345 --json
 ```
 
 ### `zotio items restore`
@@ -2199,8 +2316,9 @@ zotio items retract-check [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Scope checks to items in a collection key |
-| `--limit` | `int` | `0` | Maximum DOI-bearing items to check (0 = all) |
+| `--collection` | `string` |  | Scope checks to items in a collection key (same as --scope collection:KEY) |
+| `--limit` | `int` | `0` | Maximum DOI-bearing items to check (0 = no limit) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 
 ### `zotio items similar`
 
@@ -2215,13 +2333,13 @@ zotio items similar <itemKey> [flags]
 Examples:
 
 ```bash
-zotio items similar ABC12345
-  zotio items similar ABC12345 --limit 5 --min-score 0.2 --json
+zotio items similar ABCD2345
+  zotio items similar ABCD2345 --limit 5 --min-score 0.2 --json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `10` | Maximum number of similar items to return |
+| `--limit` | `int` | `10` | Maximum number of similar items to return (0 = no limit) |
 | `--min-score` | `float64` | `0` | Minimum composite similarity score to include |
 
 ### `zotio items stale`
@@ -2234,10 +2352,10 @@ zotio items stale [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--days` | `int` | `365` | Items added more than this many days ago |
-| `--limit` | `int` | `50` | Maximum number of items to return |
+| `--limit` | `int` | `50` | Maximum number of items to return (0 = no limit) |
 | `--no-annotations` | `bool` | `false` | Include only items without annotation children |
 | `--no-pdf` | `bool` | `false` | Include only items without a PDF attachment |
+| `--older-than-days` | `int` | `365` | Items added more than this many days ago |
 
 ### `zotio items summarize`
 
@@ -2350,13 +2468,13 @@ zotio items top [flags]
 Examples:
 
 ```bash
-zotio items top
+zotio items top --limit 20 --item-type journalArticle
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--item-type` | `string` |  | Filter by item type |
-| `--limit` | `int` | `0` | Maximum number of items to return |
+| `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--query` | `string` |  | Quick search query |
 | `--sort` | `string` |  | Sort field |
 | `--start` | `int` | `0` | Pagination offset |
@@ -2378,7 +2496,7 @@ zotio items trash
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number of items to return |
+| `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--start` | `int` | `0` | Pagination offset (zero-based) |
 
 ### `zotio items unfiled`
@@ -2395,18 +2513,18 @@ Examples:
 
 ```bash
 zotio items unfiled --suggest --json
-  zotio items unfiled --suggest --suggest-limit 5 --type book
-  # File every item whose best suggestion is collection ABCD1234 (preview; add --yes to apply)
-  zotio items unfiled --suggest --json | jq '[.results[] | select(.suggestions[0].collection == "ABCD1234")]' | zotio items move --keys-from - --to ABCD1234
+  zotio items unfiled --suggest --suggest-limit 5 --item-type book
+  # File every item whose best suggestion is collection ABCD2345 (preview; add --yes to apply)
+  zotio items unfiled --suggest --json | jq '[.results[] | select(.suggestions[0].collection == "ABCD2345")]' | zotio items move --keys-from - --to ABCD2345
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--item-type` | `string` |  | Filter by Zotero item type |
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--suggest` | `bool` | `false` | Suggest collections from local tags, creators, and venue (read-only) |
 | `--suggest-limit` | `int` | `3` | Maximum collection suggestions per item (requires --suggest) |
 | `--suggest-min-score` | `float64` | `0.05` | Drop collection suggestions scoring below this (requires --suggest) |
-| `--type` | `string` |  | Filter by Zotero item type |
 
 ### `zotio items update`
 
@@ -2443,14 +2561,14 @@ Examples:
 
 ```bash
 zotio items venues
-  zotio items venues --top 10
-  zotio items venues --type journalArticle --json
+  zotio items venues --limit 10
+  zotio items venues --item-type journalArticle --json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--top` | `int` | `20` | Maximum number of venues to return |
-| `--type` | `string` |  | Filter by Zotero itemType |
+| `--item-type` | `string` |  | Filter by Zotero item type |
+| `--limit` | `int` | `20` | Maximum number of venues to return (0 = no limit) |
 
 ## `zotio journal`
 
@@ -2470,6 +2588,7 @@ zotio journal list [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--limit` | `int` | `50` | Maximum number of runs to return, newest first (0 = no limit) |
 | `--workflow` | `string` |  | Filter entries by workflow run ID |
 
 ### `zotio journal show`
@@ -2527,10 +2646,10 @@ zotio library health [flags]
 | --- | --- | --- | --- |
 | `--badge` | `bool` | `false` | Emit a shields.io endpoint JSON badge instead of the report |
 | `--badge-label` | `string` | `bibliography` | Label for the shields.io endpoint badge |
-| `--baseline` | `string` |  | Read health finding identities from this baseline JSON; missing file establishes a baseline |
+| `--baseline` | `string` |  | Read health finding identities from this baseline JSON. A missing file is reported as 'baseline: not found' and nothing is diffed; with --fail-on-new it exits 9. Create one with --write-baseline |
 | `--check-retractions` | `bool` | `false` | Run the live CrossRef retraction check (network; DOI-bearing items) |
 | `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's) |
-| `--fail-on-new` | `string` |  | Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline) |
+| `--fail-on-new` | `string` |  | Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any; none disables (requires --baseline, which must exist: a missing baseline exits 9) |
 | `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, vault, all |
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
 | `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
@@ -2571,8 +2690,8 @@ zotio library stats [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--added-by` | `string` |  | Group item intake by month or year |
-| `--top` | `int` | `10` | Number of venues to show |
-| `--years` | `int` | `20` | Number of years to show |
+| `--top` | `int` | `10` | Number of venues to show (0 = no limit) |
+| `--years` | `int` | `20` | Number of years to show (0 = all years) |
 
 ### `zotio library wrapped`
 
@@ -2584,7 +2703,7 @@ zotio library wrapped [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--card` | `string` |  | Write an 800x418 SVG share card to this path |
+| `--card` | `string` |  | Write an 800x418 SVG share card to this path (with --dry-run, report the path and write nothing) |
 | `--card-style` | `string` | `overview` | Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three) |
 | `--year` | `int` | `2026` | Year to summarize |
 
@@ -2612,8 +2731,8 @@ zotio profile
 
 Remove a profile
 
-Removes a saved profile. Requires --yes; --dry-run reports what would be
-removed and writes nothing.
+Previews by default: shows which profile would be removed and writes
+nothing. Pass --yes to remove it.
 
 ```
 zotio profile delete <name>
@@ -2665,7 +2784,7 @@ Examples:
 
 ```bash
 zotio profile save my-defaults --json --compact
-  zotio profile save tonight-defaults --region US
+  zotio profile save tonight-defaults --data-source local
 ```
 
 | Flag | Type | Default | Description |
@@ -2689,7 +2808,7 @@ zotio profile show my-defaults
 
 ### `zotio profile use`
 
-Print the flag values a profile will apply (does not execute anything)
+Print the flag values a profile holds (does not apply or execute anything)
 
 ```
 zotio profile use <name>
@@ -2712,7 +2831,7 @@ zotio reading-list [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `20` | Maximum number of items to show |
+| `--limit` | `int` | `20` | Maximum number of items to show (0 = no limit) |
 | `--tag` | `string` | `to-read` | Override the reading queue tag |
 
 ### `zotio reading-list add`
@@ -2789,7 +2908,7 @@ per-item-type fields and creator types from Zotero in parallel by default. Pass
 snapshot must be complete and match Zotero's live schema version. Refresh it in
 two steps: 'zotio sync --resources schema', then 'zotio sync --resources
 schema-item-type-fields,schema-item-type-creator-types'. The baseline is stored
-at ~/.local/share/zotio/schema-baseline.json (override with --baseline) and is
+as schema-baseline.json in the zotio data directory (override with --baseline) and is
 shared across libraries because the schema is global to the Zotero install.
 
 ```
@@ -2809,7 +2928,7 @@ Examples:
   zotio schema drift --deep
 
   # Use an explicitly synced deep snapshot instead
-  zotio schema drift --deep --db ~/.local/share/zotio/data.db
+  zotio schema drift --deep --db ./data.db
 
   # Re-baseline to the current schema
   zotio schema drift --update
@@ -2817,7 +2936,7 @@ Examples:
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--baseline` | `string` |  | Baseline file path (default: ~/.local/share/zotio/schema-baseline.json) |
+| `--baseline` | `string` |  | Baseline file path (default: schema-baseline.json in the zotio data directory) |
 | `--db` | `string` |  | Read the deep schema from this explicitly synced database instead of Zotero |
 | `--deep` | `bool` | `false` | Also diff per-item-type field and creator-type validity (live by default; use --db for an explicit cache) |
 | `--update` | `bool` | `false` | Adopt the current live schema as the new baseline after reporting |
@@ -2847,7 +2966,7 @@ zotio schema item-type-creator-types [flags]
 Examples:
 
 ```bash
-zotio schema item-type-creator-types --item-type example-value
+zotio schema item-type-creator-types --item-type journalArticle
 ```
 
 | Flag | Type | Default | Description |
@@ -2865,7 +2984,7 @@ zotio schema item-type-fields [flags]
 Examples:
 
 ```bash
-zotio schema item-type-fields --item-type example-value
+zotio schema item-type-fields --item-type journalArticle
 ```
 
 | Flag | Type | Default | Description |
@@ -2897,7 +3016,7 @@ zotio schema new-item-template [flags]
 Examples:
 
 ```bash
-zotio schema new-item-template --item-type example-value
+zotio schema new-item-template --item-type journalArticle
 ```
 
 | Flag | Type | Default | Description |
@@ -2932,9 +3051,6 @@ Examples:
   # Force local search only
   zotio search "payment failed" --data-source local
 
-  # Search a specific resource type locally
-  zotio search "critical" --type transactions --data-source local
-
   # Resolve synced PDF full-text matches to their parent items
   zotio search "calibration feedback" --fulltext --data-source local
 
@@ -2949,9 +3065,8 @@ Examples:
 | --- | --- | --- | --- |
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
 | `--fulltext` | `bool` | `false` | Search synced PDF full text and return parent item context |
-| `--limit` | `int` | `50` | Maximum results to return |
+| `--limit` | `int` | `50` | Maximum results to return (0 = no limit) |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library); requires --fulltext |
-| `--type` | `string` |  | Filter by resource type |
 
 ## `zotio searches`
 
@@ -2972,7 +3087,7 @@ zotio searches get <searchKey>
 Examples:
 
 ```bash
-zotio searches get SEARCHKEY
+zotio searches get ABCD2345
 ```
 
 ### `zotio searches list`
@@ -2991,7 +3106,7 @@ zotio searches list
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number of searches to return |
+| `--limit` | `int` | `0` | Maximum number of searches to return (0 = no limit) |
 
 ### `zotio searches materialize`
 
@@ -3037,6 +3152,12 @@ Zotero's search does.
 
 ```
 zotio searches run <searchKey>
+```
+
+Examples:
+
+```bash
+zotio searches run ABCD2345
 ```
 
 ## `zotio sync`
@@ -3097,7 +3218,7 @@ Examples:
   zotio sync --full
 
   # Incremental sync: only objects modified since a Zotero library version
-  zotio sync --since 4521
+  zotio sync --since-version 4521
 
   # Parallel sync with 8 workers
   zotio sync --concurrency 8
@@ -3112,10 +3233,10 @@ Examples:
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
 | `--full` | `bool` | `false` | Full resync (ignore previous checkpoint) |
 | `--fulltext` | `bool` | `false` | Also sync PDF full-text content (slower; one request per attachment) |
-| `--latest-only` | `bool` | `false` | Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins). |
+| `--latest-only` | `bool` | `false` | Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins). |
 | `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) |
 | `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type) |
-| `--since` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. |
+| `--since-version` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'. |
 | `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13). |
 
 ## `zotio tags`
@@ -3178,7 +3299,7 @@ zotio tags get <tagName>
 Examples:
 
 ```bash
-zotio tags get example-resource
+zotio tags get "machine learning"
 ```
 
 ### `zotio tags inventory`
@@ -3204,12 +3325,12 @@ zotio tags list [flags]
 Examples:
 
 ```bash
-zotio tags list
+zotio tags list --query machine --limit 20
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `0` | Maximum number of tags to return |
+| `--limit` | `int` | `0` | Maximum number of tags to return (0 = no limit) |
 | `--query` | `string` |  | Filter tags by name substring |
 | `--query-mode` | `string` | `contains` | Tag query mode: contains or startsWith |
 | `--start` | `int` | `0` | Pagination offset |
@@ -3225,7 +3346,7 @@ zotio tags rename --from <oldTag> --to <newTag> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--from` | `string` |  | Old tag name |
-| `--limit` | `int` | `100` | Maximum number of items to process per page |
+| `--page-size` | `int` | `100` | Items to fetch per page while selecting carriers of the tag (1-100) |
 | `--to` | `string` |  | New tag name |
 
 ## `zotio tail`
@@ -3266,14 +3387,14 @@ zotio tail [resource] [flags]
 Examples:
 
 ```bash
-# Tail all changes every 10 seconds
-  zotio tail --interval 10s
+# Tail item changes every 10 seconds
+  zotio tail items --interval 10s
 
   # Tail a specific resource
-  zotio tail messages --interval 5s
+  zotio tail collections --interval 5s
 
   # Pipe to jq for filtering
-  zotio tail events --interval 30s | jq 'select(.type == "error")'
+  zotio tail items --interval 30s | jq 'select(.event == "upsert")'
 ```
 
 | Flag | Type | Default | Description |
@@ -3305,24 +3426,24 @@ key, so a missing or duplicated citekey renames or collides notes on the next
 'vault push'; this audit only sees the damage afterwards.
 
 ```
-zotio vault audit [--out <dir>] [flags]
+zotio vault audit [--vault <dir>] [flags]
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ### `zotio vault conflicts`
 
 List unresolved Zotero note write-back conflicts
 
 ```
-zotio vault conflicts [--out <dir>] [flags]
+zotio vault conflicts [--vault <dir>] [flags]
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ### `zotio vault pull`
 
@@ -3340,7 +3461,7 @@ always wins over --yes. Each note write it plans (a pull or a conflict
 artifact) counts as one change against --max-changes.
 
 ```
-zotio vault pull [--out <dir>] [flags]
+zotio vault pull [--vault <dir>] [flags]
 ```
 
 Examples:
@@ -3348,12 +3469,12 @@ Examples:
 ```bash
 zotio vault pull --dry-run
   zotio vault pull --yes
-  zotio vault pull --yes --out ~/vault/refs
+  zotio vault pull --yes --vault ~/vault/refs
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ### `zotio vault push`
 
@@ -3371,19 +3492,19 @@ wins, even together with --yes. Each note write (create, update, or conflict)
 counts against --max-changes.
 
 ```
-zotio vault push [--out <dir>] [flags]
+zotio vault push [--vault <dir>] [flags]
 ```
 
 Examples:
 
 ```bash
 zotio vault push --dry-run
-  zotio vault push --yes --out ~/vault/refs
+  zotio vault push --yes --vault ~/vault/refs
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ### `zotio vault resolve`
 
@@ -3407,7 +3528,7 @@ The resolved conflict artifact is removed on success. Counts as one change
 against --max-changes.
 
 ```
-zotio vault resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--out <dir>] [flags]
+zotio vault resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--vault <dir>] [flags]
 ```
 
 Examples:
@@ -3422,8 +3543,8 @@ zotio vault resolve smith2024 --keep-vault
 | --- | --- | --- | --- |
 | `--keep-remote` | `bool` | `false` | Pull the Zotero note over the vault Notes region (discards local edits) |
 | `--keep-vault` | `bool` | `false` | Write the vault copy over the Zotero note (required direction) |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 | `--recreate` | `bool` | `false` | Re-create a child note deleted in Zotero |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ### `zotio vault sync`
 
@@ -3450,16 +3571,16 @@ refused alongside a filter that means a different cohort: --item-type has no
 AND arms.
 
 ```
-zotio vault sync [--out <dir>] [flags]
+zotio vault sync [--vault <dir>] [flags]
 ```
 
 Examples:
 
 ```bash
 zotio vault sync                 # uses [vault] root/notes_dir from config
-  zotio vault sync --out ~/vault/refs --yes
-  zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
-  zotio vault sync --out ~/vault/refs --scope query:transformer --dry-run
+  zotio vault sync --vault ~/vault/refs --yes
+  zotio vault sync --vault ~/vault/refs --collection ABCD2345 --dry-run
+  zotio vault sync --vault ~/vault/refs --scope query:transformer --dry-run
 ```
 
 | Flag | Type | Default | Description |
@@ -3468,9 +3589,9 @@ zotio vault sync                 # uses [vault] root/notes_dir from config
 | `--format` | `string` | `obsidian` | Note format: obsidian or logseq |
 | `--item-type` | `string` |  | Only sync items of this type |
 | `--limit` | `int` | `0` | Maximum items to sync (0 = all) |
-| `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--tag` | `string` |  | Only sync items with this tag |
+| `--vault` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
 
 ## `zotio version`
 
@@ -3536,11 +3657,11 @@ zotio watch [resource...] [flags]
 
 Find the command that implements a capability
 
-which resolves a natural-language capability query (for example, "search messages" or "stale tickets") to the best matching command from this CLI's curated feature index.
+which resolves a natural-language capability query (for example, "export bibtex for a collection" or "find papers missing PDFs") to the best matching command from this CLI's curated feature index.
 
 Exit codes:
   0  at least one match found
-  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search' if this CLI has one
+  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search'. Under --json or --agent the output is {"matches":[]}
 
 ```
 zotio which [query] [flags]
@@ -3549,15 +3670,15 @@ zotio which [query] [flags]
 Examples:
 
 ```bash
-zotio which "stale tickets"
-  zotio which "bottleneck"
-  zotio which --limit 1 "send message"
+zotio which "export bibtex for a collection"
+  zotio which "find papers missing PDFs"
+  zotio which --limit 1 "undo that Zotero change"
   zotio which                                # list the full capability index
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--limit` | `int` | `3` | Maximum number of matches to return |
+| `--limit` | `int` | `3` | Maximum number of matches to return (0 = no limit) |
 
 ## `zotio workflow`
 
@@ -3599,8 +3720,10 @@ Examples:
 
 Preview or apply a declarative multi-step workflow
 
-Runs a declarative workflow spec in process. By default, mutating steps
-are previewed with --dry-run while read-only steps run normally.
+Runs a declarative workflow spec in process. By default, every step that
+changes anything is previewed with --dry-run: library writes, local state
+writes, and steps that write a local file (an export, a report, a baseline).
+Steps that change nothing run normally.
 
 Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
 Override declared values with repeatable --var NAME=value. Arguments may also

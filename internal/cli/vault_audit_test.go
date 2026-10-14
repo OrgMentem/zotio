@@ -36,9 +36,9 @@ func TestVaultAuditReportsOrphanedManagedNote(t *testing.T) {
 		vaultNotesBegin+"\nlocal notes\n"+vaultNotesEnd+"\n")
 	writeFile(t, filepath.Join(vaultDir, "unmanaged.md"), "# My own note\n\nNo Zotero metadata here.\n")
 
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}
 	cmd := newVaultCmd(flags)
-	cmd.SetArgs([]string{"audit", "--out", vaultDir})
+	cmd.SetArgs([]string{"audit", "--vault", vaultDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -80,9 +80,9 @@ func TestVaultAuditReportsUnparseableStateComment(t *testing.T) {
 	// silently treat it as fresh (NoteVersion 0) and miss the drift.
 	body := "---\nzotero_key: LIVE\n---\n\n## Notes\n" + vaultNotesBegin + "\nnotes\n" + vaultNotesEnd + "\n" + vaultStatePrefix + "{invalid json" + " -->\n"
 	writeFile(t, filepath.Join(vaultDir, "broken-state.md"), body)
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}
 	cmd := newVaultCmd(flags)
-	cmd.SetArgs([]string{"audit", "--out", vaultDir})
+	cmd.SetArgs([]string{"audit", "--vault", vaultDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})

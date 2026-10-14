@@ -70,11 +70,11 @@ func TestItemsTagsBatchRequestConflictPreservesSingleEnvelope(t *testing.T) {
 		for _, status := range []int{http.StatusConflict, http.StatusPreconditionFailed} {
 			for _, idempotent := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%d/idempotent=%t", operation, status, idempotent), func(t *testing.T) {
-					b := newBatchTagServer(t, []string{"K1", "K2"})
+					b := newBatchTagServer(t, []string{"ITEMAAA2", "ITEMAAA3"})
 					b.postFailureStatus = status
 					if operation == "remove" {
-						b.existing["K1"] = []map[string]any{{"tag": "sweep"}}
-						b.existing["K2"] = []map[string]any{{"tag": "sweep"}}
+						b.existing["ITEMAAA2"] = []map[string]any{{"tag": "sweep"}}
+						b.existing["ITEMAAA3"] = []map[string]any{{"tag": "sweep"}}
 					}
 					t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
 					t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -83,7 +83,7 @@ func TestItemsTagsBatchRequestConflictPreservesSingleEnvelope(t *testing.T) {
 					var out, errOut bytes.Buffer
 					root.SetOut(&out)
 					root.SetErr(&errOut)
-					args := []string{"items", "tags", operation, "--batch", "--tag", "sweep", "K1", "K2", "--yes", "--json"}
+					args := []string{"items", "tags", operation, "--batch", "--tag", "sweep", "ITEMAAA2", "ITEMAAA3", "--yes", "--json"}
 					if idempotent {
 						args = append(args, "--idempotent")
 					}
@@ -122,53 +122,53 @@ func TestItemsTagsBatchRequestConflictPreservesSingleEnvelope(t *testing.T) {
 }
 
 func TestItemsTagsAddNewTagApplies(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-		"K1": {{"tag": "existing", "type": float64(0)}},
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+		"ITEMAAA2": {{"tag": "existing", "type": float64(0)}},
 	})
 
-	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "fresh", "K1")
+	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "fresh", "ITEMAAA2")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want one applied item", env)
 	}
-	if srv.patchCounts["K1"] != 1 {
-		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["K1"])
+	if srv.patchCounts["ITEMAAA2"] != 1 {
+		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["ITEMAAA2"])
 	}
-	if srv.patchHeaders["K1"] != "42" {
-		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["K1"])
+	if srv.patchHeaders["ITEMAAA2"] != "42" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["ITEMAAA2"])
 	}
-	if !patchBodyHasTag(srv.patchBodies["K1"], "fresh") {
-		t.Errorf("PATCH body = %+v, want fresh tag", srv.patchBodies["K1"])
+	if !patchBodyHasTag(srv.patchBodies["ITEMAAA2"], "fresh") {
+		t.Errorf("PATCH body = %+v, want fresh tag", srv.patchBodies["ITEMAAA2"])
 	}
 }
 
 func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	t.Run("automatic new tag", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "existing", "type": float64(0)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "existing", "type": float64(0)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
 			t.Fatalf("env = %+v, want one applied item", env)
 		}
 		if got := env.Plan.Operations[0].Changes[0].TagType; got != 1 {
 			t.Fatalf("planned tag type = %d, want 1", got)
 		}
-		if got := patchBodyTag(srv.patchBodies["K1"], "x"); got["type"] != float64(1) {
+		if got := patchBodyTag(srv.patchBodies["ITEMAAA2"], "x"); got["type"] != float64(1) {
 			t.Errorf("automatic tag = %+v, want type 1", got)
 		}
 	})
 
 	t.Run("manual new tag", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "existing", "type": float64(0)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "existing", "type": float64(0)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "x", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "x", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
 			t.Fatalf("env = %+v, want one applied item", env)
 		}
-		if got := patchBodyTag(srv.patchBodies["K1"], "x"); len(got) != 1 || got["tag"] != "x" {
+		if got := patchBodyTag(srv.patchBodies["ITEMAAA2"], "x"); len(got) != 1 || got["tag"] != "x" {
 			t.Errorf("manual tag = %+v, want {tag:x}", got)
 		}
 		if got := env.Plan.Operations[0].Changes[0].TagType; got != 0 {
@@ -177,11 +177,11 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	})
 
 	t.Run("existing manual tag is unchanged", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "x", "type": float64(0)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "x", "type": float64(0)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
 			t.Fatalf("env = %+v, want no_op", env)
 		}
@@ -190,17 +190,17 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 		if got, _ := types["x"].(float64); got != 0 {
 			t.Fatalf("existing manual tag type metadata = %v, want 0", reason)
 		}
-		if srv.patchCounts["K1"] != 0 {
-			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+		if srv.patchCounts["ITEMAAA2"] != 0 {
+			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["ITEMAAA2"])
 		}
 	})
 
 	t.Run("existing automatic tag reports ownership type", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "x", "type": float64(1)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "x", "type": float64(1)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 {
 			t.Fatalf("env = %+v, want no_op", env)
 		}
@@ -209,8 +209,8 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 		if got, _ := types["x"].(float64); got != 1 {
 			t.Fatalf("existing automatic tag type metadata = %v, want 1", reason)
 		}
-		if srv.patchCounts["K1"] != 0 {
-			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+		if srv.patchCounts["ITEMAAA2"] != 0 {
+			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["ITEMAAA2"])
 		}
 	})
 }
@@ -221,82 +221,82 @@ func TestItemsTagsNoOpWhenStateAlreadyHolds(t *testing.T) {
 		existing []map[string]any
 		args     []string
 	}{
-		{name: "add already present", existing: []map[string]any{{"tag": "fresh", "type": float64(0)}}, args: []string{"add", "--tag", "fresh", "K1"}},
-		{name: "remove absent", existing: []map[string]any{{"tag": "existing", "type": float64(0)}}, args: []string{"remove", "--tag", "missing", "K1"}},
+		{name: "add already present", existing: []map[string]any{{"tag": "fresh", "type": float64(0)}}, args: []string{"add", "--tag", "fresh", "ITEMAAA2"}},
+		{name: "remove absent", existing: []map[string]any{{"tag": "existing", "type": float64(0)}}, args: []string{"remove", "--tag", "missing", "ITEMAAA2"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-				"K1": tt.existing,
+			srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+				"ITEMAAA2": tt.existing,
 			})
 
 			env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tt.args...)
 			if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
 				t.Fatalf("env = %+v, want no_op", env)
 			}
-			if srv.patchCounts["K1"] != 0 {
-				t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+			if srv.patchCounts["ITEMAAA2"] != 0 {
+				t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["ITEMAAA2"])
 			}
 		})
 	}
 }
 
 func TestItemsTagsRemovePresentApplies(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-		"K1": {{"tag": "keep", "type": float64(0)}, {"tag": "drop", "type": float64(0)}},
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+		"ITEMAAA2": {{"tag": "keep", "type": float64(0)}, {"tag": "drop", "type": float64(0)}},
 	})
 
-	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--tag", "drop", "K1")
+	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--tag", "drop", "ITEMAAA2")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want applied remove", env)
 	}
-	if srv.patchHeaders["K1"] != "42" {
-		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["K1"])
+	if srv.patchHeaders["ITEMAAA2"] != "42" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["ITEMAAA2"])
 	}
-	if patchBodyHasTag(srv.patchBodies["K1"], "drop") || !patchBodyHasTag(srv.patchBodies["K1"], "keep") {
-		t.Errorf("PATCH body = %+v, want drop removed and keep preserved", srv.patchBodies["K1"])
+	if patchBodyHasTag(srv.patchBodies["ITEMAAA2"], "drop") || !patchBodyHasTag(srv.patchBodies["ITEMAAA2"], "keep") {
+		t.Errorf("PATCH body = %+v, want drop removed and keep preserved", srv.patchBodies["ITEMAAA2"])
 	}
 }
 
 func TestItemsTagsRemoveAutomaticOnly(t *testing.T) {
 	t.Run("preserves a manual tag", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "papio:unavailable", "type": float64(0)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "papio:unavailable", "type": float64(0)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--automatic-only", "--tag", "papio:unavailable", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--automatic-only", "--tag", "papio:unavailable", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 {
 			t.Fatalf("env = %+v, want no-op for manual tag", env)
 		}
-		if srv.patchCounts["K1"] != 0 {
-			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+		if srv.patchCounts["ITEMAAA2"] != 0 {
+			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["ITEMAAA2"])
 		}
 	})
 
 	t.Run("removes an automatic tag", func(t *testing.T) {
-		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-			"K1": {{"tag": "papio:unavailable", "type": float64(1)}, {"tag": "keep", "type": float64(0)}},
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42"}, map[string][]map[string]any{
+			"ITEMAAA2": {{"tag": "papio:unavailable", "type": float64(1)}, {"tag": "keep", "type": float64(0)}},
 		})
 
-		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--automatic-only", "--tag", "papio:unavailable", "K1")
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--automatic-only", "--tag", "papio:unavailable", "ITEMAAA2")
 		if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
 			t.Fatalf("env = %+v, want applied automatic removal", env)
 		}
 		if got := env.Plan.Operations[0].Changes[0].TagType; got != 1 {
 			t.Fatalf("planned tag type = %d, want 1", got)
 		}
-		if patchBodyHasTag(srv.patchBodies["K1"], "papio:unavailable") || !patchBodyHasTag(srv.patchBodies["K1"], "keep") {
-			t.Fatalf("PATCH body = %+v, want automatic target removed only", srv.patchBodies["K1"])
+		if patchBodyHasTag(srv.patchBodies["ITEMAAA2"], "papio:unavailable") || !patchBodyHasTag(srv.patchBodies["ITEMAAA2"], "keep") {
+			t.Fatalf("PATCH body = %+v, want automatic target removed only", srv.patchBodies["ITEMAAA2"])
 		}
 	})
 }
 
 func TestItemsTagsBulkAddKeysFrom(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42", "K2": "43"}, map[string][]map[string]any{
-		"K1": {{"tag": "one", "type": float64(0)}},
-		"K2": {{"tag": "two", "type": float64(0)}},
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"ITEMAAA2": "42", "ITEMAAA3": "43"}, map[string][]map[string]any{
+		"ITEMAAA2": {{"tag": "one", "type": float64(0)}},
+		"ITEMAAA3": {{"tag": "two", "type": float64(0)}},
 	})
 	keysPath := filepath.Join(t.TempDir(), "keys.txt")
-	if err := os.WriteFile(keysPath, []byte("K1\nK2\n"), 0o600); err != nil {
+	if err := os.WriteFile(keysPath, []byte("ITEMAAA2\nITEMAAA3\n"), 0o600); err != nil {
 		t.Fatalf("write keys file: %v", err)
 	}
 
@@ -304,7 +304,7 @@ func TestItemsTagsBulkAddKeysFrom(t *testing.T) {
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 2 || len(env.Result.Items) != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
-	for _, key := range []string{"K1", "K2"} {
+	for _, key := range []string{"ITEMAAA2", "ITEMAAA3"} {
 		if srv.patchCounts[key] != 1 {
 			t.Fatalf("%s PATCH count = %d, want 1", key, srv.patchCounts[key])
 		}
@@ -318,11 +318,11 @@ func TestItemsTagsBareReadDeprecatedAlias(t *testing.T) {
 	// Tags are read out of the item payload: /items/<key>/tags exists on the Web
 	// API but 404s on the Zotero local desktop API, where reads are routed.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/users/0/items/K1" {
+		if r.Method != http.MethodGet || r.URL.Path != "/users/0/items/ITEMAAA2" {
 			http.Error(w, "unexpected request for "+r.URL.Path, http.StatusNotFound)
 			return
 		}
-		_, _ = w.Write([]byte(`{"key":"K1","version":42,"data":{"key":"K1","tags":[{"tag":"existing","type":0}]}}`))
+		_, _ = w.Write([]byte(`{"key":"ITEMAAA2","version":42,"data":{"key":"ITEMAAA2","tags":[{"tag":"existing","type":0}]}}`))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -334,7 +334,7 @@ func TestItemsTagsBareReadDeprecatedAlias(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"K1"})
+	cmd.SetArgs([]string{"ITEMAAA2"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("items tags legacy read: %v; stderr=%s", err, errOut.String())
 	}
@@ -366,4 +366,43 @@ func patchBodyTag(body map[string]any, tagName string) map[string]any {
 		}
 	}
 	return nil
+}
+
+// Planning reads are batched: preview and apply both read N items with
+// ceil(N/50) list requests, never one GET per item, and a missing key still
+// exits 3.
+func TestItemsTagsPlanningReadIsBatched(t *testing.T) {
+	versions := map[string]string{"ITEMAAA2": "42", "ITEMAAA3": "43"}
+	srv := writePlaneTestNewItemServer(t, "tags", versions, map[string][]map[string]any{
+		"ITEMAAA2": {},
+		"ITEMAAA3": {{"tag": "fresh", "type": float64(0)}},
+	})
+
+	for _, flags := range []*rootFlags{
+		{asJSON: true, maxChanges: -1},
+		{asJSON: true, dryRun: true, maxChanges: -1},
+		{asJSON: true, yes: true, maxChanges: -1},
+	} {
+		srv.listRequests = nil
+		env, _ := runItemsTagsTestCmd(t, srv, flags, "add", "--tag", "fresh", "ITEMAAA2", "ITEMAAA3")
+		if len(srv.listRequests) != 1 || srv.listRequests[0] != "ITEMAAA2,ITEMAAA3" {
+			t.Fatalf("list requests = %v, want one request naming both keys", srv.listRequests)
+		}
+		if env.Plan.Summary.Planned != 1 || env.Plan.Summary.NoOp != 1 {
+			t.Fatalf("plan summary = %+v, want one planned and one no-op", env.Plan.Summary)
+		}
+		for _, op := range env.Plan.Operations {
+			if op.ExpectedVersion != 42 && op.ExpectedVersion != 43 {
+				t.Errorf("op %s expected_version = %d, want its own item version", op.Key, op.ExpectedVersion)
+			}
+		}
+	}
+	if srv.patchCounts["ITEMAAA2"] != 1 || srv.patchCounts["ITEMAAA3"] != 0 || srv.patchHeaders["ITEMAAA2"] != "42" {
+		t.Fatalf("patches = %v header = %q, want one version-guarded PATCH for ITEMAAA2 only", srv.patchCounts, srv.patchHeaders["ITEMAAA2"])
+	}
+
+	_, _, err := writePlaneTestRunMutationCmd(t, newItemsTagsAddCmd, &rootFlags{asJSON: true, maxChanges: -1}, "--tag", "fresh", "ITEMAAA2", "MISSING2")
+	if ExitCode(err) != 3 {
+		t.Fatalf("ExitCode(batched read with a missing key) = %d, want 3; err = %v", ExitCode(err), err)
+	}
 }

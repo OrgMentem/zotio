@@ -97,8 +97,8 @@ func TestPaStoredApprovalFlagsNeverApplyADestructiveCommand(t *testing.T) {
 		env  string
 		args []string
 	}{
-		{name: "--profile", args: []string{"--profile", "danger", "collections", "delete", "COLL1234", "--json"}},
-		{name: "ZOTERO_PROFILE", env: "danger", args: []string{"collections", "delete", "COLL1234", "--json"}},
+		{name: "--profile", args: []string{"--profile", "danger", "collections", "delete", "CDEF2345", "--json"}},
+		{name: "ZOTERO_PROFILE", env: "danger", args: []string{"collections", "delete", "CDEF2345", "--json"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paIsolate(t)
@@ -114,7 +114,7 @@ func TestPaStoredApprovalFlagsNeverApplyADestructiveCommand(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Last-Modified-Version", "7")
-				_, _ = w.Write([]byte(`{"key":"COLL1234","version":7,"data":{"key":"COLL1234","version":7,"name":"Doomed"}}`))
+				_, _ = w.Write([]byte(`{"key":"CDEF2345","version":7,"data":{"key":"CDEF2345","version":7,"name":"Doomed"}}`))
 			}))
 			defer srv.Close()
 			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/123")
@@ -125,17 +125,19 @@ func TestPaStoredApprovalFlagsNeverApplyADestructiveCommand(t *testing.T) {
 				"allow-destructive": "true",
 			}})
 
+			// The stored allow-destructive is ignored too, so the preview of a
+			// destructive delete is refused (non-zero exit) and nothing is written.
 			stdout, stderr, err := paRunRoot(t, "", tc.args...)
-			if err != nil {
-				t.Fatalf("collections delete: %v (stderr %q)", err, stderr)
+			if err == nil || ExitCode(err) == 0 {
+				t.Fatalf("collections delete: err = %v, want a refused destructive preview (stderr %q)", err, stderr)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if len(writes) != 0 {
 				t.Fatalf("stored approval applied a write: %v", writes)
 			}
-			if got := paDecode(t, stdout); got["dry_run"] != true {
-				t.Fatalf("output = %v, want a preview (dry_run true)", got)
+			if got := paDecode(t, stdout); got["mode"] != "preview" || got["ok"] != false {
+				t.Fatalf("output = %v, want a preview envelope with ok false", got)
 			}
 			if !strings.Contains(stderr, "--allow-destructive, --yes") {
 				t.Fatalf("stderr = %q, want a notice naming the ignored approval flags", stderr)
@@ -398,7 +400,12 @@ func TestPaProfileNotFoundIsConsistent(t *testing.T) {
 				if !seeded && !strings.Contains(err.Error(), "no profiles saved yet") {
 					t.Fatalf("empty-store error = %q, want the profile save remediation", err)
 				}
-				got := paDecode(t, stdout)
+				if strings.TrimSpace(stdout) != "" {
+					t.Fatalf("seeded=%t command printed its own stdout %q; the central printer owns the error object", seeded, stdout)
+				}
+				var central bytes.Buffer
+				PrintErrorJSON(&central, err)
+				got := paDecode(t, central.String())
 				gotAvailable, _ := got["available_profiles"].([]any)
 				if got["kind"] != "profile_not_found" || got["code"] != float64(3) || got["profile"] != "ghost" || len(gotAvailable) != len(want) {
 					t.Fatalf("seeded=%t envelope = %v, want profile_not_found for ghost listing %v", seeded, got, want)

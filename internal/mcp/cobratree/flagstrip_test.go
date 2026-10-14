@@ -274,3 +274,24 @@ func TestAnnotatedUnsafeInheritedFlagRemainsRejected(t *testing.T) {
 		t.Fatal("unsafe config flag was exposed through an annotation")
 	}
 }
+
+// A read-only command that writes local files keeps --dry-run reachable and
+// nothing else from the write-safety gate: an agent must be able to preview
+// the file it would write, and has no apply gate to pass.
+func TestStripFileWriterKeepsOnlyDryRun(t *testing.T) {
+	_, child := stripNewRoot(true)
+	child.Annotations[WritesFilesAnnotation] = "true"
+	allowed := safeFlagNames(child)
+
+	if _, ok := allowed["dry-run"]; !ok {
+		t.Error("safeFlagNames(read-only file writer) dropped --dry-run")
+	}
+	for _, name := range writeGatingGlobalFlagNames {
+		if name == "dry-run" {
+			continue
+		}
+		if _, ok := allowed[name]; ok {
+			t.Errorf("safeFlagNames(read-only file writer) exposed write-gating flag %q", name)
+		}
+	}
+}

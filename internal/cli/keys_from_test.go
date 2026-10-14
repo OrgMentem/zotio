@@ -26,39 +26,39 @@ func TestResolveKeys(t *testing.T) {
 	}{
 		{
 			name: "positional args",
-			args: []string{"K1", "K2"},
-			want: []string{"K1", "K2"},
+			args: []string{"KEYAAAA2", "KEYAAAA3"},
+			want: []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:        "line file",
-			fileContent: ptr("K1\nK2\n"),
-			want:        []string{"K1", "K2"},
+			fileContent: ptr("KEYAAAA2\nKEYAAAA3\n"),
+			want:        []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:     "stdin lines",
 			keysFrom: "-",
-			stdin:    strings.NewReader("K1\nK2\n"),
-			want:     []string{"K1", "K2"},
+			stdin:    strings.NewReader("KEYAAAA2\nKEYAAAA3\n"),
+			want:     []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:        "json string array",
-			fileContent: ptr(`["K1","K2"]`),
-			want:        []string{"K1", "K2"},
+			fileContent: ptr(`["KEYAAAA2","KEYAAAA3"]`),
+			want:        []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:        "json object array",
-			fileContent: ptr(`[{"key":"K1"},{"key":"K2"}]`),
-			want:        []string{"K1", "K2"},
+			fileContent: ptr(`[{"key":"KEYAAAA2"},{"key":"KEYAAAA3"}]`),
+			want:        []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name: "dedupe order preserved",
-			args: []string{"K1", "K2", "K1", "K3", "K2"},
-			want: []string{"K1", "K2", "K3"},
+			args: []string{"KEYAAAA2", "KEYAAAA3", "KEYAAAA2", "KEYAAAA4", "KEYAAAA3"},
+			want: []string{"KEYAAAA2", "KEYAAAA3", "KEYAAAA4"},
 		},
 		{
 			name:        "blank lines skipped",
-			fileContent: ptr("\n  K1  \n\nK2\n  \n"),
-			want:        []string{"K1", "K2"},
+			fileContent: ptr("\n  KEYAAAA2  \n\nKEYAAAA3\n  \n"),
+			want:        []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:    "empty positional args error",
@@ -71,15 +71,30 @@ func TestResolveKeys(t *testing.T) {
 		},
 		{
 			name:     "both sources error",
-			args:     []string{"K1"},
+			args:     []string{"KEYAAAA2"},
 			keysFrom: "-",
-			stdin:    strings.NewReader("K2\n"),
+			stdin:    strings.NewReader("KEYAAAA3\n"),
 			wantErr:  "--keys-from cannot be combined with positional keys",
 		},
 		{
 			name:        "malformed json error",
-			fileContent: ptr(`["K1",`),
+			fileContent: ptr(`["KEYAAAA2",`),
 			wantErr:     "malformed keys JSON:",
+		},
+		{
+			name:    "bad positional key is a usage error",
+			args:    []string{"KEYAAAA2", "notakey"},
+			wantErr: `invalid Zotero item key "notakey"`,
+		},
+		{
+			name:        "bad line names its line",
+			fileContent: ptr("KEYAAAA2\nKEY0O1AB\n"),
+			wantErr:     `--keys-from line 2: invalid Zotero item key "KEY0O1AB"`,
+		},
+		{
+			name:        "bad json key is a usage error",
+			fileContent: ptr(`[{"key":"KEYAAAA2"},{"key":"short"}]`),
+			wantErr:     `invalid Zotero item key "short"`,
 		},
 	}
 
@@ -108,6 +123,9 @@ func TestResolveKeys(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("resolveKeys error = %q, want containing %q", err.Error(), tt.wantErr)
 				}
+				if ExitCode(err) != 2 {
+					t.Fatalf("ExitCode(resolveKeys error) = %d, want 2 (usage); err = %v", ExitCode(err), err)
+				}
 				return
 			}
 			if err != nil {
@@ -129,42 +147,42 @@ func TestResolveKeysFromJSONContracts(t *testing.T) {
 	}{
 		{
 			name:  "findings envelope preserves first seen keys",
-			input: `{"findings":[{"item_key":"K1"},{"item_key":"K2"},{"item_key":"K1"}]}`,
-			want:  []string{"K1", "K2"},
+			input: `{"findings":[{"item_key":"KEYAAAA2"},{"item_key":"KEYAAAA3"},{"item_key":"KEYAAAA2"}]}`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "findings envelope skips grouped findings without keys",
-			input: `{"findings":[{"kind":"library_warning"},{"item_key":""},{"item_key":"K1"},{"key":"K2"},{"key":"  "}]}`,
-			want:  []string{"K1", "K2"},
+			input: `{"findings":[{"kind":"library_warning"},{"item_key":""},{"item_key":"KEYAAAA2"},{"key":"KEYAAAA3"},{"key":"  "}]}`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "items envelope reads item keys",
-			input: `{"items":[{"key":"K1"},{"key":"K2"}]}`,
-			want:  []string{"K1", "K2"},
+			input: `{"items":[{"key":"KEYAAAA2"},{"key":"KEYAAAA3"}]}`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "bare item key object array",
-			input: `[{"item_key":"K1"},{"item_key":"K2"}]`,
-			want:  []string{"K1", "K2"},
+			input: `[{"item_key":"KEYAAAA2"},{"item_key":"KEYAAAA3"}]`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "legacy line list",
-			input: "K1\nK2\n",
-			want:  []string{"K1", "K2"},
+			input: "KEYAAAA2\nKEYAAAA3\n",
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "legacy string array",
-			input: `["K1","K2"]`,
-			want:  []string{"K1", "K2"},
+			input: `["KEYAAAA2","KEYAAAA3"]`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:  "legacy key object array",
-			input: `[{"key":"K1"},{"key":"K2"}]`,
-			want:  []string{"K1", "K2"},
+			input: `[{"key":"KEYAAAA2"},{"key":"KEYAAAA3"}]`,
+			want:  []string{"KEYAAAA2", "KEYAAAA3"},
 		},
 		{
 			name:    "malformed top level object fails loudly",
-			input:   `{"notes":[{"key":"K1"}]}`,
+			input:   `{"notes":[{"key":"KEYAAAA2"}]}`,
 			wantErr: "malformed keys JSON: object must contain a findings or items array",
 		},
 	}
@@ -197,7 +215,7 @@ func TestResolveKeysFromFindingsReportPipe(t *testing.T) {
 			{
 				Kind:        "missing_citation",
 				Severity:    "high",
-				ItemKey:     "K1",
+				ItemKey:     "KEYAAAA2",
 				Source:      FindingSource{Kind: "local"},
 				Autofixable: true,
 			},
@@ -210,7 +228,7 @@ func TestResolveKeysFromFindingsReportPipe(t *testing.T) {
 			{
 				Kind:     "preprint_published",
 				Severity: "medium",
-				ItemKey:  "K2",
+				ItemKey:  "KEYAAAA3",
 				Source:   FindingSource{Kind: "web_api"},
 			},
 		},
@@ -228,7 +246,7 @@ func TestResolveKeysFromFindingsReportPipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveKeys error = %v", err)
 	}
-	want := []string{"K1", "K2"}
+	want := []string{"KEYAAAA2", "KEYAAAA3"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolveKeys = %#v, want %#v", got, want)
 	}

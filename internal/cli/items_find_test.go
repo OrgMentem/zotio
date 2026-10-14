@@ -556,16 +556,13 @@ func TestWantsNearMatchProseRefusesMachineAndQuietModes(t *testing.T) {
 	}
 }
 
-// --quiet still receives the rows in the JSON envelope WHEN STDOUT IS NOT A
-// TERMINAL, which is the case here and the case for every scripted caller:
-// the flag trims prose, it does not withhold an answer a caller asked for. On
-// a real terminal --quiet builds no envelope, and the exit code is the answer.
-func TestItemsFindQuietKeepsNearTitlesInTheEnvelope(t *testing.T) {
+// --quiet prints nothing: the exit code is the whole answer, even when stdout
+// is not a terminal.
+func TestItemsFindQuietPrintsNothing(t *testing.T) {
 	seedNearTitleStore(t)
 	stdout, _ := runItemsFind(t, &rootFlags{quiet: true}, "--title", "Attention Is All You Nead")
-	got := decodeFindEnvelope(t, stdout)
-	if len(got.Near) == 0 || got.Near[0].Key != "ATTN" {
-		t.Fatalf("near_title_matches = %+v, want ATTN present under --quiet", got.Near)
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("--quiet stdout = %q, want nothing", stdout)
 	}
 }
 
@@ -1126,11 +1123,9 @@ func TestItemsFindNotesNearCiteKeysItCannotShow(t *testing.T) {
 		if strings.Contains(stderr, "near citekey found") {
 			t.Fatalf("--quiet asked for silence but got a note: %q", stderr)
 		}
-		// The rows still reach a scripted caller: --quiet trims prose, it
-		// does not withhold an answer that was asked for.
-		got := decodeFindEnvelope(t, stdout)
-		if len(got.NearKeys) == 0 || got.NearKeys[0].CiteKey != "smith2023" {
-			t.Fatalf("near_citekey_matches = %+v, want smith2023 present under --quiet", got.NearKeys)
+		// --quiet prints nothing: the exit code is the whole answer.
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("--quiet stdout = %q, want nothing", stdout)
 		}
 	})
 }

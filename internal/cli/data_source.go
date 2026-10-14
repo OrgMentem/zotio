@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -175,6 +176,13 @@ func validateJSONReadBody(data json.RawMessage, params map[string]string) error 
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
 func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, DataProvenance, error) {
+	if raw := params["limit"]; raw != "" {
+		if n, convErr := strconv.Atoi(raw); convErr == nil {
+			if limitErr := validateLimitFlag("--limit", n); limitErr != nil {
+				return nil, DataProvenance{}, limitErr
+			}
+		}
+	}
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, resourceType, isList, path, params, "user_requested")
@@ -196,25 +204,76 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 			if validationErr := validateJSONReadBody(data, params); validationErr != nil {
 				return nil, DataProvenance{}, validationErr
 			}
-			writeThroughCacheForPath(ctx, resourceType, path, data)
+			if !flags.dryRun {
+				writeThroughCacheForPath(ctx, resourceType, path, data)
+			}
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
-		if !isNetworkError(err) {
-			// HTTP 4xx/5xx errors propagate — not a fallback case
+		if !isNetworkError(err) && !isNoEndpointError(err) {
+			// Other HTTP 4xx/5xx errors propagate — not a fallback case
 			return nil, DataProvenance{}, err
 		}
-		// Network error — try local fallback. The live attempt may have
-		// consumed the caller's deadline, so the mirror read runs detached
-		// from it: a timeout that still failed the fallback would make the
-		// documented offline resilience unreachable. Cancellation never
-		// reaches this branch (it is not a network error), so detaching only
-		// drops an already-expired timeout, never a user interrupt.
+		// Network error or the local API answering "No endpoint found" (the
+		// Zotero desktop API lacks the route) — try the local fallback. The
+		// live attempt may have consumed the caller's deadline, so the mirror
+		// read runs detached from it: a timeout that still failed the fallback
+		// would make the documented offline resilience unreachable.
+		// Cancellation never reaches this branch (it is not a network error),
+		// so detaching only drops an already-expired timeout, never a user
+		// interrupt.
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(context.WithoutCancel(ctx), resourceType, isList, path, params, "api_unreachable")
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", err)
+			var coded *cliError
+			if errors.As(fallbackErr, &coded) {
+				switch coded.code {
+				case 2:
+					return nil, DataProvenance{}, fallbackErr
+				case 3:
+					// The mirror is synced and lacks the key: it does not exist.
+					return nil, DataProvenance{}, notFoundErr(fmt.Errorf("Zotero API unreachable and the requested key is not in the local mirror (%w)\n\nOriginal error: %w", fallbackErr, err))
+				}
+			}
+			return nil, DataProvenance{}, preconditionErr(fmt.Errorf("Zotero API unreachable and the local mirror cannot answer (%w). Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", fallbackErr, err))
 		}
+		fmt.Fprintf(os.Stderr, "note: Zotero API unreachable; serving the local mirror (synced %s)\n", mirrorAge(fallbackProv.SyncedAt))
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
+}
+
+// isNoEndpointError reports the local Zotero API's 404 "No endpoint found"
+// answer, which means the desktop API lacks the route rather than the item.
+func isNoEndpointError(err error) bool {
+	var apiError *client.APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == http.StatusNotFound && strings.Contains(apiError.Body, "No endpoint found")
+}
+
+// mirrorAge renders how long ago the mirror was synced for stderr notes.
+func mirrorAge(syncedAt *time.Time) string {
+	if syncedAt == nil {
+		return "unknown"
+	}
+	d := time.Since(*syncedAt)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d minutes ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d hours ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+	}
+}
+
+// requireMirrorOnlySource is the guard for commands that can only read the
+// local mirror: an explicit --data-source live cannot be honored, so it is a
+// usage error instead of a silent override. Provenance for such reads must
+// carry reason "local_only" and synced_at (localProvenance does both).
+func requireMirrorOnlySource(flags *rootFlags, cmdPath string) error {
+	if flags != nil && flags.dataSource == "live" {
+		return usageErr(fmt.Errorf("%s reads the local mirror only; --data-source live is not supported (use auto or local)", cmdPath))
+	}
+	return nil
 }
 
 // writeThroughCache upserts live API results into the local SQLite store so
@@ -359,7 +418,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return nil, DataProvenance{}, fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 	}
 	if db == nil {
-		return nil, DataProvenance{}, fmt.Errorf("no local data. Run 'zotio sync' first")
+		return nil, DataProvenance{}, preconditionErr(errors.New("no local data. Run 'zotio sync' first"))
 	}
 	defer db.Close()
 
@@ -463,7 +522,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 				return nil, DataProvenance{}, fmt.Errorf("querying local %q sync state: %w", resourceType, err)
 			}
 			if lastSynced.IsZero() {
-				return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
+				return nil, DataProvenance{}, preconditionErr(fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType))
 			}
 			return json.RawMessage("[]"), prov, nil
 		}
@@ -492,7 +551,13 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	item, err := db.GetContext(ctx, resourceType, id)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotio sync' first", resourceType, id)
+		// A key absent from a synced mirror does not exist there (exit 3); a
+		// resource that was never synced says nothing about the key, so the
+		// store itself is the missing precondition (exit 9).
+		if _, lastSynced, _, syncErr := db.GetSyncStateContext(ctx, resourceType); syncErr == nil && lastSynced.IsZero() {
+			return nil, DataProvenance{}, preconditionErr(fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType))
+		}
+		return nil, DataProvenance{}, notFoundErr(fmt.Errorf("resource %q with ID %q not found in local store (not in the local mirror)", resourceType, id))
 	}
 	if err != nil {
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
@@ -535,10 +600,13 @@ func parseLocalPagination(params map[string]string) (limit, start int, err error
 		}
 		n, parseErr := strconv.Atoi(v)
 		if parseErr != nil {
-			return 0, 0, fmt.Errorf("invalid %s %q: must be an integer", param.name, v)
+			return 0, 0, usageErr(fmt.Errorf("invalid %s %q: must be an integer", param.name, v))
+		}
+		if n < 0 && param.name == "limit" {
+			return 0, 0, validateLimitFlag("--limit", n)
 		}
 		if n < 0 {
-			return 0, 0, fmt.Errorf("invalid %s %q: must be non-negative", param.name, v)
+			return 0, 0, usageErr(fmt.Errorf("invalid %s %q: must be non-negative", param.name, v))
 		}
 		*param.dest = n
 	}

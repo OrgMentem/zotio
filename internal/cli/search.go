@@ -102,7 +102,6 @@ func extractSearchResults(data json.RawMessage) ([]json.RawMessage, error) {
 }
 
 func newSearchCmd(flags *rootFlags) *cobra.Command {
-	var resourceType string
 	var limit int
 	var dbFlag string
 	var fulltextOnly bool
@@ -127,9 +126,6 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
   # Force local search only
   zotio search "payment failed" --data-source local
 
-  # Search a specific resource type locally
-  zotio search "critical" --type transactions --data-source local
-
   # Resolve synced PDF full-text matches to their parent items
   zotio search "calibration feedback" --fulltext --data-source local
 
@@ -149,11 +145,11 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.Join(args, " ")
-			if fulltextOnly && resourceType != "" {
-				return fmt.Errorf("--fulltext cannot be combined with --type")
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
 			}
 			if fulltextOnly && flags.dataSource == "live" {
-				return fmt.Errorf("--fulltext requires synced local data; use --data-source local or auto")
+				return usageErr(fmt.Errorf("--fulltext requires synced local data; use --data-source local or auto"))
 			}
 			// Cohort membership is an item property. Only --fulltext resolves
 			// every hit to a parent item; cross-resource search also returns
@@ -229,8 +225,6 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			switch {
 			case fulltextOnly:
 				provenanceResource = "fulltext"
-			case resourceType != "":
-				provenanceResource = resourceType
 			}
 
 			// Stat before opening. store.OpenWithContext CREATES and migrates
@@ -294,19 +288,17 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 					}
 					results = append(results, raw)
 				}
-			case resourceType == "":
+			default:
 				// Default local search runs cross-resource FTS. Context-bound so
 				// a Ctrl+C aborts the SQLite read like the fulltext and MCP paths.
 				results, err = db.SearchContext(cmd.Context(), query, limit)
-			default:
-				results, err = db.SearchByTypeContext(cmd.Context(), query, resourceType, limit)
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)
 			}
 
 			prov := attachFreshness(localProvenance(db, provenanceResource, reason), flags)
-			// FTS applies the request's query, type filter, and limit, so this
+			// FTS applies the request's query and limit, so this
 			// is a planner-served read rather than the generic dump the Scoped
 			// flag exists to distinguish (ADR-0002).
 			prov.Scoped = true
@@ -315,8 +307,7 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 		},
 	}
 
-	cmd.Flags().StringVar(&resourceType, "type", "", "Filter by resource type")
-	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return (0 = no limit)")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().BoolVar(&fulltextOnly, "fulltext", false, "Search synced PDF full text and return parent item context")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary+"; requires --fulltext")

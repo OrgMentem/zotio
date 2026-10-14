@@ -43,11 +43,13 @@ func TestFxcWebhookWarningOmitsURLQuotedInCause(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	warning := rfCaptureStderr(t, func() {
-		deliverCapturedOutput(nil, context.Background(), sink, spool, false)
-	})
-	if want := "warning: deliver to webhook:http://" + base.Host + " failed: posting to webhook"; !strings.Contains(warning, want) {
-		t.Fatalf("stderr = %q, want %q", warning, want)
+	derr := deliverCapturedOutput(nil, context.Background(), sink, spool, false)
+	if derr == nil {
+		t.Fatal("deliverCapturedOutput reported success for a failed webhook")
+	}
+	warning := derr.Error()
+	if want := "deliver to webhook:http://" + base.Host + " failed: posting to webhook"; !strings.Contains(warning, want) {
+		t.Fatalf("error = %q, want %q", warning, want)
 	}
 	if strings.Contains(warning, "SECRET") {
 		t.Fatalf("stderr leaked a credential: %q", warning)

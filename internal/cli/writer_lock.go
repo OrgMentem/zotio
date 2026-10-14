@@ -244,9 +244,9 @@ const (
 // narrow so normal readers stay free.
 var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"auth set-token":   writerLockOnNotDryRun,
-	"auth logout":      writerLockOnNotDryRun,
+	"auth logout":      writerLockOnApply,
 	"profile save":     writerLockOnNotDryRun,
-	"profile delete":   writerLockOnNotDryRun,
+	"profile delete":   writerLockOnApply,
 	"init":             writerLockAlways,
 	"demo":             writerLockOnNotDryRun,
 	"tail":             writerLockAlways,
@@ -349,6 +349,14 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) (err error) {
 		if err := applySelectedProfile(cmd, flags); err != nil {
 			return err
+		}
+		// A command that cannot preview rejects --dry-run before any lock is
+		// taken, so a dry run never waits on, creates, or loses to a lock.
+		if flags != nil && flags.dryRun {
+			path := strings.TrimPrefix(cmd.CommandPath(), rootCmd.Name()+" ")
+			if registryRejectsDryRun[path] {
+				return usageErr(fmt.Errorf("%s cannot preview: --dry-run is not supported", path))
+			}
 		}
 		mode, ok := installationWriterLockModeForCommand(rootCmd, cmd)
 		if !ok || !shouldAcquireInstallationWriterLock(cmd, mode, flags) {

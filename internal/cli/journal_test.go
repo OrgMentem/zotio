@@ -268,7 +268,7 @@ func TestJournalUndoUsesLegacyPrefixOrReportsTornTail(t *testing.T) {
 		t.Fatalf("journal undo error = %v, want IncompleteJournalError", err)
 	}
 
-	completeCmd := newJournalCmd(&rootFlags{asJSON: true})
+	completeCmd := newJournalCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	completeCmd.SetArgs([]string{"undo", "legacy-complete"})
 	completeCmd.SilenceErrors, completeCmd.SilenceUsage = true, true
 	var out bytes.Buffer
@@ -338,7 +338,7 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 		t.Errorf("preview should not record; entries = %d, want 1", len(entries))
 	}
 }
-func TestRecorderJournalFailureDegradesAppliedRun(t *testing.T) {
+func TestRecorderJournalFailureWarnsOnAppliedRun(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(helpersTestJournalDir(t)), 0o700); err != nil {
@@ -354,8 +354,8 @@ func TestRecorderJournalFailureDegradesAppliedRun(t *testing.T) {
 		return "applied", nil, nil
 	}}}
 	env, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1}, "items.tags.add", ops)
-	if ExitCode(err) != 13 {
-		t.Fatalf("ExitCode(runMutation error) = %d, want 13; err = %v", ExitCode(err), err)
+	if err != nil {
+		t.Fatalf("runMutation err = %v, want nil (journal failure after apply is a warning)", err)
 	}
 	if env.Result == nil || env.Result.Summary.Applied != 1 {
 		t.Fatalf("applied result = %+v, want one applied operation", env.Result)
@@ -436,7 +436,7 @@ func TestJournalUndoPreviewPlan(t *testing.T) {
 		t.Fatalf("seed journal: %v", err)
 	}
 
-	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	flags := &rootFlags{asJSON: true, maxChanges: -1} // preview (no --yes)
 	cmd := newJournalCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs([]string{"undo", "r2"})
@@ -458,11 +458,9 @@ func TestJournalUndoPreviewPlan(t *testing.T) {
 	if op.Kind != "undo.tag_add" || len(op.Changes) != 1 || op.Changes[0].Field != "tags" || op.Changes[0].Remove != "ml" {
 		t.Errorf("inverse op = %+v, want undo.tag_add removing ml", op)
 	}
-	// Under --json the refused DOI op is reported in the envelope, not stderr
-	// prose: renderMutation only prints Warnings to stderr for interactive
-	// (non-JSON) callers.
-	if errOut.Len() != 0 {
-		t.Errorf("JSON undo should not print refusal prose to stderr, got %q", errOut.String())
+	// Warnings go to stderr in every mode so JSON callers still see them.
+	if !strings.Contains(errOut.String(), "missing_doi") {
+		t.Errorf("stderr = %q, want the refusal warning", errOut.String())
 	}
 	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "missing_doi") || !strings.Contains(env.Warnings[0], "op b") {
 		t.Errorf("warnings = %#v, want the refused missing_doi op (id b)", env.Warnings)
@@ -492,7 +490,7 @@ func TestJournalUndoReportsRefusalsInJSON(t *testing.T) {
 		t.Fatalf("seed journal: %v", err)
 	}
 
-	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	flags := &rootFlags{asJSON: true, maxChanges: -1} // preview (no --yes)
 	cmd := newJournalCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs([]string{"undo", "mixed-run"})
@@ -552,7 +550,7 @@ func TestJournalUndoAllRefusedEmitsEnvelope(t *testing.T) {
 		t.Fatalf("seed journal: %v", err)
 	}
 
-	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	flags := &rootFlags{asJSON: true, maxChanges: -1} // preview (no --yes)
 	cmd := newJournalCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs([]string{"undo", "all-refused-run"})
@@ -607,7 +605,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	}
 
 	setActiveGroupID("12345")
-	groupCmd := newJournalCmd(&rootFlags{asJSON: true})
+	groupCmd := newJournalCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	groupCmd.SilenceErrors, groupCmd.SilenceUsage = true, true
 	groupCmd.SetArgs([]string{"undo", "personal-run"})
 	var groupOut, groupErr bytes.Buffer
@@ -622,7 +620,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	}
 
 	setActiveGroupID("")
-	personalCmd := newJournalCmd(&rootFlags{asJSON: true})
+	personalCmd := newJournalCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	personalCmd.SilenceErrors, personalCmd.SilenceUsage = true, true
 	personalCmd.SetArgs([]string{"undo", "personal-run"})
 	var personalOut bytes.Buffer
@@ -644,7 +642,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	if err := mutation.WriteEntry(helpersTestJournalDir(t), groupEntry); err != nil {
 		t.Fatalf("seed personal dir with group journal entry: %v", err)
 	}
-	personalMismatchCmd := newJournalCmd(&rootFlags{asJSON: true})
+	personalMismatchCmd := newJournalCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	personalMismatchCmd.SilenceErrors, personalMismatchCmd.SilenceUsage = true, true
 	personalMismatchCmd.SetArgs([]string{"undo", "group-run"})
 	personalMismatchCmd.SetOut(&bytes.Buffer{})
@@ -661,7 +659,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	if err := mutation.WriteEntry(helpersTestJournalDir(t), groupEntry); err != nil {
 		t.Fatalf("seed group journal: %v", err)
 	}
-	matchingGroupCmd := newJournalCmd(&rootFlags{asJSON: true})
+	matchingGroupCmd := newJournalCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	matchingGroupCmd.SilenceErrors, matchingGroupCmd.SilenceUsage = true, true
 	matchingGroupCmd.SetArgs([]string{"undo", "group-run"})
 	var matchingGroupOut bytes.Buffer

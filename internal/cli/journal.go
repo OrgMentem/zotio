@@ -216,11 +216,15 @@ func newJournalCmd(flags *rootFlags) *cobra.Command {
 
 func newJournalListCmd(flags *rootFlags) *cobra.Command {
 	var workflowRunID string
+	var limit int
 	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List recorded mutation runs, newest first",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
+			}
 			dir, err := journalDir()
 			if err != nil {
 				return err
@@ -243,24 +247,31 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				}
 				entries = filtered
 			}
+			if limit > 0 && len(entries) > limit {
+				entries = entries[:limit]
+			}
 			if flags.asJSON {
-				data, err := json.Marshal(entries)
+				var rows any = entries
+				if flags.compact && flags.selectFields == "" {
+					rows = journalCompactRows(entries)
+				}
+				data, err := json.Marshal(rows)
 				if err != nil {
 					return err
 				}
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(json.RawMessage(data), flags)
+				if err != nil {
+					return err
 				}
 				prov := DataProvenance{Source: "local", ResourceType: "journal"}
 				wrapped, err := wrapWithProvenance(filtered, prov)
 				if err != nil {
 					return err
 				}
-				if err := printOutput(cmd.OutOrStdout(), wrapped, true); err != nil {
-					return err
+				if !flags.quiet {
+					if err := printOutput(cmd.OutOrStdout(), wrapped, true); err != nil {
+						return err
+					}
 				}
 				if incomplete != nil {
 					return degradedErr(fmt.Errorf("journal list is incomplete; some runs may be omitted: %w", incomplete))
@@ -269,7 +280,7 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if len(entries) == 0 {
-				fmt.Fprintln(out, "No mutation runs recorded yet.")
+				fmt.Fprintln(out, "No mutation runs found.")
 			} else {
 				for _, e := range entries {
 					ok := "ok"
@@ -291,7 +302,27 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workflowRunID, "workflow", "", "Filter entries by workflow run ID")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of runs to return, newest first (0 = no limit)")
 	return cmd
+}
+
+// journalCompactRows drops the bulky per-op detail from each run so --compact
+// lists stay small; `journal show <run-id>` returns the ops.
+func journalCompactRows(entries []mutation.JournalEntry) []map[string]any {
+	rows := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(data, &row); err != nil {
+			continue
+		}
+		delete(row, "ops")
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func newJournalShowCmd(flags *rootFlags) *cobra.Command {
@@ -409,10 +440,7 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 				return runErr
 			}
 
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 }

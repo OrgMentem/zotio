@@ -94,7 +94,7 @@ func TestEveryNonReadOnlyCommandHasCapabilityOverride(t *testing.T) {
 // write any plane, so it reports a targetless destructive write.
 func TestNewlyClassifiedMutatingCommandsReportWrites(t *testing.T) {
 	want := map[string]capabilityEntry{
-		"creators rename":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+		"creators rename":  {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 		"init":             {Operation: "write", WriteTarget: localStateWriteTarget},
 		"auth set-token":   {Operation: "write", WriteTarget: localStateWriteTarget},
 		"auth logout":      {Operation: "write", WriteTarget: localStateWriteTarget},
@@ -110,7 +110,7 @@ func TestNewlyClassifiedMutatingCommandsReportWrites(t *testing.T) {
 		"profile show":     {Operation: "read"},
 		"profile use":      {Operation: "read"},
 		"feedback list":    {Operation: "read"},
-		"export":           {Operation: "read"},
+		"export":           {Operation: "read", WriteTarget: localFileWriteTarget},
 	}
 	entries := buildCapabilityRegistry(RootCmd())
 	byPath := make(map[string]capabilityEntry, len(entries))
@@ -413,15 +413,15 @@ const (
 var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 	// Live-plane reads.
 	// searches run evaluates a saved search live; its local route evaluates
-	// the seeded (supported) PROBESK definition against the mirror.
+	// the seeded (supported) PRBESK22 definition against the mirror.
 	"searches run": {
 		routes: map[string][]string{
-			"local": {"searches", "run", "PROBESK", "--data-source", "local"},
-			"live":  {"searches", "run", "PROBESK", "--data-source", "live"},
+			"local": {"searches", "run", "PRBESK22", "--data-source", "local"},
+			"live":  {"searches", "run", "PRBESK22", "--data-source", "live"},
 		},
 	},
 	"items file":               {args: []string{"items", "file", probeItemKey}},
-	"schema new-item-template": {args: []string{"schema", "new-item-template", "--item-type", "journalArticle"}},
+	"schema new-item-template": {args: []string{"schema", "new-item-template", "--item-type", "journalArticle"}, planeErr: map[string]string{"default": "Zotero API unreachable"}},
 	// The connector commands refuse on the base URL before any request, in
 	// their own wording rather than through the shared envelope.
 	"import targets":     {args: []string{"import", "targets"}, planeErr: map[string]string{"default": "local Zotero base URL"}},
@@ -472,6 +472,19 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 		args:   []string{"items", "bibcheck", probeTempFile},
 		routes: map[string][]string{"citekey": {"items", "bibcheck", probeTempFile}},
 	},
+	// Mirror readers that refuse an unsynced library through the shared
+	// precondition_unmet envelope. Each reads only the synced store.
+	"items retract-check": {
+		skip: "checks every DOI against Crossref's Retraction Watch data, a plane no precondition in this vocabulary describes",
+	},
+	"items stale":        {args: []string{"items", "stale"}},
+	"items venues":       {args: []string{"items", "venues"}},
+	"items authors":      {args: []string{"items", "authors"}},
+	"items unfiled":      {args: []string{"items", "unfiled"}},
+	"library wrapped":    {args: []string{"library", "wrapped"}},
+	"items find":         {args: []string{"items", "find", "--doi", "10.1/x"}},
+	"collections stats":  {args: []string{"collections", "stats", probeCollectionKey}},
+	"collections bundle": {args: []string{"collections", "bundle", probeCollectionKey, "--output-dir", probeTempFile}},
 	"export snapshot verify": {
 		skip: "verifies a lockfile artifact produced by a prior export run; its own tests cover the offline read",
 	},
@@ -480,13 +493,13 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 	},
 	// Refuses on the missing mirror before any provider request or output write.
 	// {tmpfile} already exists, so --overwrite gets past the manifest guard.
-	"import monitor": {args: []string{"import", "monitor", "--author", "0000-0002-1825-0097", "--since", "2026-01-01", "--out", probeTempFile, "--overwrite"}},
+	"import monitor": {args: []string{"import", "monitor", "--author", "0000-0002-1825-0097", "--since", "2026-01-01", "--output", probeTempFile, "--overwrite"}},
 	// Classify the package directory, which holds no PDFs, against the mirror.
 	"import scan":    {args: []string{"import", "scan", "."}},
 	"import resolve": {args: []string{"import", "resolve", "."}},
 	// Writes: offline behaviour is the write guard's contract, not this test's,
 	// EXCEPT where a write depends on a live READ to build its plan.
-	"searches materialize": {args: []string{"searches", "materialize", "PROBESK", "--to", probeCollectionKey, "--dry-run"}},
+	"searches materialize": {args: []string{"searches", "materialize", "PRBESK22", "--to", probeCollectionKey, "--dry-run"}},
 }
 
 func init() {
@@ -715,7 +728,7 @@ func seedCapabilityProbeStore(t *testing.T) capabilityProbeFixture {
 	}
 	defer db.Close()
 	if _, _, err := db.UpsertBatch("searches", []json.RawMessage{
-		json.RawMessage(`{"key":"PROBESK","version":1,"data":{"key":"PROBESK","name":"probe search","conditions":[{"condition":"title","operator":"contains","value":"a"}]}}`),
+		json.RawMessage(`{"key":"PRBESK22","version":1,"data":{"key":"PRBESK22","name":"probe search","conditions":[{"condition":"title","operator":"contains","value":"a"}]}}`),
 	}); err != nil {
 		t.Fatalf("seed saved search: %v", err)
 	}
@@ -723,8 +736,30 @@ func seedCapabilityProbeStore(t *testing.T) capabilityProbeFixture {
 		t.Fatalf("record searches sync state: %v", err)
 	}
 	qs := localQueryStore{db}
+	// Demo item ids are citekey-shaped and fail key validation, so the
+	// probe item is a copy of the first demo item under a valid Zotero key.
+	const probeItemID = "PRBITM22"
+	rows, err := qs.QueryRawContext(t.Context(), `SELECT data FROM resources WHERE resource_type='items' AND json_extract(data,'$.data.itemType') NOT IN ('attachment','annotation','note') ORDER BY id LIMIT 1`)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("read demo item to copy: %v", err)
+	}
+	var copied map[string]any
+	if err := json.Unmarshal([]byte(sqlStringValue(rows[0]["data"])), &copied); err != nil {
+		t.Fatalf("decode demo item: %v", err)
+	}
+	copied["key"] = probeItemID
+	if inner, ok := copied["data"].(map[string]any); ok {
+		inner["key"] = probeItemID
+	}
+	copiedRaw, err := json.Marshal(copied)
+	if err != nil {
+		t.Fatalf("encode probe item: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{copiedRaw}); err != nil {
+		t.Fatalf("seed probe item: %v", err)
+	}
 	fixture := capabilityProbeFixture{
-		itemKey:       probeFirstKey(t, qs, `SELECT id AS key FROM resources WHERE resource_type='items' AND json_extract(data,'$.data.itemType') NOT IN ('attachment','annotation','note') ORDER BY id LIMIT 1`),
+		itemKey:       probeItemID,
 		collectionKey: probeFirstKey(t, qs, `SELECT id AS key FROM resources WHERE resource_type='collections' ORDER BY id LIMIT 1`),
 	}
 	if fixture.itemKey == "" || fixture.collectionKey == "" {
@@ -785,4 +820,68 @@ func runRootCommandOffline(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(append([]string{"--json", "--timeout", "5s"}, args...))
 	err := root.Execute()
 	return out.String(), err
+}
+
+// Every mcp:writes-files command reports write_target local_file and keeps the
+// operation its library effect earns (papio parses both).
+func TestFileWritersReportLocalFileWriteTarget(t *testing.T) {
+	registry := buildCapabilityRegistry(RootCmd())
+	byPath := make(map[string]capabilityEntry, len(registry))
+	for _, e := range registry {
+		byPath[e.Path] = e
+	}
+	seen := 0
+	walkRunnableCommands(RootCmd(), func(path string, cmd *cobra.Command) {
+		if !commandWritesFiles(cmd) {
+			return
+		}
+		seen++
+		entry := byPath[path]
+		if entry.WriteTarget != localFileWriteTarget {
+			t.Errorf("%s writes files but write_target = %q, want %q", path, entry.WriteTarget, localFileWriteTarget)
+		}
+		if base := baseCapabilityOperation(cmd.Annotations["mcp:read-only"]); entry.Operation != base && capabilityOverrides[path].Operation == "" {
+			t.Errorf("%s operation = %q, want the annotation-derived %q", path, entry.Operation, base)
+		}
+	})
+	if seen == 0 {
+		t.Fatal("no mcp:writes-files commands found; the walk is broken")
+	}
+}
+
+// Destructive has one definition: the change cannot be undone by `journal undo`.
+func TestCapabilityDestructiveSetIsTheUndoBoundary(t *testing.T) {
+	want := []string{
+		"collections delete",
+		"creators audit fix",
+		"creators rename",
+		"items delete",
+		"items duplicates resolve",
+		"vault resolve",
+		"workflow run",
+	}
+	var got []string
+	for _, e := range buildCapabilityRegistry(RootCmd()) {
+		if e.Destructive {
+			got = append(got, e.Path)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("destructive commands = %v, want %v", got, want)
+	}
+}
+
+// The mirror readers named by the unsynced-store audit declare the synced_store
+// precondition, so the central preflight exits 9 with the envelope.
+func TestMirrorReadersDeclareSyncedStore(t *testing.T) {
+	for _, path := range []string{
+		"items retract-check", "items stale", "collections stats", "items venues",
+		"items authors", "items unfiled", "library wrapped", "items find",
+		"items enrich", "collections bundle",
+	} {
+		entry, ok := capabilityOverrides[path]
+		if !ok || !stringSliceContains(entry.Requires, preconditionSyncedStore) {
+			t.Errorf("capabilityOverrides[%q].Requires = %v, want it to include %s", path, entry.Requires, preconditionSyncedStore)
+		}
+	}
 }

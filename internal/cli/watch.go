@@ -61,6 +61,9 @@ skip and never clears an existing finding. Act on a finding with zotio items
 preprint-check fix.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.dryRun {
+				return usageErr(fmt.Errorf("watch cannot preview: --dry-run is not supported (each cycle syncs the local mirror)"))
+			}
 			if interval < 10*time.Second {
 				return usageErr(fmt.Errorf("--interval must be at least 10s"))
 			}
@@ -158,7 +161,6 @@ preprint-check fix.`,
 						}
 						if werr := runTriggeredWorkflowE(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
 							Yes:     flags.yes,
-							DryRun:  flags.dryRun,
 							Agent:   flags.agent,
 							NoInput: flags.noInput,
 						}); werr != nil {

@@ -266,14 +266,14 @@ func TestItemsBibliographyItemScopeFetchesCiteKeyMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		format := r.URL.Query().Get("format")
 		formats = append(formats, format)
-		if got := r.URL.Query().Get("itemKey"); got != "K1" {
-			t.Errorf("itemKey = %q, want K1", got)
+		if got := r.URL.Query().Get("itemKey"); got != "KEYA2345" {
+			t.Errorf("itemKey = %q, want KEYA2345", got)
 		}
 		switch format {
 		case "json":
-			_, _ = w.Write([]byte(`[{"key":"K1","data":{"key":"K1","extra":"Citation Key: directKey"}}]`))
+			_, _ = w.Write([]byte(`[{"key":"KEYA2345","data":{"key":"KEYA2345","extra":"Citation Key: directKey"}}]`))
 		case "csljson":
-			_, _ = w.Write([]byte(`{"items":[{"id":"123/K1","title":"Direct"}]}`))
+			_, _ = w.Write([]byte(`{"items":[{"id":"123/KEYA2345","title":"Direct"}]}`))
 		default:
 			http.Error(w, "unexpected format", http.StatusBadRequest)
 		}
@@ -281,7 +281,7 @@ func TestItemsBibliographyItemScopeFetchesCiteKeyMetadata(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "item:K1", "--format", "csljson"})
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "item:KEYA2345", "--format", "csljson"})
 	if err != nil {
 		t.Fatalf("item-scope CSL-JSON: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestItemsBibliographySavedSearchScopeRendersResolvedKeys(t *testing.T) {
 	isolateCSLTestEnv(t)
 	t.Setenv("ZOTERO_API_KEY", "testkey")
 	stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/users/0/searches/S1/items" {
+		if r.URL.Path != "/api/users/0/searches/SRCH2345/items" {
 			http.NotFound(w, r)
 			return
 		}
@@ -325,7 +325,7 @@ func TestItemsBibliographySavedSearchScopeRendersResolvedKeys(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "saved-search:S1", "--format", "csljson"})
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "saved-search:SRCH2345", "--format", "csljson"})
 	if err != nil {
 		t.Fatalf("saved-search CSL-JSON: %v (exit %d)", err, ExitCode(err))
 	}
@@ -344,9 +344,9 @@ func TestItemsBibliographyIntersectionScopeRendersOnlyIntersectionKeys(t *testin
 	isolateCSLTestEnv(t)
 	t.Setenv("ZOTERO_API_KEY", "testkey")
 	cliTestSeedItemsStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["C1"],"tags":[{"tag":"T1"}]}}`),
-		json.RawMessage(`{"key":"K2","version":1,"data":{"key":"K2","itemType":"journalArticle","title":"two","collections":["C1"],"tags":[{"tag":"T1"}]}}`),
-		json.RawMessage(`{"key":"K3","version":1,"data":{"key":"K3","itemType":"journalArticle","title":"three","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["CDEF2345"],"tags":[{"tag":"T1"}]}}`),
+		json.RawMessage(`{"key":"K2","version":1,"data":{"key":"K2","itemType":"journalArticle","title":"two","collections":["CDEF2345"],"tags":[{"tag":"T1"}]}}`),
+		json.RawMessage(`{"key":"K3","version":1,"data":{"key":"K3","itemType":"journalArticle","title":"three","collections":["CDEF2345"]}}`),
 		json.RawMessage(`{"key":"K4","version":1,"data":{"key":"K4","itemType":"journalArticle","title":"four","tags":[{"tag":"T1"}]}}`),
 	})
 	var requests []string
@@ -360,7 +360,7 @@ func TestItemsBibliographyIntersectionScopeRendersOnlyIntersectionKeys(t *testin
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	out, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND tag:T1", "--format", "bibtex"})
+	out, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:CDEF2345 AND tag:T1", "--format", "bibtex"})
 	if err != nil {
 		t.Fatalf("intersection bibliography: %v (exit %d)", err, ExitCode(err))
 	}
@@ -378,7 +378,7 @@ func TestItemsBibliographyIntersectionUnmetSavedSearchArmExits9(t *testing.T) {
 	isolateCSLTestEnv(t)
 	t.Setenv("ZOTERO_API_KEY", "testkey")
 	cliTestSeedItemsStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"one","collections":["CDEF2345"]}}`),
 	})
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,7 +388,7 @@ func TestItemsBibliographyIntersectionUnmetSavedSearchArmExits9(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	_, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND saved-search:S1", "--format", "bibtex"})
+	_, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "collection:CDEF2345 AND saved-search:SRCH2345", "--format", "bibtex"})
 	if err == nil {
 		t.Fatal("unmet saved-search arm rendered a bibliography")
 	}
@@ -401,7 +401,7 @@ func TestItemsBibliographyIntersectionMissingStoreIsPrecondition(t *testing.T) {
 	isolateCSLTestEnv(t)
 	t.Setenv("ZOTERO_API_KEY", "testkey")
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/users/0")
-	_, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:C1 AND tag:T1", "--format", "bibtex"})
+	_, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--scope", "collection:CDEF2345 AND tag:T1", "--format", "bibtex"})
 	if err == nil || ExitCode(err) != 9 {
 		t.Fatalf("err = %v (exit %d), want exit 9", err, ExitCode(err))
 	}
@@ -710,7 +710,7 @@ func TestItemsBibliographyReadOnlyDoesNotPersistUserID(t *testing.T) {
 	// Scope "item:K1" avoids the paginated scope-key loop hitting the Web API
 	// with unmocked params; the single Get for BIB is what we want to prove
 	// still succeeds after the in-memory userID is filled.
-	out, err := runCSLItemsCommand(t, flags, []string{"bibliography", "--scope", "item:K1"})
+	out, err := runCSLItemsCommand(t, flags, []string{"bibliography", "--scope", "item:KEYA2345"})
 	if err != nil {
 		t.Fatalf("items bibliography: %v", err)
 	}

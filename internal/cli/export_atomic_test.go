@@ -188,7 +188,7 @@ func TestAnnotationsExportPreservesExistingFileMode(t *testing.T) {
 
 	cmd := newAnnotationsExportCmd(&rootFlags{asJSON: true, noCache: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetArgs([]string{"--collection", "COLL1", "--format", "json", "--refresh", "--limit", "1", "--output", target})
+	cmd.SetArgs([]string{"--collection", "CDEF2345", "--format", "json", "--refresh", "--limit", "1", "--output", target})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {

@@ -3,25 +3,23 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 )
 
 func newCollectionsSubcollectionsCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:   "subcollections <collectionKey>",
-		Short: "List subcollections of a collection",
-		// use a collection key placeholder, not a token.
-		Example:     "  zotio collections subcollections COLLECTIONKEY",
+		Use:         "subcollections <collectionKey>",
+		Short:       "List subcollections of a collection",
+		Example:     "  zotio collections subcollections ABCD2345",
 		Annotations: map[string]string{"zotio:endpoint": "collections.subcollections", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/collections", "mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
+				return err
+			}
+			if err := verifyCollectionExists(cmd.Context(), c, flags, args[0]); err != nil {
 				return err
 			}
 
@@ -32,38 +30,7 @@ func newCollectionsSubcollectionsCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			// Print provenance to stderr for human-facing output
-			printProvenance(cmd, countResultItems(data), prov)
-			// For JSON output, wrap with provenance envelope before passing through flags.
-			// --select wins over --compact when both are set; --compact only runs when
-			// no explicit fields were requested.
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						return err
-					}
-					if len(items) >= 25 {
-						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
-					}
-					return nil
-				}
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printCollectionsRead(cmd, flags, data, prov)
 		},
 	}
 

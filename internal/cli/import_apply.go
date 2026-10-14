@@ -69,7 +69,7 @@ a canceled run still reports every entry the session already saved, and
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
 
---collection KEY files every created item into that collection. It overrides
+--to KEY files every created item into that collection. It overrides
 the manifest's "collection" default for this run; an entry's own "collection"
 still wins over both. The destination applies to created items, including the
 item Zotero's recognizer makes from a "recognize" entry, which its own save
@@ -87,11 +87,14 @@ refused before any item is created; apply it in a separate run.`,
 			switch attachMode {
 			case "none", "linked-file", "stored":
 			default:
-				return fmt.Errorf("--attach-mode must be one of none, linked-file, stored")
+				return usageErr(fmt.Errorf("--attach-mode must be one of none, linked-file, stored"))
 			}
 
 			if attachMode == "stored" && fetchPDF {
-				return fmt.Errorf("--fetch-pdf cannot be combined with --attach-mode stored; the manifest already supplies the PDF")
+				return usageErr(fmt.Errorf("--fetch-pdf cannot be combined with --attach-mode stored; the manifest already supplies the PDF"))
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
 			}
 
 			m, err := readImportManifest(args[0], cmd.InOrStdin())
@@ -102,7 +105,7 @@ refused before any item is created; apply it in a separate run.`,
 			if defaultCollection == "" {
 				defaultCollection = strings.TrimSpace(m.Collection)
 			}
-			if err := verifyImportApplyCollections(cmd.Context(), m, defaultCollection); err != nil {
+			if err := verifyImportApplyCollections(cmd.Context(), flags, m, defaultCollection); err != nil {
 				return err
 			}
 			if fetchPDF || (attachMode == "stored" && flags.via == "connector") {
@@ -229,18 +232,15 @@ refused before any item is created; apply it in a separate run.`,
 				runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops, runOptions...)
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
 			if (attachMode == "stored" || fetchPDF) && env.Result != nil && env.Result.Summary.Applied > 0 {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&attachMode, "attach-mode", "none", "Attachment handling: none, linked-file, or stored")
 	cmd.Flags().BoolVar(&fetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to file created items into (overrides the manifest default; attach entries are not re-filed)")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to file created items into (overrides the manifest default; attach entries are not re-filed)")
 
 	return cmd
 }
@@ -268,7 +268,7 @@ func importApplyFiles(entry importManifestEntry) bool {
 
 // verifyImportApplyCollections refuses the run before any write when a
 // destination key is not a collection in the synced local store.
-func verifyImportApplyCollections(ctx context.Context, m importManifest, defaultCollection string) error {
+func verifyImportApplyCollections(ctx context.Context, flags *rootFlags, m importManifest, defaultCollection string) error {
 	var keys []string
 	seen := map[string]bool{}
 	for _, entry := range m.Entries {
@@ -294,10 +294,36 @@ func verifyImportApplyCollections(ctx context.Context, m importManifest, default
 	for _, key := range keys {
 		if _, err := db.GetContext(ctx, "collections", key); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return usageErr(fmt.Errorf("destination collection %s is not in the local store; check the key or run 'zotio sync'", key))
+				if liveErr := confirmImportApplyCollectionLive(flags, key); liveErr != nil {
+					return liveErr
+				}
+				continue
 			}
 			return fmt.Errorf("looking up destination collection %s: %w", key, err)
 		}
+	}
+	return nil
+}
+
+// confirmImportApplyCollectionLive settles a destination missing from the
+// mirror, which may only be unsynced: a live 404 on the write plane is not
+// found (exit 3); a live check that cannot run is a precondition (exit 9)
+// pointing at `zotio sync`. The selection client is pinned to the write plane
+// (honouring --group), never cached, and persists nothing in preview.
+func confirmImportApplyCollectionLive(flags *rootFlags, key string) error {
+	unverified := func(cause error) error {
+		return preconditionErr(fmt.Errorf("destination collection %s is not in the local store and could not be checked live (%w); run 'zotio sync' and retry", key, cause))
+	}
+	c, err := flags.newSelectionClient()
+	if err != nil {
+		return unverified(err)
+	}
+	if _, err := c.Get(replacePathParam("/collections/{collectionKey}", "collectionKey", key), map[string]string{}); err != nil {
+		classified := classifyAPIError(err, flags)
+		if ExitCode(classified) == 3 {
+			return notFoundErr(fmt.Errorf("destination collection %s does not exist in Zotero; check the key", key))
+		}
+		return unverified(err)
 	}
 	return nil
 }

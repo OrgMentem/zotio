@@ -297,3 +297,33 @@ func TestProbeCrossrefRetractionAPIRedirectPolicy(t *testing.T) {
 		}
 	})
 }
+
+// A failed CrossRef lookup must not read as a clean run: the report is still
+// printed, but the command exits 13 (degraded).
+func TestItemsRetractCheckExits13WhenALookupFails(t *testing.T) {
+	seedRetractionDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"FAIL2345","version":1,"data":{"key":"FAIL2345","itemType":"journalArticle","title":"Lookup Fails","DOI":"10.555/fails","dateAdded":"2026-01-02T00:00:00Z"}}`),
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+	cmd := newItemsRetractCheckCmd(&rootFlags{asJSON: true, maxChanges: -1, timeout: time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("items retract-check error = %v, want exit 13", err)
+	}
+	var report retractionCheckReport
+	if jerr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &report); jerr != nil {
+		t.Fatalf("report was not printed as one JSON document: %q: %v", out.String(), jerr)
+	}
+	if report.Summary.Errors != 1 || len(report.Errors) != 1 {
+		t.Fatalf("report errors = %+v, want the failed DOI listed", report.Errors)
+	}
+}

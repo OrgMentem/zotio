@@ -55,6 +55,14 @@ const publicOutboundPreflightTimeout = 5 * time.Second
 // stalled lookup cannot block the command before it runs, even after
 // cancellation or --timeout.
 func ParseDeliverSinkWithContext(ctx context.Context, spec string) (DeliverSink, error) {
+	sink, err := parseDeliverSink(ctx, spec)
+	if err != nil {
+		return DeliverSink{}, usageErr(err)
+	}
+	return sink, nil
+}
+
+func parseDeliverSink(ctx context.Context, spec string) (DeliverSink, error) {
 	if spec == "" || spec == "stdout" {
 		return DeliverSink{Scheme: "stdout"}, nil
 	}
@@ -101,6 +109,16 @@ func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact
 	case "", "stdout":
 		return nil
 	case "file":
+		if spool != nil && spool.lock != nil {
+			// Lock taken before the command ran; hold it through the rename.
+			commitErr := spool.commitFile()
+			lock := spool.lock
+			spool.lock = nil
+			if releaseErr := lock.Release(); releaseErr != nil {
+				return errors.Join(commitErr, fmt.Errorf("releasing writer lock for %q: %w", sink.Target, releaseErr))
+			}
+			return commitErr
+		}
 		lockPath, canonicalTarget, err := outputWriterLockPath(sink.Target)
 		if err != nil {
 			return fmt.Errorf("resolving deliver target: %w", err)

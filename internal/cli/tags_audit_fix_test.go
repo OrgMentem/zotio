@@ -81,7 +81,7 @@ func TestTagsAuditFixPreviewPlansRenamesWithoutWrites(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	env, _, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true}, srv.URL)
+	env, _, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, srv.URL)
 	if err != nil {
 		t.Fatalf("tags audit fix preview: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestTagsAuditFixPlansThroughVersionlessMirrorRows(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	env, out, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true}, srv.URL)
+	env, out, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, srv.URL)
 	if err != nil {
 		t.Fatalf("tags audit fix aborted on a version-less mirror row: %v (out %s)", err, out)
 	}

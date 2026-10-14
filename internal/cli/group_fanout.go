@@ -717,6 +717,17 @@ func runGroupFanout(cmd *cobra.Command, args []string, flags *rootFlags, run fun
 	return fanoutExitStatus(libs, failures)
 }
 
+// fanoutReportShaped lists the fanned-out commands whose single-library output
+// is one report body (with findings) rather than a list envelope. Each
+// library's report goes under results[i] with its library identity and the
+// findings are concatenated at the top level; every other command keeps row
+// aggregation and sibling-key Extra.
+var fanoutReportShaped = map[string]bool{
+	"items audit":      true,
+	"tags audit":       true,
+	"items duplicates": true,
+}
+
 // mergeFanoutPayload folds one library's JSON payload into the aggregate.
 func mergeFanoutPayload(report *fanoutReport, block *fanoutLibraryResult, payload json.RawMessage, lib fanoutLibrary) {
 	// Decoded key by key rather than into a struct, so the keys this function
@@ -734,6 +745,21 @@ func mergeFanoutPayload(report *fanoutReport, block *fanoutLibraryResult, payloa
 		// path below reports as a single row.
 		if resultsErr == nil && findingsErr == nil && (results != nil || findings != nil) {
 			block.Meta = envelope["meta"]
+			if findings != nil && fanoutReportShaped[report.Meta.Command] {
+				// A report-shaped payload (items audit, tags audit, items
+				// duplicates): the whole single-library report is one entry of
+				// results, carrying the library identity, and its findings are
+				// also concatenated at the top level, as in the single-library
+				// form.
+				report.Results = append(report.Results, tagWithLibrary(payload, lib))
+				for _, finding := range findings {
+					report.Findings = append(report.Findings, tagWithLibrary(finding, lib))
+				}
+				block.Extra = fanoutSiblingKeys(envelope)
+				block.ResultCount = 1
+				block.FindingCount = len(findings)
+				return
+			}
 			block.Extra = fanoutSiblingKeys(envelope)
 			for _, row := range results {
 				report.Results = append(report.Results, tagWithLibrary(row, lib))

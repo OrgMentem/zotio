@@ -95,10 +95,10 @@ that order. The bib format follows the selected CSL style's sorting rules.
 When any citation key is unknown or ambiguous, or an include is missing or
 cyclic, nothing is rendered: the command names each problem with its file
 and line and exits 11.`,
-		Example: `  zotio items bibliography --scope collection:ABCD1234 --style apa
+		Example: `  zotio items bibliography --scope collection:ABCD2345 --style apa
   zotio items bibliography --scope tag:to-submit --format csljson
-  zotio items bibliography --scope collection:ABCD1234 --format bibtex
-  zotio items bibliography --scope item:ABCD1234 --json
+  zotio items bibliography --scope collection:ABCD2345 --format bibtex
+  zotio items bibliography --scope item:ABCD2345 --json
   zotio items bibliography --manuscript paper.tex --format biblatex
   zotio items bibliography --manuscript thesis.tex --follow-includes --format bibtex
   zotio items bibliography --manuscript intro.md --manuscript methods.md --format csljson`,
@@ -109,7 +109,7 @@ and line and exits 11.`,
 			}
 			format, err := normalizeBibliographyFormat(flagFormat)
 			if err != nil {
-				return usageErr(err)
+				return err
 			}
 			if format != "bib" && strings.TrimSpace(flagStyle) != "" {
 				return usageErr(fmt.Errorf("--style applies only to --format bib"))
@@ -135,8 +135,11 @@ and line and exits 11.`,
 				selection = bibliographySelection{Keys: keys}
 			} else {
 				spec, err := parseScopeSpec(flagScope)
+				if err == nil {
+					err = validateScopeKeys(spec)
+				}
 				if err != nil {
-					return usageErr(err)
+					return err
 				}
 				switch spec.Type {
 				case "saved-search":
@@ -160,7 +163,7 @@ and line and exits 11.`,
 						return fmt.Errorf("opening local database: %w", err)
 					}
 					if rawDB == nil {
-						return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first"))
+						return errUnsyncedStoreFor(cmd, flags)
 					}
 					defer rawDB.Close()
 					resolved, err := resolveScopeLive(cmd.Context(), flags, localQueryStore{Store: rawDB}, spec)
@@ -307,17 +310,27 @@ func webAPIKeyPrecondition(cmd *cobra.Command, flags *rootFlags, capability stri
 		"Export ZOTERO_API_KEY with a Zotero Web API key that can read the target library.",
 		"Or save one with: printf %s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin",
 	}
-	message := fmt.Sprintf("%s requires the %s precondition for server-side CSL rendering", capability, preconditionWebAPIKey)
-	if flags != nil && flags.asJSON && !flags.quiet {
-		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
-			"kind":         "precondition_unmet",
-			"precondition": preconditionWebAPIKey,
-			"title":        "Zotero Web API key required",
-			"detail":       message,
-			"remediation":  remediation,
-		})
+	detail := fmt.Sprintf("%s requires the %s precondition for server-side CSL rendering", capability, preconditionWebAPIKey)
+	message := fmt.Sprintf("%s; %s", detail, remediation[0])
+	if flags != nil && flags.asJSON {
+		// The envelope keeps its historical `title` field beside the shared
+		// precondition fields, plus code and message.
+		if !flags.quiet {
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"kind":                    "precondition_unmet",
+				"code":                    9,
+				"message":                 message,
+				"capability":              capability,
+				"precondition":            preconditionWebAPIKey,
+				"title":                   "Zotero Web API key required",
+				"detail":                  detail,
+				"remediation":             remediation,
+				"retry_after_remediation": true,
+			})
+		}
+		return markRendered(preconditionErr(errors.New(message)))
 	}
-	return preconditionErr(fmt.Errorf("%s; %s", message, remediation[0]))
+	return preconditionErr(errors.New(message))
 }
 
 func bibliographyStyleLabel(style string) string {
@@ -345,7 +358,7 @@ func normalizeBibliographyFormat(format string) (string, error) {
 	case "bib", "csljson", "bibtex", "biblatex", "ris":
 		return format, nil
 	default:
-		return "", fmt.Errorf("invalid --format %q: must be bib, csljson, bibtex, biblatex, or ris", format)
+		return "", usageErr(fmt.Errorf("invalid --format %q: must be bib, csljson, bibtex, biblatex, or ris", format))
 	}
 }
 

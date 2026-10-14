@@ -171,7 +171,8 @@ func runCollectionsGapsTestCmd(t *testing.T, args ...string) (string, error) {
 
 // The command handler owns two flag bounds that buildCollectionGapsReportWithCache
 // never sees: a negative --limit would make the scan query nonsensical and a
-// --top below 1 would slice an empty ranking. Both must surface as usage errors
+// negative --top would slice a negative ranking (0 means no limit for both).
+// Both must surface as usage errors
 // (exit 2), which is what shells and CI branch on to tell a caller mistake apart
 // from a real failure.
 func TestCollectionsGapsCmdRejectsOutOfRangeFlags(t *testing.T) {
@@ -180,8 +181,8 @@ func TestCollectionsGapsCmdRejectsOutOfRangeFlags(t *testing.T) {
 		flag string
 		want string
 	}{
-		{name: "negative_limit", flag: "--limit=-1", want: "--limit must be >= 0"},
-		{name: "zero_top", flag: "--top=0", want: "--top must be >= 1"},
+		{name: "negative_limit", flag: "--limit=-1", want: "invalid --limit -1"},
+		{name: "negative_top", flag: "--top=-1", want: "invalid --top -1"},
 	}
 
 	for _, tt := range tests {

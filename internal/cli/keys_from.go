@@ -5,6 +5,7 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -14,12 +15,18 @@ type resolveKeysError string
 
 func (e resolveKeysError) Error() string { return string(e) }
 
+// resolveKeys collects item keys from positional args, or from --keys-from (a
+// file or '-' for stdin; lines or JSON). Every key must have Zotero's key
+// shape; the first bad one is a usage error (exit 2) naming it, and for a line
+// file the line it sits on.
 func resolveKeys(args []string, keysFrom string, stdin io.Reader) ([]string, error) {
 	if len(args) > 0 && keysFrom != "" {
-		return nil, resolveKeysError("--keys-from cannot be combined with positional keys")
+		return nil, usageErr(resolveKeysError("--keys-from cannot be combined with positional keys"))
 	}
 
 	var keys []string
+	var badKey error
+	where := ""
 	seen := make(map[string]struct{})
 	addKey := func(key string) {
 		if key == "" {
@@ -27,6 +34,11 @@ func resolveKeys(args []string, keysFrom string, stdin io.Reader) ([]string, err
 		}
 		if _, ok := seen[key]; ok {
 			return
+		}
+		if badKey == nil {
+			if err := validateKeyArg("item", key); err != nil {
+				badKey = usageErr(fmt.Errorf("%s%w", where, err))
+			}
 		}
 		seen[key] = struct{}{}
 		keys = append(keys, key)
@@ -36,27 +48,33 @@ func resolveKeys(args []string, keysFrom string, stdin io.Reader) ([]string, err
 		for _, arg := range args {
 			addKey(arg)
 		}
+		if badKey != nil {
+			return nil, badKey
+		}
 		if len(keys) == 0 {
-			return nil, resolveKeysError("no item keys provided")
+			return nil, usageErr(resolveKeysError("no item keys provided"))
 		}
 		return keys, nil
 	}
 
 	data, err := readKeysInput(keysFrom, stdin)
 	if err != nil {
-		return nil, err
+		return nil, usageErr(err)
 	}
 
 	if keysInputIsJSON(data) {
 		if err := addJSONKeys(data, addKey); err != nil {
-			return nil, err
+			return nil, usageErr(err)
 		}
-	} else if err := addLineKeys(data, addKey); err != nil {
-		return nil, err
+	} else if err := addLineKeys(data, addKey, func(n int) { where = fmt.Sprintf("--keys-from line %d: ", n) }); err != nil {
+		return nil, usageErr(err)
+	}
+	if badKey != nil {
+		return nil, badKey
 	}
 
 	if len(keys) == 0 {
-		return nil, resolveKeysError("no item keys provided")
+		return nil, usageErr(resolveKeysError("no item keys provided"))
 	}
 	return keys, nil
 }
@@ -76,9 +94,12 @@ func keysInputIsJSON(data []byte) bool {
 	return strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")
 }
 
-func addLineKeys(data []byte, addKey func(string)) error {
+func addLineKeys(data []byte, addKey func(string), atLine func(int)) error {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	line := 0
 	for scanner.Scan() {
+		line++
+		atLine(line)
 		addKey(strings.TrimSpace(scanner.Text()))
 	}
 	return scanner.Err()

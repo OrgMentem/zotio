@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 // collectionsSingleKeyCounter answers the version GET these commands need and
@@ -20,6 +22,7 @@ import (
 type collectionsSingleKeyCounter struct {
 	server   *httptest.Server
 	requests int
+	writes   int
 }
 
 func newCollectionsSingleKeyCounter(t *testing.T) *collectionsSingleKeyCounter {
@@ -27,8 +30,11 @@ func newCollectionsSingleKeyCounter(t *testing.T) *collectionsSingleKeyCounter {
 	ctr := &collectionsSingleKeyCounter{}
 	ctr.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctr.requests++
+		if r.Method != http.MethodGet {
+			ctr.writes++
+		}
 		w.Header().Set("Last-Modified-Version", "7")
-		_, _ = w.Write([]byte(`{"key":"K1","version":7,"data":{"key":"K1","name":"before"}}`))
+		_, _ = w.Write([]byte(`{"key":"ABCD2345","version":7,"data":{"key":"ABCD2345","name":"before"}}`))
 	}))
 	t.Cleanup(ctr.server.Close)
 	return ctr
@@ -54,24 +60,24 @@ func executeCollectionsSingleKeyCmd(t *testing.T, ctr *collectionsSingleKeyCount
 // id and the whole envelope are built from args[0] alone. The operator sees
 // one applied change and reads it as two.
 func TestCollectionsSingleKeyCommandsRefuseMoreThanOneKey(t *testing.T) {
-	wantJSONPreview := func(action string, checkBody func(*testing.T, map[string]any)) func(*testing.T, string) {
+	wantPreview := func(operation string, checkChange func(*testing.T, any)) func(*testing.T, string) {
 		return func(t *testing.T, out string) {
 			t.Helper()
-			var decoded map[string]any
-			if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+			var env mutation.Envelope
+			if err := json.Unmarshal([]byte(out), &env); err != nil {
 				t.Fatalf("decode single-key preview %q: %v", out, err)
 			}
-			if decoded["action"] != action || decoded["key"] != "K1" {
-				t.Errorf("preview envelope = %v, want action %s for key K1", decoded, action)
+			if env.Operation != operation || !env.OK || env.Mode != "preview" || env.Result != nil {
+				t.Errorf("preview envelope = %+v, want an ok %s preview with no result: the single-key path must stay a preview", env, operation)
 			}
-			if decoded["dry_run"] != true {
-				t.Errorf("preview envelope = %v, want dry_run true: the single-key path must stay a preview", decoded)
+			if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "ABCD2345" {
+				t.Errorf("plan = %+v, want exactly one operation on ABCD2345", env.Plan)
 			}
-			if strings.Contains(out, "K2") {
-				t.Errorf("preview output %q mentions K2, want only the single requested key", out)
+			if strings.Contains(out, "EFGH6789") {
+				t.Errorf("preview output %q mentions EFGH6789, want only the single requested key", out)
 			}
-			if checkBody != nil {
-				checkBody(t, decoded)
+			if checkChange != nil && len(env.Plan.Operations) == 1 && len(env.Plan.Operations[0].Changes) == 1 {
+				checkChange(t, env.Plan.Operations[0].Changes[0].Add)
 			}
 		}
 	}
@@ -83,40 +89,37 @@ func TestCollectionsSingleKeyCommandsRefuseMoreThanOneKey(t *testing.T) {
 	}{
 		{
 			name:    "update",
-			newCmd:  func() *cobra.Command { return newCollectionsUpdateCmd(&rootFlags{asJSON: true}) },
-			twoKeys: []string{"K1", "K2", "--name", "Renamed"},
-			oneKey:  []string{"K1", "--name", "Renamed"},
-			checkPreview: wantJSONPreview("update", func(t *testing.T, decoded map[string]any) {
+			newCmd:  func() *cobra.Command { return newCollectionsUpdateCmd(&rootFlags{asJSON: true, maxChanges: -1}) },
+			twoKeys: []string{"ABCD2345", "EFGH6789", "--name", "Renamed"},
+			oneKey:  []string{"ABCD2345", "--name", "Renamed"},
+			checkPreview: wantPreview("collections.update", func(t *testing.T, add any) {
 				t.Helper()
-				body, ok := decoded["body"].(map[string]any)
+				body, ok := add.(map[string]any)
 				if !ok || body["name"] != "Renamed" {
-					t.Errorf("preview body = %v, want {name: Renamed}", decoded["body"])
+					t.Errorf("planned body = %v, want {name: Renamed}", add)
 				}
 			}),
 		},
 		{
 			// Destructive: `collections delete K1 K2` deleted only K1.
-			name:    "delete",
-			newCmd:  func() *cobra.Command { return newCollectionsDeleteCmd(&rootFlags{asJSON: true}) },
-			twoKeys: []string{"K1", "K2"},
-			oneKey:  []string{"K1"},
-			checkPreview: wantJSONPreview("delete", func(t *testing.T, decoded map[string]any) {
-				t.Helper()
-				if _, ok := decoded["body"]; ok {
-					t.Errorf("delete preview carries body = %v, want no body", decoded["body"])
-				}
-			}),
+			name: "delete",
+			newCmd: func() *cobra.Command {
+				return newCollectionsDeleteCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
+			},
+			twoKeys:      []string{"ABCD2345", "EFGH6789"},
+			oneKey:       []string{"ABCD2345"},
+			checkPreview: wantPreview("collections.delete", nil),
 		},
 		{
 			name:    "move",
-			newCmd:  func() *cobra.Command { return newCollectionsMoveCmd(&rootFlags{asJSON: true}) },
-			twoKeys: []string{"--to", "PARENT", "K1", "K2"},
-			oneKey:  []string{"--to", "PARENT", "K1"},
-			checkPreview: wantJSONPreview("move", func(t *testing.T, decoded map[string]any) {
+			newCmd:  func() *cobra.Command { return newCollectionsMoveCmd(&rootFlags{asJSON: true, maxChanges: -1}) },
+			twoKeys: []string{"--to", "PRNTAB23", "ABCD2345", "EFGH6789"},
+			oneKey:  []string{"--to", "PRNTAB23", "ABCD2345"},
+			checkPreview: wantPreview("collections.move", func(t *testing.T, add any) {
 				t.Helper()
-				body, ok := decoded["body"].(map[string]any)
-				if !ok || body["parentCollection"] != "PARENT" {
-					t.Errorf("move preview body = %v, want parentCollection PARENT", decoded["body"])
+				body, ok := add.(map[string]any)
+				if !ok || body["parentCollection"] != "PRNTAB23" {
+					t.Errorf("planned body = %v, want parentCollection PRNTAB23", add)
 				}
 			}),
 		},
@@ -135,15 +138,16 @@ func TestCollectionsSingleKeyCommandsRefuseMoreThanOneKey(t *testing.T) {
 				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
 			}
 
-			// The single-key path still previews unchanged and makes no HTTP call.
+			// The single-key path still previews unchanged.
 			singleCtr := newCollectionsSingleKeyCounter(t)
 			singleOut, err := executeCollectionsSingleKeyCmd(t, singleCtr, tc.newCmd(), tc.oneKey...)
 			if err != nil {
 				t.Fatalf("collections %s with one key = %v, want the preview", tc.name, err)
 			}
 			tc.checkPreview(t, singleOut)
-			if singleCtr.requests != 0 {
-				t.Errorf("requests = %d, want 0: the preview must not reach the library", singleCtr.requests)
+			// The preview runs the same reads as apply, but never writes.
+			if singleCtr.requests == 0 || singleCtr.writes != 0 {
+				t.Errorf("requests = %d, writes = %d, want reads only from the preview", singleCtr.requests, singleCtr.writes)
 			}
 		})
 	}

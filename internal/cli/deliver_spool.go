@@ -3,10 +3,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+
+	"zotio/internal/cliutil"
 )
 
 // deliverSpool streams captured command output to a file instead of holding it
@@ -31,6 +34,29 @@ type deliverSpool struct {
 	// to the MultiWriter regardless: stdout is the primary output and must not
 	// be truncated because the spool's disk filled up.
 	writeErr error
+	// lock is the file sink's <target>.lock, taken before the command runs and
+	// held through the rename so a concurrent writer to the same path is
+	// refused up front instead of racing the delivery.
+	lock *cliutil.WriterLock
+}
+
+// acquireDeliverLock takes the output collision lock for a file sink. A busy
+// lock is a precondition failure (exit 9), the same as for every other writer.
+func acquireDeliverLock(sink DeliverSink) (*cliutil.WriterLock, error) {
+	lockPath, canonicalTarget, err := outputWriterLockPath(sink.Target)
+	if err != nil {
+		return nil, fmt.Errorf("resolving deliver target: %w", err)
+	}
+	operation := fmt.Sprintf("delivering to %q", canonicalTarget)
+	lock, err := cliutil.AcquireWriterLock(lockPath, operation)
+	if err != nil {
+		var busy *cliutil.WriterLockBusyError
+		if errors.As(err, &busy) {
+			return nil, preconditionErr(fmt.Errorf("%s cannot acquire writer lock %q because another writer is active; retry after it completes: %w", operation, lockPath, err))
+		}
+		return nil, fmt.Errorf("acquiring writer lock for %s at %q: %w", operation, lockPath, err)
+	}
+	return lock, nil
 }
 
 func newDeliverSpool(sink DeliverSink) (*deliverSpool, error) {
@@ -133,7 +159,12 @@ type spoolReader struct {
 // cleanup removes whatever the spool left behind. Safe to call twice, and safe
 // after a successful commit, where the tmp path no longer exists.
 func (s *deliverSpool) cleanup() {
-	if s == nil || s.file == nil {
+	if s == nil {
+		return
+	}
+	_ = s.lock.Release()
+	s.lock = nil
+	if s.file == nil {
 		return
 	}
 	name := s.path

@@ -4,6 +4,358 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+#### Keys and not-found
+
+- **Unknown keys exit 3 instead of returning library-wide data.** The local API
+  answers `/collections/<bad>/items` and similar paths with the whole library.
+  `collections items|export|subcollections|tags` now check the collection first
+  (`GET /collections/<key>`, or the mirror under `--data-source local`).
+  `collections stats|gaps|bundle` exit 3 when the key is not in the mirror.
+  `searches materialize` checks its target collection, and a 404 on the saved
+  search is not found (exit 3), not "Zotero not running" (exit 9).
+  `items related|similar|summarize` and the MCP graph resources exit 3 for an
+  unknown item (they printed `{"error":"not found"}` or prose with exit 0) and
+  exit 9 on an unsynced store. `items fulltext|file|children|annotations`
+  verify the parent item (exit 3), and `fulltext`/`file` use only attachments
+  whose `parentItem` is the requested key.
+
+- **Key-valued flags are validated and exit 2 when malformed.** Applies to
+  `items enrich --collection`, `searches materialize --to`/`<searchKey>`,
+  `items move --to/--from`, `items missing-pdf --keys`, `--parent-collection`,
+  and the `--scope` keys of `items bibliography` and `export snapshot`. An
+  `attachments add` parent key error now reads `invalid Zotero item key "…"`
+  (still exit 2).
+
+- **`--data-source auto` falls back to the mirror when the local API is
+  unreachable or answers `No endpoint found`.** It prints one stderr note. When
+  live access fails, a key absent from a synced mirror exits 3 (was 5); an
+  unavailable or unsynced mirror exits 9.
+  `--data-source live` is a usage error (exit 2) on the mirror-only commands
+  `items stale|unfiled|venues|authors|missing-pdf|retract-check|find|audit|duplicates|citekey-conflicts`
+  and `collections stats|gaps|bundle`. `groups list` and `groups inspect`
+  reject `--data-source local` (exit 2; group discovery is Web API only).
+
+- **Mirror readers exit 9 with the `synced_store` precondition envelope on an
+  unsynced library** (they printed prose and exited 0). Covers `items
+  retract-check|stale|venues|authors|unfiled|find|audit|duplicates|citekey-conflicts|missing-pdf|enrich|bibcheck`,
+  `collections stats|gaps|bundle`, `library wrapped`, and `import apply --to`
+  with an intersection scope. `import apply --to` naming a collection absent
+  from the store exits 3 (was 2).
+
+#### `--dry-run` and previews
+
+- **Mutation previews run the same reads and gates as apply.** `items tags
+  add|remove`, `reading-list add|start|done`, `items update|delete|restore|move`
+  read each target through the write plane, so a preview reports real no-ops,
+  plans the real `expected_version` (never `0`), and exits 3 for a missing key.
+  A preview no longer prints the `→ writing via Zotero Web API` notice or saves
+  config. `items update` reads the version even when the body carries
+  `version`. For `items delete`, the planning read decides `--ignore-missing`,
+  already-trashed and already-purged outcomes (`no_op`).
+
+- **Previews evaluate `--max-changes`, `--allow-destructive`, and invalid local
+  input.** A preview that apply would refuse prints `ok:false` with
+  `error:{code,message}` and exits with apply's code. A preview of a destructive
+  operation without `--allow-destructive` is `ok:false` with
+  `destructive_opt_in_required` and a non-zero exit; the plan still prints.
+  Covers `collections delete`, `creators rename`, `creators audit fix`,
+  `vault resolve --keep-vault|--keep-remote`, and the vault commands below.
+  `import url` with an unparsable URL and `import pdf` with a missing file
+  report `invalid` in the preview and exit 2.
+
+- **`--dry-run` does less or errors in several places.** `sync`, `watch`, and
+  `init` reject `--dry-run` (exit 2). `feedback --dry-run` records and POSTs
+  nothing. `items bibcheck --dry-run` runs the check (it exited 0 without
+  checking). `collections export --output`, `annotations export --output`,
+  `library wrapped --card`, and `creators audit --orcid` write no file, lock,
+  or `creator_orcids` row under `--dry-run`. `workflow run` previews pass
+  `--dry-run` to steps that write local files or declare their own
+  `--dry-run`. `--dry-run` reads no longer write the local mirror, and
+  `items trash --dry-run` no longer stores its live result in it.
+
+- **`auth logout` and `profile delete` preview by default** (exit 0) and apply
+  only with `--yes`. `profile delete` no longer exits 1 with "confirmation
+  required". `auth set-token` and `profile save` still apply directly.
+
+- **`--deliver` is output routing and `--dry-run` does not suppress it.**
+  Like a shell redirect, it still delivers the command's own preview output.
+
+#### Errors and exit codes
+
+- **Typed errors under `--json`/`--agent` (or piped stdout) print one flat
+  error object on stdout:** `{kind, code, message, hint?}`. Precondition
+  envelopes gain `code` and `message`. `profile not found` is one object with
+  `kind:"profile_not_found"`, `profile`, `available_profiles`, `code`, `message`.
+  Mutation failures keep their mutation envelope (`ok:false` plus `error`). A
+  `which` miss prints `{"matches":[]}` and exits 2.
+
+- **Exit 13 means part of a write applied and part failed for a non-conflict
+  reason, or part of a read was unreadable.** A conflict exits 1 everywhere (ADR-0008), in preview and apply. A
+  run where nothing applied exits 1 (or its specific typed code), including
+  conflict-only runs and a rejected `collections create` batch (was 13). A journal write
+  failure after a fully successful apply is a stderr warning with exit 0 (was
+  13). Mutation warnings print to stderr under `--json` too.
+
+- **More usage errors exit 2 instead of 1, 4 or 5.** A non-auth HTTP 400 exits
+  2 (was 5). `items get --format bogus` exits 2. `collections export --format
+  bogus`, `items add-to-collection` without `--collection-name`, `items note-template --format bogus`,
+  `items open --target bogus`, and `auth set-token` without `--stdin` (was 4)
+  exit 2. `which` exits 2 on a miss in every output mode; under
+  `--json`/`--agent` it prints `{"matches":[]}` (it exited 0). Negative
+  `--limit` exits 2 on live and local list reads, `items list|top`,
+  `searches list`, `search`, `collections list|top|items|tags`, `export`,
+  `export snapshot`, `items enrich`, `items preprint-check fix`,
+  `items recent|trash|stale`, `reading-list`, `journal list`, and
+  `vault sync`.
+
+- **`--select` naming no field in the output exits 2; `--quiet` prints nothing.**
+  `date_added` and `dateAdded` are interchangeable. `--quiet` is honored on
+  every command that uses the shared output path, including `items find` and
+  the collection read commands.
+
+- **Specific failure changes.** `doctor --fail-on` is validated first (exit 2);
+  a tripped gate exits 11 (error) or 12 (stale), and doctor JSON gains a
+  top-level `status`. `library health --verify-files` and `--fail-on-new` with a
+  missing `--baseline` exit 9. `items cite` with Zotero not running exits 9
+  with a "start Zotero" hint. `items retract-check` exits 13 (report still
+  printed) when a CrossRef lookup failed. `items enrich` with a failed
+  provider lookup or unreadable local row is `ok:false` with
+  `enrich_lookup_failed` and exits 5 (13 when part of the plan applied); only
+  benign skips remain in `journal.skipped`. `auth status` with no API key and a
+  local API base URL exits 0 (`api_key: not set (optional for the local API)`,
+  was 4). `import doi|arxiv|isbn|pmid` with a malformed identifier exits 2
+  before any request; an identifier the upstream does not know exits 3 (was 1).
+  `vault resolve` exits 2 on opposite or missing direction flags and 3 when no
+  note matches; `vault sync` exits 2 on a bad `--format`, `--collection` key,
+  or missing vault directory (all were 1). `items move` with neither `--to` nor
+  `--from`, bad `--tags`/`--collections`/stdin JSON for `items update`, bad
+  `--items`/stdin JSON for `items create`, bad `--strategy` for `items
+  duplicates resolve`, missing `--tag` for `items tags add|remove`, bad
+  `--keys-from`, and `--max-failures`/`--continue-on-error=false` with
+  `--batch` exit 2 (were 1). `items duplicates --by bogus` and `items find`
+  with no selector or a bad `--arxiv`/`--openalex` exit 2. Invalid `library
+  health --prefer|--years|--added-by`, bad enum values for `import`
+  (`--attach-mode`, `--on-duplicate`, file `--format`), and a missing input
+  to `import file|apply|resolve|scan` exit 2. `collections create|update|move`
+  check flags before the preview branch: `create` without `--name`, `update`
+  with nothing to change, `move` without `--to`, an empty `--name`, `--stdin`
+  with `--name`/`--parent-collection`, a nameless stdin collection, and a
+  malformed key exit 2 with or without `--dry-run`. `schema item-type-fields`,
+  `item-type-creator-types`, and `new-item-template` check `--item-type` first
+  (exit 2). `items list --sort/--direction/--format` and `items top --sort`
+  reject values outside Zotero's documented set (exit 2).
+
+#### Mutation envelope and output shapes
+
+- **`collections create|update|delete|move` and `items add-to-collection` print
+  the standard mutation envelope** (`ok`, `mode`, `plan`, `result`) in preview
+  and apply. The legacy `{action, status, success, dry_run, ...}` preview and
+  `{action:"post"|"put", status, data}` apply objects are gone. A created
+  collection's key is in `result.items[].key`. Gate failures and failed writes
+  render the envelope instead of a bare error. `items add-to-collection` is one
+  mutation (`operation: items.add-to-collection`, one journal entry) with an
+  optional collection create plus the membership change, and its preview
+  reports an already-member item as `no_op`. `import doi` and JSONL `import`
+  gate failures print the envelope with `ok:false`; `items create` prints
+  `error.code max_changes_exceeded`.
+
+- **Some outputs moved into the `{meta, results}` envelope or renamed keys.**
+  `items authors`, `tags inventory`, `searches run`, `annotations export
+  --format json` (was a bare array), and `reading-list` (rows moved from
+  `items` to `results`; `queue_tag`, `count`, `oldest` are top-level siblings).
+  `collections gaps` returns `results` (was `rows`). `import targets` returns
+  `results` (was `targets`). `schema drift --json` key `schema_version` is now
+  `zotero_schema_version`. `groups inspect` `num_items` is an integer.
+  `vault sync --json` reports `counts{}` instead of bare
+  `created`/`updated`/`unchanged`. `vault resolve --json` returns
+  `{dry_run, out, counts, results[]}` with one result row (was a single object
+  with `direction`/`vault_changed`/`zotero_changed`). `import discover` and
+  `import monitor` report `output` (was `out`).
+  `--group all` on `items audit`, `tags audit`, and `items duplicates` puts
+  each library's whole report under `results[i]` and concatenates `findings`.
+
+- **Text-returning commands wrap their text under `--json`/`--agent`.**
+  `items cite` (including `--style csljson`) and `items note-template` return
+  `{"format","content"}`; `collections export` bibtex/ris and `annotations
+  export --format markdown` do the same. Raw text is unchanged otherwise.
+  `annotations export` defaults to JSON under `--json`/`--agent` and on piped
+  stdout, and to markdown on a terminal.
+
+- **Piped output equals `--json` and tabular flags are refused on reports.**
+  `items duplicates`, `items citekey-conflicts`, and `items audit` piped output
+  matches `--json`. Reports (`library stats|prisma|health|wrapped`, `tags
+  audit`, `creators audit`, `collections gaps|bundle`) print JSON when piped.
+  These commands and `items audit` summary, `items retract-check`, `items
+  bibcheck`, `vault audit|conflicts`, and `import scan|resolve|discover|monitor`
+  exit 2 on `--plain`/`--csv`. Elsewhere `--csv` shares the `--plain` renderer:
+  envelopes unwrap, nested values are JSON-encoded, empty results print nothing.
+
+- **`export --format jsonl` writes one compact JSON object per line** on every
+  path. It passed the pretty-printed API records through before.
+
+- **Vault status words are snake_case.** Previews report `would_create`,
+  `would_update`, `would_conflict`, `would_pull`, `would_resolve`;
+  `vault sync --dry-run` reports these instead of `created`/`updated`; the
+  failure word is `failed` (was `error`). `counts` keys use the same words. A
+  preview that finds conflicts counts them as issues and exits 1, like apply.
+
+#### Flag renames and limit semantics
+
+- **Flags renamed.**
+
+  | Command | Old | New |
+  | --- | --- | --- |
+  | `items list`, `sync` | `--since` | `--since-version` |
+  | `items stale` | `--days` | `--older-than-days` |
+  | `items recent\|unfiled\|venues\|missing-pdf`, `analytics` | `--type` (item type) | `--item-type` |
+  | `items authors` | `--type` | `--creator-type` |
+  | `items authors\|venues` | `--top` | `--limit` |
+  | `items annotations` | `--type` | `--annotation-type` |
+  | `items open` | `--type` | `--target` |
+  | `items new` | `--collection` | `--to` |
+  | `import doi\|arxiv\|isbn\|pmid\|url\|file\|apply` | `--collection` | `--to` |
+  | `import discover\|monitor` | `--out` | `--output`/`-o` |
+  | `collections bundle` | `--out` | `--output-dir` |
+  | `collections export`, `tags rename` | `--limit` | `--page-size` |
+  | `vault push\|pull\|sync\|resolve\|audit\|conflicts` | `--out` | `--vault` |
+
+  `import pdf` takes `--to <key>` and a separate `--collection-name <name>`
+  (created if absent); the two are mutually exclusive. `analytics --type` now
+  means the mirrored resource kind only. `search --type` and the unused
+  `import --batch-size` are removed. `collections export --output` gains `-o`.
+  A negative `--older-than-days` or `sync --since-version` exits 2.
+
+- **`--limit 0` and `--top 0` mean no limit; negatives exit 2.** Applies to
+  `items similar`, `items authors|venues`, `analytics --limit`, `library stats
+  --top` and `--years`, `collections stats|gaps --top`, `annotations search|timeline`,
+  `import discover|monitor`, and `journal list`. `import resolve --limit`
+  defaults to 0 (was 200); a truncating limit sets top-level `truncated: true`
+  and prints a stderr note. `annotations export --limit` caps annotations, not
+  parent items scanned (default 50). `journal list` gains `--limit` (default 50)
+  and `--compact` strips `ops` from each run. `sync --since-version` is the
+  Zotero library version cursor.
+
+- **Scope flags.** `items authors|missing-pdf|retract-check` accept `--scope`
+  (`--collection` lowers into it). `annotations export`, `timeline` and
+  `search` accept `--scope`. `annotations export` also takes `--collection`
+  and `--tag`, and `timeline` takes `--collection` and `--item`; they lower into
+  `--scope` and intersect (`annotations export --collection` with `--tag` no
+  longer exits 2). An unknown collection or item exits 3. `export snapshot` uses the
+  shared grammar: `library`, `collection:KEY`, `tag:NAME`, and
+  `collection:KEY AND tag:NAME`; `item:`, `query:`, `saved-search:` and repeated
+  arms exit 2; `--page-size` outside 1-100 exits 2. `annotations export`,
+  `timeline` and `search` agree that `--item`, `--collection`, `--tag` and
+  `--scope` name top-level items and annotations come through their
+  attachments (`timeline --item` compared against the attachment key before).
+
+- **`annotations search` stays local-first under `--data-source auto`.** It
+  reads the full-text index (stemming, AND/OR/NOT, ranking) and goes live only
+  with no synced mirror. `annotations timeline` and `export` read live first and
+  fall back to the mirror. `meta.source` and `meta.reason` (`local_first`,
+  `no_local_store`, `user_requested`) say which path answered. `--refresh` means
+  live only. `item_key`/`item_title` are set whenever the owning item is known;
+  an empty local result prints a stderr note. Both read paths page through
+  attachment children and annotations (Zotero returns 25 per request without a
+  limit).
+
+#### Data safety
+
+- **`export snapshot` publishes staged files and keeps the previous snapshot on
+  failure.** It stages `<output>.partial` and `<output>.manifest.json.partial`,
+  then publishes data followed by manifest; translator formats stage the same
+  way. After a crash between renames, `--resume` finishes publishing without
+  refetching; without `--resume` the run exits 9. Staging symlinks or
+  non-regular files are refused. A checkpoint from an older zotio cannot be
+  resumed: rerun without `--resume`. The result reports `replaced`, and a
+  symlink, directory, or device at the output or manifest path is refused.
+
+- **File outputs write atomically and report `replaced`.** `annotations export
+  --output` uses mode 0600, takes `-o`, reports `{output, format, items,
+  annotations, replaced}`, and honors `--dry-run`. `collections export
+  --output` reports `replaced` like `export -o` and, under `--dry-run`, prints
+  `Dry run: would write N bytes ...; nothing was written` (`--json` result has
+  `dry_run:true`). `collections bundle` refuses a missing collection before it
+  creates `<output-dir>.lock`.
+
+- **Destructive operations need `--allow-destructive`.** `creators rename`,
+  `creators audit fix`, and `vault resolve --keep-vault|--keep-remote` need it
+  to apply. They are registry-destructive: a change `journal undo` cannot
+  reverse.
+
+- **Other local-state changes.** `demo.db` lives in the resolved data directory
+  (`ZOTERO_DATA_DIR`, `ZOTERO_HOME`, XDG apply). The `schema drift` default
+  baseline lives in the zotio data directory, honoring `ZOTIO_DATA_HOME` and
+  `XDG_DATA_HOME`.
+
+#### MCP and agent-context
+
+- **`agent-context` `schema_version` is `4`.** The `zotio:supports-dry-run`,
+  `zotio:destructive`, `zotio:requires-allow-destructive`, and
+  `zotio:default-max-changes` annotations come from the capability registry for
+  every write command (literals on 17 commands, absent on 28).
+  `zotio:default-max-changes` stays `500`; new `zotio:default-max-changes-agent`
+  is `50`. Command flags list only command-local flags; global flags appear once
+  in `global_flags`.
+
+- **MCP mirror hints follow the registry.** `annotations search` is a mirrored
+  tool (framework commands match by full path). `destructiveHint` is `true` only
+  for registry-destructive commands and local file writers; additive writes
+  report `false`. Commands that read only the mirror report
+  `openWorldHint:false`. Every `mcp:writes-files` command exposes `--dry-run`.
+  The `command_run` description says read-only file writers expose dry-run and
+  `yes` means "Apply writes (otherwise preview only)".
+
+### Changed
+
+- **`capabilities` and `agent-context` carry more metadata.** Every
+  `mcp:writes-files` command reports `write_target: "local_file"` (its
+  `operation` is unchanged). `agent-context` gains `annotation_semantics`,
+  `exit_codes`, `global_flags` (with `applies_to`), per-command
+  `typed_exit_codes`, a derived `mcp:effect` annotation
+  (`read|write|local-file|local-state|other`), and per-flag `shorthand` and
+  `required`.
+
+- **Help text is corrected.** `--limit` says `(0 = no limit)`; `items list
+  --query` says to quote multi-word queries; `groups inspect` documents that
+  exit 0 with `found:false` means no access; `which --help`, `items create`,
+  `items duplicates resolve` (now with `--allow-destructive`), `tail`, and
+  `profile save` use real examples; collections help uses real key shapes.
+  `tail` with no resource exits 2. Empty-state messages for `journal list`,
+  `feedback list`, and `profile list` read `No <things> found.` Per-command
+  `zotio:*` annotation literals are removed; the registry is the only source.
+
+### Fixed
+
+- **Failed or partial runs no longer corrupt data or report success.**
+  A failed `export snapshot` keeps the previous data file and manifest, and
+  `export snapshot "collection:KEY AND tag:NAME"` no longer exports an unscoped
+  set. `items preprint-check fix` keeps the applied run's `journal.run_id`.
+  `items tags add|remove --batch` prints no second JSON object after an
+  API failure.
+
+- **Reads return the right data.** `annotations export` finds annotations that
+  Zotero stores under attachments (it returned `[]` for collections and the
+  whole library on the mirror). `tags list --query` sends the query to the
+  server (`q`/`qmode`) and also filters client-side, honoring `--query-mode`
+  (`contains` or `startsWith`), so the local API matches the Web API.
+  `library health` reports `baseline: not found`. `--group all` of
+  `items duplicates` keeps sibling keys such as `near_title_groups`.
+  `items get`, `children`, `annotations`, `collections-of` apply
+  `--select`/`--compact` through the shared handler, and `--compact` keeps the
+  `keys` field. Unknown tag names and `collections/<key>/collections` with a bad
+  key exit 3 without three 5xx retries.
+
+- **Messages and ranking.** The terminal sanitizer keeps newlines in zotio's own
+  hints; library and remote data stay strictly sanitized. 404 hints name the
+  right noun and a real `list` command; 401/403 hints separate missing key,
+  rejected key, and missing permission. `which` ranks alias hits once per
+  command, and `items move` and `items add-to-collection` have distinct aliases.
+  `items bibliography` prints its Web API key precondition envelope once, with
+  `code`, `message` and `capability`. `items bibcheck --fail-on` accepts
+  `critical`, `high`, `info`, `any`, and `none`.
+
 ## [0.29.0] — 2026-10-12
 
 ### Changed — breaking

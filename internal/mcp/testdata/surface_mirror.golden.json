@@ -1,7 +1,7 @@
 [
   {
     "name": "analytics",
-    "description": "Analyze locally synced Zotero data.\n\n--type accepts a mirrored resource kind (such as items or collections) for\nresource counts, or a Zotero item type (such as journalArticle or book) to\ncount only matching rows in the items mirror. When --group-by is supplied,\nthe item rows are grouped by year, itemType, collection, creator, or tag.",
+    "description": "Analyze locally synced Zotero data.\n\n--type accepts a mirrored resource kind (such as items or collections) for\nresource counts. --item-type accepts a Zotero item type (such as journalArticle\nor book) to count only matching rows in the items mirror. When --group-by is\nsupplied, the item rows are grouped by year, itemType, collection, creator, or\ntag. --limit caps the groups shown (0 = no limit).",
     "inputSchema": {
       "properties": {
         "db": {
@@ -12,12 +12,16 @@
           "description": "Group items by year, itemType, collection, creator, or tag",
           "type": "string"
         },
+        "item-type": {
+          "description": "Zotero item type to count or group (journalArticle, book, ...)",
+          "type": "string"
+        },
         "limit": {
-          "description": "Maximum groups to show with --group-by (default: 25)",
+          "description": "Maximum groups to show with --group-by (0 = no limit) (default: 25)",
           "type": "number"
         },
         "type": {
-          "description": "Resource kind or Zotero item type to analyze",
+          "description": "Mirrored resource kind to count (items, collections, tags, ...)",
           "type": "string"
         }
       },
@@ -27,19 +31,23 @@
   },
   {
     "name": "annotations_export",
-    "description": "Export annotations as markdown or JSON",
+    "description": "Export annotations grouped by the top-level item that owns them. --limit caps\nthe number of annotations exported, not the number of items scanned.\n--collection and --tag are shorthand for --scope collection:KEY and\n--scope tag:NAME; together they intersect.\n\nWith --data-source auto (the default) the command reads live and serves the\nlocal mirror when Zotero is unreachable. --format json returns the\n{meta, results} envelope; under --json or --agent, --format markdown returns\n{\"format\", \"content\"}. With --output the result goes to the file and stdout\nreports what was written; under --dry-run nothing is written.",
     "inputSchema": {
       "properties": {
         "collection": {
-          "description": "Scope to items in this collection key",
+          "description": "Only annotations of items in this collection key (same as --scope collection:KEY)",
           "type": "string"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
         },
         "format": {
           "description": "Output format (markdown or json) (default: markdown)",
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of items to process (default: 50)",
+          "description": "Maximum number of annotations to export (0 = no limit) (default: 50)",
           "type": "number"
         },
         "output": {
@@ -47,11 +55,45 @@
           "type": "string"
         },
         "refresh": {
-          "description": "Fetch live from the API instead of the local store (default: false)",
+          "description": "Read live only, with no local mirror fallback (same as --data-source live) (default: false)",
           "type": "boolean"
         },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
+          "type": "string"
+        },
         "tag": {
-          "description": "Scope to items with this tag",
+          "description": "Only annotations of items with this tag (same as --scope tag:NAME)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "annotations_search",
+    "description": "Search annotation text, comments and tags.\n\nBy default the search uses the local store's full-text index: word stems match\n(\"trust\" finds \"trusted\"), \"quoted phrases\" match exactly, AND, OR, NOT and\nparentheses combine terms, and results are ranked by relevance. Live search has\nnone of that, which is why this command reads the local store first, unlike\nannotations timeline and annotations export, which read live first. With no\nsynced local store the search runs live instead: each word or \"quoted phrase\"\nmust appear, in any letter case, in the annotation's text, comment or tags;\nstems and operators do not apply. meta.source and meta.reason say which path\nanswered.\n\n--data-source local searches the index only. --data-source live (or --refresh)\nsearches live only.\n\nResults include the key and title of the top-level item each annotation\nbelongs to. --scope names top-level items, as it does for annotations export\nand annotations timeline.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "color": {
+          "description": "Filter by annotation color (yellow, red, green, blue, purple, orange)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of annotations to return (0 = no limit) (default: 50)",
+          "type": "number"
+        },
+        "refresh": {
+          "description": "Search live only, skipping the local index (same as --data-source live) (default: false)",
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) (default: library)",
           "type": "string"
         }
       },
@@ -61,24 +103,28 @@
   },
   {
     "name": "annotations_timeline",
-    "description": "List annotations sorted by creation date",
+    "description": "List annotations newest first. --item names the top-level item that owns the\nannotations, never the attachment that holds them. --collection and --item are\nshorthand for --scope collection:KEY and --scope item:KEY.\n\nWith --data-source auto (the default) the command reads live and serves the\nlocal mirror when Zotero is unreachable.",
     "inputSchema": {
       "properties": {
         "collection": {
-          "description": "Scope to items in this collection key",
+          "description": "Only annotations of items in this collection key (same as --scope collection:KEY)",
           "type": "string"
         },
         "item": {
-          "description": "Scope to annotations of a specific parent item key",
+          "description": "Only annotations of this top-level item key (same as --scope item:KEY)",
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of annotations to return (default: 50)",
+          "description": "Maximum number of annotations to return (0 = no limit) (default: 50)",
           "type": "number"
         },
         "refresh": {
-          "description": "Fetch live from the API instead of the local store (default: false)",
+          "description": "Read live only, with no local mirror fallback (same as --data-source live) (default: false)",
           "type": "boolean"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
+          "type": "string"
         },
         "since": {
           "description": "ISO date string; include annotations after this date",
@@ -149,7 +195,7 @@
   },
   {
     "name": "capabilities",
-    "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex,\ndesktop_connector, zotero_file_storage) so agents can select safe commands\nand pre-flight requirements without parsing --help or guessing from names.\nCommands with more than one write route carry a routes list where each route\nnames its own preconditions; the top-level requires and write_target describe\nthe default route (the first entry in routes).",
+    "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex,\ndesktop_connector, zotero_file_storage) so agents can select safe commands\nand pre-flight requirements without parsing --help or guessing from names.\nCommands with more than one write route carry a routes list where each route\nnames its own preconditions; the top-level requires and write_target describe\nthe default route (the first entry in routes).\n\nA destructive command makes a change \"journal undo\" cannot reverse. A command\nthat writes local files you name (an export, a report, a baseline) keeps\noperation read and reports write_target local_file.",
     "inputSchema": {
       "properties": {
         "pretty": {
@@ -163,20 +209,24 @@
   },
   {
     "name": "collections_bundle",
-    "description": "Assemble a self-contained research package from the local store for a\ncollection: synthesis context, annotations, and compact bibliography. This command\nnever writes to Zotero; run sync first if local data is missing.\n\nRe-running into the same --out replaces the package; the result names every\nexisting file it replaced. zotio-bundle.json is written last and lists each\nfile's size and SHA-256: the package is complete only while that file is\npresent and matches. With --dry-run nothing is written; the result lists the\nfiles that would be written and replaced.",
+    "description": "Assemble a self-contained research package from the local store for a\ncollection: synthesis context, annotations, and compact bibliography. This command\nnever writes to Zotero; run sync first if local data is missing.\n\nRe-running into the same --output-dir replaces the package; the result names every\nexisting file it replaced. zotio-bundle.json is written last and lists each\nfile's size and SHA-256: the package is complete only while that file is\npresent and matches. With --dry-run nothing is written; the result lists the\nfiles that would be written and replaced.",
     "inputSchema": {
       "properties": {
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "out": {
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
+        "output-dir": {
           "description": "Output directory for the research package",
           "type": "string"
         }
       },
       "required": [
-        "out"
+        "output-dir"
       ],
       "type": "object"
     }
@@ -275,12 +325,16 @@
   },
   {
     "name": "collections_export",
-    "description": "Recursively walks a collection and all its subcollections, then emits a\nsingle combined export in the requested format. Use --flat to export only\nthe top-level collection without recursing into subcollections.\n\nbibtex, ris, and csljson are rendered by Zotero's export translators, so they\nneed Zotero desktop running. --format json emits the structured item JSON the\nsynced mirror already holds, so it also works with Zotero closed\n(--data-source local, or auto once the local API stops answering).",
+    "description": "Recursively walks a collection and all its subcollections, then emits a\nsingle combined export in the requested format. Use --flat to export only\nthe top-level collection without recursing into subcollections.\n\nbibtex, ris, and csljson are rendered by Zotero's export translators, so they\nneed Zotero desktop running. --format json emits the structured item JSON the\nsynced mirror already holds, so it also works with Zotero closed\n(--data-source local, or auto once the local API stops answering).\n\nThe collection must exist: an unknown key exits 3 before anything is written.\nUnder --json or --agent, bibtex and ris output is wrapped as\n{\"format\": ..., \"content\": ...}. With --output the file is replaced atomically\nand the result reports whether it replaced an existing file; with --dry-run\nnothing is written, not even a lock file, and the result reports what would be.",
     "inputSchema": {
       "properties": {
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
         },
         "flat": {
           "description": "Export only the top-level collection, skip subcollections (default: false)",
@@ -290,13 +344,13 @@
           "description": "Export format: bibtex, ris, csljson, json (json is the offline-capable format) (default: bibtex)",
           "type": "string"
         },
-        "limit": {
+        "output": {
+          "description": "Write output to this file instead of stdout (replaced atomically)",
+          "type": "string"
+        },
+        "page-size": {
           "description": "Items fetched per API request (max 100); the export always walks every page (default: 100)",
           "type": "number"
-        },
-        "output": {
-          "description": "Write output to file instead of stdout",
-          "type": "string"
         }
       },
       "required": [],
@@ -313,11 +367,11 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum DOI-bearing collection items to scan (0 = all) (default: 50)",
+          "description": "Maximum DOI-bearing collection items to scan (0 = no limit) (default: 50)",
           "type": "number"
         },
         "top": {
-          "description": "Number of citation gaps to show (default: 20)",
+          "description": "Number of citation gaps to show (0 = no limit) (default: 20)",
           "type": "number"
         }
       },
@@ -353,7 +407,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of items to return (default: 0)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "start": {
@@ -371,7 +425,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number of collections to return (default: 0)",
+          "description": "Maximum number of collections to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "start": {
@@ -439,7 +493,7 @@
           "type": "string"
         },
         "top": {
-          "description": "Number of top venues to show (default: 5)",
+          "description": "Number of top venues to show (0 = no limit) (default: 5)",
           "type": "number"
         }
       },
@@ -471,7 +525,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of tags to return (default: 0)",
+          "description": "Maximum number of tags to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "query": {
@@ -497,7 +551,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number to return (default: 0)",
+          "description": "Maximum number of collections to return (0 = no limit) (default: 0)",
           "type": "number"
         }
       },
@@ -573,6 +627,10 @@
     "description": "Audit synced creator names for variant candidates without mutating Zotero.\n\nThe audit reads item creators from the local synced store and groups likely name\nvariants into three confidence tiers: exact-after-normalization, initial/full-name\ncompatibility, and ambiguous same-surname diagnostics. Ambiguous groups are\nhidden unless --include-ambiguous is supplied; when shown, they are review-only\nand never include runnable rename commands. Use --orcid to fetch CrossRef author\nORCIDs for DOI-bearing tier-2/3 candidates and store them in the local\ncreator_orcids sidecar table as corroboration evidence. That sidecar is\nlocal-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has\nno creator ORCID field.",
     "inputSchema": {
       "properties": {
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
         "include-ambiguous": {
           "description": "Include unsafe same-surname groups as review-only evidence; no rename commands are emitted (default: false)",
           "type": "boolean"
@@ -698,6 +756,10 @@
     "description": "Seed a bundled sample library into a separate demo store and print a\nshort tour of commands to try.\n\nThe demo library is a separate SQLite database (demo.db) beside your real\nstore. Set ZOTIO_DEMO=1 and pass --data-source local to keep reads inside it.\nWithout that flag, the default auto source can query a running Zotero desktop.\nNo Zotero desktop and no API key are required for local demo reads.",
     "inputSchema": {
       "properties": {
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
         "reset": {
           "description": "Delete and re-seed the demo library (also removes demo.db) (default: false)",
           "type": "boolean"
@@ -746,7 +808,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum records to export (0 = unlimited) (default: 0)",
+          "description": "Maximum records to export (0 = no limit) (default: 0)",
           "type": "number"
         },
         "max-changes": {
@@ -772,19 +834,23 @@
   },
   {
     "name": "export_snapshot",
-    "description": "Export every page of a library, collection, or tag scope as JSONL, BibTeX,\nRIS, or CSL-JSON. A sidecar manifest (\u003coutput\u003e.manifest.json) records each\nitem's key, version, and canonical data hash for drift detection. An\ninterrupted run continues with --resume using \u003coutput\u003e.checkpoint.json.\nTranslator formats need Zotero to return the requested include field.\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
+    "description": "Export every page of a library, collection, or tag scope as JSONL, BibTeX,\nRIS, or CSL-JSON. A sidecar manifest (\u003coutput\u003e.manifest.json) records each\nitem's key, version, and canonical data hash for drift detection. An\ninterrupted run continues with --resume using \u003coutput\u003e.checkpoint.json.\nTranslator formats need Zotero to return the requested include field.\n\nScope uses the shared --scope grammar: library (default), collection:KEY,\ntag:NAME, or collection:KEY AND tag:NAME. The data file and the manifest are\neach published atomically (a temporary file renamed into place), so a failed\nrun keeps the previous snapshot. A JSONL run keeps its in-progress data in\n\u003coutput\u003e.partial until it finishes.",
     "inputSchema": {
       "properties": {
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
         "format": {
           "description": "Snapshot format: jsonl, bibtex, ris, or csljson (default: jsonl)",
           "type": "string"
         },
         "limit": {
-          "description": "Maximum items to export (0 = all) (default: 0)",
+          "description": "Maximum items to export (0 = no limit) (default: 0)",
           "type": "number"
         },
         "output": {
@@ -824,7 +890,7 @@
   },
   {
     "name": "groups_inspect",
-    "description": "Check whether a Zotero group library is accessible and writable",
+    "description": "Probes one group library. The command always exits 0 when the probe itself\nworks: \"found\": false means the group is not accessible (not a member, or the\nAPI key lacks access), not that the command failed. Read \"found\",\n\"ready_for_read\" and \"ready_for_write\" in the output.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -862,10 +928,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "batch-size": {
-          "description": "Records per batch (future: batch API support) (default: 1)",
-          "type": "number"
-        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -899,7 +961,7 @@
   },
   {
     "name": "import_apply",
-    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. One invocation\ntherefore saves every connector-bound stored create in one session, as import\nfile --via connector and items create do; in a run with no destination, an\nentry whose item names its own collection still gets its own session. Because\nthe batch commits together, a failed entry does not stop the entries after it,\na canceled run still reports every entry the session already saved, and\n--max-failures or an explicit --continue-on-error=false is refused. Prefer one\ninvocation with many records. --rate-limit governs only Web API requests and\ndoes not pace connector calls; pace your own invocations.\n\n--collection KEY files every created item into that collection. It overrides\nthe manifest's \"collection\" default for this run; an entry's own \"collection\"\nstill wins over both. The destination applies to created items, including the\nitem Zotero's recognizer makes from a \"recognize\" entry, which its own save\nsession files once recognition finishes. Attach entries add a file to an item\nthat already exists and do not re-file it. The key must exist in the synced\nlocal store, or the run is refused before any write. A connector save session\nhas one target, so on the connector route an entry whose own collection differs\nfrom the run's destination, or whose item already lists another collection, is\nrefused before any item is created; apply it in a separate run.",
+    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. One invocation\ntherefore saves every connector-bound stored create in one session, as import\nfile --via connector and items create do; in a run with no destination, an\nentry whose item names its own collection still gets its own session. Because\nthe batch commits together, a failed entry does not stop the entries after it,\na canceled run still reports every entry the session already saved, and\n--max-failures or an explicit --continue-on-error=false is refused. Prefer one\ninvocation with many records. --rate-limit governs only Web API requests and\ndoes not pace connector calls; pace your own invocations.\n\n--to KEY files every created item into that collection. It overrides\nthe manifest's \"collection\" default for this run; an entry's own \"collection\"\nstill wins over both. The destination applies to created items, including the\nitem Zotero's recognizer makes from a \"recognize\" entry, which its own save\nsession files once recognition finishes. Attach entries add a file to an item\nthat already exists and do not re-file it. The key must exist in the synced\nlocal store, or the run is refused before any write. A connector save session\nhas one target, so on the connector route an entry whose own collection differs\nfrom the run's destination, or whose item already lists another collection, is\nrefused before any item is created; apply it in a separate run.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -916,10 +978,6 @@
         },
         "attach-mode": {
           "description": "Attachment handling: none, linked-file, or stored (default: none)",
-          "type": "string"
-        },
-        "collection": {
-          "description": "Collection key to file created items into (overrides the manifest default; attach entries are not re-filed)",
           "type": "string"
         },
         "connector-target": {
@@ -945,6 +1003,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to file created items into (overrides the manifest default; attach entries are not re-filed)",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -976,10 +1038,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add the item to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -1003,6 +1061,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to add the item to",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -1030,20 +1092,24 @@
           "description": "Citation chase direction: backward, forward, or both (default: backward)",
           "type": "string"
         },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
         "limit": {
-          "description": "Maximum manifest entries to emit (default: 25)",
+          "description": "Maximum manifest entries to emit (0 = no limit) (default: 25)",
           "type": "number"
         },
         "min-count": {
           "description": "Minimum number of source items citing a DOI (default: 2)",
           "type": "number"
         },
-        "out": {
+        "output": {
           "description": "Path to write the reviewable import manifest",
           "type": "string"
         },
         "overwrite": {
-          "description": "Replace an existing manifest at --out; review edits in it are lost (default: false)",
+          "description": "Replace an existing manifest at --output; review edits in it are lost (default: false)",
           "type": "boolean"
         },
         "scope": {
@@ -1052,7 +1118,7 @@
         }
       },
       "required": [
-        "out",
+        "output",
         "scope"
       ],
       "type": "object"
@@ -1073,10 +1139,6 @@
         },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
-          "type": "string"
-        },
-        "collection": {
-          "description": "Collection key to add the item to",
           "type": "string"
         },
         "connector-target": {
@@ -1102,6 +1164,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to add the item to",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -1133,10 +1199,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add imported items to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -1160,6 +1222,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to add imported items to",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -1191,10 +1257,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add the item to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -1218,6 +1280,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to add the item to",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -1244,16 +1310,20 @@
           },
           "type": "array"
         },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
         "limit": {
-          "description": "Maximum manifest entries to write (default: 25)",
+          "description": "Maximum manifest entries to write (0 = no limit) (default: 25)",
           "type": "number"
         },
-        "out": {
+        "output": {
           "description": "Required reviewable import manifest output path",
           "type": "string"
         },
         "overwrite": {
-          "description": "Replace an existing manifest at --out; review edits in it are lost (default: false)",
+          "description": "Replace an existing manifest at --output; review edits in it are lost (default: false)",
           "type": "boolean"
         },
         "query": {
@@ -1275,7 +1345,7 @@
   },
   {
     "name": "import_pdf",
-    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\n--collection \u003ckey|name\u003e files the created item into a collection after import,\ncreating a same-named collection when one doesn't already exist (like 'items\nadd-to-collection'). This is a separate step, not part of the connector call: the\nsaveStandaloneAttachment endpoint saves into whatever the desktop pane currently\ntargets and accepts no collection parameter.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many PDFs: import file --via connector and items create share\none session, and import apply saves all of its stored creates in one session\nper invocation; its recognize and --fetch-pdf entries, like each PDF here,\nstill use one session each. --rate-limit governs only Web API requests and\ndoes not pace connector calls.",
+    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\n--to \u003ckey\u003e files the created item into the collection with that key after import.\n--collection-name \u003cname\u003e does the same by exact name, creating the collection\nwhen it does not exist (like 'items add-to-collection'). Pass at most one. This\nis a separate step, not part of the connector call: the saveStandaloneAttachment\nendpoint saves into whatever the desktop pane currently targets and accepts no\ncollection parameter.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many PDFs: import file --via connector and items create share\none session, and import apply saves all of its stored creates in one session\nper invocation; its recognize and --fetch-pdf entries, like each PDF here,\nstill use one session each. --rate-limit governs only Web API requests and\ndoes not pace connector calls.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1290,8 +1360,8 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key or name to file the created item into (the name is created if it doesn't exist)",
+        "collection-name": {
+          "description": "Exact collection name to file the created item into (created if absent)",
           "type": "string"
         },
         "continue-on-error": {
@@ -1312,6 +1382,10 @@
         },
         "on-duplicate": {
           "description": "How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create (default: skip)",
+          "type": "string"
+        },
+        "to": {
+          "description": "Destination collection key to file the created item into",
           "type": "string"
         },
         "yes": {
@@ -1340,10 +1414,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add the item to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -1368,6 +1438,10 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
+        "to": {
+          "description": "Destination collection key to add the item to",
+          "type": "string"
+        },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
           "type": "string"
@@ -1391,7 +1465,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Scan at most N PDFs when resolving a directory (default: 200)",
+          "description": "Scan at most N PDFs when resolving a directory (0 = no limit) (default: 0)",
           "type": "number"
         }
       },
@@ -1409,7 +1483,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Scan at most N PDFs (0 = all) (default: 0)",
+          "description": "Scan at most N PDFs (0 = no limit) (default: 0)",
           "type": "number"
         },
         "resolve": {
@@ -1423,7 +1497,7 @@
   },
   {
     "name": "import_targets",
-    "description": "List Zotero desktop Connector save targets for connector-backed imports.\nUse the id column (for example C78) with --connector-target when --collection is\nambiguous or the local Web API collection key cannot be mapped automatically.",
+    "description": "List Zotero desktop Connector save targets for connector-backed imports.\nUse the id column (for example C78) with --connector-target when --to is\nambiguous or the local Web API collection key cannot be mapped automatically.",
     "inputSchema": {
       "properties": {},
       "required": [],
@@ -1461,10 +1535,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add the item to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -1488,6 +1558,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "to": {
+          "description": "Destination collection key to add the item to",
+          "type": "string"
         },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
@@ -1546,7 +1620,7 @@
   },
   {
     "name": "items_add_to_collection",
-    "description": "Add an item to a top-level collection identified by name, creating the\ncollection when no collection of that name exists.\n\nPrefer this when you know the collection by name. When you already have the\ncollection key, or need to move many items at once or remove a membership, use\n'zotio items move --to \u003ccollectionKey\u003e' (also --from, --keys-from); this command\nresolves the name and then delegates the membership change to it.\n\nApply mode journals two writes for one invocation when the collection has to be\ncreated — a collection create plus an item move — because two writes happen.",
+    "description": "Add an item to a top-level collection identified by name, creating the\ncollection when no collection of that name exists.\n\nPrefer this when you know the collection by name. When you already have the\ncollection key, or need to move many items at once or remove a membership, use\n'zotio items move --to \u003ccollectionKey\u003e' (also --from, --keys-from); this command\nresolves the name and then applies the same membership change.\n\nThe plan holds two operations when the collection has to be created -- a\ncollection create plus an item membership change -- because two writes happen.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1595,16 +1669,16 @@
     "description": "List annotation children for an item",
     "inputSchema": {
       "properties": {
+        "annotation-type": {
+          "description": "Filter by annotation type (highlight, note, image)",
+          "type": "string"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
         "color": {
           "description": "Filter by annotation color (yellow, red, green, blue, purple, orange)",
-          "type": "string"
-        },
-        "type": {
-          "description": "Filter by annotation type (highlight, note, image)",
           "type": "string"
         }
       },
@@ -1664,15 +1738,19 @@
     "inputSchema": {
       "properties": {
         "collection": {
-          "description": "Filter to items in this collection key",
+          "description": "Filter to items in this collection key (same as --scope collection:KEY)",
           "type": "string"
         },
-        "top": {
-          "description": "Maximum number of authors to return (default: 20)",
+        "creator-type": {
+          "description": "Filter by creatorType (for example author or editor)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of authors to return (0 = no limit) (default: 20)",
           "type": "number"
         },
-        "type": {
-          "description": "Filter by creatorType (for example author or editor)",
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         }
       },
@@ -1694,7 +1772,7 @@
           "type": "boolean"
         },
         "fail-on": {
-          "description": "Exit 11 when findings reach this severity: high, any, or none",
+          "description": "Exit 11 when findings reach this severity: critical, high, info, any, or none",
           "type": "string"
         },
         "fail-on-unknown": {
@@ -2017,7 +2095,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum items to process per category (default: 25)",
+          "description": "Maximum items to process per category (0 = no limit) (default: 25)",
           "type": "number"
         },
         "max-changes": {
@@ -2195,18 +2273,18 @@
           "type": "string"
         },
         "item-type": {
-          "description": "Filter by item type (journalArticle, book, bookSection, conferencePaper, etc.)",
+          "description": "Filter by item type, for example journalArticle or book (not validated client-side; see 'zotio schema item-types')",
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of items to return (max 100) (default: 0)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "query": {
-          "description": "Quick search across title, creator, and year",
+          "description": "Quick search across title, creator, and year; quote multi-word queries",
           "type": "string"
         },
-        "since": {
+        "since-version": {
           "description": "Return only items modified after this library version number (default: 0)",
           "type": "number"
         },
@@ -2233,7 +2311,11 @@
     "inputSchema": {
       "properties": {
         "collection": {
-          "description": "Filter to an exact Zotero collection key",
+          "description": "Filter to an exact Zotero collection key (same as --scope collection:KEY)",
+          "type": "string"
+        },
+        "item-type": {
+          "description": "Filter to a specific Zotero item type",
           "type": "string"
         },
         "keys": {
@@ -2244,8 +2326,8 @@
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
         },
-        "type": {
-          "description": "Filter to a specific Zotero item type",
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         }
       },
@@ -2324,10 +2406,6 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "collection": {
-          "description": "Collection key to add the item to",
-          "type": "string"
-        },
         "connector-target": {
           "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
           "type": "string"
@@ -2363,6 +2441,10 @@
           "description": "Read a JSON object of item fields from stdin (default: false)",
           "type": "boolean"
         },
+        "to": {
+          "description": "Collection key to add the item to (e.g. ABCD2345)",
+          "type": "string"
+        },
         "via": {
           "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
           "type": "string"
@@ -2396,7 +2478,7 @@
   },
   {
     "name": "items_open",
-    "description": "Build a zotero:// desktop deep link for an item (default), a collection\n(--type collection), or a PDF attachment (--type attachment), then print it or\nlaunch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,\nrundll32 on Windows).\n\nThe link targets the personal library by default, or a group library when the\nglobal --group \u003cid\u003e flag (or ZOTERO_GROUP) is set. With --agent/--json the\ncommand emits {uri, target_type, library_scope, launched}.",
+    "description": "Build a zotero:// desktop deep link for an item (default), a collection\n(--target collection), or a PDF attachment (--target attachment), then print it or\nlaunch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,\nrundll32 on Windows).\n\nThe link targets the personal library by default, or a group library when the\nglobal --group \u003cid\u003e flag (or ZOTERO_GROUP) is set. With --agent/--json the\ncommand emits {uri, target_type, library_scope, launched}.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -2431,7 +2513,7 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
-        "type": {
+        "target": {
           "description": "Target type: item, collection, or attachment (PDF) (default: item)",
           "type": "string"
         },
@@ -2506,16 +2588,16 @@
     "inputSchema": {
       "properties": {
         "days": {
-          "description": "Return only items added in the last N days (default: 0)",
+          "description": "Return only items added in the last N days (0 = no date filter) (default: 0)",
           "type": "number"
+        },
+        "item-type": {
+          "description": "Filter by Zotero item type",
+          "type": "string"
         },
         "limit": {
-          "description": "Maximum number of items to return (default: 20)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 20)",
           "type": "number"
-        },
-        "type": {
-          "description": "Filter by item type",
-          "type": "string"
         }
       },
       "required": [],
@@ -2584,12 +2666,16 @@
     "inputSchema": {
       "properties": {
         "collection": {
-          "description": "Scope checks to items in a collection key",
+          "description": "Scope checks to items in a collection key (same as --scope collection:KEY)",
           "type": "string"
         },
         "limit": {
-          "description": "Maximum DOI-bearing items to check (0 = all) (default: 0)",
+          "description": "Maximum DOI-bearing items to check (0 = no limit) (default: 0)",
           "type": "number"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
+          "type": "string"
         }
       },
       "required": [],
@@ -2606,7 +2692,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of similar items to return (default: 10)",
+          "description": "Maximum number of similar items to return (0 = no limit) (default: 10)",
           "type": "number"
         },
         "min-score": {
@@ -2623,12 +2709,8 @@
     "description": "Find old items without PDFs or annotations",
     "inputSchema": {
       "properties": {
-        "days": {
-          "description": "Items added more than this many days ago (default: 365)",
-          "type": "number"
-        },
         "limit": {
-          "description": "Maximum number of items to return (default: 50)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 50)",
           "type": "number"
         },
         "no-annotations": {
@@ -2638,6 +2720,10 @@
         "no-pdf": {
           "description": "Include only items without a PDF attachment (default: false)",
           "type": "boolean"
+        },
+        "older-than-days": {
+          "description": "Items added more than this many days ago (default: 365)",
+          "type": "number"
         }
       },
       "required": [],
@@ -2842,7 +2928,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of items to return (default: 0)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "query": {
@@ -2872,7 +2958,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number of items to return (default: 0)",
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "start": {
@@ -2889,6 +2975,10 @@
     "description": "List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Each shared tag, creator, or venue splits its vote across the collections its filed items occupy, so a status tag such as \"/unread\" or a broad journal that spans many collections is weak evidence, and suggestions scoring below --suggest-min-score are dropped. Suggestions are read-only and never move items.",
     "inputSchema": {
       "properties": {
+        "item-type": {
+          "description": "Filter by Zotero item type",
+          "type": "string"
+        },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"
@@ -2904,10 +2994,6 @@
         "suggest-min-score": {
           "description": "Drop collection suggestions scoring below this (requires --suggest) (default: 0.05)",
           "type": "number"
-        },
-        "type": {
-          "description": "Filter by Zotero item type",
-          "type": "string"
         }
       },
       "required": [],
@@ -2985,13 +3071,13 @@
     "description": "Count synced items by publication venue",
     "inputSchema": {
       "properties": {
-        "top": {
-          "description": "Maximum number of venues to return (default: 20)",
-          "type": "number"
-        },
-        "type": {
-          "description": "Filter by Zotero itemType",
+        "item-type": {
+          "description": "Filter by Zotero item type",
           "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of venues to return (0 = no limit) (default: 20)",
+          "type": "number"
         }
       },
       "required": [],
@@ -3003,6 +3089,10 @@
     "description": "List recorded mutation runs, newest first",
     "inputSchema": {
       "properties": {
+        "limit": {
+          "description": "Maximum number of runs to return, newest first (0 = no limit) (default: 50)",
+          "type": "number"
+        },
         "workflow": {
           "description": "Filter entries by workflow run ID",
           "type": "string"
@@ -3082,11 +3172,15 @@
           "type": "string"
         },
         "baseline": {
-          "description": "Read health finding identities from this baseline JSON; missing file establishes a baseline",
+          "description": "Read health finding identities from this baseline JSON. A missing file is reported as 'baseline: not found' and nothing is diffed; with --fail-on-new it exits 9. Create one with --write-baseline",
           "type": "string"
         },
         "check-retractions": {
           "description": "Run the live CrossRef retraction check (network; DOI-bearing items) (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
         },
         "fail-on": {
@@ -3094,7 +3188,7 @@
           "type": "string"
         },
         "fail-on-new": {
-          "description": "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline)",
+          "description": "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any; none disables (requires --baseline, which must exist: a missing baseline exits 9)",
           "type": "string"
         },
         "for": {
@@ -3158,11 +3252,11 @@
           "type": "string"
         },
         "top": {
-          "description": "Number of venues to show (default: 10)",
+          "description": "Number of venues to show (0 = no limit) (default: 10)",
           "type": "number"
         },
         "years": {
-          "description": "Number of years to show (default: 20)",
+          "description": "Number of years to show (0 = all years) (default: 20)",
           "type": "number"
         }
       },
@@ -3176,12 +3270,16 @@
     "inputSchema": {
       "properties": {
         "card": {
-          "description": "Write an 800x418 SVG share card to this path",
+          "description": "Write an 800x418 SVG share card to this path (with --dry-run, report the path and write nothing)",
           "type": "string"
         },
         "card-style": {
           "description": "Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three) (default: overview)",
           "type": "string"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
         },
         "year": {
           "description": "Year to summarize (default: 2026)",
@@ -3198,7 +3296,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number of items to show (default: 20)",
+          "description": "Maximum number of items to show (0 = no limit) (default: 20)",
           "type": "number"
         },
         "tag": {
@@ -3467,7 +3565,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number of searches to return (default: 0)",
+          "description": "Maximum number of searches to return (0 = no limit) (default: 0)",
           "type": "number"
         }
       },
@@ -3593,7 +3691,7 @@
           "type": "boolean"
         },
         "latest-only": {
-          "description": "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins). (default: false)",
+          "description": "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins). (default: false)",
           "type": "boolean"
         },
         "max-changes": {
@@ -3615,8 +3713,8 @@
           },
           "type": "array"
         },
-        "since": {
-          "description": "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. (default: 0)",
+        "since-version": {
+          "description": "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'. (default: 0)",
           "type": "number"
         },
         "strict": {
@@ -3726,7 +3824,7 @@
     "inputSchema": {
       "properties": {
         "limit": {
-          "description": "Maximum number of tags to return (default: 0)",
+          "description": "Maximum number of tags to return (0 = no limit) (default: 0)",
           "type": "number"
         },
         "query": {
@@ -3775,16 +3873,16 @@
           "description": "Old tag name",
           "type": "string"
         },
-        "limit": {
-          "description": "Maximum number of items to process per page (default: 100)",
-          "type": "number"
-        },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
           "type": "number"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "page-size": {
+          "description": "Items to fetch per page while selecting carriers of the tag (1-100) (default: 100)",
           "type": "number"
         },
         "to": {
@@ -3809,7 +3907,7 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "out": {
+        "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         }
@@ -3827,7 +3925,7 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
-        "out": {
+        "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         }
@@ -3869,7 +3967,7 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
-        "out": {
+        "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         },
@@ -3915,7 +4013,7 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
-        "out": {
+        "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         },
@@ -3969,13 +4067,13 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
-        "out": {
-          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
-          "type": "string"
-        },
         "recreate": {
           "description": "Re-create a child note deleted in Zotero (default: false)",
           "type": "boolean"
+        },
+        "vault": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -4035,16 +4133,16 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
-        "out": {
-          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
-          "type": "string"
-        },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
           "type": "string"
         },
         "tag": {
           "description": "Only sync items with this tag",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         },
         "yes": {

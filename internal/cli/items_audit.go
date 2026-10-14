@@ -213,13 +213,18 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Audit locally synced items for missing metadata and PDFs",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -233,16 +238,25 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 				return runVerifyAttachmentFiles(cmd, db, flags, flagLimit, sel)
 			}
 
+			// One shape per flag set: piped output and --json both give the
+			// object form; only a terminal (or --plain/--csv) gets the
+			// human form.
+			asObject := wantsJSONEnvelope(cmd.OutOrStdout(), flags)
+
 			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations, sel)
 			if flagDuplicateAttachmentBytes {
 				checks = append(checks, duplicateAttachmentBytesAuditCheck(sel))
 			}
 			if len(checks) == 0 {
+				// The summary is a set of counters with no tabular form.
+				if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+					return err
+				}
 				summary, err := itemsAuditSummaryForScope(db, sel)
 				if err != nil {
 					return fmt.Errorf("querying item audit summary: %w", err)
 				}
-				if flags.asJSON {
+				if asObject {
 					summary.Findings = []Finding{}
 					data, err := json.Marshal(summary)
 					if err != nil {
@@ -250,9 +264,18 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 					}
 					return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 				}
+				if flags.quiet {
+					return nil
+				}
 				return printItemsAuditSummary(cmd, summary)
 			}
 
+			if len(checks) > 1 && !asObject {
+				// Several check arrays in one document have no tabular form.
+				if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+					return err
+				}
+			}
 			results := make(map[string][]map[string]any, len(checks))
 			for _, check := range checks {
 				rows, err := check.query(db, flagLimit)
@@ -261,7 +284,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 				}
 				results[check.name] = rows
 			}
-			if flags.asJSON {
+			if asObject {
 				out := make(map[string]any, len(results)+1)
 				for _, check := range checks {
 					out[check.name] = results[check.name]
@@ -893,9 +916,7 @@ func runVerifyAttachmentFilesWithClient(cmd *cobra.Command, db localQueryStore, 
 		key := sqlStringValue(a["key"])
 		path, reason, statusErr := attachmentFileStatusWithError(c, key)
 		if statusErr != nil {
-			classified := classifyAPIError(fmt.Errorf("resolving attachment %s file status: %w", key, statusErr), flags)
-			writeAPIErrorEnvelope(cmd.OutOrStdout(), flags, classified, ExitCode(classified))
-			return classified
+			return classifyAPIError(fmt.Errorf("resolving attachment %s file status: %w", key, statusErr), flags)
 		}
 		if reason == "" {
 			continue

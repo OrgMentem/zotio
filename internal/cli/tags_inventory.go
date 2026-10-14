@@ -29,16 +29,32 @@ func newTagsInventoryCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Show tag usage within collections and across the library",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if flagCollection != "" {
+				if err := validateKeyArg("collection", flagCollection); err != nil {
+					return err
+				}
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
+			if flagCollection != "" {
+				found, err := db.QueryRaw(`SELECT 1 AS found FROM resources WHERE resource_type='collections' AND id=?`, flagCollection)
+				if err != nil {
+					return fmt.Errorf("checking collection %s: %w", flagCollection, err)
+				}
+				if len(found) == 0 {
+					return notFoundErr(fmt.Errorf("collection %s not found", flagCollection))
+				}
+			}
 
 			scopedRows, err := db.QueryRaw(`
 SELECT
@@ -67,7 +83,7 @@ WHERE i.resource_type='items'
 			if err != nil {
 				return err
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			return printMirrorRows(cmd, flags, json.RawMessage(data), localProvenance(rawDB, "tags", "local_only"))
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Show only tags within this collection key")

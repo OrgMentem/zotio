@@ -153,6 +153,11 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			if len(args) == 0 && strings.TrimSpace(flagCollection) == "" && strings.TrimSpace(flagScope) == "" {
 				return positionalArgUsageErr(cmd, errors.New("missing <itemKey>: pass an item key, --collection <key>, or --scope <spec>"))
 			}
+			if len(args) == 1 {
+				if err := validateKeyArg("item", args[0]); err != nil {
+					return err
+				}
+			}
 			if cmd.Flags().Changed("focus") && strings.TrimSpace(flagFocus) == "" {
 				return usageErr(errors.New("--focus needs search terms"))
 			}
@@ -168,8 +173,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return preconditionErr(errors.New("local store not synced; run 'zotio sync' first"))
 			}
 			defer db.Close()
 			// database/sql opens SQLite lazily. Force the read-only connection now
@@ -202,7 +206,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			}
 			raw, err := db.Get("items", args[0])
 			if errors.Is(err, store.ErrNotFound) {
-				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
+				return notFoundErr(fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0]))
 			}
 			if err != nil {
 				return fmt.Errorf("reading item: %w", err)

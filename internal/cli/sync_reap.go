@@ -256,7 +256,7 @@ func parsePlaneKeySet(data json.RawMessage) ([]string, bool) {
 		if key == "" {
 			continue
 		}
-		if err := validateZoteroKey(key); err != nil {
+		if err := validateKeyArg("item", key); err != nil {
 			return nil, false
 		}
 		keys = append(keys, key)

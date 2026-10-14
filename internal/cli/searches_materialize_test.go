@@ -40,7 +40,7 @@ func newSearchesMaterializeTestServer(t *testing.T, searchKeys []string, version
 		patchCounts:  map[string]int{},
 	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/users/0/searches/SK/items" && r.Method == http.MethodGet {
+		if r.URL.Path == "/users/0/searches/SEARCH22/items" && r.Method == http.MethodGet {
 			w.Header().Set("Last-Modified-Version", "99")
 			items := make([]map[string]any, 0, len(ts.searchKeys))
 			for _, key := range ts.searchKeys {
@@ -55,10 +55,14 @@ func newSearchesMaterializeTestServer(t *testing.T, searchKeys []string, version
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 			return
 		}
-		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+		if r.URL.Path == "/users/0/collections/TARGET22" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+			return
+		}
+		if r.URL.Path == "/users/0/collections/TARGET22/items" && r.Method == http.MethodGet {
 			items := make([]map[string]any, 0)
 			for key, memberships := range ts.collections {
-				if stringSliceContains(memberships, "TARGET") {
+				if stringSliceContains(memberships, "TARGET22") {
 					items = append(items, map[string]any{"key": key, "data": map[string]any{"collections": memberships}})
 				}
 			}
@@ -122,10 +126,12 @@ func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T
 			var localSearchReads, localItemReads, localPatches int
 			localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
-				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/searches/SK/items":
+				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/searches/SEARCH22/items":
 					localSearchReads++
 					_, _ = fmt.Fprint(w, `[{"key":"LOCAL001","version":11,"data":{"collections":["LOCAL-SOURCE"]}}]`)
-				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/collections/TARGET/items":
+				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/collections/TARGET22":
+					_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/collections/TARGET22/items":
 					_, _ = fmt.Fprint(w, `[]`)
 				case strings.HasPrefix(r.URL.Path, "/api/users/0/items/"):
 					switch r.Method {
@@ -148,7 +154,7 @@ func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T
 			var localPatchBody map[string]any
 			webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
-				case r.Method == http.MethodGet && r.URL.Path == "/users/0/searches/SK/items":
+				case r.Method == http.MethodGet && r.URL.Path == "/users/0/searches/SEARCH22/items":
 					webSearchReads++
 					_, _ = fmt.Fprint(w, `[{"key":"WEB00001","version":81,"data":{"collections":["WEB-SOURCE"]}}]`)
 				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
@@ -213,7 +219,7 @@ func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T
 			flags := tc.flags
 			flags.noCache = true
 			flags.timeout = time.Second
-			env, stderr, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &flags, "SK", "--to", "TARGET")
+			env, stderr, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &flags, "SEARCH22", "--to", "TARGET22")
 			if err != nil {
 				t.Fatalf("materialize: %v; stderr=%s; result=%+v", err, stderr, env.Result)
 			}
@@ -248,8 +254,8 @@ func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T
 				t.Fatalf("LOCAL001 If-Unmodified-Since-Version = %q, want 71 from write plane", localPatchHeader)
 			}
 			collections := writePlaneTestPatchBodyCollections(t, localPatchBody)
-			if !stringSliceContains(collections, "WRITE-SOURCE") || !stringSliceContains(collections, "TARGET") {
-				t.Fatalf("LOCAL001 PATCH collections = %v, want WRITE-SOURCE and TARGET", collections)
+			if !stringSliceContains(collections, "WRITE-SOURCE") || !stringSliceContains(collections, "TARGET22") {
+				t.Fatalf("LOCAL001 PATCH collections = %v, want WRITE-SOURCE and TARGET22", collections)
 			}
 		})
 	}
@@ -261,13 +267,13 @@ func TestSearchesMaterializePreviewListsAddsAndWritesNothing(t *testing.T) {
 		"K2": {"OTHER"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22")
 	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 2 || len(env.Plan.Operations) != 2 {
 		t.Fatalf("env = %+v, want preview plan with two adds", env)
 	}
 	for _, op := range env.Plan.Operations {
-		if op.Kind != "collection_add" || len(op.Changes) != 1 || op.Changes[0].Field != "collections" || op.Changes[0].Add != "TARGET" {
-			t.Fatalf("op = %+v, want collection_add TARGET change", op)
+		if op.Kind != "collection_add" || len(op.Changes) != 1 || op.Changes[0].Field != "collections" || op.Changes[0].Add != "TARGET22" {
+			t.Fatalf("op = %+v, want collection_add TARGET22 change", op)
 		}
 	}
 	if srv.patchCounts["K1"] != 0 || srv.patchCounts["K2"] != 0 {
@@ -281,7 +287,7 @@ func TestSearchesMaterializeYesAddsAllItems(t *testing.T) {
 		"K2": {"OTHER"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
@@ -293,18 +299,18 @@ func TestSearchesMaterializeYesAddsAllItems(t *testing.T) {
 			t.Errorf("If-Unmodified-Since-Version %s = %q, want %q", key, srv.patchHeaders[key], srv.versions[key])
 		}
 		collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies[key])
-		if !stringSliceContains(collections, "TARGET") {
-			t.Errorf("PATCH collections %s = %v, want TARGET", key, collections)
+		if !stringSliceContains(collections, "TARGET22") {
+			t.Errorf("PATCH collections %s = %v, want TARGET22", key, collections)
 		}
 	}
 }
 
 func TestSearchesMaterializeAlreadyInCollectionIsNoOp(t *testing.T) {
 	srv := newSearchesMaterializeTestServer(t, []string{"K1"}, map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"TARGET"},
+		"K1": {"TARGET22"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want no operations for an unchanged item", env)
 	}
@@ -319,7 +325,7 @@ func TestSearchesMaterializeAlreadyInCollectionIsNoOp(t *testing.T) {
 func TestSearchesMaterializeEmptySearchYieldsEmptyPlan(t *testing.T) {
 	newSearchesMaterializeTestServer(t, nil, map[string]string{}, map[string][]string{})
 
-	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22")
 	if !env.OK || env.Mode != "preview" || env.Plan.Summary.Selected != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want empty preview plan", env)
 	}
@@ -341,17 +347,6 @@ func TestSearchesMaterializeRefusesWhenTheSearchCannotBeExecuted(t *testing.T) {
 		setup func(t *testing.T)
 	}{
 		{
-			name: "endpoint absent on this plane",
-			setup: func(t *testing.T) {
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					http.Error(w, `{"message":"No endpoint found"}`, http.StatusNotFound)
-				}))
-				t.Cleanup(srv.Close)
-				t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-				t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-			},
-		},
-		{
 			name: "zotero closed",
 			setup: func(t *testing.T) {
 				t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
@@ -367,7 +362,7 @@ func TestSearchesMaterializeRefusesWhenTheSearchCannotBeExecuted(t *testing.T) {
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+			cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22"})
 			err := cmd.Execute()
 			if err == nil {
 				t.Fatalf("searches materialize succeeded without executing the search; output %q", out.String())
@@ -395,12 +390,34 @@ func TestSearchesMaterializeRefusesWhenTheSearchCannotBeExecuted(t *testing.T) {
 	}
 }
 
+// A saved search the desktop does not have answers 404. That is a missing
+// key (exit 3), not a missing Zotero: the live_local_api precondition would
+// send the operator to launch an app that is already running.
+func TestSearchesMaterializeMissingSearchIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Not found"}`, http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	for _, flags := range []*rootFlags{
+		{asJSON: true, maxChanges: -1},
+		{asJSON: true, dryRun: true, maxChanges: -1},
+	} {
+		_, _, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, flags, "SEARCH22", "--to", "TARGET22")
+		if ExitCode(err) != 3 {
+			t.Fatalf("ExitCode(missing saved search, dryRun=%v) = %d, want 3; err = %v", flags.dryRun, ExitCode(err), err)
+		}
+	}
+}
+
 func TestSearchesMaterializeRequiresTo(t *testing.T) {
 	newSearchesMaterializeTestServer(t, []string{"K1"}, map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	_, _, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK")
+	_, _, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SEARCH22")
 	if err == nil {
 		t.Fatalf("searches materialize without --to succeeded")
 	}
@@ -452,7 +469,11 @@ func TestSearchesMaterializePaginatesAcrossPages(t *testing.T) {
 			return
 		}
 		// Item reads/PATCHes for the mutation apply phase.
-		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+		if r.URL.Path == "/users/0/collections/TARGET22" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+			return
+		}
+		if r.URL.Path == "/users/0/collections/TARGET22/items" && r.Method == http.MethodGet {
 			_, _ = fmt.Fprint(w, `[]`)
 			return
 		}
@@ -481,7 +502,7 @@ func TestSearchesMaterializePaginatesAcrossPages(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+	cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("materialize paginated: %v", err)
 	}
@@ -530,7 +551,11 @@ func TestSearchesMaterializeDuplicateKeysArePaginationFailure(t *testing.T) {
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 			return
 		}
-		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+		if r.URL.Path == "/users/0/collections/TARGET22" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+			return
+		}
+		if r.URL.Path == "/users/0/collections/TARGET22/items" && r.Method == http.MethodGet {
 			_, _ = fmt.Fprint(w, `[]`)
 			return
 		}
@@ -546,7 +571,7 @@ func TestSearchesMaterializeDuplicateKeysArePaginationFailure(t *testing.T) {
 	cmd.SetOut(&out)
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+	cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatalf("materialize with repeating server succeeded; want pagination failure")
@@ -575,7 +600,11 @@ func TestSearchesMaterializeSamePageDuplicateProducesOneOperation(t *testing.T) 
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 			return
 		}
-		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+		if r.URL.Path == "/users/0/collections/TARGET22" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+			return
+		}
+		if r.URL.Path == "/users/0/collections/TARGET22/items" && r.Method == http.MethodGet {
 			_, _ = fmt.Fprint(w, `[]`)
 			return
 		}
@@ -600,7 +629,7 @@ func TestSearchesMaterializeSamePageDuplicateProducesOneOperation(t *testing.T) 
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+	cmd.SetArgs([]string{"SEARCH22", "--to", "TARGET22"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("materialize with same-page duplicate: %v", err)
 	}
@@ -648,7 +677,7 @@ func TestApplySearchesMaterializeCollectionAdd_FailsClosedOnZeroVersion(t *testi
 	if err != nil {
 		t.Fatalf("newWriteClient: %v", err)
 	}
-	status, reason, retErr := applySearchesMaterializeCollectionAdd(c, "/items/K1", "TARGET")
+	status, reason, retErr := applySearchesMaterializeCollectionAdd(c, "/items/K1", "TARGET22")
 	if retErr == nil || status != "failed" {
 		t.Fatalf("status=%q err=%v reason=%v, want failed when version is 0", status, retErr, reason)
 	}

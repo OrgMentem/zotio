@@ -37,7 +37,7 @@ type importDiscoverSummary struct {
 // --dry-run it says one would be, and nothing was written.
 type importDiscoverReport struct {
 	Scope    string                `json:"scope"`
-	Out      string                `json:"out"`
+	Out      string                `json:"output"`
 	Replaced bool                  `json:"replaced"`
 	DryRun   bool                  `json:"dry_run,omitempty"`
 	Summary  importDiscoverSummary `json:"summary"`
@@ -106,13 +106,21 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("--scope is required"))
 			}
 			if strings.TrimSpace(flagOut) == "" {
-				return usageErr(fmt.Errorf("--out is required"))
+				return usageErr(fmt.Errorf("--output is required"))
 			}
-			if flagLimit < 1 {
-				return usageErr(fmt.Errorf("--limit must be >= 1"))
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
 			}
 			if flagMinCount < 1 {
 				return usageErr(fmt.Errorf("--min-count must be >= 1"))
+			}
+			if c := strings.TrimSpace(flagCollection); c != "" {
+				if err := validateKeyArg("collection", c); err != nil {
+					return err
+				}
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
 			}
 
 			lockPath, canonicalTarget, err := outputWriterLockPath(flagOut)
@@ -129,7 +137,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("writing manifest: %w", err)
 				}
 				if exists && !flagOverwrite {
-					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --out", flagOut))
+					return preconditionErr(fmt.Errorf("manifest %s already exists and may hold review edits that import apply would act on; pass --overwrite to replace it, or choose another --output", flagOut))
 				}
 				manifest, report, err := buildImportDiscoverManifestWithDirection(
 					cmd.Context(),
@@ -184,14 +192,14 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageRequired)
-	cmd.Flags().StringVar(&flagOut, "out", "", "Path to write the reviewable import manifest")
-	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum manifest entries to emit")
+	cmd.Flags().StringVarP(&flagOut, "output", "o", "", "Path to write the reviewable import manifest")
+	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum manifest entries to emit (0 = no limit)")
 	cmd.Flags().IntVar(&flagMinCount, "min-count", 2, "Minimum number of source items citing a DOI")
 	cmd.Flags().StringVar(&flagDirection, "direction", importDiscoverDirectionBackward, "Citation chase direction: backward, forward, or both")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Default destination collection key recorded in the manifest for created items")
-	cmd.Flags().BoolVar(&flagOverwrite, "overwrite", false, "Replace an existing manifest at --out; review edits in it are lost")
+	cmd.Flags().BoolVar(&flagOverwrite, "overwrite", false, "Replace an existing manifest at --output; review edits in it are lost")
 	_ = cmd.MarkFlagRequired("scope")
-	_ = cmd.MarkFlagRequired("out")
+	_ = cmd.MarkFlagRequired("output")
 	return cmd
 }
 
@@ -267,7 +275,7 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 		return importManifest{}, importDiscoverReport{}, err
 	}
 
-	manifest := importManifest{SchemaVersion: importManifestSchemaVersion, Entries: make([]importManifestEntry, 0, limit)}
+	manifest := importManifest{SchemaVersion: importManifestSchemaVersion, Entries: make([]importManifestEntry, 0, max(limit, 0))}
 	report := importDiscoverReport{
 		Scope: resolved.Expr,
 		Out:   outPath,
@@ -294,7 +302,7 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 			report.Summary.SkippedAlreadyInLibrary++
 			continue
 		}
-		if len(manifest.Entries) >= limit {
+		if limit > 0 && len(manifest.Entries) >= limit {
 			break
 		}
 

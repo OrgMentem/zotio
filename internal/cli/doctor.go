@@ -109,6 +109,9 @@ releases feed at most once a day.`,
 		// Diagnostics/setup: never gated by registry preflight preconditions.
 		Annotations: map[string]string{"zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateDoctorFailOn(failOn); err != nil {
+				return err
+			}
 			if ensureLiveFlag || launchFlag {
 				return ensureLive(cmd, flags, launchFlag)
 			}
@@ -261,7 +264,7 @@ releases feed at most once a day.`,
 					} else if reachErr != nil && !errors.As(reachErr, &reachAPIErr) {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
-						report["credentials"] = "present (not verified — set auth.verify_path in spec for an API acceptance check)"
+						report["credentials"] = "present (not verified)"
 					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
@@ -283,6 +286,8 @@ releases feed at most once a day.`,
 			} else {
 				report["library"] = "personal"
 			}
+
+			report["status"] = doctorOverallStatus(report)
 
 			if flags.asJSON {
 				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
@@ -377,8 +382,8 @@ releases feed at most once a day.`,
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero when a health level is reached: stale, error. Default is never.")
-	cmd.Flags().BoolVar(&ensureLiveFlag, "ensure-live", false, "Check the Zotero desktop local API is reachable; exit 9 if not")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero when a health level is reached: stale (exit 12 when the cache is stale, 11 on an error) or error (exit 11). Default is never.")
+	cmd.Flags().BoolVar(&ensureLiveFlag, "ensure-live", false, "Check the Zotero desktop local API is reachable; exit 9 if not. Prints {\"status\":\"reachable\"} under --json instead of the full report")
 	cmd.Flags().BoolVar(&launchFlag, "launch", false, "With --ensure-live, launch Zotero and wait up to 15s for the local API")
 	return cmd
 }
@@ -419,19 +424,17 @@ func updateReport(ctx context.Context, cfg *config.Config, checker *update.Check
 	return fmt.Sprintf("OK current (%s)", currentVersion)
 }
 
-// doctorExitForFailOn returns a non-nil error when the report's worst
-// status meets or exceeds the --fail-on threshold. "error" always trips
-// when any section reports an error; "stale" also trips when the cache
-// section is stale. The default empty string means never fail on status.
-func doctorExitForFailOn(failOn string, report map[string]any) error {
-	if failOn == "" {
-		return nil
-	}
+// doctorOverallStatus reduces the report to its worst status: "error" when any
+// section reports an error, "stale" when the cache section is stale, "ok"
+// otherwise.
+func doctorOverallStatus(report map[string]any) string {
 	worstError := false
 	worstStale := false
-	for _, v := range report {
-		s, ok := v.(string)
-		if ok {
+	for key, v := range report {
+		if key == "status" {
+			continue
+		}
+		if s, ok := v.(string); ok {
 			if strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
 				worstError = true
 			}
@@ -444,17 +447,43 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 			}
 		}
 	}
+	switch {
+	case worstError:
+		return "error"
+	case worstStale:
+		return "stale"
+	}
+	return "ok"
+}
+
+// validateDoctorFailOn checks the --fail-on value before the report runs.
+func validateDoctorFailOn(failOn string) error {
 	switch failOn {
+	case "", "stale", "error":
+		return nil
+	}
+	return usageErr(fmt.Errorf("invalid --fail-on value %q: want one of stale, error", failOn))
+}
+
+// doctorExitForFailOn returns a non-nil error when the report's worst
+// status meets or exceeds the --fail-on threshold. "error" trips when any
+// section reports an error (exit 11, quality gate); "stale" also trips when
+// the cache section is stale (exit 12, freshness gate; an error still exits
+// 11). The default empty string means never fail on status.
+func doctorExitForFailOn(failOn string, report map[string]any) error {
+	if err := validateDoctorFailOn(failOn); err != nil {
+		return err
+	}
+	if failOn == "" {
+		return nil
+	}
+	switch doctorOverallStatus(report) {
 	case "error":
-		if worstError {
-			return fmt.Errorf("doctor: --fail-on=error triggered")
-		}
+		return gateErr(fmt.Errorf("doctor: --fail-on=%s triggered: a check reported an error", failOn))
 	case "stale":
-		if worstError || worstStale {
-			return fmt.Errorf("doctor: --fail-on=stale triggered")
+		if failOn == "stale" {
+			return freshnessErr(fmt.Errorf("doctor: --fail-on=stale triggered: the local cache is stale"))
 		}
-	default:
-		return fmt.Errorf("doctor: unknown --fail-on value %q (valid: stale, error)", failOn)
 	}
 	return nil
 }

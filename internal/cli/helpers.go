@@ -4,10 +4,12 @@ package cli
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/tabwriter"
 	"time"
 	"unicode"
@@ -105,6 +108,13 @@ func colorEnabled() bool {
 }
 
 func isTerminal(w io.Writer) bool {
+	for {
+		u, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		w = u.Unwrap()
+	}
 	if f, ok := w.(*os.File); ok {
 		fi, err := f.Stat()
 		if err != nil {
@@ -160,6 +170,10 @@ func cyan(s string) string {
 type cliError struct {
 	code int
 	err  error
+	// kind overrides the kind derived from code in the JSON error object.
+	kind string
+	// fields are extra kind-specific keys merged into the JSON error object.
+	fields map[string]any
 }
 
 func (e *cliError) Error() string { return e.err.Error() }
@@ -254,16 +268,6 @@ func timeoutErr(err error) error { return &cliError{code: 14, err: err} }
 // tell the user, whose Zotero is open but hung or has its connector off.
 func stuckErr(err error) error { return &cliError{code: 15, err: err} }
 
-// dryRunOK reports whether the command should short-circuit without doing any
-// real work because --dry-run was set. Positional arguments are still checked
-// first: they belong in Cobra's `Args:`, which runs before RunE and whose
-// failures installPositionalArgUsage turns into usage errors (exit 2). A
-// missing argument is refused even under --dry-run, never answered with help
-// that exits 0.
-func dryRunOK(flags *rootFlags) bool {
-	return flags != nil && flags.dryRun
-}
-
 // accessWarning describes an API access-denial that sync converts into a
 // non-fatal warning. It carries enough structured data for the sync_warning
 // JSON event without parsing free-form error strings downstream.
@@ -349,20 +353,27 @@ func writeNoop(out, errOut io.Writer, flags *rootFlags, reason, prose string) er
 	return nil
 }
 
-func writeAPIErrorEnvelope(out io.Writer, flags *rootFlags, err error, code int) {
-	if flags == nil || !flags.asJSON {
-		return
-	}
-	_ = json.NewEncoder(out).Encode(map[string]any{
-		"error": err.Error(),
-		"code":  code,
-	})
-}
-
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
+	// An already-typed error keeps its exit code: re-classifying by message
+	// would downgrade a typed not-found/precondition/usage error to upstream.
+	var typed *cliError
+	if errors.As(err, &typed) {
+		return err
+	}
 	msg := err.Error()
 	secrets := liveSecrets(flags)
+	// A request that got no HTTP response at all (dial refused or unreachable,
+	// DNS, timeout, TLS) is a missing precondition, not an upstream fault. A
+	// response whose body failed to read did get a response, so it keeps the
+	// generic mapping. Auto-mode read fallback is handled before classification.
+	var bodyReadErr *client.BodyReadError
+	if isNetworkError(err) && !errors.As(err, &bodyReadErr) {
+		if isLocalZoteroTransportError(err) {
+			return preconditionErr(redactedAPIError(err, msg, secrets, "\nhint: Zotero desktop is not running or its local API is disabled; start Zotero or run: zotio doctor --ensure-live --launch"))
+		}
+		return preconditionErr(redactedAPIError(err, msg, secrets, "\nhint: cannot reach the Zotero Web API; check the network connection and retry"))
+	}
 	// the Zotero local API is GET-only and rejects writes with
 	// "Endpoint does not support method" (400, POST) or "Method not implemented"
 	// (501, PUT/PATCH). Without this, those map to a misleading "fix your auth"
@@ -394,23 +405,25 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			return writeNoop(flags.out(), flags.errOut(), flags, "already_exists", "already exists (no-op)")
 		}
 		classified := apiErr(redactedAPIError(err, msg, secrets, ""))
-		writeAPIErrorEnvelope(flags.out(), flags, classified, ExitCode(classified))
 		return classified
 	case cliutil.HTTPErrBadRequestAuth:
 		return authErr(redactedAPIError(err, msg, secrets, "\nhint: the API rejected the request — this usually means auth is missing or invalid."+
-			"\n      Set your API key: export ZOTERO_API_KEY=<your-key>"+
+			"\n      Set your API key: export ZOTERO_API_KEY=<your-key> or run zotio auth set-token --stdin"+
 			"\n      Run 'zotio doctor' to check auth status."))
+	case cliutil.HTTPErrBadRequest:
+		// An access-policy 400 (e.g. "missing scope") is an auth problem, not a
+		// bad client value.
+		var bodyErr *client.APIError
+		if errors.As(err, &bodyErr) && looksLikeAccessDenial(bodyErr.Body) {
+			return authErr(redactedAPIError(err, msg, secrets, authHint(msg, len(secrets) > 0, true)))
+		}
+		return usageErr(redactedAPIError(err, msg, secrets, "\nhint: the server rejected a value in the request; check the arguments and flag values."))
 	case cliutil.HTTPErrUnauthorized:
-		return authErr(redactedAPIError(err, msg, secrets, "\nhint: check your API key."+
-			" Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotio doctor' to check auth status."))
+		return authErr(redactedAPIError(err, msg, secrets, authHint(msg, len(secrets) > 0, false)))
 	case cliutil.HTTPErrForbidden:
-		return authErr(redactedAPIError(err, msg, secrets, "\nhint: permission denied. Your credentials are valid but lack access to this resource."+
-			"\n      Check that your API key has the required permissions."+
-			"\n      Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotio doctor' to check auth status."))
+		return authErr(redactedAPIError(err, msg, secrets, authHint(msg, len(secrets) > 0, true)))
 	case cliutil.HTTPErrNotFound:
-		return notFoundErr(redactedAPIError(err, msg, secrets, "\nhint: resource not found. Run the 'list' command to see available items"))
+		return notFoundErr(redactedAPIError(err, msg, secrets, notFoundHint(msg)))
 	case cliutil.HTTPErrRateLimited:
 		return rateLimitErr(redactedAPIError(err, msg, secrets, ""))
 	default:
@@ -427,17 +440,35 @@ func isLocalWriteRejection(msg string) bool {
 		strings.Contains(msg, "Method not implemented")
 }
 
+// sanitizeForTerminal replaces ESC and the other control bytes, including
+// newline, with U+FFFD so a hostile library or remote value cannot drive the
+// terminal or forge extra output lines. Tab is kept.
 func sanitizeForTerminal(s string) string {
+	return replaceControlBytes(s, terminalControlByte)
+}
+
+// sanitizeErrorForTerminal is for zotio's own error and hint text: it keeps
+// newline, which multi-line hints depend on.
+func sanitizeErrorForTerminal(s string) string {
+	return replaceControlBytes(s, errorControlByte)
+}
+
+// SanitizeErrorForTerminal exposes sanitizeErrorForTerminal to the binary entry
+// point, which prints zotio's own multi-line error and hint text.
+func SanitizeErrorForTerminal(s string) string {
+	return sanitizeErrorForTerminal(s)
+}
+
+func replaceControlBytes(s string, bad func(byte) bool) string {
 	for i := range len(s) {
-		b := s[i]
-		if (b < 0x20 && b != '\t') || b == 0x7f {
+		if bad(s[i]) {
 			var out strings.Builder
 			out.Grow(len(s))
 			out.WriteString(s[:i])
 			out.WriteRune('\uFFFD')
 			for j := i + 1; j < len(s); j++ {
-				b = s[j]
-				if (b < 0x20 && b != '\t') || b == 0x7f {
+				b := s[j]
+				if bad(b) {
 					out.WriteRune('\uFFFD')
 					continue
 				}
@@ -447,6 +478,14 @@ func sanitizeForTerminal(s string) string {
 		}
 	}
 	return s
+}
+
+func errorControlByte(b byte) bool {
+	return (b < 0x20 && b != '\t' && b != '\n') || b == 0x7f
+}
+
+func terminalControlByte(b byte) bool {
+	return (b < 0x20 && b != '\t') || b == 0x7f
 }
 
 // newTabWriter returns a tabwriter for plain (unstyled) tab-separated output.
@@ -505,18 +544,7 @@ func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
 func filterFields(data json.RawMessage, fields string) json.RawMessage {
-	var paths [][]string
-	for _, f := range strings.Split(fields, ",") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		parts := strings.Split(f, ".")
-		for i := range parts {
-			parts[i] = strings.ToLower(parts[i])
-		}
-		paths = append(paths, parts)
-	}
+	_, paths := parseSelectPaths(fields)
 	if len(paths) == 0 {
 		return data
 	}
@@ -598,18 +626,120 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 	return data
 }
 
-// matchSelectSegment returns the matching lowercase segment, or "" if no match.
-// Supports direct case-insensitive match and camelCase→kebab-case conversion.
+// matchSelectSegment returns the matching normalized segment, or "" if no match.
+// Matching ignores case, '-' and '_', so date_added, dateAdded and date-added
+// all select the same field.
 func matchSelectSegment(fieldName string, keepWhole map[string]bool, subPaths map[string][][]string) string {
-	lower := strings.ToLower(fieldName)
-	if keepWhole[lower] || subPaths[lower] != nil {
-		return lower
+	n := normSelectSegment(fieldName)
+	if keepWhole[n] || subPaths[n] != nil {
+		return n
 	}
-	kebab := camelToKebab(fieldName)
-	if kebab != lower && (keepWhole[kebab] || subPaths[kebab] != nil) {
-		return kebab
+	for k := range keepWhole {
+		if normSelectSegment(k) == n {
+			return k
+		}
+	}
+	for k := range subPaths {
+		if normSelectSegment(k) == n {
+			return k
+		}
 	}
 	return ""
+}
+
+// normSelectSegment folds a field name to its comparison form.
+func normSelectSegment(s string) string {
+	s = strings.ToLower(s)
+	if strings.ContainsAny(s, "-_") {
+		s = strings.NewReplacer("-", "", "_", "").Replace(s)
+	}
+	return s
+}
+
+// parseSelectPaths splits a --select list into normalized dotted paths.
+func parseSelectPaths(fields string) (names []string, paths [][]string) {
+	for _, f := range strings.Split(fields, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		parts := strings.Split(f, ".")
+		for i := range parts {
+			parts[i] = normSelectSegment(parts[i])
+		}
+		names = append(names, f)
+		paths = append(paths, parts)
+	}
+	return names, paths
+}
+
+// checkSelectFields returns a usage error when no field in the --select list
+// matches anything in any row or object of data. Empty results are not an error.
+func checkSelectFields(data json.RawMessage, fields string) error {
+	names, paths := parseSelectPaths(fields)
+	if len(paths) == 0 {
+		return nil
+	}
+	sawObject := false
+	for _, p := range paths {
+		matched, saw := selectPathMatches(data, p)
+		if matched {
+			return nil
+		}
+		sawObject = sawObject || saw
+	}
+	if !sawObject {
+		return nil
+	}
+	return usageErr(fmt.Errorf("--select: no field matches %s in the output (snake_case and camelCase names are both accepted)", strings.Join(names, ", ")))
+}
+
+// selectPathMatches mirrors filterFieldsRec's traversal: arrays descend
+// element-wise, and an object with no matching top-level key falls back to its
+// array-valued siblings.
+func selectPathMatches(data json.RawMessage, path []string) (matched, sawObject bool) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err == nil {
+		for _, el := range arr {
+			m, s := selectPathMatches(el, path)
+			matched = matched || m
+			sawObject = sawObject || s
+		}
+		return matched, sawObject
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return false, false
+	}
+	topMatched := false
+	for k, v := range obj {
+		if normSelectSegment(k) != path[0] {
+			continue
+		}
+		topMatched = true
+		if len(path) == 1 {
+			matched = true
+			continue
+		}
+		if m, _ := selectPathMatches(v, path[1:]); m {
+			matched = true
+		}
+	}
+	foundArray := false
+	if !topMatched {
+		for _, v := range obj {
+			var a []json.RawMessage
+			if json.Unmarshal(v, &a) == nil && a != nil {
+				foundArray = true
+				m, s := selectPathMatches(v, path)
+				matched = matched || m
+				sawObject = sawObject || s
+			}
+		}
+	}
+	// A list envelope is only a wrapper: its records decide, so an empty
+	// results array is not a candidate record.
+	return matched, sawObject || topMatched || !foundArray
 }
 
 // camelToKebab converts "orderDate" or "orderdate" to "order-date" by splitting on
@@ -628,23 +758,18 @@ func camelToKebab(s string) string {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
-	// --select wins over --compact when both are set: an explicit field list
-	// is the user's authoritative request, so the high-gravity allow-list
-	// must not strip those fields out before --select can pick them. When
-	// only --compact is set (e.g., --agent without --select), the allow-list
-	// still runs.
-	if flags.selectFields != "" {
-		data = filterFields(data, flags.selectFields)
-	} else if flags.compact {
-		data = compactFields(data)
-	}
-	// --quiet: suppress all output, exit code communicates result
+	// --quiet: print nothing for every command routed through here; the exit
+	// code is the answer.
 	if flags.quiet {
 		return nil
 	}
+	data, err := applyFieldFlags(data, flags)
+	if err != nil {
+		return err
+	}
 	// --csv: render as CSV
 	if flags.csv {
-		return printCSV(w, data)
+		return printCSV(w, data, flags.selectFields != "")
 	}
 	// --plain: tab-separated text
 	if flags.plain {
@@ -653,6 +778,24 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 		return printPlain(w, data, flags.selectFields != "")
 	}
 	return printOutput(w, data, flags.asJSON)
+}
+
+// applyFieldFlags applies --select (or, when no field list was given,
+// --compact). --select wins over --compact when both are set: an explicit
+// field list is the user's authoritative request, so the high-gravity
+// allow-list must not strip those fields out before --select can pick them.
+// A field list that matches nothing in the data is a usage error (exit 2).
+func applyFieldFlags(data json.RawMessage, flags *rootFlags) (json.RawMessage, error) {
+	if flags.selectFields != "" {
+		if err := checkSelectFields(data, flags.selectFields); err != nil {
+			return nil, err
+		}
+		return filterFields(data, flags.selectFields), nil
+	}
+	if flags.compact {
+		return compactFields(data), nil
+	}
+	return data, nil
 }
 
 // compactFields keeps only the most important fields for agent consumption.
@@ -679,7 +822,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 	keepFields := map[string]bool{
 		"id": true, "name": true, "title": true, "identifier": true,
 		"status": true, "state": true, "type": true, "priority": true,
-		"url": true, "email": true, "key": true,
+		"url": true, "email": true, "key": true, "keys": true,
 		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
 		// Preserve hand-written Zotero analytics fields under --agent compact output.
 		// resource_type and value carry the analytics row's grouping key: without
@@ -759,47 +902,6 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	return result
 }
 
-// printCSV renders JSON arrays as CSV with header row.
-func printCSV(w io.Writer, data json.RawMessage) error {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil || len(items) == 0 {
-		// Single object or empty - just print as JSON
-		fmt.Fprintln(w, string(data))
-		return nil
-	}
-	// Collect all keys for header
-	keySet := map[string]bool{}
-	for _, item := range items {
-		for k := range item {
-			keySet[k] = true
-		}
-	}
-	var keys []string
-	for k := range keySet {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	// Header
-	fmt.Fprintln(w, strings.Join(keys, ","))
-	// Rows
-	for _, item := range items {
-		var vals []string
-		for _, k := range keys {
-			v := item[k]
-			if v == nil {
-				vals = append(vals, "")
-			} else {
-				s := csvSafeCell(fmt.Sprintf("%v", v))
-				if strings.ContainsAny(s, ",\"\n") {
-					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-				}
-				vals = append(vals, s)
-			}
-		}
-		fmt.Fprintln(w, strings.Join(vals, ","))
-	}
-	return nil
-}
 func csvSafeCell(s string) string {
 	if s == "" {
 		return s
@@ -822,36 +924,70 @@ func csvSafeCell(s string) string {
 // feeding cut/awk, so a 60-character display truncation would hand the caller
 // quietly wrong values.
 func printPlain(w io.Writer, data json.RawMessage, explicitFields bool) error {
+	return printTabular(w, data, explicitFields, false)
+}
+
+// printCSV renders the same rows as printPlain, comma-separated and quoted. It
+// shares the envelope unwrap, resource flattening and cell encoding with
+// --plain, so nested values are JSON-encoded in both formats and an empty
+// result prints nothing in both.
+func printCSV(w io.Writer, data json.RawMessage, explicitFields bool) error {
+	return printTabular(w, data, explicitFields, true)
+}
+
+// printTabular is the shared --plain/--csv renderer.
+func printTabular(w io.Writer, data json.RawMessage, explicitFields, asCSV bool) error {
 	var records []json.RawMessage
 	if err := json.Unmarshal(data, &records); err == nil {
-		return printPlainRecords(w, records, explicitFields)
+		return printTabularRecords(w, records, explicitFields, asCSV)
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err == nil {
 		// Read commands wrap results in a provenance envelope
 		// ({"results": [...], "meta": {...}}); render the records, not the wrapper.
 		if nested, ok := extractPaginatedItems(obj); ok {
-			return printPlainRecords(w, nested, explicitFields)
+			return printTabularRecords(w, nested, explicitFields, asCSV)
 		}
 		// An object holding several sibling arrays (e.g. items audit with more
 		// than one check) has no single record list. Rendering it as one row
 		// would put a whole JSON array in each cell, which is worse than the
 		// format the caller asked for being unavailable: emit JSON and say so.
 		if countArrayFields(obj) > 1 {
-			fmt.Fprintln(os.Stderr, "note: --plain has no tabular form for this response; emitting JSON")
+			format := "--plain"
+			if asCSV {
+				format = "--csv"
+			}
+			fmt.Fprintf(os.Stderr, "note: %s has no tabular form for this response; emitting JSON\n", format)
 			return printOutput(w, data, true)
 		}
-		return printPlainRecords(w, []json.RawMessage{data}, explicitFields)
+		return printTabularRecords(w, []json.RawMessage{data}, explicitFields, asCSV)
 	}
 	// Scalar or non-JSON payload (e.g. a plain-text file URL): pass it through.
 	var scalar any
 	if err := json.Unmarshal(data, &scalar); err == nil {
 		// Decode first so a JSON string does not print its own quotes.
-		fmt.Fprintln(w, plainCell(scalar))
-		return nil
+		return writeTabularRow(w, []string{plainCell(scalar)}, asCSV)
 	}
-	fmt.Fprintln(w, plainCell(strings.TrimSpace(string(data))))
-	return nil
+	return writeTabularRow(w, []string{plainCell(strings.TrimSpace(string(data)))}, asCSV)
+}
+
+// writeTabularRow writes one record: tab-joined for --plain, RFC 4180 quoting
+// with spreadsheet-formula neutralisation for --csv.
+func writeTabularRow(w io.Writer, cells []string, asCSV bool) error {
+	if !asCSV {
+		_, err := fmt.Fprintln(w, strings.Join(cells, "\t"))
+		return err
+	}
+	safe := make([]string, len(cells))
+	for i, cell := range cells {
+		safe[i] = csvSafeCell(cell)
+	}
+	cw := csv.NewWriter(w)
+	if err := cw.Write(safe); err != nil {
+		return err
+	}
+	cw.Flush()
+	return cw.Error()
 }
 
 // countArrayFields reports how many top-level fields hold a JSON array.
@@ -866,7 +1002,7 @@ func countArrayFields(obj map[string]json.RawMessage) int {
 	return count
 }
 
-func printPlainRecords(w io.Writer, records []json.RawMessage, explicitFields bool) error {
+func printTabularRecords(w io.Writer, records []json.RawMessage, explicitFields, asCSV bool) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -887,22 +1023,31 @@ func printPlainRecords(w io.Writer, records []json.RawMessage, explicitFields bo
 		for _, record := range records {
 			var value any
 			if err := json.Unmarshal(record, &value); err != nil {
-				return fmt.Errorf("rendering plain output: %w", err)
+				return fmt.Errorf("rendering tabular output: %w", err)
 			}
-			fmt.Fprintln(w, plainCell(value))
+			if err := writeTabularRow(w, []string{plainCell(value)}, asCSV); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 
 	items = flattenResourceEnvelopesForTable(items)
 	headers := plainHeaders(items, explicitFields)
-	fmt.Fprintln(w, strings.Join(headers, "\t"))
+	if len(headers) == 0 {
+		return nil
+	}
+	if err := writeTabularRow(w, headers, asCSV); err != nil {
+		return err
+	}
 	cells := make([]string, len(headers))
 	for _, item := range items {
 		for i, header := range headers {
 			cells[i] = plainCell(item[header])
 		}
-		fmt.Fprintln(w, strings.Join(cells, "\t"))
+		if err := writeTabularRow(w, cells, asCSV); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -916,7 +1061,14 @@ func plainHeaders(items []map[string]any, explicitFields bool) []string {
 		seen[header] = true
 	}
 	var extra []string
-	for _, item := range items[1:] {
+	// An explicit --select keeps every selected column even when its value is
+	// empty, null or [] (the card renderer's empty-value filter would drop it),
+	// so the first record contributes all of its keys too.
+	rest := items[1:]
+	if explicitFields {
+		rest = items
+	}
+	for _, item := range rest {
 		for field := range item {
 			if !seen[field] {
 				seen[field] = true
@@ -1774,4 +1926,319 @@ func isAllDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// authHint tells the three 401/403 causes apart: no key configured, a key the
+// server rejected, and a valid key that lacks permission for the resource.
+func authHint(msg string, haveKey, forbidden bool) string {
+	const doctor = "\n      Run 'zotio doctor' to check auth status."
+	switch {
+	case !haveKey:
+		return "\nhint: no API key is configured; check your API key setup. Set ZOTERO_API_KEY or run zotio auth set-token --stdin" + doctor
+	case strings.Contains(strings.ToLower(msg), "invalid key"):
+		return "\nhint: the Zotero API rejected your key (Invalid key). Create a new key at https://www.zotero.org/settings/keys, then set ZOTERO_API_KEY or run zotio auth set-token --stdin" + doctor
+	case forbidden:
+		return "\nhint: your API key is valid but has no permission for this resource. Edit the key's library access at https://www.zotero.org/settings/keys" + doctor
+	default:
+		return "\nhint: the Zotero API rejected your credentials. Set ZOTERO_API_KEY or run zotio auth set-token --stdin" + doctor
+	}
+}
+
+var apiRequestPathPattern = regexp.MustCompile(`\b(?:GET|HEAD|POST|PUT|PATCH|DELETE) (/\S*) returned HTTP`)
+
+// notFoundHint names the missing noun and a real command that lists the
+// valid values, derived from the failing request path.
+func notFoundHint(msg string) string {
+	m := apiRequestPathPattern.FindStringSubmatch(msg)
+	if m == nil {
+		return "\nhint: not found. Check the key or name and try again."
+	}
+	segs := strings.Split(strings.Trim(m[1], "/"), "/")
+	if len(segs) >= 2 && (segs[0] == "users" || segs[0] == "groups") {
+		segs = segs[2:]
+	}
+	if len(segs) == 0 {
+		return "\nhint: not found. Check the key or name and try again."
+	}
+	var noun, list string
+	switch segs[0] {
+	case "items":
+		noun, list = "item", "zotio items list"
+	case "collections":
+		noun, list = "collection", "zotio collections list"
+	case "searches":
+		noun, list = "saved search", "zotio searches list"
+	case "tags":
+		noun, list = "tag", "zotio tags list"
+	case "groups":
+		noun, list = "group", "zotio groups list"
+	default:
+		return "\nhint: not found. Check the key or name and try again."
+	}
+	return fmt.Sprintf("\nhint: that %s does not exist. To see valid ones, run: %s", noun, list)
+}
+
+// renderedError marks an error whose JSON has already been printed.
+type renderedError struct{ err error }
+
+func (e *renderedError) Error() string { return e.err.Error() }
+func (e *renderedError) Unwrap() error { return e.err }
+
+// markRendered wraps an error whose JSON (for example a mutation envelope
+// with ok:false) was already printed, so the central printer skips it. The
+// exit code is preserved through errors.As.
+func markRendered(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &renderedError{err: err}
+}
+
+// errorKindForCode names the JSON error kind for an exit code.
+func errorKindForCode(code int) string {
+	switch code {
+	case 2:
+		return "usage"
+	case 3:
+		return "not_found"
+	case 4:
+		return "auth"
+	case 5:
+		return "upstream"
+	case 7:
+		return "rate_limited"
+	case 9:
+		return "precondition_unmet"
+	case 10:
+		return "config"
+	case 11:
+		return "gate"
+	case 12:
+		return "freshness"
+	case 13:
+		return "degraded"
+	case 14:
+		return "timeout"
+	default:
+		return "general"
+	}
+}
+
+// splitErrorHint separates the message from its trailing "hint:" block.
+func splitErrorHint(text string) (message, hint string) {
+	idx := strings.Index(text, "\nhint:")
+	if idx < 0 {
+		return strings.TrimSpace(text), ""
+	}
+	message = strings.TrimSpace(text[:idx])
+	lines := strings.Split(strings.TrimPrefix(text[idx+1:], "hint:"), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			kept = append(kept, line)
+		}
+	}
+	return message, strings.Join(kept, "\n")
+}
+
+// errorJSONObject builds the flat JSON error object for one non-zero exit:
+// {kind, code, message, hint?} plus any kind-specific fields the error carries.
+func errorJSONObject(err error) map[string]any {
+	code := ExitCode(err)
+	message, hint := splitErrorHint(sanitizeErrorForTerminal(err.Error()))
+	obj := map[string]any{"code": code, "message": message}
+	var coded *cliError
+	if errors.As(err, &coded) {
+		for k, v := range coded.fields {
+			obj[k] = v
+		}
+	}
+	if hint != "" {
+		obj["hint"] = hint
+	}
+	if _, ok := obj["kind"]; !ok {
+		kind := ""
+		if coded != nil {
+			kind = coded.kind
+		}
+		if kind == "" {
+			kind = errorKindForCode(code)
+		}
+		obj["kind"] = kind
+	}
+	var apiError *client.APIError
+	if errors.As(err, &apiError) {
+		if _, ok := obj["http_status"]; !ok {
+			obj["http_status"] = apiError.StatusCode
+		}
+	}
+	return obj
+}
+
+// errorOutputMode is the effective output mode of the failed invocation.
+type errorOutputMode struct {
+	json  bool
+	quiet bool
+	set   bool
+	// wroteStdout is true when the command already wrote to stdout.
+	wroteStdout bool
+}
+
+var (
+	errorModeMu   sync.Mutex
+	lastErrorMode errorOutputMode
+)
+
+func recordErrorOutputMode(m errorOutputMode) {
+	m.set = true
+	errorModeMu.Lock()
+	lastErrorMode = m
+	errorModeMu.Unlock()
+}
+
+// effectiveOutputMode reads the mode from the bound flag values, which already
+// include saved-profile values and --agent defaults.
+func effectiveOutputMode(root *cobra.Command, flags *rootFlags) errorOutputMode {
+	jsonSet := root.PersistentFlags().Changed("json")
+	return errorOutputMode{
+		json:  flags.asJSON || (flags.agent && !jsonSet),
+		quiet: flags.quiet,
+	}
+}
+
+// argvOutputMode derives the mode from the argument list for failures that
+// happen before flag parsing completes. It stops at "--", honours "=false" on
+// boolean flags, and skips the value of root string flags.
+func argvOutputMode(root *cobra.Command, args []string) errorOutputMode {
+	var asJSON, agent, quiet, jsonSet bool
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if !strings.HasPrefix(arg, "--") {
+			continue
+		}
+		name, value, hasValue := strings.Cut(arg[2:], "=")
+		f := root.PersistentFlags().Lookup(name)
+		isBool := f == nil || f.NoOptDefVal != ""
+		if !isBool && !hasValue {
+			i++ // the next argument is this flag's value
+			continue
+		}
+		on := true
+		if hasValue && isBool {
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				continue
+			}
+			on = parsed
+		}
+		switch name {
+		case "json":
+			asJSON, jsonSet = on, true
+		case "agent":
+			agent = on
+		case "quiet":
+			quiet = on
+		}
+	}
+	return errorOutputMode{json: asJSON || (agent && !jsonSet), quiet: quiet}
+}
+
+// stdoutCounter wraps the stdout the CLI hands to commands and remembers
+// whether anything was written, so the central error printer never appends a
+// JSON error object to a document the command already printed.
+type stdoutCounter struct {
+	w io.Writer
+	n atomic.Int64
+}
+
+func (c *stdoutCounter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// Unwrap lets isTerminal see the real file behind the counter.
+func (c *stdoutCounter) Unwrap() io.Writer { return c.w }
+
+// Wrote reports whether any byte reached stdout.
+func (c *stdoutCounter) Wrote() bool { return c.n.Load() > 0 }
+
+// ReportError renders the failure of the last Execute call and returns the
+// process exit code. The human line goes to stderr. The flat JSON error object
+// goes to stdout only under the effective --json/--agent (or when stdout is not
+// a terminal), and only when the command wrote nothing to stdout and did not
+// mark its own JSON as rendered. --quiet prints nothing: the exit code is the
+// answer.
+func ReportError(stdout, stderr io.Writer, err error) int {
+	errorModeMu.Lock()
+	m := lastErrorMode
+	errorModeMu.Unlock()
+	if !m.quiet {
+		if (m.json || !isTerminal(stdout)) && !m.wroteStdout {
+			PrintErrorJSON(stdout, err)
+		}
+		fmt.Fprintf(stderr, "Error: %s\n", sanitizeErrorForTerminal(err.Error()))
+	}
+	return ExitCode(err)
+}
+
+// PrintErrorJSON is the central JSON error printer: exactly one flat object on
+// w per failure, skipped when the command already rendered its own JSON.
+func PrintErrorJSON(w io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	var rendered *renderedError
+	if errors.As(err, &rendered) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(errorJSONObject(err))
+}
+
+// parseFailOnSeverity validates a --fail-on severity gate value. The one
+// vocabulary is critical|high|info|any|none; anything else is a usage error.
+func parseFailOnSeverity(flag, value string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
+	case "critical", "high", "info", "any", "none":
+		return v, nil
+	}
+	return "", usageErr(fmt.Errorf("invalid --%s value %q: want one of critical, high, info, any, none", strings.TrimLeft(flag, "-"), value))
+}
+
+// requireTabularOutput rejects --plain and --csv on a command whose output has
+// no tabular form.
+func requireTabularOutput(flags *rootFlags, cmdPath string) error {
+	if flags == nil || (!flags.plain && !flags.csv) {
+		return nil
+	}
+	format := "--plain"
+	if flags.csv {
+		format = "--csv"
+	}
+	return usageErr(fmt.Errorf("%s has no tabular form, so %s is not supported; use --json", cmdPath, format))
+}
+
+// isLocalZoteroTransportError reports whether a transport error targeted the
+// Zotero desktop local API (loopback port 23119), judged by the failing URL or
+// dial address the error carries.
+func isLocalZoteroTransportError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && isLocalZoteroAPI(urlErr.URL) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Addr != nil {
+		host, port, splitErr := net.SplitHostPort(opErr.Addr.String())
+		if splitErr == nil && port == "23119" {
+			switch strings.ToLower(host) {
+			case "localhost", "127.0.0.1", "::1":
+				return true
+			}
+		}
+	}
+	return false
 }

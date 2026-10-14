@@ -31,7 +31,7 @@ func owRunDiscover(t *testing.T, flags *rootFlags, out string, extra ...string) 
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs(append([]string{"--scope", "collection:OWC", "--out", out, "--limit", "10", "--min-count", "1"}, extra...))
+	cmd.SetArgs(append([]string{"--scope", "collection:OWC", "--output", out, "--limit", "10", "--min-count", "1"}, extra...))
 	if err := cmd.Execute(); err != nil {
 		return importDiscoverReport{}, err
 	}

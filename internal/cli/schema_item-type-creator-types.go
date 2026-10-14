@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -16,11 +17,12 @@ func newSchemaItemTypeCreatorTypesCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "item-type-creator-types",
 		Short:       "List valid creator types for an item type",
-		Example:     "  zotio schema item-type-creator-types --item-type example-value",
+		Example:     "  zotio schema item-type-creator-types --item-type journalArticle",
 		Annotations: map[string]string{"zotio:endpoint": "schema.item-type-creator-types", "zotio:method": "GET", "zotio:path": "/itemTypeCreatorTypes", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "item-type")
+			// --dry-run has no effect on this read; the flag is validated first.
+			if !cmd.Flags().Changed("item-type") || strings.TrimSpace(flagItemType) == "" {
+				return usageErr(fmt.Errorf("required flag \"item-type\" not set"))
 			}
 			// schema endpoints are global; use newSchemaClient (strips library prefix).
 			c, err := newSchemaClient(flags)
@@ -43,11 +45,9 @@ func newSchemaItemTypeCreatorTypesCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

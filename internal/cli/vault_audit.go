@@ -40,7 +40,7 @@ type vaultAuditReport struct {
 func newVaultAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagOut string
 	cmd := &cobra.Command{
-		Use:   "audit [--out <dir>]",
+		Use:   "audit [--vault <dir>]",
 		Short: "Audit managed vault notes without writing",
 		Long: `Audit managed vault notes without writing: notes whose Zotero item is gone, notes
 that drifted behind the store, notes missing a '## Notes' boundary, and notes on the
@@ -52,6 +52,9 @@ key, so a missing or duplicated citekey renames or collides notes on the next
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
 				return err
@@ -63,7 +66,7 @@ key, so a missing or duplicated citekey renames or collides notes on the next
 			return printVaultAuditReport(cmd, report, flags)
 		},
 	}
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
+	cmd.Flags().StringVar(&flagOut, "vault", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
 }
 

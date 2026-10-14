@@ -61,18 +61,14 @@ review the preview carefully before applying.`,
 		Example: `  zotio items duplicates resolve
   zotio items duplicates resolve --doi
   zotio items duplicates resolve --title
-  zotio items duplicates resolve --doi --title --yes`,
+  zotio items duplicates resolve --doi --title --yes --allow-destructive`,
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "true",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "true",
-			"zotio:default-max-changes":        "500",
+			"mcp:read-only": "false",
 		},
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strategy != duplicateResolveStrategyKeepMostComplete {
-				return fmt.Errorf("invalid --strategy value %q: must be %s", strategy, duplicateResolveStrategyKeepMostComplete)
+				return usageErr(fmt.Errorf("invalid --strategy value %q: must be %s", strategy, duplicateResolveStrategyKeepMostComplete))
 			}
 
 			// Default unresolved flag state to DOI-only instead of DOI+title.
@@ -103,11 +99,7 @@ review the preview carefully before applying.`,
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.duplicates.resolve", ops)
 			duplicateResolveSurfacePartialWarnings(&env, ops)
-			renderErr := renderMutation(cmd, flags, env, itemsDuplicatesResolveSingleLine)
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, itemsDuplicatesResolveSingleLine)
 		},
 	}
 	cmd.Flags().StringVar(&strategy, "strategy", duplicateResolveStrategyKeepMostComplete, "Resolution strategy (keep-most-complete)")

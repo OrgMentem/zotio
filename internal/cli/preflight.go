@@ -29,6 +29,8 @@ const (
 
 type preconditionUnmetEnvelope struct {
 	Kind                  string   `json:"kind"`
+	Code                  int      `json:"code"`
+	Message               string   `json:"message"`
 	Capability            string   `json:"capability"`
 	Precondition          string   `json:"precondition"`
 	Detail                string   `json:"detail"`
@@ -164,8 +166,11 @@ func commandRegistryPath(cmd *cobra.Command) string {
 // and the useful next step differs for each.
 func emitPreconditionUnmetWithRemediation(w io.Writer, flags *rootFlags, capability, precondition, detail string, remediation []string) error {
 	detail = sanitizeForTerminal(detail)
+	message := fmt.Sprintf("%s requires %s: %s", capability, precondition, detail)
 	env := preconditionUnmetEnvelope{
 		Kind:                  "precondition_unmet",
+		Code:                  9,
+		Message:               message,
 		Capability:            capability,
 		Precondition:          precondition,
 		Detail:                detail,
@@ -174,10 +179,16 @@ func emitPreconditionUnmetWithRemediation(w io.Writer, flags *rootFlags, capabil
 	}
 	if writePreconditionUnmetEnvelope(w, flags, env) {
 		// The machine-readable envelope already carries the remediation, so the
-		// error stays a single line for logs.
-		return preconditionErr(fmt.Errorf("%s requires %s: %s", capability, precondition, detail))
+		// error stays a single line for logs. The central printer must not print
+		// it a second time.
+		return markRendered(preconditionErr(errors.New(message)))
 	}
-	return preconditionErr(errors.New(humanPreconditionMessage(capability, precondition, detail, remediation)))
+	return &cliError{
+		code:   9,
+		err:    errors.New(humanPreconditionMessage(capability, precondition, detail, remediation)),
+		kind:   "precondition_unmet",
+		fields: preconditionEnvelopeFields(env),
+	}
 }
 
 // humanPreconditionMessage renders the failure the way a person needs to read
@@ -203,8 +214,28 @@ func writePreconditionUnmetEnvelope(w io.Writer, flags *rootFlags, env precondit
 	if flags == nil || !flags.asJSON || w == nil {
 		return false
 	}
+	if flags.quiet {
+		// --quiet prints nothing; the exit code is the answer.
+		return true
+	}
 	_ = json.NewEncoder(w).Encode(env)
 	return true
+}
+
+// preconditionEnvelopeFields flattens the envelope into the extra fields the
+// central error printer merges, so a precondition failure that did not print
+// its own envelope (piped output without --json) still reaches stdout with all
+// of its fields.
+func preconditionEnvelopeFields(env preconditionUnmetEnvelope) map[string]any {
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return nil
+	}
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	return fields
 }
 
 func preconditionRemediation(precondition string) []string {

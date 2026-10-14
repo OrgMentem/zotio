@@ -9,6 +9,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -54,33 +55,80 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 	}
 	if mutationJournalRecorder != nil {
 		if journalErr := mutationJournalRecorder(&env); journalErr != nil {
+			// The writes landed; only the undo record is missing. That is a
+			// warning (printed on stderr by renderMutation), not a failure,
+			// so the exit code stays whatever the engine decided.
 			env.Warnings = append(env.Warnings, fmt.Sprintf("applied but not journaled: %v (journal undo unavailable for this run)", journalErr))
-			// Only a run the engine considered successful is downgraded to
-			// "degraded". When the engine already failed (conflict, or a
-			// failure without --continue-on-error), overwriting its error
-			// erased the conflict signal that CI and MCP callers branch on and
-			// replaced it with a generic exit 13 naming neither cause.
-			if err == nil {
-				err = degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", operation, len(env.Warnings)))
-			}
 		}
 	}
-	return env, err
+	return env, classifyMutationErr(env, err)
+}
+
+// classifyMutationErr types the engine's errors for the exit-code contract. A
+// gate refusal keeps its engine error; invalid local input is a usage error;
+// an incomplete multi-op run is degraded (exit 13) only when some op applied and another failed. It does not mark the error
+// rendered: only the code that prints the envelope may do that.
+func classifyMutationErr(env mutation.Envelope, err error) error {
+	if err == nil {
+		return nil
+	}
+	var gate *mutation.Error
+	if errors.As(err, &gate) {
+		if gate.Code == mutation.CodeInvalidInput {
+			return usageErr(err)
+		}
+		return err
+	}
+	var typed *cliError
+	if errors.As(err, &typed) {
+		return err
+	}
+	if errors.Is(err, mutation.ErrIncomplete) {
+		// Exit 13 means partial: some ops applied and others failed or were
+		// never attempted. A run with nothing applied, or one whose only
+		// problem is a lost precondition (conflict), keeps exit 1.
+		if r := env.Result; r != nil && r.Summary.Applied > 0 && r.Summary.Failed+r.Summary.NotAttempted > 0 {
+			return degradedErr(err)
+		}
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return degradedErr(err)
+	}
+	return err
+}
+
+// renderMutationResult renders the envelope and returns runErr marked as
+// rendered, so the central JSON error printer does not print a second object.
+// Callers that return runErr without rendering must not use markRendered.
+func renderMutationResult(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, runErr error, singleLine func(mutation.Envelope) string) error {
+	if renderErr := renderMutation(cmd, flags, env, singleLine); renderErr != nil {
+		return renderErr
+	}
+	if runErr == nil {
+		return nil
+	}
+	return markRendered(runErr)
 }
 
 // renderMutation writes the envelope as JSON (under --json or non-TTY) or a
 // human summary. singleLine, when provided, renders a single-op plan compactly.
 func renderMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, singleLine func(mutation.Envelope) string) error {
+	if flags != nil && flags.quiet {
+		// --quiet: print nothing; the exit code is the answer.
+		return nil
+	}
 	out := cmd.OutOrStdout()
+	// Warnings go to stderr in every mode so JSON callers still see them.
+	for _, warning := range env.Warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+	}
 	if flags != nil && flags.asJSON || !isTerminal(out) {
 		data, err := json.Marshal(env)
 		if err != nil {
 			return err
 		}
 		return printOutput(out, json.RawMessage(data), true)
-	}
-	for _, warning := range env.Warnings {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
 	}
 
 	if env.Error == nil && singleLine != nil && len(env.Plan.Operations) == 1 {

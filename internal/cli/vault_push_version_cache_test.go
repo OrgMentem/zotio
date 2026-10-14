@@ -94,20 +94,20 @@ func TestFetchNoteVersionsObservesLiveVersions(t *testing.T) {
 	srv := vs.start(t)
 	c := cachingClient(t, srv.URL)
 
-	first, err := fetchNoteVersions(c, []string{"NOTEKEY1"})
+	first, err := fetchNoteVersions(c, []string{"NTKEYAB2"})
 	if err != nil {
 		t.Fatalf("first fetchNoteVersions: %v", err)
 	}
-	if got := first["NOTEKEY1"]; got != 10 {
+	if got := first["NTKEYAB2"]; got != 10 {
 		t.Fatalf("first version = %d, want 10", got)
 	}
 
 	// The remote moved. A cached map would hide it.
-	second, err := fetchNoteVersions(c, []string{"NOTEKEY1"})
+	second, err := fetchNoteVersions(c, []string{"NTKEYAB2"})
 	if err != nil {
 		t.Fatalf("second fetchNoteVersions: %v", err)
 	}
-	if got := second["NOTEKEY1"]; got != 20 {
+	if got := second["NTKEYAB2"]; got != 20 {
 		t.Fatalf("second version = %d, want 20: the version map was served from the response cache, "+
 			"so a remote edit is invisible to the push diff", got)
 	}
@@ -123,21 +123,21 @@ func TestFetchNoteVersionsObservesLiveVersions(t *testing.T) {
 func TestFetchNoteVersionsAbsentKeyStaysAbsent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// PRESENT1 exists; GONEKEY2 is simply not in the reply.
-		_, _ = w.Write([]byte(`{"PRESENT1":7}`))
+		// PRESENT2 exists; GXNEKEY2 is simply not in the reply.
+		_, _ = w.Write([]byte(`{"PRESENT2":7}`))
 	}))
 	t.Cleanup(srv.Close)
 	c := cachingClient(t, srv.URL)
 
-	got, err := fetchNoteVersions(c, []string{"PRESENT1", "GONEKEY2"})
+	got, err := fetchNoteVersions(c, []string{"PRESENT2", "GXNEKEY2"})
 	if err != nil {
 		t.Fatalf("fetchNoteVersions: %v", err)
 	}
-	if v, ok := got["PRESENT1"]; !ok || v != 7 {
-		t.Errorf("PRESENT1 = %d (present=%v), want 7", v, ok)
+	if v, ok := got["PRESENT2"]; !ok || v != 7 {
+		t.Errorf("PRESENT2 = %d (present=%v), want 7", v, ok)
 	}
-	if v, ok := got["GONEKEY2"]; ok {
-		t.Errorf("GONEKEY2 present with version %d, want absent so the diff can report remote_deleted", v)
+	if v, ok := got["GXNEKEY2"]; ok {
+		t.Errorf("GXNEKEY2 present with version %d, want absent so the diff can report remote_deleted", v)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestFetchNoteVersionsPropagatesReadFailure(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := cachingClient(t, srv.URL)
 
-	got, err := fetchNoteVersions(c, []string{"NOTEKEY1"})
+	got, err := fetchNoteVersions(c, []string{"NTKEYAB2"})
 	if err == nil {
 		t.Fatalf("fetchNoteVersions succeeded on a 400, returning %v", got)
 	}

@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -207,7 +208,10 @@ Applied field changes record provenance in the item's Extra field.`,
 				return usageErr(fmt.Errorf("--pdf-dir is required with --attach-mode linked-file"))
 			}
 			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation && !flagMissingSubjects && !flagMissingMesh {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, --missing-mesh, or --validate")
+				return usageErr(fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, --missing-mesh, or --validate"))
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
 			}
 			// Whether an attachment file is broken is only knowable from the
 			// live desktop API, which this command does not call. Without a
@@ -238,8 +242,7 @@ Applied field changes record provenance in the item's Extra field.`,
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -262,6 +265,11 @@ Applied field changes record provenance in the item's Extra field.`,
 			effectiveScope, err := reconcileScopeFlags(flagScope, collectionScope)
 			if err != nil {
 				return err
+			}
+			if strings.TrimSpace(flagCollection) != "" {
+				if err := validateKeyArg("collection", strings.TrimSpace(flagCollection)); err != nil {
+					return err
+				}
 			}
 			// reconcileScopeFlags intentionally leaves bespoke flags on their
 			// existing query paths when --scope is absent. Enrich also needs the
@@ -370,6 +378,8 @@ Applied field changes record provenance in the item's Extra field.`,
 			if len(skipped) > 0 {
 				// Merge, never replace: runMutation has already put the
 				// applied run's run_id here, and journal undo needs it.
+				// Only benign skips live here (no match, nothing to fill);
+				// a failed provider lookup is an error, reported below.
 				journal, _ := env.Journal.(map[string]any)
 				if journal == nil {
 					journal = map[string]any{}
@@ -377,11 +387,10 @@ Applied field changes record provenance in the item's Extra field.`,
 				journal["skipped"] = skipped
 				env.Journal = journal
 			}
-			renderErr := renderMutation(cmd, flags, env, nil)
-			if renderErr != nil {
-				return renderErr
+			if len(proposalErrs) > 0 {
+				runErr = enrichLookupFailure(&env, runErr, proposalErrs)
 			}
-			return errors.Join(runErr, errors.Join(proposalErrs...))
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
@@ -396,7 +405,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingMesh, "missing-mesh", false, "Propose PubMed MeSH descriptors as automatic mesh/<descriptor> tags for items with a PMID or DOI that carry no mesh/ tag yet")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
-	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
+	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category (0 = no limit)")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 	// --collection predates --scope and stays supported; it lowers to
 	// --scope collection:KEY (see reconcileScopeFlags).
@@ -409,6 +418,90 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagValidate, "validate", false, "Read-only DOI discrepancy report against CrossRef and OpenCitations")
 
 	return cmd
+}
+
+// enrichLookupFailure folds failed provider lookups (and unreadable local
+// rows) into the envelope: ok:false with an error entry, and the same
+// non-zero exit the process returns. Benign skips never reach here; they stay
+// in journal.skipped with ok:true. An engine error already on the envelope (a
+// gate refusal) keeps its own entry and exit code. A run that applied part of
+// its plan before the failures exits 13 (partial). Otherwise the exit code
+// follows what the providers said: auth failures (401/403) exit 4, other
+// client errors (400, ...) exit 2, transport failures, 429 and 5xx exit 5,
+// and an unreadable local row exits 1.
+func enrichLookupFailure(env *mutation.Envelope, runErr error, lookupErrs []error) error {
+	joined := errors.Join(lookupErrs...)
+	if env.Error != nil {
+		return errors.Join(runErr, joined)
+	}
+	env.OK = false
+	env.Error = &mutation.Error{Code: "enrich_lookup_failed", Message: joined.Error()}
+	if env.Result != nil && env.Result.Summary.Applied > 0 {
+		return degradedErr(errors.Join(runErr, joined))
+	}
+	var typed error
+	switch enrichLookupExitCode(joined) {
+	case 4:
+		typed = authErr(joined)
+	case 2:
+		typed = usageErr(joined)
+	case 5:
+		typed = apiErr(joined)
+	default:
+		typed = joined
+	}
+	return errors.Join(runErr, typed)
+}
+
+var enrichProviderStatusRE = regexp.MustCompile(`\bHTTP (\d{3})\b`)
+
+// enrichLookupExitCode ranks the failed lookups in err and returns the exit
+// code of the most specific class: auth (4) over client error (2) over
+// upstream failure (5) over everything else (1). A provider status is read
+// from the lookup's own message; a lookup with no status is a transport,
+// decode or cancellation failure, which counts as upstream.
+func enrichLookupExitCode(err error) int {
+	rank := map[int]int{4: 4, 2: 3, 5: 2, 1: 1}
+	best := 1
+	consider := func(code int) {
+		if rank[code] > rank[best] {
+			best = code
+		}
+	}
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if multi, ok := e.(interface{ Unwrap() []error }); ok {
+			for _, inner := range multi.Unwrap() {
+				walk(inner)
+			}
+			return
+		}
+		var providerErr *enrichProviderError
+		if !errors.As(e, &providerErr) {
+			return
+		}
+		match := enrichProviderStatusRE.FindStringSubmatch(providerErr.Error())
+		if match == nil {
+			consider(5)
+			return
+		}
+		status, _ := strconv.Atoi(match[1])
+		switch {
+		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+			consider(4)
+		case status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500:
+			consider(5)
+		case status >= 400:
+			consider(2)
+		default:
+			consider(5)
+		}
+	}
+	walk(err)
+	return best
 }
 
 func enrichTimeout(t time.Duration) time.Duration {
@@ -464,7 +557,7 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip, error) {
 	rows, err := enrichWorkQueueForKeys(db, category, limit, collection, keyFilter)
 	if err != nil {
-		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}, err
+		return nil, nil, fmt.Errorf("querying %s work queue: %w", category, err)
 	}
 
 	// Each candidate triggers an independent
@@ -510,23 +603,26 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		}
 	}
 	// A failed provider lookup or an unreadable local row is not a "no match":
-	// each stays visible in the skip list for the journal and also becomes a
-	// command error, so the run cannot exit clean after an outage.
+	// it becomes a command error (and an error entry on the envelope), so the
+	// run cannot exit clean after an outage. Only a cancelled lookup, which
+	// carries neither error type, stays a skip.
 	var buildErrs []error
 	for _, fanoutErr := range fanoutErrs {
+		var localReadErr *enrichLocalReadError
+		if errors.As(fanoutErr.Err, &localReadErr) {
+			buildErrs = append(buildErrs, fmt.Errorf("loading enrichment item %s: %w", fanoutErr.Source, fanoutErr.Err))
+			continue
+		}
+		var providerErr *enrichProviderError
+		if errors.As(fanoutErr.Err, &providerErr) {
+			buildErrs = append(buildErrs, fmt.Errorf("enriching item %s (%s): %w", fanoutErr.Source, category, fanoutErr.Err))
+			continue
+		}
 		skipped = append(skipped, enrichSkip{
 			Key:      fanoutErr.Source,
 			Category: category,
 			Reason:   fmt.Sprintf("resolving enrichment: %v", fanoutErr.Err),
 		})
-		var localReadErr *enrichLocalReadError
-		if errors.As(fanoutErr.Err, &localReadErr) {
-			buildErrs = append(buildErrs, fmt.Errorf("loading enrichment item %s: %w", fanoutErr.Source, fanoutErr.Err))
-		}
-		var providerErr *enrichProviderError
-		if errors.As(fanoutErr.Err, &providerErr) {
-			buildErrs = append(buildErrs, fmt.Errorf("enriching item %s (%s): %w", fanoutErr.Source, category, fanoutErr.Err))
-		}
 	}
 	return proposals, skipped, errors.Join(buildErrs...)
 }

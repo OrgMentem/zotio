@@ -22,15 +22,20 @@ func TestCollectionsBundleWritesResearchPackage(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	flags := &rootFlags{}
 	cmd := newCollectionsCmd(flags)
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("bundle: %v", err)
 	}
-	if !strings.Contains(out.String(), "2 item(s)") {
-		t.Fatalf("summary = %q, want item count", out.String())
+	// Piped stdout carries the same JSON manifest as --json; prose is for a TTY.
+	var manifest collectionBundleManifest
+	if err := json.Unmarshal(out.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode manifest %q: %v", out.String(), err)
+	}
+	if manifest.ItemCount != 2 {
+		t.Fatalf("manifest = %+v, want item count 2", manifest)
 	}
 
 	synthesis := readBundleTestFile(t, outDir, "synthesis.md")
@@ -73,7 +78,7 @@ func TestCollectionsBundleSameOutputReturnsBusyAndPreservesFirstArtifacts(t *tes
 	first.SetErr(&bytes.Buffer{})
 	err = withPathWriterLock(first, canonicalOut+".lock", "collections bundle", func() error {
 		second := newCollectionsCmd(&rootFlags{})
-		second.SetArgs([]string{"bundle", "OTHER", "--out", outDir})
+		second.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 		second.SetOut(&bytes.Buffer{})
 		second.SetErr(&bytes.Buffer{})
 		busyErr := second.Execute()
@@ -101,7 +106,7 @@ func TestCollectionsBundleIncludesStoredFulltext(t *testing.T) {
 
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	cmd := newCollectionsCmd(&rootFlags{})
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
@@ -167,7 +172,7 @@ func TestCollectionsBundleJSONManifest(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	flags := &rootFlags{asJSON: true}
 	cmd := newCollectionsCmd(flags)
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -213,6 +218,9 @@ func seedCollectionBundleStoreOpen(t *testing.T) *store.Store {
 	}
 	if _, _, err := db.UpsertBatch("collections", collections); err != nil {
 		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.SaveSyncState("collections", "", len(collections)); err != nil {
+		t.Fatalf("save collections sync state: %v", err)
 	}
 
 	items := []json.RawMessage{
@@ -267,7 +275,7 @@ func TestCollectionsBundleRequiresSyncedStore(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	cmd := newCollectionsCmd(&rootFlags{})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	err := cmd.Execute()
@@ -306,7 +314,7 @@ func TestCollectionsBundleEmptyStoreRequiresSync(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	cmd := newCollectionsCmd(&rootFlags{})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	err = cmd.Execute()
@@ -321,13 +329,21 @@ func TestCollectionsBundleEmptyStoreRequiresSync(t *testing.T) {
 	}
 }
 
-// A ready mirror with no items in the target collection is a valid empty
+// A ready mirror with a collection that holds no items is a valid empty
 // bundle, not a missing prerequisite: success is reserved for written output.
 func TestCollectionsBundleEmptyCollectionWritesEmptyBundle(t *testing.T) {
-	seedCollectionBundleStore(t)
+	db := seedCollectionBundleStoreOpen(t)
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
+		json.RawMessage(`{"key":"EMPT","version":1,"data":{"key":"EMPT","name":"Empty"}}`),
+	}); err != nil {
+		t.Fatalf("seed empty collection: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
 	outDir := filepath.Join(t.TempDir(), "bundle")
 	cmd := newCollectionsCmd(&rootFlags{})
-	cmd.SetArgs([]string{"bundle", "MISSING", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "EMPT", "--output-dir", outDir})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
@@ -335,5 +351,26 @@ func TestCollectionsBundleEmptyCollectionWritesEmptyBundle(t *testing.T) {
 	}
 	for _, name := range []string{"synthesis.md", "annotations.md", "bibliography.json"} {
 		assertFileMode(t, filepath.Join(outDir, name), 0o600)
+	}
+}
+
+// An unknown collection key is exit 3 before anything is created: no package
+// and no <output-dir>.lock sibling.
+func TestCollectionsBundleUnknownCollectionIsNotFound(t *testing.T) {
+	seedCollectionBundleStore(t)
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := newCollectionsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"bundle", "MISSING", "--output-dir", outDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 3 {
+		t.Fatalf("bundle of an unknown collection: error = %v, exit=%d; want not found (exit 3)", err, ExitCode(err))
+	}
+	for _, path := range []string{outDir, outDir + ".lock"} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s exists after a refused bundle: %v", path, statErr)
+		}
 	}
 }

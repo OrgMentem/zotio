@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -35,12 +36,21 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "note-template <itemKey>",
 		Short: "Generate a markdown reading-note template for an item",
-		Example: `  zotio items note-template ABCD1234
-  zotio items note-template ABCD1234 --format obsidian
-  zotio items note-template ABCD1234 --format logseq`,
+		Example: `  zotio items note-template ABCD2345
+  zotio items note-template ABCD2345 --format obsidian
+  zotio items note-template ABCD2345 --format logseq --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format := strings.ToLower(strings.TrimSpace(flagFormat))
+			if format == "" {
+				format = "standard"
+			}
+			switch format {
+			case "standard", "obsidian", "logseq":
+			default:
+				return usageErr(fmt.Errorf("invalid --format value %q: must be standard, obsidian, or logseq", flagFormat))
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -58,22 +68,23 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 
 			anns, err := noteTemplateAnnotations(cmd.Context(), c, flags, args[0], provenance)
 			if err != nil {
+				var ce *cliError
+				if errors.As(err, &ce) {
+					return err
+				}
 				return classifyAPIError(err, flags)
 			}
 
 			var out string
-			switch strings.ToLower(strings.TrimSpace(flagFormat)) {
-			case "", "standard":
+			switch format {
+			case "standard":
 				out = renderStandardNoteTemplate(meta, anns, false, time.Now())
 			case "obsidian":
 				out = renderStandardNoteTemplate(meta, anns, true, time.Now())
-			case "logseq":
-				out = renderLogseqNoteTemplate(meta, anns, time.Now())
 			default:
-				return fmt.Errorf("invalid --format value %q: must be standard, obsidian, or logseq", flagFormat)
+				out = renderLogseqNoteTemplate(meta, anns, time.Now())
 			}
-			fmt.Fprint(cmd.OutOrStdout(), out)
-			return nil
+			return printTextPayload(cmd, flags, format, out)
 		},
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "standard", "Template format: standard, obsidian, or logseq")
@@ -90,10 +101,10 @@ func noteTemplateAnnotations(ctx context.Context, c *client.Client, flags *rootF
 	case "local":
 		db, err := openStoreForRead(ctx, "zotio")
 		if err != nil {
-			return nil, fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
+			return nil, preconditionErr(fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err))
 		}
 		if db == nil {
-			return nil, fmt.Errorf("no local data. Run 'zotio sync' first")
+			return nil, preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first"))
 		}
 		defer db.Close()
 		annByKey, err := db.AnnotationsForItems([]string{itemKey})

@@ -281,7 +281,7 @@ Exit codes & warnings:
   zotio sync --full
 
   # Incremental sync: only objects modified since a Zotero library version
-  zotio sync --since 4521
+  zotio sync --since-version 4521
 
   # Parallel sync with 8 workers
   zotio sync --concurrency 8
@@ -289,6 +289,12 @@ Exit codes & warnings:
   # Latest-only: refresh head of each resource, no historical backfill
   zotio sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.dryRun {
+				return usageErr(fmt.Errorf("sync cannot preview: --dry-run is not supported (it would still have to fetch and write the local mirror)"))
+			}
+			if sinceVersion < 0 {
+				return usageErr(fmt.Errorf("invalid --since-version %d: must be 0 (use the stored checkpoint) or greater", sinceVersion))
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -366,7 +372,7 @@ Exit codes & warnings:
 			// ignoring the historical resume cursor. We cap maxPages at 1
 			// here rather than re-interpreting it downstream so the rest
 			// of the sync loop stays oblivious. Mutually-useful with
-			// --since: if the user set --since, that threshold still wins
+			// --since-version: if the user set it, that threshold still wins
 			// and we don't short-circuit historical context they asked for.
 			if latestOnly {
 				if sinceVersion == 0 {
@@ -386,7 +392,7 @@ Exit codes & warnings:
 						}
 					}
 				} else if humanFriendly {
-					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since is set; --since takes precedence")
+					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since-version is set; --since-version takes precedence")
 				}
 			}
 
@@ -602,11 +608,11 @@ Exit codes & warnings:
 
 	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type)")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
-	cmd.Flags().IntVar(&sinceVersion, "since", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'.")
+	cmd.Flags().IntVar(&sinceVersion, "since-version", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
-	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
+	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13).")
 	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
 
@@ -1645,7 +1651,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			// a third path that an --agent run would never see.
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr,
-					"warning: skipped reaping deleted %s rows because this pass was filtered (--since narrows the response, so absent objects are unchanged, not deleted); run `zotio sync --full` without --since to reap\n",
+					"warning: skipped reaping deleted %s rows because this pass was filtered (--since-version narrows the response, so absent objects are unchanged, not deleted); run `zotio sync --full` without --since-version to reap\n",
 					canonicalStoreResource(resource))
 			} else {
 				emitSyncEvent(ctx, struct {
@@ -1657,7 +1663,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Event:    "sync_anomaly",
 					Resource: canonicalStoreResource(resource),
 					Reason:   "sweep_skipped_filtered_pass",
-					Message:  "--full combined with a narrowing filter (--since): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
+					Message:  "--full combined with a narrowing filter (--since-version): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
 				})
 			}
 		}

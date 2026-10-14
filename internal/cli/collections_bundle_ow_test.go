@@ -18,7 +18,7 @@ import (
 func owRunBundleJSON(t *testing.T, flags *rootFlags, outDir string) collectionBundleManifest {
 	t.Helper()
 	cmd := newCollectionsCmd(flags)
-	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetArgs([]string{"bundle", "COL", "--output-dir", outDir})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})

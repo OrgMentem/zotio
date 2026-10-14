@@ -10,9 +10,12 @@ package cli
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 // Precondition vocabulary. These strings are the contract shared with the
@@ -37,11 +40,16 @@ const (
 // creates (desktop_connector).
 const localStateWriteTarget = "local_state"
 
+// localFileWriteTarget names the plane of a command that writes local files
+// the user names (export, baseline, report, card). It marks a command whose
+// operation is "read" because it does not change the library.
+const localFileWriteTarget = "local_file"
+
 type capabilityEntry struct {
 	Path        string   `json:"path"`
 	Operation   string   `json:"operation"` // read | write | sync | introspect | other
 	DataSources []string `json:"data_sources,omitempty"`
-	WriteTarget string   `json:"write_target,omitempty"`
+	WriteTarget string   `json:"write_target,omitempty"` // web_api | local_state | local_vault | desktop_connector | local_file
 	Destructive bool     `json:"destructive,omitempty"`
 	Requires    []string `json:"requires,omitempty"` // describes the default route; routes carry the full truth
 	// Routes splits a command with more than one write path into one entry per
@@ -174,10 +182,22 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items similar":          {Requires: []string{preconditionSyncedStore}},
 	"items summarize":        {Requires: []string{preconditionSyncedStore}},
 	"creators audit":         {Operation: "read", Requires: []string{preconditionSyncedStore}},
-	"creators audit fix":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+	"creators audit fix":     {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"tags audit":             {Requires: []string{preconditionSyncedStore}},
 	"tags inventory":         {Requires: []string{preconditionSyncedStore}},
 	"export snapshot verify": {Requires: []string{preconditionSyncedStore}},
+	// Mirror readers that used to print prose or an empty result on an
+	// unsynced library. Declaring the precondition sends them through the
+	// central preflight, which exits 9 with the precondition_unmet envelope.
+	"items retract-check": {Requires: []string{preconditionSyncedStore}},
+	"items stale":         {Requires: []string{preconditionSyncedStore}},
+	"collections stats":   {Requires: []string{preconditionSyncedStore}},
+	"collections bundle":  {Requires: []string{preconditionSyncedStore}},
+	"items venues":        {Requires: []string{preconditionSyncedStore}},
+	"items authors":       {Requires: []string{preconditionSyncedStore}},
+	"items unfiled":       {Requires: []string{preconditionSyncedStore}},
+	"library wrapped":     {Requires: []string{preconditionSyncedStore}},
+	"items find":          {Requires: []string{preconditionSyncedStore}},
 	// Citation keys live in Better BibTeX's `extra` field.
 	"items citekey-conflicts": {Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
 	// bibcheck always reads the synced store. Better BibTeX applies only to
@@ -203,7 +223,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items add-to-collection":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items restore":            {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items delete":             {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
-	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"items tags add":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items tags remove":        {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items duplicates resolve": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
@@ -281,7 +301,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
-	"vault resolve": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"vault resolve": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"vault sync":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionSyncedStore}},
 	// Local-state writers mutate the installation (credentials, named flag
 	// profiles, the local feedback log, first-run setup), not the Zotero
@@ -301,7 +321,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// and the same synced_store read for candidate resolution), and the
 	// generic `import` POSTs one record per input line through the same
 	// preview-first apply gate.
-	"creators rename": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+	"creators rename": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"import":          {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// `workflow archive` is a sync under another name: it fetches every
 	// syncable resource into the local mirror and mutates nothing remotely.
@@ -467,11 +487,97 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 			entry.Requires = ov.Requires
 			entry.Routes = ov.Routes
 		}
+		if entry.WriteTarget == "" && commandWritesFiles(sub) {
+			entry.WriteTarget = localFileWriteTarget
+		}
 		entry.DataSources = dataSourcesForEntry(entry)
 		entries = append(entries, entry)
 	})
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries
+}
+
+// writesFilesAnnotationKey marks a command that may create, replace, or delete
+// local files (an output path the user names, a baseline, the demo sandbox).
+// The registry reports such a command with write_target "local_file" while its
+// operation stays whatever the library-effect classification says.
+const writesFilesAnnotationKey = "mcp:writes-files"
+
+func commandWritesFiles(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(cmd.Annotations[writesFilesAnnotationKey])) {
+	case "true", "1", "yes":
+		return true
+	}
+	return false
+}
+
+// registryRejectsDryRun lists the commands that cannot preview at all and
+// reject --dry-run with a usage error.
+var registryRejectsDryRun = map[string]bool{"init": true, "sync": true, "watch": true}
+
+// localMirrorOnly lists the commands that read only the synced local mirror:
+// no Zotero API, no network. MCP hints report them openWorldHint=false. The
+// list is an allowlist so a command that can reach the network (for example
+// `library health --check-retractions`) is never advertised as closed-world.
+var localMirrorOnly = map[string]bool{
+	"items missing-pdf":       true,
+	"items duplicates":        true,
+	"items related":           true,
+	"items similar":           true,
+	"items summarize":         true,
+	"items stale":             true,
+	"items venues":            true,
+	"items authors":           true,
+	"items unfiled":           true,
+	"items citekey-conflicts": true,
+	"collections stats":       true,
+	"library prisma":          true,
+	"library stats":           true,
+	"library wrapped":         true,
+	"tags audit":              true,
+	"tags inventory":          true,
+	"export snapshot verify":  true,
+}
+
+// CommandLocalOnly reports whether the registry classifies the command as
+// reading only the local mirror. The MCP mirror maps it to openWorldHint=false.
+func CommandLocalOnly(path string) bool {
+	return localMirrorOnly[path]
+}
+
+// registryAnnotations derives the zotio:* safety annotations for one command
+// from its registry entry, so `agent-context` publishes exactly what the
+// registry says and no per-command annotation can contradict it:
+//
+//   - supports-dry-run: true for every operation write and every command that
+//     writes local files; false for the commands that reject --dry-run.
+//   - destructive / requires-allow-destructive: the registry's single
+//     definition, a change `journal undo` cannot reverse. The claim must match
+//     the gate that runs. `creators rename`, `creators audit fix` and
+//     `vault resolve` are pending --allow-destructive enforcement in this
+//     branch (Phase 2); the claim stays and the enforcement follows.
+//   - default-max-changes / default-max-changes-agent: the --max-changes cap
+//     for a plain run and for a run under --agent (mutation.EffectiveMaxChanges).
+func registryAnnotations(entry capabilityEntry, writesFiles bool) map[string]string {
+	rejects := registryRejectsDryRun[entry.Path]
+	switch {
+	case entry.Operation == "write":
+		return map[string]string{
+			"zotio:supports-dry-run":           strconv.FormatBool(!rejects),
+			"zotio:destructive":                strconv.FormatBool(entry.Destructive),
+			"zotio:requires-allow-destructive": strconv.FormatBool(entry.Destructive),
+			"zotio:default-max-changes":        strconv.Itoa(mutation.EffectiveMaxChanges(mutation.Options{MaxChanges: -1})),
+			"zotio:default-max-changes-agent":  strconv.Itoa(mutation.EffectiveMaxChanges(mutation.Options{MaxChanges: -1, Agent: true})),
+		}
+	case rejects:
+		return map[string]string{"zotio:supports-dry-run": "false"}
+	case writesFiles:
+		return map[string]string{"zotio:supports-dry-run": "true"}
+	}
+	return nil
 }
 
 // annotateCapabilityRouteFlags makes route selectors available to the MCP
@@ -523,7 +629,11 @@ desktop_connector, zotero_file_storage) so agents can select safe commands
 and pre-flight requirements without parsing --help or guessing from names.
 Commands with more than one write route carry a routes list where each route
 names its own preconditions; the top-level requires and write_target describe
-the default route (the first entry in routes).`,
+the default route (the first entry in routes).
+
+A destructive command makes a change "journal undo" cannot reverse. A command
+that writes local files you name (an export, a report, a baseline) keeps
+operation read and reports write_target local_file.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := json.Marshal(buildCapabilityRegistry(rootCmd))
 			if err != nil {

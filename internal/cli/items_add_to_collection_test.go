@@ -28,7 +28,7 @@ type collectionFilingTestServer struct {
 
 func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 	t.Helper()
-	ts := &collectionFilingTestServer{collectionKey: "", itemCollections: []string{"EXISTING"}}
+	ts := &collectionFilingTestServer{collectionKey: "", itemCollections: []string{"EXISTAB2"}}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/users/0/collections":
@@ -63,20 +63,20 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 					return
 				}
 				ts.collectionCreates++
-				ts.collectionKey, ts.collectionName = "COLL0001", name
+				ts.collectionKey, ts.collectionName = "CLCTAB23", name
 				if ts.ambiguousCollectionCreate {
 					http.Error(w, "response lost after create", http.StatusInternalServerError)
 					return
 				}
-				_, _ = fmt.Fprint(w, `{"success":{"0":"COLL0001"},"successful":{"0":{"key":"COLL0001"}}}`)
+				_, _ = fmt.Fprint(w, `{"success":{"0":"CLCTAB23"},"successful":{"0":{"key":"CLCTAB23"}}}`)
 			default:
 				http.Error(w, "unexpected collection method", http.StatusMethodNotAllowed)
 			}
-		case "/users/0/items/ITEM0001":
+		case "/users/0/items/ITEMAB23":
 			switch r.Method {
 			case http.MethodGet:
 				w.Header().Set("Last-Modified-Version", "17")
-				_, _ = fmt.Fprintf(w, `{"key":"ITEM0001","version":17,"data":{"collections":%s}}`, mustJSON(t, ts.itemCollections))
+				_, _ = fmt.Fprintf(w, `{"key":"ITEMAB23","version":17,"data":{"collections":%s}}`, mustJSON(t, ts.itemCollections))
 			case http.MethodPatch:
 				var body struct {
 					Collections []string `json:"collections"`
@@ -127,9 +127,8 @@ func executeItemsAddToCollectionTestCmd(t *testing.T, srv *collectionFilingTestS
 }
 
 // executeItemsAddToCollectionTestCmdWithFlags runs the command with caller-supplied
-// flags and returns the raw stdout, undecoded: preview mode reports a plain JSON
-// object rather than a mutation.Envelope, so callers decode into whichever shape
-// fits their case.
+// flags and returns the raw stdout, undecoded, so callers can inspect output
+// that accompanies a failure.
 func executeItemsAddToCollectionTestCmdWithFlags(t *testing.T, srv *collectionFilingTestServer, flags *rootFlags, args ...string) (string, error) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
@@ -146,18 +145,18 @@ func executeItemsAddToCollectionTestCmdWithFlags(t *testing.T, srv *collectionFi
 func TestItemsAddToCollectionCreatesOnceAndIsIdempotent(t *testing.T) {
 	srv := newCollectionFilingTestServer(t)
 
-	first := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
-	if !first.OK || first.Mode != "apply" || first.Result == nil || first.Result.Summary.Applied != 1 {
-		t.Fatalf("first filing = %+v", first)
+	first := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
+	if !first.OK || first.Mode != "apply" || first.Result == nil || first.Result.Summary.Applied != 2 {
+		t.Fatalf("first filing = %+v, want the collection create and the membership both applied", first)
 	}
-	if srv.collectionCreates != 1 || srv.collectionKey != "COLL0001" || srv.itemPatchCount != 1 {
+	if srv.collectionCreates != 1 || srv.collectionKey != "CLCTAB23" || srv.itemPatchCount != 1 {
 		t.Fatalf("first calls: creates=%d key=%q patches=%d", srv.collectionCreates, srv.collectionKey, srv.itemPatchCount)
 	}
-	if !stringSliceContains(srv.itemCollections, "EXISTING") || !stringSliceContains(srv.itemCollections, "COLL0001") {
+	if !stringSliceContains(srv.itemCollections, "EXISTAB2") || !stringSliceContains(srv.itemCollections, "CLCTAB23") {
 		t.Fatalf("item collections = %v", srv.itemCollections)
 	}
 
-	second := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
+	second := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
 	if !second.OK || second.Mode != "apply" || second.Result == nil || second.Result.Summary.NoOp != 1 {
 		t.Fatalf("second filing = %+v", second)
 	}
@@ -193,20 +192,20 @@ func TestItemsAddToCollectionFindsCollectionOnLaterPage(t *testing.T) {
 				t.Errorf("encoding first collection page: %v", err)
 			}
 		case 100:
-			_, _ = fmt.Fprint(w, `[{"key":"COLL0002","data":{"name":"Inbox"}}]`)
+			_, _ = fmt.Fprint(w, `[{"key":"CLCTAB24","data":{"name":"Inbox"}}]`)
 		default:
 			http.Error(w, "unexpected collection page", http.StatusBadRequest)
 		}
 	}
 
-	env := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
+	env := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
 		t.Fatalf("filing = %+v", env)
 	}
 	if srv.collectionCreates != 0 || srv.itemPatchCount != 1 {
 		t.Fatalf("calls: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
 	}
-	if !stringSliceContains(srv.itemCollections, "COLL0002") {
+	if !stringSliceContains(srv.itemCollections, "CLCTAB24") {
 		t.Fatalf("item collections = %v", srv.itemCollections)
 	}
 }
@@ -227,8 +226,8 @@ func TestItemsAddToCollectionReconcilesWriteTokenRetry(t *testing.T) {
 	srv := newCollectionFilingTestServer(t)
 	srv.ambiguousCollectionCreate = true
 
-	env := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
-	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+	env := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 2 {
 		t.Fatalf("filing = %+v", env)
 	}
 	if srv.collectionCreates != 1 || srv.itemPatchCount != 1 {
@@ -242,71 +241,103 @@ func TestItemsAddToCollectionReconcilesWriteTokenRetry(t *testing.T) {
 	}
 }
 
-// TestAddToCollectionPreviewsWithoutWriting guards the fix for the reviewer-flagged
-// UX gap: the command used to error instead of previewing. Bare and --agent
-// invocations must describe the plan and issue zero write requests, whether the
-// named collection would be created or an existing one reused.
+// decodeAddToCollectionEnvelope decodes the mutation envelope every
+// add-to-collection run prints, preview and apply alike.
+func decodeAddToCollectionEnvelope(t *testing.T, out string) mutation.Envelope {
+	t.Helper()
+	var env mutation.Envelope
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("decoding mutation envelope %q: %v", out, err)
+	}
+	return env
+}
+
+// TestAddToCollectionPreviewsWithoutWriting: bare, --dry-run and --agent
+// invocations print the mutation envelope as a preview and issue zero write
+// requests, whether the named collection would be created or an existing one
+// reused.
 func TestAddToCollectionPreviewsWithoutWriting(t *testing.T) {
-	srv := newCollectionFilingTestServer(t)
-	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "ITEM0001", "--collection-name", "Inbox")
-	if err != nil {
-		t.Fatalf("bare preview: %v; out=%s", err, out)
-	}
-	if srv.collectionCreates != 0 || srv.itemPatchCount != 0 {
-		t.Fatalf("bare preview issued writes: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
-	}
-	var report map[string]any
-	if err := json.Unmarshal([]byte(out), &report); err != nil {
-		t.Fatalf("decoding preview report %q: %v", out, err)
-	}
-	if report["collection_action"] != "create" || report["dry_run"] != true || report["success"] != false {
-		t.Fatalf("preview report = %+v, want a create plan that is not applied", report)
-	}
-	if _, ok := report["collection_key"]; ok {
-		t.Fatalf("preview report = %+v, want no collection_key when the collection does not yet exist", report)
-	}
-
-	// --agent must not auto-apply either; --yes is still required.
-	agentSrv := newCollectionFilingTestServer(t)
-	agentOut, err := executeItemsAddToCollectionTestCmdWithFlags(t, agentSrv, &rootFlags{asJSON: true, agent: true, maxChanges: -1}, "ITEM0001", "--collection-name", "Inbox")
-	if err != nil {
-		t.Fatalf("--agent preview: %v; out=%s", err, agentOut)
-	}
-	if agentSrv.collectionCreates != 0 || agentSrv.itemPatchCount != 0 {
-		t.Fatalf("--agent preview issued writes: creates=%d patches=%d", agentSrv.collectionCreates, agentSrv.itemPatchCount)
+	for _, tc := range []struct {
+		name  string
+		flags *rootFlags
+	}{
+		{"default", &rootFlags{asJSON: true, maxChanges: -1}},
+		{"dry-run", &rootFlags{asJSON: true, yes: true, dryRun: true, maxChanges: -1}},
+		{"agent", &rootFlags{asJSON: true, agent: true, maxChanges: -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newCollectionFilingTestServer(t)
+			out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, tc.flags, "ITEMAB23", "--collection-name", "Inbox")
+			if err != nil {
+				t.Fatalf("preview: %v; out=%s", err, out)
+			}
+			if srv.collectionCreates != 0 || srv.itemPatchCount != 0 {
+				t.Fatalf("preview issued writes: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
+			}
+			env := decodeAddToCollectionEnvelope(t, out)
+			if !env.OK || env.Mode != "preview" || env.Result != nil || env.Operation != "items.add-to-collection" {
+				t.Fatalf("preview envelope = %+v, want ok preview with no result", env)
+			}
+			if env.Plan.Summary.Planned != 2 || len(env.Plan.Operations) != 2 || env.Plan.Operations[0].Kind != "collection_create" {
+				t.Fatalf("plan = %+v, want a collection create then the membership change", env.Plan)
+			}
+		})
 	}
 
-	// The collection already exists: the preview must describe a reuse and
-	// name the existing key, not a create.
+	// The collection already exists: the plan holds only the membership
+	// change and names the existing key.
 	existingSrv := newCollectionFilingTestServer(t)
-	existingSrv.collectionKey, existingSrv.collectionName = "COLL0001", "Inbox"
-	existingOut, err := executeItemsAddToCollectionTestCmdWithFlags(t, existingSrv, &rootFlags{asJSON: true, maxChanges: -1}, "ITEM0001", "--collection-name", "Inbox")
+	existingSrv.collectionKey, existingSrv.collectionName = "CLCTAB23", "Inbox"
+	existingOut, err := executeItemsAddToCollectionTestCmdWithFlags(t, existingSrv, &rootFlags{asJSON: true, maxChanges: -1}, "ITEMAB23", "--collection-name", "Inbox")
 	if err != nil {
 		t.Fatalf("existing-collection preview: %v; out=%s", err, existingOut)
 	}
 	if existingSrv.collectionCreates != 0 || existingSrv.itemPatchCount != 0 {
 		t.Fatalf("existing-collection preview issued writes: creates=%d patches=%d", existingSrv.collectionCreates, existingSrv.itemPatchCount)
 	}
-	var reuseReport map[string]any
-	if err := json.Unmarshal([]byte(existingOut), &reuseReport); err != nil {
-		t.Fatalf("decoding reuse preview report %q: %v", existingOut, err)
-	}
-	if reuseReport["collection_action"] != "reuse" || reuseReport["collection_key"] != "COLL0001" {
-		t.Fatalf("reuse preview report = %+v, want reuse of existing COLL0001", reuseReport)
+	reuse := decodeAddToCollectionEnvelope(t, existingOut)
+	if reuse.Plan.Summary.Planned != 1 || len(reuse.Plan.Operations) != 1 || len(reuse.Plan.Operations[0].Changes) != 1 || reuse.Plan.Operations[0].Changes[0].Add != "CLCTAB23" {
+		t.Fatalf("reuse plan = %+v, want one membership change adding CLCTAB23", reuse.Plan)
 	}
 }
 
-// TestAddToCollectionJournalsCollectionCreate guards the fix for the reviewer-flagged
-// gap: the on-demand collection POST used to bypass runMutation entirely, so an
-// applied create never reached the journal. Route it through runMutation and the
-// run must leave two journaled entries: the collection create and the item move.
+// A preview that apply would refuse must say so, with the same exit code.
+func TestAddToCollectionPreviewReportsGateRefusal(t *testing.T) {
+	srv := newCollectionFilingTestServer(t)
+	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, maxChanges: 1}, "ITEMAB23", "--collection-name", "Inbox")
+	if err == nil {
+		t.Fatalf("preview of a plan above --max-changes succeeded; out=%s", out)
+	}
+	env := decodeAddToCollectionEnvelope(t, out)
+	if env.OK || env.Mode != "preview" || env.Error == nil || env.Error.Code != "max_changes_exceeded" {
+		t.Fatalf("preview envelope = %+v, want ok:false with max_changes_exceeded", env)
+	}
+	if srv.collectionCreates != 0 || srv.itemPatchCount != 0 {
+		t.Fatalf("refused preview issued writes: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
+	}
+}
+
+// A missing --collection-name is a usage error (exit 2), with or without --dry-run.
+func TestAddToCollectionRequiresCollectionName(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		srv := newCollectionFilingTestServer(t)
+		_, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dryRun: dryRun, maxChanges: -1}, "ITEMAB23")
+		if err == nil || ExitCode(err) != 2 {
+			t.Fatalf("dryRun=%v: error = %v, exit=%d; want usage error exit 2", dryRun, err, ExitCode(err))
+		}
+	}
+}
+
+// TestAddToCollectionJournalsCollectionCreate: one invocation that creates the
+// collection runs one mutation with two operations, and the journal records
+// both writes in a single entry.
 func TestAddToCollectionJournalsCollectionCreate(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	mutationJournalRecorder = recordMutationJournal
 	t.Cleanup(func() { mutationJournalRecorder = nil })
 
 	srv := newCollectionFilingTestServer(t)
-	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "ITEM0001", "--collection-name", "Inbox")
+	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "ITEMAB23", "--collection-name", "Inbox")
 	if err != nil {
 		t.Fatalf("apply: %v; out=%s", err, out)
 	}
@@ -318,26 +349,12 @@ func TestAddToCollectionJournalsCollectionCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list journal entries: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("journal entries = %+v, want two (collection create + item move)", entries)
+	if len(entries) != 1 || entries[0].Operation != "items.add-to-collection" || entries[0].Summary.Applied != 2 || len(entries[0].Ops) != 2 {
+		t.Fatalf("journal entries = %+v, want one items.add-to-collection entry with two applied ops", entries)
 	}
-	var sawCreate, sawMove bool
-	for _, e := range entries {
-		switch e.Operation {
-		case "items.add-to-collection":
-			sawCreate = true
-			if e.Summary.Applied != 1 {
-				t.Fatalf("collection-create journal entry = %+v, want one applied change", e)
-			}
-		case "items.move":
-			sawMove = true
-			if e.Summary.Applied != 1 {
-				t.Fatalf("item-move journal entry = %+v, want one applied change", e)
-			}
-		}
-	}
-	if !sawCreate || !sawMove {
-		t.Fatalf("journal entries = %+v, want both items.add-to-collection and items.move", entries)
+	member := entries[0].Ops[1]
+	if len(member.Revert) != 1 || member.Revert[0].Remove != "CLCTAB23" {
+		t.Fatalf("membership op revert = %+v, want removal of the created collection key", member.Revert)
 	}
 }
 
@@ -348,7 +365,7 @@ func TestAddToCollectionJournalsCollectionCreate(t *testing.T) {
 // and before the item is ever moved.
 func TestAddToCollectionHonorsMaxChanges(t *testing.T) {
 	srv := newCollectionFilingTestServer(t)
-	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: 0}, "ITEM0001", "--collection-name", "Inbox")
+	out, err := executeItemsAddToCollectionTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: 0}, "ITEMAB23", "--collection-name", "Inbox")
 	if err == nil {
 		t.Fatalf("expected max-changes refusal; out=%s", out)
 	}

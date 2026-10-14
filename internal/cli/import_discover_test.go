@@ -38,8 +38,8 @@ func TestImportDiscoverBackwardManifestSkipsHeldAndTitleDuplicate(t *testing.T) 
 	)
 
 	manifestPath := filepath.Join(t.TempDir(), "discover.json")
-	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:DISC", "--out", manifestPath, "--limit", "10", "--min-count", "2")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:DISC", "--output", manifestPath, "--limit", "10", "--min-count", "2")
 
 	if manifest.SchemaVersion != 2 {
 		t.Fatalf("schema_version = %d, want 2", manifest.SchemaVersion)
@@ -113,8 +113,8 @@ func TestImportDiscoverSkipsTitleDuplicateAcrossTypographicFolding(t *testing.T)
 	)
 
 	manifestPath := filepath.Join(t.TempDir(), "discover.json")
-	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:FOLD", "--out", manifestPath, "--limit", "10", "--min-count", "1")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:FOLD", "--output", manifestPath, "--limit", "10", "--min-count", "1")
 
 	if report.Summary.SkippedTitleDuplicate != 4 || report.Summary.SkippedAlreadyInLibrary != 0 {
 		t.Fatalf("skip summary = %+v, want four title skips and no DOI skip", report.Summary)
@@ -169,8 +169,8 @@ func TestImportDiscoverMinCountAndLimit(t *testing.T) {
 	)
 
 	manifestPath := filepath.Join(t.TempDir(), "discover.json")
-	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:LIMIT", "--out", manifestPath, "--limit", "1", "--min-count", "2")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:LIMIT", "--output", manifestPath, "--limit", "1", "--min-count", "2")
 
 	if len(manifest.Entries) != 1 {
 		t.Fatalf("entries = %+v, want exactly one due to --limit", manifest.Entries)
@@ -251,21 +251,21 @@ func TestImportDiscoverProviderCacheReusesAndNoCacheBypasses(t *testing.T) {
 		},
 	)
 
-	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, timeout: 5 * time.Second},
-		"--scope", "collection:CACHE", "--out", filepath.Join(t.TempDir(), "first.json"), "--limit", "10", "--min-count", "2")
+	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:CACHE", "--output", filepath.Join(t.TempDir(), "first.json"), "--limit", "10", "--min-count", "2")
 	firstCOCI, firstCrossRef, firstS2 := counters.coci.Load(), counters.crossref.Load(), counters.semanticScholar.Load()
 	if firstCOCI == 0 || firstCrossRef == 0 || firstS2 != 0 {
 		t.Fatalf("first counters coci=%d crossref=%d s2=%d, want COCI/CrossRef hits and no S2", firstCOCI, firstCrossRef, firstS2)
 	}
 
-	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, timeout: 5 * time.Second},
-		"--scope", "collection:CACHE", "--out", filepath.Join(t.TempDir(), "second.json"), "--limit", "10", "--min-count", "2")
+	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:CACHE", "--output", filepath.Join(t.TempDir(), "second.json"), "--limit", "10", "--min-count", "2")
 	if got := []int64{counters.coci.Load(), counters.crossref.Load(), counters.semanticScholar.Load()}; !reflect.DeepEqual(got, []int64{firstCOCI, firstCrossRef, firstS2}) {
 		t.Fatalf("cached second run counters = %v, want unchanged [%d %d %d]", got, firstCOCI, firstCrossRef, firstS2)
 	}
 
-	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:CACHE", "--out", filepath.Join(t.TempDir(), "third.json"), "--limit", "10", "--min-count", "2")
+	runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:CACHE", "--output", filepath.Join(t.TempDir(), "third.json"), "--limit", "10", "--min-count", "2")
 	if counters.coci.Load() <= firstCOCI || counters.crossref.Load() <= firstCrossRef {
 		t.Fatalf("--no-cache counters coci=%d crossref=%d, want increments beyond coci=%d crossref=%d", counters.coci.Load(), counters.crossref.Load(), firstCOCI, firstCrossRef)
 	}
@@ -314,8 +314,8 @@ func TestImportDiscoverSemanticScholarTruncationInJSONSummary(t *testing.T) {
 	t.Cleanup(crossref.Close)
 	withBase(t, &enrichCrossRefBase, crossref.URL)
 
-	_, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:TRUNC", "--out", filepath.Join(t.TempDir(), "truncated.json"), "--limit", "10", "--min-count", "1")
+	_, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:TRUNC", "--output", filepath.Join(t.TempDir(), "truncated.json"), "--limit", "10", "--min-count", "1")
 	if len(report.Summary.Sources) != 1 {
 		t.Fatalf("sources = %+v, want one source", report.Summary.Sources)
 	}
@@ -395,11 +395,11 @@ func TestImportDiscoverCommandErrorsWhenAllSourcesFail(t *testing.T) {
 	t.Cleanup(semanticScholar.Close)
 	withBase(t, &enrichSemanticScholarBase, semanticScholar.URL)
 
-	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second})
+	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--scope", "collection:FAIL", "--out", filepath.Join(t.TempDir(), "manifest.json"), "--limit", "10", "--min-count", "1"})
+	cmd.SetArgs([]string{"--scope", "collection:FAIL", "--output", filepath.Join(t.TempDir(), "manifest.json"), "--limit", "10", "--min-count", "1"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("import discover succeeded when every source provider fetch failed")
 	}
@@ -414,11 +414,11 @@ func TestImportDiscoverRefusesBusyOutputBeforeReadingSource(t *testing.T) {
 	_ = holdOutputWriterLock(t, target)
 	useUnreachableAPI(t)
 
-	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second})
+	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--scope", "library", "--out", target, "--min-count", "1"})
+	cmd.SetArgs([]string{"--scope", "library", "--output", target, "--min-count", "1"})
 	err := cmd.Execute()
 	assertBusyPrecondition(t, err, "import discover")
 
@@ -522,7 +522,7 @@ func runImportDiscoverTestCmd(t *testing.T, flags *rootFlags, args ...string) (i
 	}
 	manifestPath := ""
 	for i := range len(args) - 1 {
-		if args[i] == "--out" {
+		if args[i] == "--output" {
 			manifestPath = args[i+1]
 			break
 		}
@@ -579,8 +579,8 @@ func TestImportDiscoverWithinManifestTitleDedup(t *testing.T) {
 	)
 
 	manifestPath := filepath.Join(t.TempDir(), "discover.json")
-	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
-		"--scope", "collection:DUP", "--out", manifestPath, "--limit", "10", "--min-count", "2")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second, maxChanges: -1},
+		"--scope", "collection:DUP", "--output", manifestPath, "--limit", "10", "--min-count", "2")
 
 	if report.Summary.SkippedTitleDuplicate != 1 {
 		t.Fatalf("skip summary = %+v, want one within-manifest title skip", report.Summary)

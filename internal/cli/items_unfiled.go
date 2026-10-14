@@ -15,7 +15,7 @@ import (
 
 func newItemsUnfiledCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
-	var flagType string
+	var flagItemType string
 	var flagSuggest bool
 	var flagSuggestLimit int
 	var flagSuggestMinScore float64
@@ -29,11 +29,17 @@ func newItemsUnfiledCmd(flags *rootFlags) *cobra.Command {
 			"Each shared tag, creator, or venue splits its vote across the collections its filed items occupy, so a " +
 			"status tag such as \"/unread\" or a broad journal that spans many collections is weak evidence, and " +
 			"suggestions scoring below --suggest-min-score are dropped. Suggestions are read-only and never move items.",
-		Example: "  zotio items unfiled --suggest --json\n  zotio items unfiled --suggest --suggest-limit 5 --type book\n" +
-			"  # File every item whose best suggestion is collection ABCD1234 (preview; add --yes to apply)\n" +
-			"  zotio items unfiled --suggest --json | jq '[.results[] | select(.suggestions[0].collection == \"ABCD1234\")]' | zotio items move --keys-from - --to ABCD1234",
+		Example: "  zotio items unfiled --suggest --json\n  zotio items unfiled --suggest --suggest-limit 5 --item-type book\n" +
+			"  # File every item whose best suggestion is collection ABCD2345 (preview; add --yes to apply)\n" +
+			"  zotio items unfiled --suggest --json | jq '[.results[] | select(.suggestions[0].collection == \"ABCD2345\")]' | zotio items move --keys-from - --to ABCD2345",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			if flagSuggestLimit < 0 {
 				return usageErr(fmt.Errorf("--suggest-limit must be >= 0"))
 			}
@@ -50,16 +56,12 @@ func newItemsUnfiledCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				if flagSuggest {
-					return preconditionErr(fmt.Errorf("run 'zotio sync' first to enable collection suggestions"))
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := queryUnfiledItems(db, flagType, flagLimit)
+			rows, err := queryUnfiledItems(db, flagItemType, flagLimit)
 			if err != nil {
 				return fmt.Errorf("querying unfiled items: %w", err)
 			}
@@ -72,29 +74,13 @@ func newItemsUnfiledCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Local-mirror read: same envelope pipeline as every other read
-			// command, so `.results` stays a JSON array (this used to print a
-			// bare top-level array).
 			prov := localProvenance(rawDB, "items", "local_only")
 			printProvenance(cmd, len(rows), prov)
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			return printMirrorRows(cmd, flags, data, prov)
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
-	cmd.Flags().StringVar(&flagType, "type", "", "Filter by Zotero item type")
+	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by Zotero item type")
 	cmd.Flags().BoolVar(&flagSuggest, "suggest", false, "Suggest collections from local tags, creators, and venue (read-only)")
 	cmd.Flags().IntVar(&flagSuggestLimit, "suggest-limit", 3, "Maximum collection suggestions per item (requires --suggest)")
 	cmd.Flags().Float64Var(&flagSuggestMinScore, "suggest-min-score", unfiledSuggestMinScore, "Drop collection suggestions scoring below this (requires --suggest)")

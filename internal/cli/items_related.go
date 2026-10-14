@@ -47,7 +47,7 @@ func newItemsRelatedCmd(flags *rootFlags) *cobra.Command {
 		Use:         "related <itemKey>",
 		Short:       "Show outgoing and incoming Zotero related-item edges",
 		Args:        cobra.ExactArgs(1),
-		Example:     "  zotio items related ABC12345\n  zotio items related ABC12345 --json",
+		Example:     "  zotio items related ABCD2345\n  zotio items related ABCD2345 --json",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, found, synced, err := itemRelatedReportFromLocalStore(cmd.Context(), args[0])
@@ -55,19 +55,10 @@ func newItemsRelatedCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			if !synced {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return preconditionErr(errors.New("local store not synced; run 'zotio sync' first"))
 			}
 			if !found {
-				if flags.asJSON {
-					data, err := graphNotFoundJSON(args[0])
-					if err != nil {
-						return err
-					}
-					return printOutput(cmd.OutOrStdout(), data, true)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Item not found: %s\n", args[0])
-				return nil
+				return graphNotFound(args[0])
 			}
 			if flags.asJSON {
 				return printCommandJSON(cmd.OutOrStdout(), report, flags)

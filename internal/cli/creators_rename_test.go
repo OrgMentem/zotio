@@ -41,7 +41,7 @@ func TestCreatorsRenamePreviewBuildsOneOpPerAffectedItem(t *testing.T) {
 	})
 	srv := newCreatorAuditFixServer(t, nil)
 
-	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
 	if err != nil {
 		t.Fatalf("creators rename preview: %v", err)
 	}
@@ -55,10 +55,31 @@ func TestCreatorsRenamePreviewBuildsOneOpPerAffectedItem(t *testing.T) {
 		t.Fatalf("planned keys = %v, want [K1 K2] (K3 does not carry the alias)", got)
 	}
 	for _, op := range env.Plan.Operations {
-		if op.Kind != "creator_rename" || op.Destructive {
-			t.Fatalf("op %+v, want non-destructive creator_rename", op)
+		if op.Kind != "creator_rename" || !op.Destructive {
+			t.Fatalf("op %+v, want destructive creator_rename", op)
 		}
 		assertCreatorChange(t, op.Changes, "Adam J Rock", "Adam J. Rock")
+	}
+}
+
+// TestCreatorsRenameRequiresAllowDestructive proves the registry's destructive
+// claim is enforced: without --allow-destructive the plan is printed but the
+// run is refused and nothing is sent to Zotero.
+func TestCreatorsRenameRequiresAllowDestructive(t *testing.T) {
+	seedCreatorAuditFixStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":3,"data":{"key":"K1","version":3,"itemType":"journalArticle","title":"Split name","creators":[{"creatorType":"author","firstName":"Adam J","lastName":"Rock"}]}}`),
+	})
+	srv := newCreatorAuditFixServer(t, nil)
+
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	if err == nil {
+		t.Fatal("creators rename --yes without --allow-destructive succeeded, want refusal")
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "destructive_opt_in_required" {
+		t.Fatalf("envelope = %+v, want ok:false destructive_opt_in_required", env)
+	}
+	if srv.requests != 0 {
+		t.Fatalf("refused apply made %d Zotero request(s), want 0", srv.requests)
 	}
 }
 
@@ -82,7 +103,7 @@ func TestCreatorsRenameApplyUsesWritePlanePreconditionAndPreservesShape(t *testi
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = oldMirror })
 
-	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
 	if err != nil {
 		t.Fatalf("creators rename apply: %v", err)
 	}
@@ -119,7 +140,7 @@ func TestCreatorsRenameNoOpWhenWritePlaneNoLongerCarriesName(t *testing.T) {
 		json.RawMessage(`{"key":"K1","version":203,"data":{"key":"K1","creators":[{"creatorType":"author","firstName":"Adam J.","lastName":"Rock"}]}}`),
 	})
 
-	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
 	if err != nil {
 		t.Fatalf("creators rename apply: %v", err)
 	}
@@ -155,7 +176,7 @@ func TestCreatorsRenameRefusesWriteWithoutWritePlaneVersion(t *testing.T) {
 		json.RawMessage(`{"key":"K1","data":{"key":"K1","creators":[{"creatorType":"author","firstName":"Adam J","lastName":"Rock"}]}}`),
 	})
 
-	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
 	if err == nil {
 		t.Fatal("creators rename apply succeeded, want an error for the unresolvable precondition")
 	}
@@ -183,7 +204,7 @@ func TestCreatorsRenameMissingMirrorIsPreconditionError(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
-	_, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, "http://127.0.0.1:1", "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	_, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, allowDestructive: true, maxChanges: -1}, "http://127.0.0.1:1", "--from", "Adam J Rock", "--to", "Adam J. Rock")
 	if err == nil {
 		t.Fatal("creators rename with no mirror succeeded, want a precondition error so the workflow step stays retryable")
 	}
@@ -192,5 +213,20 @@ func TestCreatorsRenameMissingMirrorIsPreconditionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "zotio sync") {
 		t.Fatalf("err = %v, want the sync remediation", err)
+	}
+}
+
+func TestCreatorsRenamePreviewRequiresAllowDestructive(t *testing.T) {
+	seedCreatorAuditFixStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":3,"data":{"key":"K1","version":3,"itemType":"journalArticle","title":"Split name","creators":[{"creatorType":"author","firstName":"Adam J","lastName":"Rock"}]}}`),
+	})
+	srv := newCreatorAuditFixServer(t, nil)
+
+	env, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, srv.server.URL, "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	if err == nil {
+		t.Fatal("preview without --allow-destructive succeeded, want refusal")
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "destructive_opt_in_required" {
+		t.Fatalf("envelope = %+v, want ok:false destructive_opt_in_required", env)
 	}
 }

@@ -4,11 +4,11 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
@@ -17,24 +17,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// openPrivateOutputFile opens an export artifact with owner-only permissions.
-// Chmod also repairs an existing output file created by an earlier zotio
-// version with a less restrictive mode.
-func openPrivateOutputFile(path string, flags int) (*os.File, error) {
-	f, err := os.OpenFile(path, flags, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return f, nil
-}
-
-// exportOutputFileMode is the mode an export artifact is published with. It
-// matches what openPrivateOutputFile forced for the direct writes this
-// replaced, so the published permissions are unchanged.
+// exportOutputFileMode is the mode an export artifact is published with: owner
+// read/write only.
 const exportOutputFileMode = 0o600
 
 // exportFileResult reports an `export --output` run. Replaced says whether a
@@ -61,15 +45,28 @@ func (r exportFileResult) message() string {
 	}
 }
 
+// writeJSONLRecord writes one record as a single compact JSON line. The local
+// and live sources return pretty-printed records, so each one is compacted to
+// keep the stream valid JSONL.
+func writeJSONLRecord(writer io.Writer, record []byte) error {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, record); err != nil {
+		return fmt.Errorf("compacting export record: %w", err)
+	}
+	buf.WriteByte('\n')
+	_, err := writer.Write(buf.Bytes())
+	return err
+}
+
 func writeExport(writer io.Writer, format string, data []byte, limit int) (int, error) {
 	switch format {
 	case "jsonl":
 		var items []json.RawMessage
 		if err := json.Unmarshal(data, &items); err != nil {
-			if _, err := fmt.Fprintln(writer, string(data)); err != nil {
+			// A single object (for example an item fetched by key) is one record.
+			if err := writeJSONLRecord(writer, data); err != nil {
 				return 0, err
 			}
-			// A single object (for example an item fetched by key) is one record.
 			return 1, nil
 		}
 		count := 0
@@ -77,7 +74,7 @@ func writeExport(writer io.Writer, format string, data []byte, limit int) (int, 
 			if limit > 0 && count >= limit {
 				break
 			}
-			if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+			if err := writeJSONLRecord(writer, item); err != nil {
 				return count, err
 			}
 			count++
@@ -120,7 +117,7 @@ backwards-compatible resource exports.`,
   zotio export items --limit 1000
 
   # Pipe to another tool
-  zotio export items | jq '.id'`,
+  zotio export items | jq '.key'`,
 		Annotations: map[string]string{"mcp:writes-files": "true"},
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -142,6 +139,9 @@ backwards-compatible resource exports.`,
 			}
 			if format != "jsonl" && format != "json" {
 				return usageErr(fmt.Errorf("unknown export format %q: use jsonl or json", format))
+			}
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
 			}
 
 			var err error
@@ -191,7 +191,7 @@ backwards-compatible resource exports.`,
 						return nil
 					}
 					for _, item := range page {
-						if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+						if err := writeJSONLRecord(writer, item); err != nil {
 							return err
 						}
 					}
@@ -284,7 +284,7 @@ backwards-compatible resource exports.`,
 
 	cmd.Flags().StringVar(&format, "format", "jsonl", "Output format: jsonl or json")
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: stdout)")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = unlimited)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = no limit)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass response cache for fresh data")
 	// --no-cache belongs to the legacy resource-export form. Keep accepting
 	// it for existing scripts, but do not advertise it on the parent

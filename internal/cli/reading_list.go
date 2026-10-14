@@ -38,6 +38,9 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Show the Zotero reading queue",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			queueTag := strings.TrimSpace(flagTag)
 			if queueTag == "" {
 				queueTag = defaultTag
@@ -60,7 +63,7 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 			if flagLimit > 0 {
 				params["limit"] = fmt.Sprintf("%d", flagLimit)
 			}
-			data, _, err := resolveRead(cmd.Context(), c, flags, "items", true, "/items", params, nil)
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", true, "/items", params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -94,19 +97,40 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 			if len(queue) > 0 {
 				result.Oldest = queue[0].DateAdded
 			}
-			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
-				data, err := json.Marshal(result)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				if flags.quiet {
+					return nil
+				}
+				rows, err := json.Marshal(queue)
 				if err != nil {
 					return err
 				}
-				// The payload wraps a single `items` array, so --plain/--csv can
-				// render it as records; printCommandJSON force-cleared them.
-				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+				filtered, err := applyFieldFlags(rows, flags)
+				if err != nil {
+					return err
+				}
+				wrapped, err := wrapWithProvenanceExtra(filtered, prov, map[string]any{
+					"queue_tag": result.QueueTag,
+					"count":     result.Count,
+					"oldest":    result.Oldest,
+				})
+				if err != nil {
+					return err
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
+			}
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+				rows, err := json.Marshal(queue)
+				if err != nil {
+					return err
+				}
+				// --plain/--csv render the queue rows as records.
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(rows), flags)
 			}
 			return printReadingList(cmd, result)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to show")
+	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to show (0 = no limit)")
 	cmd.Flags().StringVar(&flagTag, "tag", defaultTag, "Override the reading queue tag")
 	// keep the bare queue view while adding state transition subcommands.
 	cmd.AddCommand(newReadingListAddCmd(flags), newReadingListStartCmd(flags), newReadingListDoneCmd(flags))

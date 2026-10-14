@@ -35,7 +35,7 @@ func parseTagAuditPrefer(value string) (tagAuditPrefer, error) {
 	case tagAuditPreferFrequency, tagAuditPreferSentence, tagAuditPreferTitle, tagAuditPreferLower:
 		return tagAuditPrefer(value), nil
 	default:
-		return "", fmt.Errorf("invalid --prefer %q: want one of frequency, sentence, title, lower", value)
+		return "", usageErr(fmt.Errorf("invalid --prefer %q: want one of frequency, sentence, title, lower", value))
 	}
 }
 
@@ -79,26 +79,33 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
   zotio tags audit --prefer title`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			policy, err := parseTagAuditPrefer(prefer)
 			if err != nil {
 				return err
 			}
-			res, ok, err := readTagAudit(cmd, policy, false)
+			res, err := readTagAudit(cmd, flags, policy)
 			if err != nil {
 				return err
 			}
-			if !ok {
+			if flags.quiet {
 				return nil
 			}
-			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(res.Plans)
 				if err != nil {
 					return err
 				}
-				if flags.selectFields != "" {
-					data = filterFields(data, flags.selectFields)
+				data, err = applyFieldFlags(json.RawMessage(data), flags)
+				if err != nil {
+					return err
 				}
-				wrapped, err := wrapWithProvenance(json.RawMessage(data), res.Prov)
+				wrapped, err := wrapWithProvenance(data, res.Prov)
 				if err != nil {
 					return err
 				}
@@ -108,7 +115,7 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
-			return printTagAuditReport(cmd, res.TotalTags, res.Plans, policy, flags.dryRun)
+			return printTagAuditReport(cmd, res.TotalTags, res.Plans, policy)
 		},
 	}
 	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
@@ -126,14 +133,10 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 		Example: `  zotio tags audit fix --yes
   zotio tags audit fix --prefer title --yes
   zotio tags audit --json | zotio tags audit fix --keys-from - --yes`,
-		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			policy, err := parseTagAuditPrefer(prefer)
 			if err != nil {
 				return err
@@ -148,15 +151,15 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 				}
 				keyFilter = make(map[string]bool, len(keys))
 				for _, key := range keys {
+					if err := validateKeyArg("item", key); err != nil {
+						return err
+					}
 					keyFilter[key] = true
 				}
 			}
-			res, ok, err := readTagAudit(cmd, policy, true)
+			res, err := readTagAudit(cmd, flags, policy)
 			if err != nil {
 				return err
-			}
-			if !ok {
-				return nil
 			}
 			var renameApply func(tagRenameUpdate) (string, any, error)
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -194,17 +197,13 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "tags.audit.fix", ops)
-			renderErr := renderMutation(cmd, flags, env, func(env mutation.Envelope) string {
+			return renderMutationResult(cmd, flags, env, runErr, func(env mutation.Envelope) string {
 				action := "would fix"
 				if env.Mode == "apply" {
 					action = "fixed"
 				}
 				return fmt.Sprintf("%s %d tag item write(s)", action, env.Plan.Summary.Planned)
 			})
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
@@ -252,19 +251,14 @@ WHERE r.resource_type = 'items' AND tag_name IN (%s)
 ORDER BY r.id ASC`
 
 // readTagAudit reads the audit from the local store. A missing store is a
-// hint for the read-only report but a precondition failure when requireStore
-// is set (the fix path must not exit 0 having planned nothing).
-func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer, requireStore bool) (tagAuditResult, bool, error) {
+// precondition failure (exit 9).
+func readTagAudit(cmd *cobra.Command, flags *rootFlags, prefer tagAuditPrefer) (tagAuditResult, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
-		return tagAuditResult{}, false, fmt.Errorf("opening database: %w", err)
+		return tagAuditResult{}, fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
-		if requireStore {
-			return tagAuditResult{}, false, preconditionErr(errors.New("no local data. Run 'zotio sync' first"))
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return tagAuditResult{}, false, nil
+		return tagAuditResult{}, errUnsyncedStoreFor(cmd, flags)
 	}
 	defer rawDB.Close()
 	prov := localProvenance(rawDB, "tags", "local_only")
@@ -272,17 +266,17 @@ func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer, requireStore bool) 
 
 	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
 	if err != nil {
-		return tagAuditResult{}, false, fmt.Errorf("querying tags: %w", err)
+		return tagAuditResult{}, fmt.Errorf("querying tags: %w", err)
 	}
 	countRows, err := db.QueryRaw(tagAuditCountQuery)
 	if err != nil {
-		return tagAuditResult{}, false, fmt.Errorf("querying tag counts: %w", err)
+		return tagAuditResult{}, fmt.Errorf("querying tag counts: %w", err)
 	}
 	automaticTags := map[string]bool{}
 	if prefer != tagAuditPreferFrequency {
 		automaticRows, err := db.QueryRaw(tagAuditAutomaticQuery)
 		if err != nil {
-			return tagAuditResult{}, false, fmt.Errorf("querying automatic tags: %w", err)
+			return tagAuditResult{}, fmt.Errorf("querying automatic tags: %w", err)
 		}
 		for _, row := range automaticRows {
 			if name := sqlStringValue(row["tag_name"]); name != "" {
@@ -294,9 +288,9 @@ func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer, requireStore bool) 
 	plans := buildTagAuditPlans(tagRows, countRows, prefer, automaticTags)
 	findings, err := tagAuditFindings(db, plans, FindingSource{Kind: prov.Source, SyncedAt: prov.SyncedAt})
 	if err != nil {
-		return tagAuditResult{}, false, fmt.Errorf("querying drifted tag items: %w", err)
+		return tagAuditResult{}, fmt.Errorf("querying drifted tag items: %w", err)
 	}
-	return tagAuditResult{TotalTags: len(tagRows), Plans: plans, Findings: findings, Prov: prov}, true, nil
+	return tagAuditResult{TotalTags: len(tagRows), Plans: plans, Findings: findings, Prov: prov}, nil
 }
 
 // tagAuditFindings restates the merge plan as the shared finding envelope,
@@ -615,12 +609,8 @@ func quoteTagAuditCommandArg(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, prefer tagAuditPrefer, dryRun bool) error {
-	summaryTitle := "Summary"
-	if dryRun {
-		summaryTitle += " (dry run)"
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), bold(summaryTitle))
+func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, prefer tagAuditPrefer) error {
+	fmt.Fprintln(cmd.OutOrStdout(), bold("Summary"))
 	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n", dim("total tags:"), totalTags)
 	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n\n", dim("duplicate groups:"), len(plans))
 	fmt.Fprintln(cmd.OutOrStdout(), bold("Merge plan"))
@@ -633,7 +623,7 @@ func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan
 		fixCommand += " --prefer " + string(prefer)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(),
-		"Run %s to apply every rename below in one batch (prepend --dry-run to preview first). The individual commands below remain a manual escape hatch for renaming groups one at a time.\n\n",
+		"Run %s to apply every rename below in one batch. `tags audit fix` previews by default and writes only with --yes. The individual commands below remain a manual escape hatch for renaming groups one at a time.\n\n",
 		bold(fixCommand))
 	for _, plan := range plans {
 		if plan.AutomaticSkipped {

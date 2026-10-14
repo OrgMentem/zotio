@@ -77,6 +77,20 @@ func localAPIReachable(c *client.Client) bool {
 	return errors.As(err, &apiErr)
 }
 
+// printEnsureLiveReachable reports the reachable verdict. Under --json the
+// payload is {"status":"reachable"}; the full doctor report carries the same
+// top-level "status" key (ok, stale, or error).
+func printEnsureLiveReachable(cmd *cobra.Command, flags *rootFlags) error {
+	if flags.quiet {
+		return nil
+	}
+	if flags.asJSON {
+		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(`{"status":"reachable"}`), flags)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Zotero local API: reachable")
+	return nil
+}
+
 // implement the doctor --ensure-live precondition remediation primitive.
 func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 	c, err := flags.newClient()
@@ -84,11 +98,7 @@ func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 		return err
 	}
 	if localAPIReachable(c) {
-		if flags.asJSON {
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(`{"status":"reachable"}`), flags)
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Zotero local API: reachable")
-		return nil
+		return printEnsureLiveReachable(cmd, flags)
 	}
 	if !launch {
 		return preconditionErr(fmt.Errorf("Zotero desktop / local API not reachable; pass --launch to start it, or open Zotero and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero'"))
@@ -121,11 +131,7 @@ func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if localAPIReachable(c) {
-				if flags.asJSON {
-					return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(`{"status":"reachable"}`), flags)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "Zotero local API: reachable")
-				return nil
+				return printEnsureLiveReachable(cmd, flags)
 			}
 		}
 	}

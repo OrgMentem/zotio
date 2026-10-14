@@ -11,6 +11,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"zotio/internal/cli"
 )
 
 // RegisterAll walks the user-facing Cobra commands and registers in-process
@@ -47,25 +49,43 @@ func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 			// as a raw flag escape hatch.
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw CLI flags are rejected.")))
 		}
-		options = append(options, mirrorHintOptions(cmd)...)
+		options = append(options, mirrorHintOptions(cmd, path)...)
 		s.AddTool(mcplib.NewTool(toolName, options...), safeInProcessHandler(rootFactory, path, allowedFlags))
 	})
 }
 
-// mirrorHintOptions returns the MCP behavior hints for one mirrored command.
-// readOnlyHint=true is reserved for commands that change nothing at all: a
-// read-only command that writes local files (WritesFilesAnnotation) is
-// advertised as a possibly destructive tool, which is also the MCP default
-// for unannotated mutating commands.
-func mirrorHintOptions(cmd *cobra.Command) []mcplib.ToolOption {
+// mirrorHintOptions returns the MCP behavior hints for one mirrored command,
+// derived from the capability registry so a mirror tool and `agent-context`
+// cannot disagree:
+//
+//   - readOnlyHint=true is reserved for commands that change nothing at all: a
+//     read-only command that writes local files (WritesFilesAnnotation) is
+//     advertised as a possibly destructive tool.
+//   - destructiveHint=true marks registry-destructive commands (changes
+//     `journal undo` cannot reverse) and local file writers, which can replace
+//     or delete an existing file. Additive writes advertise
+//     destructiveHint=false.
+//   - openWorldHint=false marks commands the registry says read only the
+//     local mirror; every other command may reach Zotero or the network.
+//
+// A command the registry cannot classify as read or write keeps the MCP
+// defaults.
+func mirrorHintOptions(cmd *cobra.Command, path []string) []mcplib.ToolOption {
+	joined := strings.Join(path, " ")
+	operation, _, destructive := orchestrationCapability(cmd, joined)
+	var opts []mcplib.ToolOption
 	switch {
-	case writesFiles(cmd):
-		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(false), mcplib.WithDestructiveHintAnnotation(true)}
+	case writesFiles(cmd), destructive:
+		opts = append(opts, mcplib.WithReadOnlyHintAnnotation(false), mcplib.WithDestructiveHintAnnotation(true))
 	case isMCPReadOnly(cmd):
-		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false)}
-	default:
-		return nil
+		opts = append(opts, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
+	case operation == "write" || operation == "sync":
+		opts = append(opts, mcplib.WithReadOnlyHintAnnotation(false), mcplib.WithDestructiveHintAnnotation(false))
 	}
+	if cli.CommandLocalOnly(joined) {
+		opts = append(opts, mcplib.WithOpenWorldHintAnnotation(false))
+	}
+	return opts
 }
 
 func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string)) {
@@ -154,13 +174,19 @@ func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 	}
 	cmd.NonInheritedFlags().VisitAll(emit)
 	// Keep the write-safety gate flags reachable for mutating commands so applies
-	// remain possible through the MCP surface.
-	if !isMCPReadOnly(cmd) {
+	// remain possible through the MCP surface. A read-only command that writes
+	// local files (WritesFilesAnnotation) keeps only --dry-run: a preview is
+	// the one gate that applies to a file writer, and an agent must be able to
+	// ask for it.
+	switch {
+	case !isMCPReadOnly(cmd):
 		for _, name := range writeGatingMCPFlags {
 			if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
 				emit(flag)
 			}
 		}
+	case writesFiles(cmd):
+		emit(cmd.InheritedFlags().Lookup("dry-run"))
 	}
 	// A command can opt specific inherited selectors back in. Capability route
 	// commands use this for --via and --connector-target. Compiled annotations

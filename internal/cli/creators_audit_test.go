@@ -193,17 +193,9 @@ func TestCreatorsAuditIncludeAmbiguousFlagControlsReport(t *testing.T) {
 			t.Fatalf("default report exposed ambiguous group: %+v", group)
 		}
 	}
-	defaultFlags := &rootFlags{timeout: time.Second}
-	defaultCmd := newCreatorsAuditCmd(defaultFlags)
-	defaultCmd.SilenceErrors, defaultCmd.SilenceUsage = true, true
-	var defaultOut bytes.Buffer
-	defaultCmd.SetOut(&defaultOut)
-	defaultCmd.SetArgs(nil)
-	if err := defaultCmd.Execute(); err != nil {
-		t.Fatalf("creators audit default (text): %v", err)
-	}
-	if strings.Contains(defaultOut.String(), "zotio creators rename --from") {
-		t.Fatalf("default text report exposed a pasteable rename command: %q", defaultOut.String())
+	defaultText := creatorAuditTextReport(t, false)
+	if strings.Contains(defaultText, "zotio creators rename --from") {
+		t.Fatalf("default text report exposed a pasteable rename command: %q", defaultText)
 	}
 	includedReport, _ := creatorAuditRunJSONCommand(t, "--include-ambiguous")
 	found := false
@@ -221,17 +213,9 @@ func TestCreatorsAuditIncludeAmbiguousFlagControlsReport(t *testing.T) {
 	if !found {
 		t.Fatal("--include-ambiguous did not expose review-only group")
 	}
-	flags := &rootFlags{timeout: time.Second}
-	cmd := newCreatorsAuditCmd(flags)
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--include-ambiguous"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("creators audit --include-ambiguous (text): %v", err)
-	}
-	if !strings.Contains(out.String(), "REVIEW ONLY") || strings.Contains(out.String(), "zotio creators rename --from") {
-		t.Fatalf("ambiguous text report was runnable or not visibly gated: %q", out.String())
+	text := creatorAuditTextReport(t, true)
+	if !strings.Contains(text, "REVIEW ONLY") || strings.Contains(text, "zotio creators rename --from") {
+		t.Fatalf("ambiguous text report was runnable or not visibly gated: %q", text)
 	}
 }
 
@@ -302,17 +286,9 @@ func TestCreatorsAuditEmitsRunnableRenameCommand(t *testing.T) {
 		t.Fatalf("alias rename_command = %q, want %q", alias.RenameCommand, wantCommand)
 	}
 
-	flags := &rootFlags{timeout: time.Second}
-	cmd := newCreatorsAuditCmd(flags)
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs(nil)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("creators audit (text): %v", err)
-	}
-	if !strings.Contains(out.String(), wantCommand) {
-		t.Fatalf("text report %q does not contain runnable command %q", out.String(), wantCommand)
+	text := creatorAuditTextReport(t, false)
+	if !strings.Contains(text, wantCommand) {
+		t.Fatalf("text report %q does not contain runnable command %q", text, wantCommand)
 	}
 }
 
@@ -371,18 +347,10 @@ func TestCreatorsAuditJSONRunnableRenamesMatchTextPlan(t *testing.T) {
 		t.Fatal("fixture did not produce an ambiguous finding")
 	}
 
-	flags := &rootFlags{timeout: time.Second}
-	cmd := newCreatorsAuditCmd(flags)
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--include-ambiguous"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("creators audit text: %v", err)
-	}
-	textRunnable := strings.Count(out.String(), "zotio creators rename --from ")
+	text := creatorAuditTextReport(t, true)
+	textRunnable := strings.Count(text, "zotio creators rename --from ")
 	if jsonRunnable != textRunnable {
-		t.Fatalf("runnable rename counts differ: JSON=%d text=%d; text=%q", jsonRunnable, textRunnable, out.String())
+		t.Fatalf("runnable rename counts differ: JSON=%d text=%d; text=%q", jsonRunnable, textRunnable, text)
 	}
 }
 
@@ -700,4 +668,22 @@ func creatorAuditRequireGroupContaining(t *testing.T, groups []creatorVariantGro
 	}
 	t.Fatalf("group canonical %q alias %q not found in %+v", canonical, alias, groups)
 	return creatorVariantGroup{}
+}
+
+// creatorAuditTextReport renders the human report. The command prints JSON
+// when stdout is not a terminal, so tests call the text printer directly.
+func creatorAuditTextReport(t *testing.T, includeAmbiguous bool) string {
+	t.Helper()
+	cmd := newCreatorsAuditCmd(&rootFlags{timeout: time.Second})
+	cmd.SetContext(context.Background())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	report, err := runCreatorsAuditWithOptions(cmd, context.Background(), &rootFlags{timeout: time.Second}, scopeFlagDefaultLibrary, false, includeAmbiguous)
+	if err != nil {
+		t.Fatalf("creators audit (text): %v", err)
+	}
+	if err := printCreatorsAuditReport(cmd, report); err != nil {
+		t.Fatalf("print creators audit report: %v", err)
+	}
+	return out.String()
 }

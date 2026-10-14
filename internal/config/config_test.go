@@ -28,6 +28,9 @@ func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *
 	t.Setenv("HOME", home)
 	cfgPath := filepath.Join(home, "config.toml")
 
+	if err := os.WriteFile(cfgPath, nil, 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -52,6 +55,36 @@ func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *
 		// AuthHeader() already asserted above; this keeps the persisted-field
 		// check without re-reading the file through a deleted helper.
 		t.Fatalf("reloaded ZoteroApiKey = %q, want saved API key", got)
+	}
+}
+
+func TestSaveUserIDKeepsInlineAPIKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, k := range []string{"ZOTERO_API_KEY", "ZOTERO_USER_ID", "ZOTERO_CONFIG"} {
+		t.Setenv(k, "")
+	}
+	cfgPath := filepath.Join(home, "config.toml")
+	body := "base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"inline-secret\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.SaveUserID("12345"); err != nil {
+		t.Fatalf("SaveUserID: %v", err)
+	}
+	reloaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.AuthHeader(); got != "inline-secret" {
+		t.Fatalf("AuthHeader() after SaveUserID = %q, want the inline key preserved", got)
+	}
+	if reloaded.UserID != "12345" {
+		t.Fatalf("UserID = %q, want 12345", reloaded.UserID)
 	}
 }
 

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/config"
 
 	"github.com/spf13/cobra"
@@ -44,6 +46,7 @@ type rootFlags struct {
 	agent            bool
 	selectFields     string
 	configPath       string
+	configMustExist  bool
 	profileName      string
 	deliverSpec      string
 	// profileApplied prevents PersistentPreRun wrappers and the root handler
@@ -110,10 +113,19 @@ func Execute() error {
 	InstallRuntimeHooks()
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
+	// Count what commands write to stdout: when a command already printed its
+	// report, the central error printer must not append a second JSON document.
+	stdout := &stdoutCounter{w: os.Stdout}
+	rootCmd.SetOut(stdout)
+	record := func(m errorOutputMode) {
+		m.wroteStdout = stdout.Wrote()
+		recordErrorOutputMode(m)
+	}
 
 	// Before Cobra can answer a mistyped subcommand with help text and success.
 	// Returned, not printed: main is the only writer of the error line.
 	if err := unknownSubcommandErr(rootCmd, os.Args[1:]); err != nil {
+		record(argvOutputMode(rootCmd, os.Args[1:]))
 		return err
 	}
 	// Run under the interrupt context so cmd.Context() is Ctrl-C/SIGTERM-cancellable
@@ -126,7 +138,11 @@ func Execute() error {
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")
 		if idx := strings.Index(msg, "unknown flag: "); idx >= 0 {
 			flagStr := strings.TrimSpace(msg[idx+len("unknown flag: "):])
-			if suggestion := suggestFlag(flagStr, rootCmd); suggestion != "" {
+			target := rootCmd
+			if found, _, ferr := rootCmd.Find(os.Args[1:]); ferr == nil && found != nil {
+				target = found
+			}
+			if suggestion := suggestFlag(flagStr, target); suggestion != "" {
 				err = fmt.Errorf("%w\nhint: did you mean --%s?", err, suggestion)
 			}
 		}
@@ -137,6 +153,13 @@ func Execute() error {
 		// flow through usageErr(); without this wrap ExitCode() falls
 		// through to 1, clobbering the conventional code-2 for usage errors.
 		err = usageErr(err)
+		// Flag parsing may not have finished, so the bound flag values are
+		// incomplete: read the effective mode from the argument list.
+		record(argvOutputMode(rootCmd, os.Args[1:]))
+		return err
+	}
+	if err != nil {
+		record(effectiveOutputMode(rootCmd, &flags))
 	}
 	return err
 }
@@ -207,7 +230,9 @@ func ExecuteRootInProcess(ctx context.Context, root *cobra.Command) error {
 	if deliverErr != nil && isCobraUsageError(deliverErr) {
 		deliverErr = usageErr(deliverErr)
 	}
-	deliverCapturedOutput(deliverErr, deliverCtx, flags.deliverSink, flags.deliverSpool, flags.compact)
+	if derr := deliverCapturedOutput(deliverErr, deliverCtx, flags.deliverSink, flags.deliverSpool, flags.compact); derr != nil && err == nil {
+		return derr
+	}
 	return err
 }
 
@@ -261,16 +286,29 @@ func (t deliverTee) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) {
-	if shouldDeliverCapturedOutput(commandErr, spool) {
-		if err := Deliver(ctx, sink, spool, compact); err != nil {
-			target := sink.Target
-			if sink.Scheme == "webhook" {
-				target = webhookOrigin(target)
-			}
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", sink.Scheme, target, err)
-		}
+// deliverCapturedOutput delivers the spooled output and returns a classified
+// error when delivery fails: a busy file lock is 9, a webhook failure is 5.
+func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) error {
+	if !shouldDeliverCapturedOutput(commandErr, spool) {
+		return nil
 	}
+	err := Deliver(ctx, sink, spool, compact)
+	if err == nil {
+		return nil
+	}
+	target := sink.Target
+	if sink.Scheme == "webhook" {
+		target = webhookOrigin(target)
+	}
+	err = fmt.Errorf("deliver to %s:%s failed: %w", sink.Scheme, target, err)
+	var busy *cliutil.WriterLockBusyError
+	switch {
+	case errors.As(err, &busy):
+		return preconditionErr(err)
+	case sink.Scheme == "webhook":
+		return apiErr(err)
+	}
+	return err
 }
 
 func shouldDeliverCapturedOutput(err error, spool *deliverSpool) bool {
@@ -383,7 +421,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.compact, "compact", false, "Return only key fields (id, name, status, timestamps) for minimal token usage")
 	rootCmd.PersistentFlags().BoolVar(&flags.csv, "csv", false, "Output as CSV (table and array responses)")
 	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
-	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
+	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Print nothing; the exit code is the answer")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRequestTimeout, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview writes without sending them; read requests still run")
@@ -403,7 +441,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotio profile list')")
-	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
+	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Also write output to a sink (output still goes to stdout): file:<path> or webhook:<url>; stdout is the default")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 	// operate on a group library instead of the personal one, or on every
 	// accessible library at once for reads and diagnostics.
@@ -416,6 +454,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Capture the command context so newClient can propagate per-command
 		// deadlines and MCP request cancellation into client HTTP work.
 		flags.ctx = cmd.Context()
+		// An explicit --config must name an existing file, except for init,
+		// which creates it.
+		flags.configMustExist = cmd.Flags().Changed("config") && cmd.Name() != "init"
 		// Hand this state to the enclosing ExecuteRootInProcess before anything
 		// below can fail: from the deliver spool onwards this hook allocates
 		// resources that only the wrapper closes, and every return path from
@@ -434,6 +475,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 				flags.group = v
 			}
 		}
+		if err := rejectWriteFlagsOnReadCommand(cmd, flags); err != nil {
+			return err
+		}
 		if flags.deliverSpec != "" {
 			// The command context carries Ctrl-C/MCP cancellation and the
 			// --timeout deadline into webhook DNS preflight: a stalled lookup
@@ -444,10 +488,21 @@ See README.md or the bundled SKILL.md for recipes.`,
 			}
 			flags.deliverSink = sink
 			if sink.Scheme != "stdout" && sink.Scheme != "" {
+				var lock *cliutil.WriterLock
+				if sink.Scheme == "file" {
+					// Take <target>.lock before the command runs and hold it
+					// through the rename.
+					lock, err = acquireDeliverLock(sink)
+					if err != nil {
+						return err
+					}
+				}
 				spool, err := newDeliverSpool(sink)
 				if err != nil {
+					_ = lock.Release()
 					return err
 				}
+				spool.lock = lock
 				flags.deliverSpool = spool
 				// Multiplex onto the writers this execution was handed, not
 				// os.Stdout: in-process callers capture output through them (the
@@ -587,7 +642,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 // become an agent tool.
 func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
 	cmd, rest, err := rootCmd.Find(args)
-	if err != nil || cmd == nil || cmd.Runnable() {
+	if err != nil || cmd == nil || cmd.Runnable() && (!cmd.HasSubCommands() || len(positionalSpecs(cmd)) != 0) {
 		// Root's own unknown-command error, a real leaf, or a resolution
 		// failure Cobra already reports with suggestions.
 		return nil
@@ -602,11 +657,7 @@ func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
 	if len(extra) == 0 {
 		return nil // `zotio items` alone: help and exit 0, as before.
 	}
-	msg := fmt.Sprintf("unknown command %q for %q", extra[0], cmd.CommandPath())
-	if suggestions := cmd.SuggestionsFor(extra[0]); len(suggestions) > 0 {
-		msg += fmt.Sprintf("\n\nDid you mean this?\n\t%s", strings.Join(suggestions, "\n\t"))
-	}
-	return usageErr(errors.New(msg))
+	return usageErr(errors.New(unknownCommandMessage(cmd, extra[0])))
 }
 
 // installPositionalArgUsage makes every positional-argument failure in the tree
@@ -623,12 +674,28 @@ func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
 // Commands with nil Args stay nil: Find applies legacyArgs only to those, and
 // legacyArgs is what makes an unknown subcommand of the root an error.
 func installPositionalArgUsage(cmd *cobra.Command) {
-	if validate := cmd.Args; validate != nil {
+	validate := cmd.Args
+	if validate == nil && cmd.HasParent() && cmd.Runnable() && len(positionalSpecs(cmd)) == 0 {
+		// A runnable command whose Use names no positional takes none: a stray
+		// word is a usage error, not silently ignored. A runnable parent reads
+		// the word as a mistyped subcommand.
+		if cmd.HasSubCommands() {
+			validate = noPositionalArgs
+		} else {
+			validate = cobra.NoArgs
+		}
+	}
+	if validate == nil && hasKeyPositional(cmd) {
+		validate = cobra.ArbitraryArgs
+	}
+	if validate != nil {
 		cmd.Args = func(c *cobra.Command, args []string) error {
 			if err := validate(c, args); err != nil {
 				return positionalArgUsageErr(c, err)
 			}
-			return nil
+			// Key-valued positionals are validated from the Use string, so a
+			// malformed key is refused before any hook or request.
+			return validateKeyPositionals(c, positionalSpecs(c), args)
 		}
 	}
 	for _, sub := range cmd.Commands() {
@@ -636,8 +703,62 @@ func installPositionalArgUsage(cmd *cobra.Command) {
 	}
 }
 
+func hasKeyPositional(cmd *cobra.Command) bool {
+	for _, spec := range positionalSpecs(cmd) {
+		if spec.kind != "" || cmd.Name() == "open" {
+			return true
+		}
+	}
+	return false
+}
+
+// loadConfig loads the config, and refuses (exit 10) a config file named with
+// an explicit --config that does not exist: that is a typo or a missing mount.
+// ZOTERO_CONFIG and the default location may be absent (first run).
+func (f *rootFlags) loadConfig() (*config.Config, error) {
+	if f.configMustExist && strings.TrimSpace(f.configPath) != "" && !demoActive() {
+		if _, err := os.Stat(filepath.Clean(f.configPath)); os.IsNotExist(err) { //nolint:gosec // G703: --config is the operator's own path
+			return nil, configErr(fmt.Errorf("config file %s does not exist", f.configPath))
+		}
+	}
+	cfg, err := config.Load(f.configPath)
+	if err != nil {
+		return nil, configErr(err)
+	}
+	return cfg, nil
+}
+
+// writeSideGlobalFlags are the root flags only write paths read.
+var writeSideGlobalFlags = []string{
+	"max-changes", "continue-on-error", "max-failures", "idempotent",
+	"ignore-missing", "allow-destructive", "allow-zotero-cloud",
+	"connector-target", "via",
+}
+
+// rejectWriteFlagsOnReadCommand refuses an explicitly passed write-side global
+// flag on a command whose capability operation is read: the flag would be
+// silently ignored. Profile-applied values do not mark a flag Changed, so only
+// a flag typed on the command line is rejected. Flags the command redefines
+// locally are exempt.
+func rejectWriteFlagsOnReadCommand(cmd *cobra.Command, flags *rootFlags) error {
+	root := cmd.Root()
+	path := strings.TrimPrefix(cmd.CommandPath(), root.Name()+" ")
+	op, _, _ := CommandCapability(path, cmd.Annotations["mcp:read-only"])
+	if op != "read" {
+		return nil
+	}
+	for _, name := range writeSideGlobalFlags {
+		fl := cmd.Flags().Lookup(name)
+		if fl == nil || !fl.Changed || fl != root.PersistentFlags().Lookup(name) {
+			continue
+		}
+		return usageErr(fmt.Errorf("--%s has no effect on %s (read-only)", name, path))
+	}
+	return nil
+}
+
 func positionalArgUsageErr(cmd *cobra.Command, err error) error {
-	// One line: main sanitizes control bytes, newlines included.
+	// Keep the usage on the same line as the error: it is a single hint, not a block.
 	return usageErr(fmt.Errorf("%w (usage: %s)", err, cmd.UseLine()))
 }
 
@@ -650,9 +771,9 @@ func ExitCode(err error) int {
 }
 
 func (f *rootFlags) newClient() (*client.Client, error) {
-	cfg, err := config.Load(f.configPath)
+	cfg, err := f.loadConfig()
 	if err != nil {
-		return nil, configErr(err)
+		return nil, err
 	}
 	// when --group is set, point the API at the group's
 	// library prefix (/groups/<id>) instead of the configured personal one.
@@ -667,10 +788,14 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c.NoCache = f.noCache
 	// the Zotero local API is read-only, so when pointed at it, route writes
 	// to the Web API (resolved lazily on the first write) while reads stay local.
+	// Only an apply persists the resolved user ID: a preview must not save config.
 	if isLocalZoteroAPI(cfg.BaseURL) {
 		group := f.group
 		c.ResolveWriteBase = func(ctx context.Context) (string, error) {
-			return resolveWebWriteBase(ctx, cfg, group, f.timeout)
+			if f.zoteroApply() {
+				return resolveWebWriteBase(ctx, cfg, group, f.timeout)
+			}
+			return resolveWebWriteBaseWithoutPersist(ctx, cfg, group, f.timeout)
 		}
 	}
 	return c, nil
@@ -686,25 +811,22 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A preview must not resolve the hybrid write route: that can fetch
-	// /keys/current and persist a user ID before the dry-run request is rendered.
-	// Clear the lazy resolver as well, since the client otherwise resolves it
-	// while constructing any mutating dry-run URL.
-	if f.dryRun {
-		c.ResolveWriteBase = nil
-		return c, nil
-	}
+	// Preview and apply read the same plane: the lazy resolver points reads at
+	// the Web write plane either way, but only an apply may persist the
+	// resolved user ID (see newClient) and only an apply announces the route.
 	if c.ResolveWriteBase != nil {
 		ctx := f.ctx
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
-			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+			return nil, routeResolutionErr(rerr)
 		} else if base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
-			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)
+			if f.zoteroApply() {
+				fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)
+			}
 		}
 	}
 	return c, nil
@@ -738,7 +860,7 @@ func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 			ctx = context.Background()
 		}
 		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
-			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+			return nil, routeResolutionErr(rerr)
 		} else if base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
@@ -752,9 +874,9 @@ func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 // example, server-side CSL style rendering). Unlike newWriteClient, it never
 // prints a write-route notice and it fails loudly when the Web API key is absent.
 func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error) {
-	cfg, err := config.Load(f.configPath)
+	cfg, err := f.loadConfig()
 	if err != nil {
-		return nil, configErr(err)
+		return nil, err
 	}
 	if cfg.AuthHeader() == "" {
 		return nil, errWebAPIKeyRequired

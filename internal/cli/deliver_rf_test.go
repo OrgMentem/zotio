@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
-	"os"
 	"strings"
 	"testing"
 )
@@ -55,12 +54,14 @@ func TestRfWebhookDeliveryFailureWarningOmitsCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			warning := rfCaptureStderr(t, func() {
-				deliverCapturedOutput(nil, context.Background(), sink, spool, false)
-			})
-			wantPrefix := "warning: deliver to webhook:http://" + base.Host + " failed:"
+			derr := deliverCapturedOutput(nil, context.Background(), sink, spool, false)
+			if derr == nil || ExitCode(derr) != 5 {
+				t.Fatalf("deliverCapturedOutput error = %v (exit %d), want webhook failure exit 5", derr, ExitCode(derr))
+			}
+			warning := derr.Error()
+			wantPrefix := "deliver to webhook:http://" + base.Host + " failed:"
 			if !strings.Contains(warning, wantPrefix) || !strings.Contains(warning, tc.wantCause) {
-				t.Fatalf("stderr = %q, want %q naming %q", warning, wantPrefix, tc.wantCause)
+				t.Fatalf("error = %q, want %q naming %q", warning, wantPrefix, tc.wantCause)
 			}
 			for _, secret := range secrets {
 				if strings.Contains(warning, secret) {
@@ -69,29 +70,4 @@ func TestRfWebhookDeliveryFailureWarningOmitsCredentials(t *testing.T) {
 			}
 		})
 	}
-}
-
-// rfCaptureStderr runs fn with os.Stderr redirected and returns what it wrote.
-func rfCaptureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	oldStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	defer func() {
-		os.Stderr = oldStderr
-		_ = r.Close()
-	}()
-	fn()
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = oldStderr
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
 }

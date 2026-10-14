@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -55,6 +56,18 @@ type crossRefDate struct {
 	DateParts [][]int `json:"date-parts"`
 }
 
+// doiArgPattern matches a DOI after normalisation: the 10.<registrant>/<suffix>
+// form every registration agency issues.
+var doiArgPattern = regexp.MustCompile(`^10\.[0-9]+(\.[0-9]+)*/\S+$`)
+
+// validateDOIArg rejects a value that is not a DOI, before any network call.
+func validateDOIArg(value string) error {
+	if !doiArgPattern.MatchString(normalizeDOI(value)) {
+		return usageErr(fmt.Errorf("invalid DOI %q: expected the form 10.1234/suffix", value))
+	}
+	return nil
+}
+
 func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 	var flagFetchPDF bool
@@ -79,9 +92,17 @@ wins over --yes.`,
 			// The DOI import plan is known before fetching metadata: one create,
 			// plus the resolver attachment when requested. In apply mode, reject
 			// an over-cap plan before constructing clients or making network calls.
+			if err := validateDOIArg(args[0]); err != nil {
+				return err
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
+			}
 			if resolveMutationMode(flags).Apply {
-				if gateFailure := mutation.CheckGates(mutationOptions(flags), doiImportPreflightOps(args[0], flagFetchPDF)); gateFailure != nil {
-					return fmt.Errorf("%s", gateFailure.Message)
+				preflight := doiImportPreflightOps(args[0], flagFetchPDF)
+				if gateFailure := mutation.CheckGates(mutationOptions(flags), preflight); gateFailure != nil {
+					env, runErr := runMutation(cmd.Context(), flags, "import.doi", preflight)
+					return renderMutationResult(cmd, flags, env, runErr, nil)
 				}
 			}
 
@@ -106,7 +127,7 @@ wins over --yes.`,
 						err error
 					)
 					if flagFetchPDF {
-						via, err = flags.resolveCreateVia(cmd.Context(), cmd.Flags().Changed("collection"))
+						via, err = flags.resolveCreateVia(cmd.Context(), cmd.Flags().Changed("to"))
 						if err != nil {
 							return "failed", nil, err
 						}
@@ -119,9 +140,9 @@ wins over --yes.`,
 						return "failed", nil, err
 					}
 					if flagFetchPDF {
-						res, err = routeCreateItemVia(cmd.Context(), flags, via, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+						res, err = routeCreateItemVia(cmd.Context(), flags, via, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("to"))
 					} else {
-						res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+						res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("to"))
 					}
 					return singleItemCreateApplyResult(res, err, args[0])
 				},
@@ -145,16 +166,13 @@ wins over --yes.`,
 				})
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "import.doi", ops)
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
 			if runErr == nil && res.Via == "connector" {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add the item to")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -211,6 +229,9 @@ func fetchDOIItemWithCache(ctx context.Context, httpClient *http.Client, doi str
 	}
 	// crossRefErr already self-identifies ("fetching CrossRef metadata: ..."),
 	// so naming CrossRef again here would stutter.
+	if isRegistryRecordAbsent(dataCiteErr) {
+		return nil, notFoundErr(fmt.Errorf("resolving DOI metadata: %w; DataCite: %w", crossRefErr, dataCiteErr))
+	}
 	return nil, fmt.Errorf("resolving DOI metadata: %w; DataCite: %w", crossRefErr, dataCiteErr)
 }
 

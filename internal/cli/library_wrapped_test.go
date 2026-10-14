@@ -115,8 +115,12 @@ func TestLibraryWrappedZeroItemYearPrintsMessage(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("library wrapped zero year: %v", err)
 	}
-	if got := out.String(); !strings.Contains(got, "No items were added in 2024.") {
-		t.Fatalf("zero-item output = %q, want plain no-items message", got)
+	var rep libraryWrappedReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("zero-item output %q is not the piped JSON report: %v", out.String(), err)
+	}
+	if rep.Year != 2024 || rep.Items.Total != 0 {
+		t.Fatalf("zero-item report = %+v, want year 2024 with no items", rep)
 	}
 }
 

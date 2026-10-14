@@ -36,8 +36,11 @@ const (
 	commandHidden
 )
 
-// frameworkCommands are top-level CLI commands the walker should skip when
-// mirroring the Cobra tree. Two cases qualify:
+// frameworkCommands are CLI commands, keyed by full command path (root name
+// stripped, e.g. "search" but not "annotations search"), that the walker
+// should skip when mirroring the Cobra tree. Matching the full path keeps a
+// nested command that merely shares a leaf name with a framework command
+// (`annotations search` vs. the top-level `search`) exposed. Two cases qualify:
 //
 //  1. A typed MCP tool already covers the same capability (the typed tool's
 //     schema is strictly better than a shell-out). Examples: `sql`, `search`,
@@ -90,10 +93,20 @@ func classify(cmd *cobra.Command) commandKind {
 	if cmd == nil || cmd.Hidden || isMCPHidden(cmd) {
 		return commandHidden
 	}
-	if frameworkCommands[cmd.Name()] {
+	if frameworkCommands[relativeCommandPath(cmd)] {
 		return commandFramework
 	}
 	return commandNovel
+}
+
+// relativeCommandPath returns the space-separated command path with the root
+// command's name removed, the same key form the capability registry uses.
+func relativeCommandPath(cmd *cobra.Command) string {
+	path := cmd.CommandPath()
+	if root := cmd.Root(); root != cmd {
+		path = strings.TrimPrefix(path, root.Name()+" ")
+	}
+	return path
 }
 
 func isMCPHidden(cmd *cobra.Command) bool {

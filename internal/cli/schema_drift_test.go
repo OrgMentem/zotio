@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"zotio/internal/cliutil"
 	"zotio/internal/store"
 )
 
@@ -93,7 +94,7 @@ func TestSchemaDriftRejectsRelativeHomeWithoutBaselineWrite(t *testing.T) {
 	}
 }
 
-func TestSchemaDriftDefaultBaselineStaysUnderHome(t *testing.T) {
+func TestSchemaDriftDefaultBaselineUsesDataDir(t *testing.T) {
 	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
 	defer srv.Close()
 	home := t.TempDir()
@@ -109,12 +110,13 @@ func TestSchemaDriftDefaultBaselineStaysUnderHome(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("schema drift: %v", err)
 	}
-	baseline := filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json")
+	dataDir, err := cliutil.DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	baseline := filepath.Join(dataDir, "schema-baseline.json")
 	if _, err := os.Stat(baseline); err != nil {
 		t.Fatalf("default baseline %s: %v", baseline, err)
-	}
-	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_DATA_HOME"), "zotio", "schema-baseline.json")); !os.IsNotExist(err) {
-		t.Fatalf("baseline moved to XDG data directory: %v", err)
 	}
 }
 
@@ -320,8 +322,8 @@ func TestSchemaDriftFastPathSkipsFetchWhenVersionUnchanged(t *testing.T) {
 	if res["drift"] != false {
 		t.Errorf("drift = %v, want false", res["drift"])
 	}
-	if res["schema_version"] != "100" {
-		t.Errorf("schema_version = %v, want 100", res["schema_version"])
+	if res["zotero_schema_version"] != "100" {
+		t.Errorf("zotero_schema_version = %v, want 100", res["zotero_schema_version"])
 	}
 }
 
@@ -350,7 +352,7 @@ func TestSchemaDriftRefetchesWhenVersionChanges(t *testing.T) {
 	mu.Unlock()
 	var res struct {
 		Drift         bool   `json:"drift"`
-		SchemaVersion string `json:"schema_version"`
+		SchemaVersion string `json:"zotero_schema_version"`
 		Deltas        []struct {
 			Section string   `json:"section"`
 			Added   []string `json:"added"`

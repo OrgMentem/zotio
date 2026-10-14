@@ -95,7 +95,7 @@ func TestImportApplyDuplicateIsAuditableNoOp(t *testing.T) {
 	manifest := importApplyTestManifest()
 	manifest.Entries = manifest.Entries[2:]
 	manifestPath := writeImportApplyTestManifest(t, manifest)
-	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", yes: true}, []string{manifestPath})
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", yes: true, maxChanges: -1}, []string{manifestPath})
 	if err != nil {
 		t.Fatalf("duplicate apply: %v; stderr=%s", err, stderr)
 	}
@@ -109,7 +109,7 @@ func TestImportApplyDuplicateIsAuditableNoOp(t *testing.T) {
 
 func TestImportApplyStoredPreviewSupportsWebCreates(t *testing.T) {
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
-	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", maxChanges: -1}, []string{"--attach-mode", "stored", manifestPath})
 	if err != nil {
 		t.Fatalf("stored Web preview: %v; stderr=%s", err, stderr)
 	}
@@ -129,7 +129,7 @@ func TestImportApplyStoredAttachOnlyManifestSkipsConnector(t *testing.T) {
 	}
 	manifest.Entries = entries
 	manifestPath := writeImportApplyTestManifest(t, manifest)
-	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", maxChanges: -1}, []string{"--attach-mode", "stored", manifestPath})
 	if err != nil {
 		t.Fatalf("stored attach-only preview: %v; stderr=%s", err, stderr)
 	}
@@ -146,13 +146,13 @@ func TestManifestUnidentifiedDefaultsToRecognize(t *testing.T) {
 func TestImportApplyRecognizeRequiresConnector(t *testing.T) {
 	manifest := importApplyTestManifest()
 	manifest.Entries = []importManifestEntry{{
-		Path:   filepath.Join(string(filepath.Separator), "tmp", "unknown.pdf"),
+		Path:   writeUploadFixture(t, "unknown.pdf", []byte("%PDF-1.4\nunknown\n%%EOF")),
 		Action: "recognize",
 		Status: "resolved",
 		Title:  "Unknown PDF",
 	}}
 	manifestPath := writeImportApplyTestManifest(t, manifest)
-	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{manifestPath})
+	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", maxChanges: -1}, []string{manifestPath})
 	if err == nil || !strings.Contains(err.Error(), "action recognize requires the desktop connector") {
 		t.Fatalf("err = %v, want recognize connector precondition error", err)
 	}
@@ -165,13 +165,13 @@ func TestImportApplyRecognizePlansImportPDF(t *testing.T) {
 
 	manifest := importApplyTestManifest()
 	manifest.Entries = []importManifestEntry{{
-		Path:   filepath.Join(string(filepath.Separator), "tmp", "unknown.pdf"),
+		Path:   writeUploadFixture(t, "unknown.pdf", []byte("%PDF-1.4\nunknown\n%%EOF")),
 		Action: "recognize",
 		Status: "resolved",
 		Title:  "Unknown PDF",
 	}}
 	manifestPath := writeImportApplyTestManifest(t, manifest)
-	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), maxChanges: -1}
 	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{manifestPath})
 	if err != nil {
 		t.Fatalf("import apply recognize preview: %v; stderr=%s", err, stderr)
@@ -187,7 +187,7 @@ func TestImportApplyStoredPreviewPlansConnectorCreateAndWebAttach(t *testing.T) 
 	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
 
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
-	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), maxChanges: -1}
 	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
 	if err != nil {
 		t.Fatalf("import apply stored preview: %v; stderr=%s", err, stderr)
@@ -225,7 +225,7 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 		t.Fatalf("env = %+v, want one applied create+attachment operation", env)
 	}
 	reason, ok := env.Result.Items[0].Reason.(map[string]any)
-	if !ok || reason["parent_key"] != "PARENT1" || reason["attachment_key"] != "ATT1" {
+	if !ok || reason["parent_key"] != "PARENTAB" || reason["attachment_key"] != "ATT1" {
 		t.Fatalf("reason = %#v, want returned parent and attachment keys", env.Result.Items[0].Reason)
 	}
 	creates, uploads, registers := fake.snapshot()
@@ -555,7 +555,7 @@ func TestImportApplyStoredWebCreateReportsOrphanedParentOnUploadFailure(t *testi
 	if !ok {
 		t.Fatalf("reason = %#v, want a structured detail map", env.Result.Items[0].Reason)
 	}
-	if reason["parent_key"] != "PARENT1" {
+	if reason["parent_key"] != "PARENTAB" {
 		t.Fatalf("reason = %#v, want the created parent's key", reason)
 	}
 	if reason["title"] != "Orphan Paper" {
@@ -683,7 +683,7 @@ func TestImportApplyLinkedFileWebCreateReturnsParentAndAttachmentKeys(t *testing
 		t.Fatalf("env = %+v, want one applied create+attachment operation", env)
 	}
 	reason, ok := env.Result.Items[0].Reason.(map[string]any)
-	if !ok || reason["parent_key"] != "PARENT1" || reason["attachment_key"] != "ATT1" {
+	if !ok || reason["parent_key"] != "PARENTAB" || reason["attachment_key"] != "ATT1" {
 		t.Fatalf("reason = %#v, want returned parent and attachment keys", env.Result.Items[0].Reason)
 	}
 	creates, uploads, registers := fake.snapshot()
@@ -988,6 +988,7 @@ func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[
 			_ = json.NewEncoder(w).Encode([]any{
 				map[string]any{"key": "C1", "data": map[string]any{"key": "C1", "name": "Team Review", "parentCollection": false}},
 				map[string]any{"key": "C2", "data": map[string]any{"key": "C2", "name": "Other", "parentCollection": false}},
+				map[string]any{"key": "ABCD2345", "data": map[string]any{"key": "ABCD2345", "name": "Team Review", "parentCollection": false}},
 			})
 		case r.URL.Path == "/connector/saveItems":
 			var body struct {
@@ -1198,7 +1199,7 @@ func TestImportApplyFetchPDFPlansCreateAndResolverSeparately(t *testing.T) {
 	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
 
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
-	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), maxChanges: -1}
 	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--fetch-pdf", manifestPath})
 	if err != nil {
 		t.Fatalf("import apply --fetch-pdf preview: %v; stderr=%s", err, stderr)
@@ -1342,7 +1343,7 @@ func writeImportApplyTestManifest(t *testing.T, m importManifest) string {
 
 func runImportApplyTestCmd(t *testing.T, args []string) (mutation.Envelope, string, error) {
 	t.Helper()
-	return runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true}, args)
+	return runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, maxChanges: -1}, args)
 }
 
 func runImportApplyTestCmdWithFlags(t *testing.T, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
@@ -1613,10 +1614,10 @@ func TestImportApplyWebCreatesFileIntoDestinationCollection(t *testing.T) {
 		want [][]string
 	}{
 		{"manifest default with entry override", nil, [][]string{{"C1"}, {"C1"}, {"C2"}}},
-		{"run flag overrides default but not entry", []string{"--collection", "C3"}, [][]string{{"C3"}, {"C3"}, {"C2"}}},
+		{"run flag overrides default but not entry", []string{"--to", "ABCD2345"}, [][]string{{"ABCD2345"}, {"ABCD2345"}, {"C2"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seedImportApplyCollections(t, "C1", "C2", "C3")
+			seedImportApplyCollections(t, "C1", "C2", "ABCD2345")
 			fake, srv := startImportApplyCollectionWebFake(t)
 			manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest("C2"))
 			flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
@@ -1656,20 +1657,6 @@ func TestImportApplyPreviewShowsDestinationPerCreate(t *testing.T) {
 	}
 }
 
-func TestImportApplyUnknownDestinationRefusedBeforeWrite(t *testing.T) {
-	seedImportApplyCollections(t, "C1")
-	fake, srv := startImportApplyCollectionWebFake(t)
-	manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest("MISSING"))
-	flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
-	_, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{manifestPath})
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "MISSING") {
-		t.Fatalf("err = %v (exit %d), want usage refusal naming MISSING", err, ExitCode(err))
-	}
-	if fake.posts != 0 {
-		t.Fatalf("posts = %d, want none before the refusal", fake.posts)
-	}
-}
-
 func TestImportApplyManifestWithoutCollectionCreatesUnfiled(t *testing.T) {
 	seedImportApplyCollections(t)
 	fake, srv := startImportApplyCollectionWebFake(t)
@@ -1687,7 +1674,7 @@ func TestImportApplyManifestWithoutCollectionCreatesUnfiled(t *testing.T) {
 
 func runImportApplyConnectorCollectionManifest(t *testing.T, override string) (*importApplySessionFake, mutation.Envelope, error) {
 	t.Helper()
-	seedImportApplyCollections(t, "C1", "C2")
+	seedImportApplyCollections(t, "C1", "C2", "ABCD2345")
 	mutationJournalRecorder = recordMutationJournal
 	t.Cleanup(func() { mutationJournalRecorder = nil })
 	m := importApplyCollectionManifest(override)
@@ -1754,7 +1741,7 @@ func importApplyConnectorTestFlags(t *testing.T) *rootFlags {
 // connector under ctx. A nil flags uses importApplyConnectorTestFlags.
 func runImportApplyConnectorRun(t *testing.T, ctx context.Context, m importManifest, flags *rootFlags, prepare func(fake *importApplySessionFake, paths map[string]string), args ...string) (*importApplySessionFake, mutation.Envelope, error) {
 	t.Helper()
-	seedImportApplyCollections(t, "C1", "C2")
+	seedImportApplyCollections(t, "C1", "C2", "ABCD2345")
 	mutationJournalRecorder = recordMutationJournal
 	t.Cleanup(func() { mutationJournalRecorder = nil })
 	md5ByTitle := map[string]string{}
@@ -1812,12 +1799,12 @@ func importApplyRecognizeManifest() importManifest {
 // it: through the recognition's own save session, after recognition settles,
 // so Zotero moves the recognized parent rather than the PDF.
 func TestImportApplyRecognizeFilesIntoDestination(t *testing.T) {
-	fake, env, err := runImportApplyConnectorRun(t, context.Background(), importApplyRecognizeManifest(), nil, nil, "--collection", "C1")
+	fake, env, err := runImportApplyConnectorRun(t, context.Background(), importApplyRecognizeManifest(), nil, nil, "--to", "ABCD2345")
 	if err != nil {
 		t.Fatalf("apply: %v env=%+v", err, env)
 	}
 	if len(fake.standalone) != 1 || fmt.Sprint(fake.targets) != "[C7]" {
-		t.Fatalf("standalone sessions=%v targets=%v, want one recognition session filed into C7 (C1)", fake.standalone, fake.targets)
+		t.Fatalf("standalone sessions=%v targets=%v, want one recognition session filed into C7 (ABCD2345)", fake.standalone, fake.targets)
 	}
 	session := fake.standalone[0]
 	if want := []string{"getRecognizedItem " + session, "updateSession " + session}; fmt.Sprint(fake.calls) != fmt.Sprint(want) {
@@ -1825,18 +1812,74 @@ func TestImportApplyRecognizeFilesIntoDestination(t *testing.T) {
 	}
 	item := env.Result.Items[0]
 	reason, _ := item.Reason.(map[string]any)
-	if item.Status != "applied" || reason["collection_key"] != "C1" {
-		t.Fatalf("result = %+v, want applied and filed into C1", item)
+	if item.Status != "applied" || reason["collection_key"] != "ABCD2345" {
+		t.Fatalf("result = %+v, want applied and filed into ABCD2345", item)
 	}
 }
 
-func TestImportApplyRecognizeUnknownDestinationRefusedBeforeWrite(t *testing.T) {
-	fake, _, err := runImportApplyConnectorRun(t, context.Background(), importApplyRecognizeManifest(), nil, nil, "--collection", "MISSING")
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "MISSING") {
-		t.Fatalf("err = %v (exit %d), want usage refusal naming MISSING", err, ExitCode(err))
+func TestImportApplyUnknownDestinationLiveCheck(t *testing.T) {
+	t.Run("live 404 is not found", func(t *testing.T) {
+		seedImportApplyCollections(t, "C1")
+		fake, srv := startImportApplyCollectionWebFake(t)
+		manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest(""))
+		flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+		_, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--to", "ZZZZ2222", manifestPath})
+		if err == nil || ExitCode(err) != 3 || !strings.Contains(err.Error(), "ZZZZ2222") {
+			t.Fatalf("err = %v (exit %d), want not-found refusal naming ZZZZ2222", err, ExitCode(err))
+		}
+		if fake.posts != 0 {
+			t.Fatalf("posts = %d, want none before the refusal", fake.posts)
+		}
+	})
+	t.Run("unreachable live check is a precondition", func(t *testing.T) {
+		seedImportApplyCollections(t, "C1")
+		manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest(""))
+		flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, timeout: time.Second, configPath: testConfigFile(t, "http://127.0.0.1:1/users/0")}
+		_, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--to", "ZZZZ2222", manifestPath})
+		if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "zotio sync") {
+			t.Fatalf("err = %v (exit %d), want precondition (exit 9) suggesting zotio sync", err, ExitCode(err))
+		}
+	})
+}
+
+// A destination that exists on the Web but is not yet synced locally passes
+// the check; the live GET goes to the write target, not the read plane.
+func TestImportApplyUnsyncedDestinationVerifiedOnWritePlane(t *testing.T) {
+	seedImportApplyCollections(t, "C1")
+	var mu sync.Mutex
+	var collectionGets []string
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/collections/"):
+			collectionGets = append(collectionGets, r.URL.Path)
+			if path == "/collections/WEBTEST2" {
+				_, _ = fmt.Fprint(w, `{"key":"WEBTEST2","data":{"key":"WEBTEST2","name":"Web only"}}`)
+				return
+			}
+			http.NotFound(w, r)
+		case r.Method == http.MethodGet && path == "/items/new":
+			_, _ = fmt.Fprint(w, `{"itemType":"journalArticle","title":"","creators":[]}`)
+		case r.Method == http.MethodPost && path == "/items":
+			posts++
+			_, _ = fmt.Fprintf(w, `{"success":{"0":"NEWKEY%02d"}}`, posts)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest(""))
+	flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+	if _, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--to", "WEBTEST2", manifestPath}); err != nil {
+		t.Fatalf("apply: %v stderr=%s", err, stderr)
 	}
-	if fake.requests != 0 {
-		t.Fatalf("connector requests = %d, want none before the refusal", fake.requests)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(collectionGets) != 1 || collectionGets[0] != "/users/0/collections/WEBTEST2" {
+		t.Fatalf("collection GETs = %v, want one against the write target", collectionGets)
 	}
 }
 

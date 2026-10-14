@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -104,16 +105,22 @@ func TestCollectionsCreateFailClosedOnBadBatchResponse(t *testing.T) {
 			cmd.SetOut(&out)
 			cmd.SetArgs([]string{"--name", "Example"})
 			err := cmd.Execute()
-			if err == nil || ExitCode(err) != 13 {
-				t.Fatalf("collections create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+			// Nothing applied, so this is not the partial-write exit 13.
+			if err == nil || ExitCode(err) != 1 {
+				t.Fatalf("collections create error = %v, exit=%d; want general failure (exit 1)", err, ExitCode(err))
 			}
 			for _, want := range tc.wantSubstr {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("collections create error = %q, want %q", err, want)
 				}
 			}
-			if out.Len() != 0 {
-				t.Fatalf("collections output = %q, must not report a failed batch as successful", out.String())
+			// The failure is rendered as the envelope, with the collection failed.
+			var env mutation.Envelope
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+				t.Fatalf("decode failure output %q: %v", out.String(), err)
+			}
+			if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
+				t.Fatalf("envelope = %+v, must not report a failed batch as successful", env)
 			}
 		})
 	}
@@ -129,6 +136,6 @@ func TestCollectionsCreateFailClosedOnBadBatchResponse(t *testing.T) {
 func TestCollectionsCreatePartialBatchIsJournaled(t *testing.T) {
 	runPartialBatchJournalingCase(t, "collections create", newCollectionsCreateCmd,
 		[]string{"--stdin"},
-		`[{"name":"a"},{"parentCollection":"X"},{"name":"c"}]`,
+		`[{"name":"a"},{"name":"b"},{"name":"c"}]`,
 		`{"success":{"0":"C1","2":"C3"},"successful":{},"unchanged":{},"failed":{"1":{"code":400,"message":"name is required"}}}`)
 }

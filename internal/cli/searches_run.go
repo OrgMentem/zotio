@@ -33,6 +33,7 @@ never evaluated partially: the command refuses with a precondition_unmet
 envelope (exit 9) naming the condition, instead of an empty-looking answer.
 Local results come from the last sync and include child items exactly as
 Zotero's search does.`,
+		Example:     "  zotio searches run ABCD2345",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -106,7 +107,7 @@ Zotero's search does.`,
 				return classifyAPIError(resultErr, flags)
 			}
 			printProvenance(cmd, countResultItems(results), prov)
-			return printOutputWithFlags(cmd.OutOrStdout(), results, flags)
+			return printSavedSearchItems(cmd, flags, results, prov)
 		},
 	}
 	return cmd
@@ -150,7 +151,25 @@ func emitSavedSearchLocalResults(cmd *cobra.Command, flags *rootFlags, definitio
 		return false, "", fmt.Errorf("encoding local saved-search results: %w", err)
 	}
 	printProvenance(cmd, len(local.Items), prov)
-	return true, "", printOutputWithFlags(cmd.OutOrStdout(), encoded, flags)
+	return true, "", printSavedSearchItems(cmd, flags, encoded, prov)
+}
+
+// printSavedSearchItems prints saved-search result rows. Under --json/--agent
+// or piped stdout the rows are wrapped in the {meta, results} provenance
+// envelope every other list read returns.
+func printSavedSearchItems(cmd *cobra.Command, flags *rootFlags, data json.RawMessage, prov DataProvenance) error {
+	if !flags.quiet && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+		filtered, err := applyFieldFlags(data, flags)
+		if err != nil {
+			return err
+		}
+		wrapped, err := wrapWithProvenance(filtered, prov)
+		if err != nil {
+			return err
+		}
+		return printOutput(cmd.OutOrStdout(), wrapped, true)
+	}
+	return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 }
 
 // refuseSavedSearchResults refuses a saved-search execution the configured

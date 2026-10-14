@@ -95,13 +95,20 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Find likely duplicate items in the local store",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			switch flagBy {
+			case "doi", "title", "all":
+			default:
+				return usageErr(fmt.Errorf("invalid --by value %q: must be doi, title, or all", flagBy))
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable duplicate detection.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{Store: rawDB}
@@ -112,15 +119,13 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 				results, err = queryDuplicateDOIs(db)
 			case "title":
 				results, err = queryDuplicateTitles(db)
-			case "all":
+			default:
 				results, err = queryDuplicateDOIs(db)
 				if err == nil {
 					var titleRows []map[string]any
 					titleRows, err = queryDuplicateTitles(db)
 					results = append(results, titleRows...)
 				}
-			default:
-				return fmt.Errorf("invalid --by value %q: must be doi, title, or all", flagBy)
 			}
 			if err != nil {
 				return fmt.Errorf("querying duplicates: %w", err)
@@ -152,7 +157,9 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 					titleLookup = titleLookupNear
 				}
 			}
-			if flags.asJSON {
+			// One shape per flag set: piped output and --json both give the
+			// object form; the bare group array is the human/--plain/--csv form.
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				// meta.title_lookup, the same key and the same words
 				// `items find` publishes: how the title question ended.
 				// A caller branches on data instead of on an absent key
@@ -272,10 +279,9 @@ func duplicateReportPayload(report, siblings map[string]any, flags *rootFlags) (
 	if err != nil {
 		return nil, err
 	}
-	if flags.selectFields != "" {
-		data = filterFields(data, flags.selectFields)
-	} else if flags.compact {
-		data = compactFields(data)
+	data, err = applyFieldFlags(data, flags)
+	if err != nil {
+		return nil, err
 	}
 	var merged map[string]json.RawMessage
 	if err := json.Unmarshal(data, &merged); err != nil {

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -383,37 +384,59 @@ func testConfigFile(t *testing.T, baseURL string) string {
 	return path
 }
 
-func TestNewWriteClientDryRunSkipsHybridRouteResolution(t *testing.T) {
+// A preview reads the same plane as an apply but must never save config: the
+// Web route resolves without persisting the user ID and without the notice.
+func TestNewWriteClientPreviewResolvesRouteWithoutPersisting(t *testing.T) {
 	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
 	allowPrivateOutboundForTests.Store(true)
 	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
-	var keyMetadataRequests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		keyMetadataRequests++
-		http.Error(w, "dry-run must not resolve the write route", http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"userID":4242}`))
 	}))
 	defer srv.Close()
 	oldBase := zoteroWebAPIBase
 	zoteroWebAPIBase = srv.URL
 	t.Cleanup(func() { zoteroWebAPIBase = oldBase })
 
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(configPath, []byte("base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
+	for name, flags := range map[string]rootFlags{
+		"default preview": {},
+		"dry-run":         {yes: true, dryRun: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			body := "base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"
+			if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			flags.configPath = configPath
+			flags.timeout = time.Second
+			flags.ctx = context.Background()
+			c, err := flags.newWriteClient()
+			if err != nil {
+				t.Fatalf("new preview write client: %v", err)
+			}
+			if want := srv.URL + "/users/4242"; c.BaseURL != want {
+				t.Fatalf("BaseURL = %q, want the write plane %q", c.BaseURL, want)
+			}
+			after, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != body {
+				t.Fatalf("preview rewrote the config:\n%s", after)
+			}
+		})
 	}
-	flags := rootFlags{configPath: configPath, dryRun: true, timeout: time.Second, ctx: context.Background()}
-	c, err := flags.newWriteClient()
-	if err != nil {
-		t.Fatalf("new dry-run write client: %v", err)
+}
+
+func TestRouteResolutionErrClassifiesFailures(t *testing.T) {
+	auth := routeResolutionErr(fmt.Errorf("resolving Zotero user ID: %w", &keyMetadataStatusError{status: 403}))
+	if got := ExitCode(auth); got != 4 {
+		t.Fatalf("403 exit = %d, want 4", got)
 	}
-	if c.ResolveWriteBase != nil {
-		t.Fatal("dry-run write client retained a lazy write-route resolver")
-	}
-	if _, _, err := c.Post("/items", map[string]string{"itemType": "book"}); err != nil {
-		t.Fatalf("dry-run post: %v", err)
-	}
-	if keyMetadataRequests != 0 {
-		t.Fatalf("key metadata requests = %d, want 0 during dry-run", keyMetadataRequests)
+	net := routeResolutionErr(fmt.Errorf("resolving Zotero user ID: %w", errors.New("dial tcp: no route")))
+	if got := ExitCode(net); got != 9 || !strings.Contains(net.Error(), "ZOTERO_USER_ID") {
+		t.Fatalf("transport exit = %d (%v), want 9 with hint", got, net)
 	}
 }

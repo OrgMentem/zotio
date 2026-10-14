@@ -30,13 +30,19 @@ the collection when it does not exist), use 'zotio items add-to-collection
 <itemKey> --collection-name <name>'. That command resolves the name to a key and
 then delegates the membership change here, so guards and idempotency are shared.`,
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
+			"mcp:read-only": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Key-valued flags are validated here, not in the shared runner,
+			// which add-to-collection also calls with an already-resolved key.
+			for _, collectionKey := range []string{flagTo, flagFrom} {
+				if collectionKey == "" {
+					continue
+				}
+				if err := validateKeyArg("collection", collectionKey); err != nil {
+					return err
+				}
+			}
 			return runItemsMoveMutation(cmd, flags, flagFrom, flagTo, keysFrom, args)
 		},
 	}
@@ -49,37 +55,17 @@ then delegates the membership change here, so guards and idempotency are shared.
 
 func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, keysFrom string, args []string) error {
 	if fromCol == "" && toCol == "" {
-		return fmt.Errorf("at least one of --to or --from is required")
+		return usageErr(fmt.Errorf("at least one of --to or --from is required"))
 	}
 	keys, err := resolveKeys(args, keysFrom, cmd.InOrStdin())
 	if err != nil {
-		return err
-	}
-	if !resolveMutationMode(flags).Apply {
-		ops := make([]mutation.Op, 0, len(keys))
-		for _, key := range keys {
-			changes := make([]mutation.Change, 0, 2)
-			if fromCol != "" {
-				changes = append(changes, mutation.Change{Field: "collections", Remove: fromCol})
-			}
-			if toCol != "" {
-				changes = append(changes, mutation.Change{Field: "collections", Add: toCol})
-			}
-			ops = append(ops, mutation.Op{
-				ID:      "items.move:" + key,
-				Key:     key,
-				Kind:    itemCollectionMutationKind(fromCol, toCol),
-				Changes: changes,
-			})
-		}
-		env, runErr := runMutation(cmd.Context(), flags, "items.move", ops)
-		if renderErr := renderMutation(cmd, flags, env, itemMoveSingleLine(fromCol, toCol)); renderErr != nil {
-			return renderErr
-		}
-		return runErr
+		return usageErr(err)
 	}
 
-	// Plan all selected item collection changes before apply.
+	// Preview and apply read each item through the write plane, so the plan
+	// reports real no-ops and a missing item exits 3 in both. The client
+	// resolves the Web route without persisting or announcing it unless this
+	// run applies.
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return err
@@ -119,11 +105,7 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, "items.move", ops)
-	renderErr := renderMutation(cmd, flags, env, itemMoveSingleLine(fromCol, toCol))
-	if renderErr != nil {
-		return renderErr
-	}
-	return runErr
+	return renderMutationResult(cmd, flags, env, runErr, itemMoveSingleLine(fromCol, toCol))
 }
 
 func itemCollectionMutationKind(fromCol, toCol string) string {

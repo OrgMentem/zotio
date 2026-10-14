@@ -18,7 +18,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	var flagColor string
 	var flagScope string
 	var flagLimit int
-	// prefer the local store unless --refresh.
+	// bypass the mirror fallback and search live only.
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -26,24 +26,42 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 		Short: "Search annotations by text",
 		Long: `Search annotation text, comments and tags.
 
-With the local store (the default), matching uses the full-text index:
-word stems match ("trust" finds "trusted"), "quoted phrases" match
-exactly, and AND, OR, NOT and parentheses combine terms. Results are
-ranked by relevance and include the key and title of the item the
-annotation belongs to. --refresh searches live through the Zotero API:
-each word or "quoted phrase" must appear, in any letter case, in the
-annotation's text, comment or tags; stems and operators do not apply.`,
+By default the search uses the local store's full-text index: word stems match
+("trust" finds "trusted"), "quoted phrases" match exactly, AND, OR, NOT and
+parentheses combine terms, and results are ranked by relevance. Live search has
+none of that, which is why this command reads the local store first, unlike
+annotations timeline and annotations export, which read live first. With no
+synced local store the search runs live instead: each word or "quoted phrase"
+must appear, in any letter case, in the annotation's text, comment or tags;
+stems and operators do not apply. meta.source and meta.reason say which path
+answered.
+
+--data-source local searches the index only. --data-source live (or --refresh)
+searches live only.
+
+Results include the key and title of the top-level item each annotation
+belongs to. --scope names top-level items, as it does for annotations export
+and annotations timeline.`,
+		Example: `  zotio annotations search "working memory"
+  zotio annotations search trust --scope collection:ABCD2345 --color yellow
+  zotio annotations search "effect size" --data-source local --limit 20`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.Join(args, " ")
 
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			if refresh && flags.dataSource == "local" {
 				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
 			}
 			spec, err := parseScopeSpec(flagScope)
 			if err != nil {
-				return usageErr(err)
+				return err
+			}
+			if err := validateScopeKeys(spec); err != nil {
+				return err
 			}
 			scoped := spec.Type != "library"
 			// resolveCohort maps --scope to parent item keys. nil means the
@@ -65,132 +83,185 @@ annotation's text, comment or tags; stems and operators do not apply.`,
 				return result.Keys, nil
 			}
 
-			// Search the local annotation store only when local data was requested.
-			// A completed local store with no matches is a valid empty result.
-			useLocal := flags.dataSource == "local" || (flags.dataSource == "auto" && !refresh)
-			if useLocal {
-				db, err := openStoreForRead(cmd.Context(), "zotio")
-				if err != nil || db == nil {
-					if flags.dataSource == "local" {
-						if err != nil {
-							return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
-						}
-						return fmt.Errorf("no local data. Run 'zotio sync' first")
+			// searchLocal searches the mirror's full-text index. With
+			// autoFallback it reports served=false instead of failing when
+			// there is no synced mirror, so auto mode can search live.
+			searchLocal := func(reason string, autoFallback bool) (bool, error) {
+				db, derr := openStoreForRead(cmd.Context(), "zotio")
+				if derr != nil {
+					return true, fmt.Errorf("opening local database: %w", derr)
+				}
+				if db == nil {
+					if autoFallback {
+						return false, nil
 					}
-				} else {
-					defer db.Close()
-					parentKeys, serr := resolveCohort(db)
+					return true, errUnsyncedStoreFor(cmd, flags)
+				}
+				defer db.Close()
+				if autoFallback {
+					if herr := requireLocalResourceHydrated(cmd.Context(), db, "items"); herr != nil {
+						return false, nil
+					}
+				}
+				parentKeys, serr := resolveCohort(db)
+				if serr != nil {
+					return true, serr
+				}
+				hits, lerr := db.SearchAnnotationsContext(cmd.Context(), store.AnnotationSearch{
+					Query:      query,
+					Colors:     annotationColorSpellings(flagColor),
+					Limit:      flagLimit,
+					ParentKeys: parentKeys,
+				})
+				if lerr != nil {
+					return true, fmt.Errorf("querying local annotations: %w", lerr)
+				}
+				results := make([]annotationSummary, 0, len(hits))
+				for _, hit := range hits {
+					var obj map[string]any
+					if json.Unmarshal(hit.Data, &obj) != nil {
+						continue
+					}
+					summaries := annotationSummariesFromItems([]map[string]any{obj})
+					if len(summaries) == 0 {
+						continue
+					}
+					summary := summaries[0]
+					summary.ItemKey = hit.ItemKey
+					summary.ItemTitle = hit.ItemTitle
+					results = append(results, summary)
+				}
+				prov := localProvenance(db, "annotations", reason)
+				noteEmptyLocalAnnotations(cmd, prov, len(results))
+				return true, printCommandJSONEnvelope(cmd.OutOrStdout(), results, flags, prov)
+			}
+
+			// searchLive searches through the Zotero API. It returns the raw
+			// failure so auto mode can tell an unreachable Zotero from a
+			// rejected request.
+			searchLive := func(reason string, withOwners bool) error {
+				// The live API has no grand-parent filter, so a scoped live
+				// search resolves the cohort from the mirror and filters
+				// client-side.
+				var cohort map[string]bool
+				if scoped {
+					db, oerr := openStoreForRead(cmd.Context(), "zotio")
+					if oerr != nil {
+						return fmt.Errorf("--scope %s needs the local store: %w", flagScope, oerr)
+					}
+					if db == nil {
+						return errUnsyncedStoreFor(cmd, flags)
+					}
+					keys, serr := resolveCohort(db)
+					db.Close()
 					if serr != nil {
 						return serr
 					}
-					hits, lerr := db.SearchAnnotationsContext(cmd.Context(), store.AnnotationSearch{
-						Query:      query,
-						Colors:     annotationColorSpellings(flagColor),
-						Limit:      flagLimit,
-						ParentKeys: parentKeys,
-					})
-					if lerr != nil {
-						if flags.dataSource == "local" {
-							return fmt.Errorf("querying local annotations: %w", lerr)
-						}
-					} else {
-						results := make([]annotationSummary, 0, len(hits))
-						for _, hit := range hits {
-							var obj map[string]any
-							if json.Unmarshal(hit.Data, &obj) != nil {
-								continue
-							}
-							summaries := annotationSummariesFromItems([]map[string]any{obj})
-							if len(summaries) == 0 {
-								continue
-							}
-							summary := summaries[0]
-							summary.ItemKey = hit.ItemKey
-							summary.ItemTitle = hit.ItemTitle
-							results = append(results, summary)
-						}
-						prov := localProvenance(db, "annotations", "local_only")
-						return printCommandJSONEnvelope(cmd.OutOrStdout(), results, flags, prov)
+					cohort = make(map[string]bool, len(keys))
+					for _, key := range keys {
+						cohort[key] = true
 					}
 				}
+
+				c, cerr := flags.newClient()
+				if cerr != nil {
+					return cerr
+				}
+				// Zotero's default quick-search mode (titleCreatorYear) never
+				// looks at annotation text, so search every field and keep only
+				// the annotations whose own text, comment or tags match:
+				// "everything" also returns annotations whose attachment's full
+				// text matches. --scope, --color and the own-field match all
+				// filter client-side before --limit, so fetch every hit; a
+				// capped fetch would drop matches that sit past the cap.
+				items, ferr := fetchZoteroItems(c, "/items", map[string]string{
+					"itemType": "annotation",
+					"q":        query,
+					"qmode":    "everything",
+				}, 0)
+				if ferr != nil {
+					return ferr
+				}
+				terms := annotationQueryTerms(query)
+				own := items[:0]
+				for _, item := range items {
+					if annotationMatchesTerms(item, terms) {
+						own = append(own, item)
+					}
+				}
+				annotations := annotationSummariesFromItems(own)
+				var attachmentParent map[string]string
+				if scoped {
+					var perr error
+					attachmentParent, perr = fetchAttachmentParents(c, annotations)
+					if perr != nil {
+						return perr
+					}
+				}
+				filtered := make([]annotationSummary, 0, len(annotations))
+				for _, annotation := range annotations {
+					if scoped {
+						owner := attachmentParent[annotation.ParentItem]
+						if !cohort[owner] {
+							continue
+						}
+						annotation.ItemKey = owner
+					}
+					if flagColor != "" && !annotationColorMatches(annotation.Color, flagColor) {
+						continue
+					}
+					filtered = append(filtered, annotation)
+					if flagLimit > 0 && len(filtered) >= flagLimit {
+						break
+					}
+				}
+				if withOwners {
+					// Fill item_key and item_title from the shared owner lookup,
+					// so a search served live carries the same fields as one
+					// served from the index.
+					rows := make([]annotationRow, 0, len(filtered))
+					for _, annotation := range filtered {
+						rows = append(rows, annotationRow{Summary: annotation})
+					}
+					liveFlags := *flags
+					liveFlags.dataSource = "live"
+					var oerr error
+					if rows, oerr = newAnnotationReader(cmd, flags, &liveFlags, c).attachOwners(cmd.Context(), rows); oerr != nil {
+						return oerr
+					}
+					for i, row := range rows {
+						filtered[i] = row.Summary
+					}
+				}
+				return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, DataProvenance{Source: "live", Reason: reason, ResourceType: "annotations"})
 			}
 
-			// The live API has no grand-parent filter, so a scoped live search
-			// resolves the cohort from the mirror and filters client-side.
-			var cohort map[string]bool
-			if scoped {
-				db, oerr := openStoreForRead(cmd.Context(), "zotio")
-				if oerr != nil {
-					return fmt.Errorf("--scope %s needs the local store: %w\nRun 'zotio sync' first.", flagScope, oerr)
-				}
-				if db == nil {
-					return fmt.Errorf("--scope %s needs the local store. Run 'zotio sync' first", flagScope)
-				}
-				keys, serr := resolveCohort(db)
-				db.Close()
-				if serr != nil {
-					return serr
-				}
-				cohort = make(map[string]bool, len(keys))
-				for _, key := range keys {
-					cohort[key] = true
-				}
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
+			switch {
+			case flags.dataSource == "local":
+				_, err := searchLocal("user_requested", false)
 				return err
-			}
-			// Zotero's default quick-search mode (titleCreatorYear) never looks
-			// at annotation text, so search every field and keep only the
-			// annotations whose own text, comment or tags match: "everything"
-			// also returns annotations whose attachment's full text matches.
-			// --scope, --color and the own-field match all filter client-side
-			// before --limit, so fetch every hit; a capped fetch would drop
-			// matches that sit past the cap.
-			items, err := fetchZoteroItems(c, "/items", map[string]string{
-				"itemType": "annotation",
-				"q":        query,
-				"qmode":    "everything",
-			}, 0)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-			terms := annotationQueryTerms(query)
-			own := items[:0]
-			for _, item := range items {
-				if annotationMatchesTerms(item, terms) {
-					own = append(own, item)
-				}
-			}
-			annotations := annotationSummariesFromItems(own)
-			var attachmentParent map[string]string
-			if scoped {
-				attachmentParent, err = fetchAttachmentParents(c, annotations)
-				if err != nil {
+			case flags.dataSource == "live" || refresh:
+				if err := searchLive("user_requested", false); err != nil {
 					return classifyAPIError(err, flags)
 				}
+				return nil
 			}
-			filtered := make([]annotationSummary, 0, len(annotations))
-			for _, annotation := range annotations {
-				if scoped && !cohort[attachmentParent[annotation.ParentItem]] {
-					continue
-				}
-				if flagColor != "" && !annotationColorMatches(annotation.Color, flagColor) {
-					continue
-				}
-				filtered = append(filtered, annotation)
-				if flagLimit > 0 && len(filtered) >= flagLimit {
-					break
-				}
+			// Auto: the local index first, because its stemming, Boolean
+			// operators, and ranking have no live equivalent. Live serves the
+			// search only when there is no synced mirror to search.
+			served, err := searchLocal("local_first", true)
+			if served || err != nil {
+				return err
 			}
-			return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, DataProvenance{Source: "live", ResourceType: "annotations"})
+			if err := searchLive("no_local_store", true); err != nil {
+				return classifyAPIError(err, flags)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&flagColor, "color", "", "Filter by annotation color (yellow, red, green, blue, purple, orange)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")
-	// bypass the local store and fetch live.
-	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
+	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return (0 = no limit)")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Search live only, skipping the local index (same as --data-source live)")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsageDefaultLibrary)
 
 	return cmd

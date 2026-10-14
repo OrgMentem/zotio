@@ -66,11 +66,11 @@ zotio watch --health --health-check-preprints --health-webhook https://example.o
 ## Preview, then apply
 
 ```bash
-zotio workflow run workflow.json          # preview: mutating steps run --dry-run, read-only steps run for real
+zotio workflow run workflow.json          # preview: write steps run --dry-run, non-previewable steps are skipped, read-only steps run
 zotio workflow run workflow.json --yes    # apply the whole workflow on a single approval
 ```
 
-Without `--yes`, every mutating step is forced to `--dry-run` while read-only steps run normally, so the plan reflects real data. A single `--yes` applies every step, and every mutation in the run shares one journal run ID. There is no rollback: if a later step fails, earlier successful writes stay applied.
+Without `--yes`, the runner injects `--dry-run` into every step that writes to Zotero, writes a local file, or declares its own `--dry-run`, while read-only steps run normally, so the plan reflects real data and a preview never rewrites an export, report, or baseline. A step that cannot preview, such as `sync`, is skipped with the reason `not previewable; runs only on apply`. A single `--yes` applies every step, and every mutation in the run shares one journal run ID. There is no rollback: if a later step fails, earlier successful writes stay applied.
 
 ```bash
 zotio journal list --workflow <id>    # everything that run changed

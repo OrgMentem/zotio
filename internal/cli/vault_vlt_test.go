@@ -20,7 +20,7 @@ import (
 const (
 	vltCitekey = "cite1"
 	vltItemKey = "ITEMKEY1"
-	vltNoteKey = "NOTEKEY1"
+	vltNoteKey = "NTKEYAB2"
 )
 
 // vltZotero is a stateful fake of one Zotero child note on the Web API. It
@@ -153,7 +153,7 @@ func vltAssertUnchanged(t *testing.T, path string, before []byte) {
 // switch let them overwrite a same-key note in the wrong library. A recorded
 // library with no resolvable active library fails closed.
 func TestVltVaultLibraryScopeGatesEveryDirection(t *testing.T) {
-	yes := rootFlags{yes: true, maxChanges: -1, asJSON: true}
+	yes := rootFlags{yes: true, maxChanges: -1, allowDestructive: true, asJSON: true}
 	for _, tc := range []struct {
 		name     string
 		newCmd   func(*rootFlags) *cobra.Command
@@ -177,7 +177,7 @@ func TestVltVaultLibraryScopeGatesEveryDirection(t *testing.T) {
 			outDir := t.TempDir()
 			path, before := vltWriteNote(t, outDir, "users/111", tc.region)
 
-			args := []string{"--out", outDir}
+			args := []string{"--vault", outDir}
 			if tc.resolve != nil {
 				args = append(append([]string{vltCitekey}, tc.resolve...), args...)
 			}
@@ -213,7 +213,7 @@ func TestVltVaultLibraryScopeGatesEveryDirection(t *testing.T) {
 		vltServe(t, z, "111")
 		outDir := t.TempDir()
 		path, _ := vltWriteNote(t, outDir, "users/111", "local notes")
-		if _, err := vltRun(t, newVaultPullCmd, yes, "--out", outDir); err != nil {
+		if _, err := vltRun(t, newVaultPullCmd, yes, "--vault", outDir); err != nil {
 			t.Fatalf("pull: %v", err)
 		}
 		if region, _ := extractNotesRegion(readNote(t, path)); region != "remote edit" {
@@ -227,7 +227,7 @@ func TestVltVaultLibraryScopeGatesEveryDirection(t *testing.T) {
 // proof the note belongs to this item. Every direction must refuse a note that
 // Zotero files under a different parent, before any write in either place.
 func TestVltVaultRefusesNoteOfAnotherParent(t *testing.T) {
-	yes := rootFlags{yes: true, maxChanges: -1, asJSON: true}
+	yes := rootFlags{yes: true, maxChanges: -1, allowDestructive: true, asJSON: true}
 	for _, tc := range []struct {
 		name     string
 		newCmd   func(*rootFlags) *cobra.Command
@@ -235,10 +235,10 @@ func TestVltVaultRefusesNoteOfAnotherParent(t *testing.T) {
 		wantExit int
 		wantErr  string
 	}{
-		{name: "push", newCmd: newVaultPushCmd, wantExit: 13, wantErr: "vault push:"},
+		{name: "push", newCmd: newVaultPushCmd, wantExit: 1, wantErr: "vault push:"},
 		// Also the regression guard for pull failures that were reported as
 		// "vault push" failures.
-		{name: "pull", newCmd: newVaultPullCmd, wantExit: 13, wantErr: "vault pull:"},
+		{name: "pull", newCmd: newVaultPullCmd, wantExit: 1, wantErr: "vault pull:"},
 		{name: "resolve keep-vault", newCmd: newVaultResolveCmd, resolve: []string{"--keep-vault"}, wantExit: 9, wantErr: "not a child note"},
 		{name: "resolve keep-remote", newCmd: newVaultResolveCmd, resolve: []string{"--keep-remote"}, wantExit: 9, wantErr: "not a child note"},
 	} {
@@ -249,7 +249,7 @@ func TestVltVaultRefusesNoteOfAnotherParent(t *testing.T) {
 			outDir := t.TempDir()
 			path, before := vltWriteNote(t, outDir, "", "edited notes")
 
-			args := []string{"--out", outDir}
+			args := []string{"--vault", outDir}
 			if tc.resolve != nil {
 				args = append(append([]string{vltCitekey}, tc.resolve...), args...)
 			}
@@ -283,11 +283,11 @@ func TestVltVaultPushDivergedNoteWaitsForResolve(t *testing.T) {
 	vltServe(t, z, "")
 	outDir := t.TempDir()
 	path, before := vltWriteNote(t, outDir, "", "edited notes")
-	yes := rootFlags{yes: true, maxChanges: -1, asJSON: true}
+	yes := rootFlags{yes: true, maxChanges: -1, allowDestructive: true, asJSON: true}
 
-	out, err := vltRun(t, newVaultPushCmd, yes, "--out", outDir)
-	if code := ExitCode(err); code != 13 {
-		t.Fatalf("push exit = %d (err %v), want 13", code, err)
+	out, err := vltRun(t, newVaultPushCmd, yes, "--vault", outDir)
+	if code := ExitCode(err); code != 1 {
+		t.Fatalf("push exit = %d (err %v), want 1 (a conflict is a lost precondition, never 13)", code, err)
 	}
 	var report vaultWriteReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
@@ -314,7 +314,7 @@ func TestVltVaultPushDivergedNoteWaitsForResolve(t *testing.T) {
 		t.Fatalf("conflict artifact lacks the remote body:\n%s", art)
 	}
 
-	if _, err := vltRun(t, newVaultResolveCmd, yes, vltCitekey, "--keep-vault", "--out", outDir); err != nil {
+	if _, err := vltRun(t, newVaultResolveCmd, yes, vltCitekey, "--keep-vault", "--vault", outDir); err != nil {
 		t.Fatalf("resolve --keep-vault --yes: %v", err)
 	}
 	version, html, patches, _, _ = z.snapshot()
@@ -334,27 +334,19 @@ func TestVltVaultPushDivergedNoteWaitsForResolve(t *testing.T) {
 }
 
 // TestVltVaultResolveJSONReport: under --json (which --agent implies) vault
-// resolve reports a parseable result naming the direction and which side it
-// changed, for previews and applied resolutions alike.
+// resolve reports the same {dry_run, out, counts, results[]} shape as push and
+// pull, with one result row, for previews and applied resolutions alike.
 func TestVltVaultResolveJSONReport(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		flags rootFlags
-		dir   string
-		want  vaultResolveReport
+		name       string
+		flags      rootFlags
+		dir        string
+		wantDryRun bool
+		wantStatus string
 	}{
-		{
-			name: "keep-vault preview", flags: rootFlags{asJSON: true}, dir: "--keep-vault",
-			want: vaultResolveReport{DryRun: true, Direction: "keep-vault", Status: "would_resolve"},
-		},
-		{
-			name: "keep-vault applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1}, dir: "--keep-vault",
-			want: vaultResolveReport{Direction: "keep-vault", Status: "resolved", ZoteroChanged: true},
-		},
-		{
-			name: "keep-remote applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1}, dir: "--keep-remote",
-			want: vaultResolveReport{Direction: "keep-remote", Status: "resolved", VaultChanged: true},
-		},
+		{name: "keep-vault preview", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-vault", wantDryRun: true, wantStatus: "would_resolve"},
+		{name: "keep-vault applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-vault", wantStatus: "resolved"},
+		{name: "keep-remote applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-remote", wantStatus: "resolved"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			z := &vltZotero{version: 6, html: markdownToNoteHTML(vltCitekey, "remote edit"), parent: vltItemKey}
@@ -362,20 +354,51 @@ func TestVltVaultResolveJSONReport(t *testing.T) {
 			outDir := t.TempDir()
 			vltWriteNote(t, outDir, "", "edited notes")
 
-			out, err := vltRun(t, newVaultResolveCmd, tc.flags, vltCitekey, tc.dir, "--out", outDir)
+			out, err := vltRun(t, newVaultResolveCmd, tc.flags, vltCitekey, tc.dir, "--vault", outDir)
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
-			var got vaultResolveReport
+			var got vaultWriteReport
 			if err := json.Unmarshal([]byte(out), &got); err != nil {
 				t.Fatalf("stdout is not a JSON report: %q (%v)", out, err)
 			}
-			want := tc.want
-			want.CiteKey, want.ItemKey, want.NoteKey = vltCitekey, vltItemKey, vltNoteKey
-			if got != want {
-				t.Fatalf("report = %+v\nwant %+v", got, want)
+			if got.DryRun != tc.wantDryRun || got.Out != outDir || got.Counts[tc.wantStatus] != 1 || len(got.Results) != 1 {
+				t.Fatalf("report = %+v, want dry_run=%v out=%q counts[%s]=1 and one result", got, tc.wantDryRun, outDir, tc.wantStatus)
+			}
+			row := got.Results[0]
+			if row.Status != tc.wantStatus || row.ItemKey != vltItemKey || row.NoteKey != vltNoteKey {
+				t.Fatalf("result row = %+v, want status %s item %s note %s", row, tc.wantStatus, vltItemKey, vltNoteKey)
 			}
 		})
+	}
+}
+
+// TestVltVaultResolveRequiresAllowDestructive: a direction selects the winning
+// side but is not consent to overwrite the loser, so apply without
+// --allow-destructive writes nothing and the preview predicts the refusal.
+func TestVltVaultResolveRequiresAllowDestructive(t *testing.T) {
+	for _, dir := range []string{"--keep-vault", "--keep-remote"} {
+		for _, flags := range []rootFlags{
+			{asJSON: true, yes: true, maxChanges: -1},
+			{asJSON: true, maxChanges: -1},
+		} {
+			z := &vltZotero{version: 6, html: markdownToNoteHTML(vltCitekey, "remote edit"), parent: vltItemKey}
+			vltServe(t, z, "")
+			outDir := t.TempDir()
+			path, before := vltWriteNote(t, outDir, "", "edited notes")
+
+			out, err := vltRun(t, newVaultResolveCmd, flags, vltCitekey, dir, "--vault", outDir)
+			if err == nil {
+				t.Fatalf("%s yes=%v: resolve succeeded without --allow-destructive; output %q", dir, flags.yes, out)
+			}
+			if !strings.Contains(out, "destructive_opt_in_required") {
+				t.Fatalf("%s yes=%v: output lacks destructive_opt_in_required: %q", dir, flags.yes, out)
+			}
+			if _, _, _, writes, _ := z.snapshot(); writes != 0 {
+				t.Fatalf("%s yes=%v: Zotero writes = %d, want none", dir, flags.yes, writes)
+			}
+			vltAssertUnchanged(t, path, before)
+		}
 	}
 }
 
@@ -421,8 +444,8 @@ func TestVltSyncVaultNoteTransitions(t *testing.T) {
 			t.Fatal(err)
 		}
 		res, err := syncVaultNote(oldMeta, nil, "obsidian", outDir, filename, false)
-		if err != nil || res.Status != "error" || res.Note == "" {
-			t.Fatalf("result = %+v (err %v), want status error with the read error", res, err)
+		if err != nil || res.Status != "failed" || res.Note == "" {
+			t.Fatalf("result = %+v (err %v), want status failed with the read error", res, err)
 		}
 	})
 

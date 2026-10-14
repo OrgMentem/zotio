@@ -27,6 +27,8 @@ type writePlaneTestServer struct {
 	patchHeaders map[string]string
 	getCounts    map[string]int
 	patchCounts  map[string]int
+	// listRequests records the itemKey query of every batched planning read.
+	listRequests []string
 }
 
 func writePlaneTestNewItemServer[T any](t *testing.T, field string, versions map[string]string, values map[string]T) *writePlaneTestServer {
@@ -45,6 +47,22 @@ func writePlaneTestNewItemServer[T any](t *testing.T, field string, versions map
 		patchCounts:  map[string]int{},
 	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Batched planning read: GET /items?itemKey=K1,K2,... answers with the
+		// requested items that exist, each carrying its own version.
+		if r.Method == http.MethodGet && r.URL.Path == "/users/0/items" && r.URL.Query().Get("itemKey") != "" {
+			ts.listRequests = append(ts.listRequests, r.URL.Query().Get("itemKey"))
+			rows := make([]string, 0)
+			for _, key := range strings.Split(r.URL.Query().Get("itemKey"), ",") {
+				value, ok := ts.items[key]
+				if !ok {
+					continue
+				}
+				ts.getCounts[key]++
+				rows = append(rows, fmt.Sprintf(`{"key":%q,"version":%s,"data":{%q:%s}}`, key, ts.versions[key], ts.field, mustJSON(t, value)))
+			}
+			_, _ = fmt.Fprintf(w, "[%s]", strings.Join(rows, ","))
+			return
+		}
 		for key, value := range ts.items {
 			itemPath := "/users/0/items/" + key
 			if r.URL.Path != itemPath {
@@ -136,37 +154,37 @@ func writePlaneTestPatchBodyCollections(t *testing.T, body map[string]any) []str
 }
 
 func TestItemsMoveToAddsCollection(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42"}, map[string][]string{
+		"KEYAAAA2": {"SRCAAAA2"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET22", "KEYAAAA2")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want one applied item", env)
 	}
-	if srv.patchCounts["K1"] != 1 {
-		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["K1"])
+	if srv.patchCounts["KEYAAAA2"] != 1 {
+		t.Fatalf("PATCH count = %d, want 1", srv.patchCounts["KEYAAAA2"])
 	}
-	if srv.patchHeaders["K1"] != "42" {
-		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["K1"])
+	if srv.patchHeaders["KEYAAAA2"] != "42" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["KEYAAAA2"])
 	}
-	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
-	if !stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "TARGET") {
-		t.Errorf("PATCH collections = %v, want SOURCE and TARGET", collections)
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["KEYAAAA2"])
+	if !stringSliceContains(collections, "SRCAAAA2") || !stringSliceContains(collections, "TARGET22") {
+		t.Errorf("PATCH collections = %v, want SRCAAAA2 and TARGET22", collections)
 	}
 }
 
 func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"TARGET"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42"}, map[string][]string{
+		"KEYAAAA2": {"TARGET22"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET22", "KEYAAAA2")
 	if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
 		t.Fatalf("env = %+v, want no_op", env)
 	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	if srv.patchCounts["KEYAAAA2"] != 0 {
+		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["KEYAAAA2"])
 	}
 	// A bare {"status":"no_op"} is indistinguishable from a missing item or
 	// collection, so the reason must name which no-op this was.
@@ -177,8 +195,8 @@ func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
 	if reason["code"] != "already_member" {
 		t.Errorf("reason code = %v, want already_member", reason["code"])
 	}
-	if reason["to"] != "TARGET" {
-		t.Errorf("reason target = %v, want TARGET", reason["to"])
+	if reason["to"] != "TARGET22" {
+		t.Errorf("reason target = %v, want TARGET22", reason["to"])
 	}
 	if _, ok := reason["message"].(string); !ok {
 		t.Errorf("reason %#v carries no human message", reason)
@@ -186,84 +204,105 @@ func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
 }
 
 func TestItemsMoveFromRemovesCollection(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE", "KEEP"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42"}, map[string][]string{
+		"KEYAAAA2": {"SRCAAAA2", "KEEP2222"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SRCAAAA2", "KEYAAAA2")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want applied remove", env)
 	}
-	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
-	if stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "KEEP") {
-		t.Errorf("PATCH collections = %v, want SOURCE removed and KEEP preserved", collections)
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["KEYAAAA2"])
+	if stringSliceContains(collections, "SRCAAAA2") || !stringSliceContains(collections, "KEEP2222") {
+		t.Errorf("PATCH collections = %v, want SRCAAAA2 removed and KEEP2222 preserved", collections)
 	}
 }
 
 func TestItemsMoveFromToMovesCollection(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE", "KEEP"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42"}, map[string][]string{
+		"KEYAAAA2": {"SRCAAAA2", "KEEP2222"},
 	})
 
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SRCAAAA2", "--to", "TARGET22", "KEYAAAA2")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want applied move", env)
 	}
 	if len(env.Plan.Operations) != 1 || len(env.Plan.Operations[0].Changes) != 2 {
 		t.Fatalf("changes = %+v, want remove and add", env.Plan.Operations)
 	}
-	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
-	if stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "TARGET") || !stringSliceContains(collections, "KEEP") {
-		t.Errorf("PATCH collections = %v, want SOURCE removed, TARGET added, KEEP preserved", collections)
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["KEYAAAA2"])
+	if stringSliceContains(collections, "SRCAAAA2") || !stringSliceContains(collections, "TARGET22") || !stringSliceContains(collections, "KEEP2222") {
+		t.Errorf("PATCH collections = %v, want SRCAAAA2 removed, TARGET22 added, KEEP2222 preserved", collections)
 	}
 }
 
 func TestItemsMoveRequiresToOrFrom(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42"}, map[string][]string{
+		"KEYAAAA2": {"SRCAAAA2"},
 	})
 
-	_, _, err := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "K1")
-	if err == nil || !strings.Contains(err.Error(), "--to or --from") {
-		t.Fatalf("err = %v, want --to/--from usage error", err)
+	_, _, err := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "KEYAAAA2")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--to or --from") {
+		t.Fatalf("err = %v (exit %d), want exit 2 --to/--from usage error", err, ExitCode(err))
 	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	if srv.patchCounts["KEYAAAA2"] != 0 {
+		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["KEYAAAA2"])
 	}
 }
 
 func TestItemsMoveBulkKeysFrom(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42", "K2": "43"}, map[string][]string{
-		"K1": {"ONE"},
-		"K2": {"TWO"},
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"KEYAAAA2": "42", "KEYAAAA3": "43"}, map[string][]string{
+		"KEYAAAA2": {"ONE"},
+		"KEYAAAA3": {"TWO"},
 	})
 	keysPath := filepath.Join(t.TempDir(), "keys.txt")
-	if err := os.WriteFile(keysPath, []byte("K1\nK2\n"), 0o600); err != nil {
+	if err := os.WriteFile(keysPath, []byte("KEYAAAA2\nKEYAAAA3\n"), 0o600); err != nil {
 		t.Fatalf("write keys file: %v", err)
 	}
 
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "BULK", "--keys-from", keysPath)
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "BULK2222", "--keys-from", keysPath)
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 2 || len(env.Result.Items) != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
-	for _, key := range []string{"K1", "K2"} {
+	for _, key := range []string{"KEYAAAA2", "KEYAAAA3"} {
 		if srv.patchCounts[key] != 1 {
 			t.Fatalf("%s PATCH count = %d, want 1", key, srv.patchCounts[key])
 		}
-		if !stringSliceContains(writePlaneTestPatchBodyCollections(t, srv.patchBodies[key]), "BULK") {
-			t.Errorf("%s PATCH body = %+v, want BULK collection", key, srv.patchBodies[key])
+		if !stringSliceContains(writePlaneTestPatchBodyCollections(t, srv.patchBodies[key]), "BULK2222") {
+			t.Errorf("%s PATCH body = %+v, want BULK2222 collection", key, srv.patchBodies[key])
 		}
 	}
 }
 
-func TestItemsMoveDefaultPreviewIsOffline(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{"K1": {"SOURCE"}})
+// Preview and apply run the same reads: the default preview fetches each item
+// from the write plane, plans with its real version, and writes nothing.
+func TestItemsMoveDefaultPreviewReadsButNeverWrites(t *testing.T) {
+	srv := newItemMoveTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]string{"KEYAAAA2": {"SRCAAAA2"}})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true}, "--to", "TARGET", "K1")
+	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "--to", "TARGET22", "KEYAAAA2")
 	if !env.OK || env.Mode != "preview" {
 		t.Fatalf("env = %+v, want ok preview", env)
 	}
-	if len(srv.getCounts) != 0 || len(srv.patchCounts) != 0 {
-		t.Fatalf("GETs = %v PATCHes = %v, want no HTTP requests", srv.getCounts, srv.patchCounts)
+	if srv.getCounts["KEYAAAA2"] != 1 || len(srv.patchCounts) != 0 {
+		t.Fatalf("GETs = %v PATCHes = %v, want one GET and no PATCH", srv.getCounts, srv.patchCounts)
+	}
+	if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].ExpectedVersion != 42 {
+		t.Fatalf("plan = %+v, want expected_version 42 read from the item", env.Plan.Operations)
+	}
+}
+
+// A preview of a missing item fails like the apply: exit 3, not a plan with
+// expected_version 0.
+func TestItemsMovePreviewOfMissingItemExitsNotFound(t *testing.T) {
+	newItemMoveTestServer(t, map[string]string{"KEYAAAA2": "42"}, map[string][]string{"KEYAAAA2": {"SRCAAAA2"}})
+
+	for _, flags := range []*rootFlags{
+		{asJSON: true, maxChanges: -1},
+		{asJSON: true, dryRun: true, maxChanges: -1},
+	} {
+		_, _, err := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, flags, "--to", "TARGET22", "MISSING2")
+		if ExitCode(err) != 3 {
+			t.Fatalf("ExitCode(preview move of a missing item, dryRun=%v) = %d, want 3; err = %v", flags.dryRun, ExitCode(err), err)
+		}
 	}
 }

@@ -15,7 +15,8 @@ import (
 )
 
 func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
-	var resourceType string
+	var resourceKind string
+	var itemType string
 	var groupBy string
 	var dbFlag string
 	var limit int
@@ -27,17 +28,42 @@ func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
 		Long: `Analyze locally synced Zotero data.
 
 --type accepts a mirrored resource kind (such as items or collections) for
-resource counts, or a Zotero item type (such as journalArticle or book) to
-count only matching rows in the items mirror. When --group-by is supplied,
-the item rows are grouped by year, itemType, collection, creator, or tag.`,
+resource counts. --item-type accepts a Zotero item type (such as journalArticle
+or book) to count only matching rows in the items mirror. When --group-by is
+supplied, the item rows are grouped by year, itemType, collection, creator, or
+tag. --limit caps the groups shown (0 = no limit).`,
 		Example: `  # Count all items and only journal articles
   zotio analytics --type items
-  zotio analytics --type journalArticle --json
+  zotio analytics --item-type journalArticle --json
 
   # Group items by publication year or collection
   zotio analytics --type items --group-by year
   zotio analytics --type items --group-by collection --limit 10 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", limit); err != nil {
+				return err
+			}
+			if resourceKind != "" && itemType != "" {
+				return usageErr(fmt.Errorf("--type and --item-type are mutually exclusive; use --item-type for a Zotero item type"))
+			}
+			limitChanged := cmd.Flags().Changed("limit")
+			if groupBy == "" && limitChanged {
+				return usageErr(fmt.Errorf("--limit requires --group-by"))
+			}
+			if groupBy != "" {
+				if resourceKind == "" && itemType == "" {
+					return usageErr(fmt.Errorf("--group-by requires --type items or --item-type"))
+				}
+				if err := validateAnalyticsGroupBy(groupBy); err != nil {
+					return err
+				}
+				if resourceKind != "" && resourceKind != "items" {
+					return usageErr(fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceKind))
+				}
+			}
 			// The mirror path is a local, resolved on every invocation and
 			// never written back into dbFlag, so a `--group all` re-entry
 			// counts its own library: see resolveDBPath.
@@ -49,81 +75,32 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 			var rows []map[string]any
 			var prov DataProvenance
 			humanMode := ""
+			reportedType := resourceKind
+			if itemType != "" {
+				reportedType = "items"
+			}
 
 			if _, err := os.Stat(dbPath); err != nil && os.IsNotExist(err) {
-				if cmd.Flags().Changed("limit") && limit <= 0 {
-					return fmt.Errorf("--limit must be greater than zero")
+				// Without a mirror there are no rows to reveal a newer type, so
+				// only the built-in names are valid.
+				if itemType != "" && !analyticsItemTypes[itemType] {
+					return unknownAnalyticsItemTypeErr(itemType)
 				}
-				if groupBy != "" {
-					if resourceType == "" {
-						return fmt.Errorf("--group-by requires --type items or a Zotero item type")
-					}
-					if err := validateAnalyticsGroupBy(groupBy); err != nil {
-						return err
-					}
-					isKnownKind := analyticsResourceKinds[resourceType]
-					isKnownItemType := analyticsItemTypes[resourceType]
-					if !isKnownKind && !isKnownItemType {
-						return unknownAnalyticsTypeErr(resourceType)
-					}
-					if isKnownKind && resourceType != "items" {
-						return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceType)
-					}
-					reportedType := resourceType
-					if !isKnownKind {
-						reportedType = "items"
-					}
-					rows = make([]map[string]any, 0)
-					prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: reportedType, GroupBy: groupBy}
-					humanMode = "group"
-				} else {
-					if cmd.Flags().Changed("limit") {
-						return fmt.Errorf("--limit requires --group-by")
-					}
-					if resourceType == "" {
-						rows = make([]map[string]any, 0)
-						prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: "analytics"}
-						humanMode = "status"
-					} else {
-						isKnownKind := analyticsResourceKinds[resourceType]
-						isKnownItemType := analyticsItemTypes[resourceType]
-						if !isKnownKind && !isKnownItemType {
-							return unknownAnalyticsTypeErr(resourceType)
-						}
-						reportedType := resourceType
-						itemType := ""
-						if !isKnownKind {
-							reportedType = "items"
-							itemType = resourceType
-						}
-						row := map[string]any{"resource_type": reportedType, "count": 0}
-						if itemType != "" {
-							row["item_type"] = itemType
-						}
-						rows = make([]map[string]any, 0, 1)
-						rows = append(rows, row)
-						prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: reportedType}
-						humanMode = "type"
-					}
+				if resourceKind != "" && !analyticsResourceKinds[resourceKind] {
+					return unknownAnalyticsTypeErr(resourceKind)
 				}
-			} else {
+				return errUnsyncedStoreFor(cmd, flags)
+			}
+			{
 				db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 				if err != nil {
 					return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 				}
 				defer db.Close()
 
-				if cmd.Flags().Changed("limit") && limit <= 0 {
-					return fmt.Errorf("--limit must be greater than zero")
-				}
-				if groupBy != "" {
-					if resourceType == "" {
-						return fmt.Errorf("--group-by requires --type items or a Zotero item type")
-					}
-					if err := validateAnalyticsGroupBy(groupBy); err != nil {
-						return err
-					}
-					rows, err = analyticsGroupRows(db, resourceType, groupBy, limit)
+				switch {
+				case groupBy != "":
+					rows, err = analyticsGroupRows(db, resourceKind, itemType, groupBy, limit)
 					if err != nil {
 						return err
 					}
@@ -134,34 +111,29 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 					prov = localProvenance(db, "items", "local_only")
 					prov.GroupBy = groupBy
 					humanMode = "group"
-				} else {
-					if cmd.Flags().Changed("limit") {
-						return fmt.Errorf("--limit requires --group-by")
+				case reportedType == "":
+					rows, err = analyticsStatusRows(db)
+					if err != nil {
+						return fmt.Errorf("getting status: %w", err)
 					}
-					if resourceType == "" {
-						rows, err = analyticsStatusRows(db)
-						if err != nil {
-							return fmt.Errorf("getting status: %w", err)
-						}
-						prov = localProvenance(db, "analytics", "local_only")
-						humanMode = "status"
-					} else {
-						rows, err = analyticsTypeRows(db, resourceType)
-						if err != nil {
-							return err
-						}
-						// The row already carries the resolved resource type, so
-						// read it back instead of resolving the scope a second
-						// time over the whole items mirror.
-						reported := resourceType
-						if len(rows) == 1 {
-							if rt, ok := rows[0]["resource_type"].(string); ok && rt != "" {
-								reported = rt
-							}
-						}
-						prov = localProvenance(db, reported, "local_only")
-						humanMode = "type"
+					prov = localProvenance(db, "analytics", "local_only")
+					humanMode = "status"
+				default:
+					rows, err = analyticsTypeRows(db, resourceKind, itemType)
+					if err != nil {
+						return err
 					}
+					// The row already carries the resolved resource type, so
+					// read it back instead of resolving the scope a second
+					// time over the whole items mirror.
+					reported := reportedType
+					if len(rows) == 1 {
+						if rt, ok := rows[0]["resource_type"].(string); ok && rt != "" {
+							reported = rt
+						}
+					}
+					prov = localProvenance(db, reported, "local_only")
+					humanMode = "type"
 				}
 			}
 
@@ -169,13 +141,14 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 			if err != nil {
 				return err
 			}
+			if flags.quiet {
+				return nil
+			}
 			printProvenance(cmd, len(rows), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(json.RawMessage(data), flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -203,7 +176,11 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 					if len(rows) == 1 {
 						count, _ = rows[0]["count"].(int)
 					}
-					fmt.Fprintf(w, "%s: %d records\n", resourceType, count)
+					label := resourceKind
+					if itemType != "" {
+						label = itemType
+					}
+					fmt.Fprintf(w, "%s: %d records\n", label, count)
 				}
 				return nil
 			}
@@ -211,10 +188,11 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&resourceType, "type", "", "Resource kind or Zotero item type to analyze")
+	cmd.Flags().StringVar(&resourceKind, "type", "", "Mirrored resource kind to count (items, collections, tags, ...)")
+	cmd.Flags().StringVar(&itemType, "item-type", "", "Zotero item type to count or group (journalArticle, book, ...)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "Group items by year, itemType, collection, creator, or tag")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path")
-	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum groups to show with --group-by")
+	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum groups to show with --group-by (0 = no limit)")
 
 	return cmd
 }
@@ -246,20 +224,24 @@ var analyticsItemTypes = map[string]bool{
 	"note": true, "annotation": true, "preprint": true, "dataset": true,
 }
 
-func analyticsScopeForType(db *store.Store, requested string) (analyticsScope, error) {
-	status, err := db.Status()
-	if err != nil {
-		return analyticsScope{}, fmt.Errorf("getting resource status: %w", err)
-	}
-	if analyticsResourceKinds[requested] || status[requested] > 0 {
-		rows, err := db.List(requested, 0)
+func analyticsScopeForType(db *store.Store, kind, itemType string) (analyticsScope, error) {
+	if itemType == "" {
+		status, err := db.Status()
 		if err != nil {
-			return analyticsScope{}, fmt.Errorf("listing %s: %w", requested, err)
+			return analyticsScope{}, fmt.Errorf("getting resource status: %w", err)
 		}
-		return analyticsScope{resourceType: requested, rows: rows}, nil
+		if !analyticsResourceKinds[kind] && status[kind] == 0 {
+			return analyticsScope{}, unknownAnalyticsTypeErr(kind)
+		}
+		rows, err := db.List(kind, 0)
+		if err != nil {
+			return analyticsScope{}, fmt.Errorf("listing %s: %w", kind, err)
+		}
+		return analyticsScope{resourceType: kind, rows: rows}, nil
 	}
 
 	// Item types are a view over the items mirror, not resource_type values.
+	requested := itemType
 	rows, err := db.List("items", 0)
 	if err != nil {
 		return analyticsScope{}, fmt.Errorf("listing items: %w", err)
@@ -280,7 +262,7 @@ func analyticsScopeForType(db *store.Store, requested string) (analyticsScope, e
 		}
 	}
 	if !analyticsItemTypes[requested] && !observed {
-		return analyticsScope{}, unknownAnalyticsTypeErr(requested)
+		return analyticsScope{}, unknownAnalyticsItemTypeErr(requested)
 	}
 	return analyticsScope{resourceType: "items", itemType: requested, rows: matched}, nil
 }
@@ -288,8 +270,14 @@ func analyticsScopeForType(db *store.Store, requested string) (analyticsScope, e
 // unknownAnalyticsTypeErr is a usage error that names every accepted --type
 // value, so a typo is fixable without reading the source.
 func unknownAnalyticsTypeErr(requested string) error {
-	return usageErr(fmt.Errorf("unknown analytics type %q; valid resource kinds: %s; valid item types: %s",
-		requested, strings.Join(sortedAnalyticsNames(analyticsResourceKinds), ", "), strings.Join(sortedAnalyticsNames(analyticsItemTypes), ", ")))
+	return usageErr(fmt.Errorf("unknown --type %q; valid resource kinds: %s (for a Zotero item type use --item-type)",
+		requested, strings.Join(sortedAnalyticsNames(analyticsResourceKinds), ", ")))
+}
+
+// unknownAnalyticsItemTypeErr is the --item-type counterpart.
+func unknownAnalyticsItemTypeErr(requested string) error {
+	return usageErr(fmt.Errorf("unknown --item-type %q; valid item types: %s",
+		requested, strings.Join(sortedAnalyticsNames(analyticsItemTypes), ", ")))
 }
 
 func sortedAnalyticsNames(set map[string]bool) []string {
@@ -306,12 +294,12 @@ func validateAnalyticsGroupBy(field string) error {
 	case "year", "itemType", "collection", "creator", "tag":
 		return nil
 	default:
-		return fmt.Errorf("--group-by %q is not supported; use year, itemType, collection, creator, or tag", field)
+		return usageErr(fmt.Errorf("--group-by %q is not supported; use year, itemType, collection, creator, or tag", field))
 	}
 }
 
-func analyticsGroupRows(db *store.Store, resourceType, field string, limit int) ([]map[string]any, error) {
-	scope, err := analyticsScopeForType(db, resourceType)
+func analyticsGroupRows(db *store.Store, kind, itemType, field string, limit int) ([]map[string]any, error) {
+	scope, err := analyticsScopeForType(db, kind, itemType)
 	if err != nil {
 		return nil, err
 	}
@@ -376,8 +364,8 @@ func analyticsStatusRows(db *store.Store) ([]map[string]any, error) {
 	return rows, nil
 }
 
-func analyticsTypeRows(db *store.Store, requested string) ([]map[string]any, error) {
-	scope, err := analyticsScopeForType(db, requested)
+func analyticsTypeRows(db *store.Store, kind, itemType string) ([]map[string]any, error) {
+	scope, err := analyticsScopeForType(db, kind, itemType)
 	if err != nil {
 		return nil, err
 	}

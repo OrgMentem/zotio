@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,73 +16,58 @@ import (
 	"zotio/internal/store"
 )
 
-func TestLibraryHealthBaselineEstablishingRunWritesSchemaAndUsesAbsoluteBadge(t *testing.T) {
+func TestLibraryHealthBaselineMissingFileReportsNotFoundAndWritesSchema(t *testing.T) {
 	home := seedBaselineHealthCommandStore(t)
 	baselinePath := filepath.Join(home, "health-baseline.json")
 	reportPath := filepath.Join(home, "establish-report.json")
 
-	stdout, err := runLibraryHealthBaselineCmd(t, nil,
+	_, err := runLibraryHealthBaselineCmd(t, nil,
 		"--for", "citation",
 		"--fail-on", "none",
 		"--baseline", baselinePath,
-		"--fail-on-new", "high",
 		"--write-baseline", baselinePath,
 		"--report", reportPath,
 	)
 	if err != nil {
-		t.Fatalf("establishing run returned %v, want nil", err)
+		t.Fatalf("missing-baseline run returned %v, want nil", err)
 	}
 
 	report := readHealthBaselineReportFile(t, reportPath)
 	if report.Baseline == nil {
-		t.Fatal("report.baseline is nil, want establishing baseline block")
+		t.Fatal("report.baseline is nil, want baseline block")
 	}
-	if report.Baseline.Established {
-		t.Fatalf("report.baseline.established = true, want false for missing baseline")
+	if report.Baseline.Established || report.Baseline.Status != "not_found" {
+		t.Fatalf("report.baseline = %+v, want established=false status=not_found for missing baseline", report.Baseline)
 	}
 	if len(report.Baseline.New) != 0 {
-		t.Fatalf("establishing run baseline.new = %+v, want zero new findings", report.Baseline.New)
+		t.Fatalf("missing-baseline run baseline.new = %+v, want zero new findings", report.Baseline.New)
 	}
 	if report.Summary.Total == 0 {
 		t.Fatal("seeded citation store unexpectedly produced zero absolute findings")
 	}
 
 	expectedIdentities := expectedHealthBaselineIdentities(t, "citation")
-	wantLine := fmt.Sprintf("Baseline established (%d findings recorded)", len(expectedIdentities))
-	if !strings.Contains(stdout, wantLine) {
-		t.Fatalf("stdout = %q, want %q", stdout, wantLine)
-	}
-	if strings.Contains(stdout, "New since baseline:") {
-		t.Fatalf("stdout = %q, want establishing message rather than delta message", stdout)
-	}
 	assertHealthBaselineFileSchema(t, baselinePath, "citation", expectedIdentities)
 	assertNoHealthBaselineTempFiles(t, baselinePath)
+}
 
-	badgeReportPath := filepath.Join(home, "establish-badge-report.json")
-	badgeOut, err := runLibraryHealthBaselineCmd(t, nil,
-		"--for", "citation",
-		"--fail-on", "none",
-		"--baseline", filepath.Join(home, "missing-badge-baseline.json"),
-		"--fail-on-new", "high",
-		"--badge",
-		"--report", badgeReportPath,
-	)
-	if err != nil {
-		t.Fatalf("establishing badge run returned %v, want nil", err)
+func TestLibraryHealthFailOnNewWithMissingBaselineIsPreconditionExit9(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	missing := filepath.Join(home, "missing-baseline.json")
+	for _, extra := range [][]string{nil, {"--badge"}} {
+		args := append([]string{
+			"--for", "citation",
+			"--fail-on", "none",
+			"--baseline", missing,
+			"--fail-on-new", "high",
+		}, extra...)
+		_, err := runLibraryHealthBaselineCmd(t, nil, args...)
+		if code := ExitCode(err); code != 9 {
+			t.Fatalf("--fail-on-new with missing baseline (%v) exit = %d (%v), want precondition exit 9", extra, code, err)
+		}
 	}
-	badgeReport := readHealthBaselineReportFile(t, badgeReportPath)
-	if badgeReport.Baseline == nil || badgeReport.Baseline.Established || len(badgeReport.Baseline.New) != 0 {
-		t.Fatalf("badge report baseline = %+v, want missing-baseline establishing block with zero new", badgeReport.Baseline)
-	}
-	badge := decodeHealthBaselineBadge(t, badgeOut)
-	wantBadge := healthBadge{
-		SchemaVersion: 1,
-		Label:         "bibliography",
-		Message:       fmt.Sprintf("%d findings", badgeReport.Summary.Total),
-		Color:         "yellow",
-	}
-	if badge != wantBadge {
-		t.Fatalf("establishing badge = %+v, want absolute badge derivation %+v", badge, wantBadge)
+	if _, statErr := os.Stat(missing); !os.IsNotExist(statErr) {
+		t.Fatalf("missing baseline was created by a refused run: %v", statErr)
 	}
 }
 
@@ -151,8 +135,8 @@ func TestLibraryHealthBaselineNewFindingsGateHumanAndBadge(t *testing.T) {
 	if code := ExitCode(err); code != 11 {
 		t.Fatalf("new finding run exit = %d (%v), want gate exit 11", code, err)
 	}
-	if !strings.Contains(stdout, "New since baseline:") || !strings.Contains(stdout, "NEW ") || !strings.Contains(stdout, "NEW1") {
-		t.Fatalf("stdout = %q, want baseline delta and NEW-prefixed NEW1 finding", stdout)
+	if !strings.Contains(stdout, `"NEW1"`) || !strings.Contains(stdout, `"baseline"`) {
+		t.Fatalf("stdout = %q, want the piped JSON report carrying the baseline delta and NEW1", stdout)
 	}
 	humanReport := readHealthBaselineReportFile(t, humanReportPath)
 	assertNewBaselineFindingForKey(t, humanReport, "NEW1")
@@ -215,9 +199,8 @@ func TestLibraryHealthBaselineResolvedUsageReportConflictAndFailOnNone(t *testin
 	if resolvedReport.Baseline.ResolvedCount == 0 {
 		t.Fatalf("resolved_count = 0 after fixing P1; report = %+v", resolvedReport.Baseline)
 	}
-	wantResolvedLine := fmt.Sprintf("resolved %d", resolvedReport.Baseline.ResolvedCount)
-	if !strings.Contains(stdout, wantResolvedLine) {
-		t.Fatalf("stdout = %q, want %q", stdout, wantResolvedLine)
+	if !strings.Contains(stdout, `"resolved_count"`) {
+		t.Fatalf("stdout = %q, want the piped JSON report with resolved_count", stdout)
 	}
 
 	failOnNoneReportPath := filepath.Join(home, "fail-on-none-report.json")
@@ -233,7 +216,7 @@ func TestLibraryHealthBaselineResolvedUsageReportConflictAndFailOnNone(t *testin
 	if failOnNoneReport.Summary.Total == 0 {
 		t.Fatal("seeded citation store unexpectedly has no findings")
 	}
-	if failOnNoneReport.Gate != nil || strings.Contains(stdout, "Gate:") {
+	if failOnNoneReport.Gate != nil || strings.Contains(stdout, `"gate"`) {
 		t.Fatalf("--fail-on none gate = %+v stdout = %q, want preset gate disabled", failOnNoneReport.Gate, stdout)
 	}
 

@@ -6,9 +6,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+// Values Zotero documents for the items read endpoints.
+var (
+	itemsSortValues      = []string{"dateAdded", "dateModified", "title", "creator", "itemType", "date", "publisher", "publicationTitle", "journalAbbreviation", "language", "accessDate", "libraryCatalog", "callNumber", "rights", "addedBy", "numItems"}
+	itemsDirectionValues = []string{"asc", "desc"}
+	itemsFormatValues    = []string{"json", "atom", "bib", "bibtex", "biblatex", "bookmarks", "coins", "csljson", "csv", "mods", "refer", "rdf_bibliontology", "rdf_dc", "rdf_zotero", "ris", "tei", "wikipedia", "keys", "versions"}
+)
+
+// validateEnumFlag rejects a non-empty value outside allowed with a usage error.
+func validateEnumFlag(flag, value string, allowed []string) error {
+	if value == "" {
+		return nil
+	}
+	for _, a := range allowed {
+		if a == value {
+			return nil
+		}
+	}
+	return usageErr(fmt.Errorf("invalid %s %q: must be one of %s", flag, value, strings.Join(allowed, ", ")))
+}
 
 func newItemsListCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
@@ -18,15 +39,27 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 	var flagItemType string
 	var flagQ string
 	var flagTag string
-	var flagSince int
+	var flagSinceVersion int
 	var flagFormat string
 
 	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List all items in the library",
-		Example:     "  zotio items list",
+		Example:     "  zotio items list --limit 20 --item-type journalArticle\n  zotio items list --query \"deep learning\" --sort dateModified --direction desc",
 		Annotations: map[string]string{"zotio:endpoint": "items.list", "zotio:method": "GET", "zotio:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if err := validateEnumFlag("--sort", flagSort, itemsSortValues); err != nil {
+				return err
+			}
+			if err := validateEnumFlag("--direction", flagDirection, itemsDirectionValues); err != nil {
+				return err
+			}
+			if err := validateEnumFlag("--format", flagFormat, itemsFormatValues); err != nil {
+				return err
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -55,8 +88,8 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			if flagTag != "" {
 				params["tag"] = fmt.Sprintf("%v", flagTag)
 			}
-			if flagSince != 0 {
-				params["since"] = fmt.Sprintf("%v", flagSince)
+			if flagSinceVersion != 0 {
+				params["since"] = fmt.Sprintf("%v", flagSinceVersion)
 			}
 			if flagFormat != "" {
 				params["format"] = fmt.Sprintf("%v", flagFormat)
@@ -73,11 +106,9 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -101,14 +132,14 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (max 100)")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
 	cmd.Flags().StringVar(&flagSort, "sort", "", "Sort field (dateAdded, dateModified, title, creator, type, date, publisher, publicationTitle, journalAbbreviation,...")
 	cmd.Flags().StringVar(&flagDirection, "direction", "", "Sort direction (asc or desc)")
-	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by item type (journalArticle, book, bookSection, conferencePaper, etc.)")
-	cmd.Flags().StringVar(&flagQ, "query", "", "Quick search across title, creator, and year")
+	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by item type, for example journalArticle or book (not validated client-side; see 'zotio schema item-types')")
+	cmd.Flags().StringVar(&flagQ, "query", "", "Quick search across title, creator, and year; quote multi-word queries")
 	cmd.Flags().StringVar(&flagTag, "tag", "", "Filter by tag name")
-	cmd.Flags().IntVar(&flagSince, "since", 0, "Return only items modified after this library version number")
+	cmd.Flags().IntVar(&flagSinceVersion, "since-version", 0, "Return only items modified after this library version number")
 	cmd.Flags().StringVar(&flagFormat, "format", "", "Response format (json, atom, bib, bibtex, bookmarks, coins, csljson, mods, refer, rdf_bibliontology, rdf_dc,...")
 
 	return cmd

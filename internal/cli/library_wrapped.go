@@ -25,6 +25,7 @@ type libraryWrappedReport struct {
 	PDFCoverage *libraryWrappedPDFCoverage  `json:"pdf_coverage,omitempty"`
 	Highlights  libraryWrappedHighlights    `json:"highlights,omitzero"`
 	CardPath    string                      `json:"card_path,omitempty"`
+	DryRun      bool                        `json:"dry_run,omitempty"`
 }
 
 type libraryWrappedItemSummary struct {
@@ -65,6 +66,12 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Show a local year-in-review for your Zotero library",
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:writes-files": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			if flagYear < 1 || flagYear > 9999 {
 				return usageErr(fmt.Errorf("--year must be between 1 and 9999"))
 			}
@@ -84,8 +91,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("opening local database: %w", err)
 				}
 				if rawDB == nil {
-					fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-					return nil
+					return errUnsyncedStoreFor(cmd, flags)
 				}
 				defer rawDB.Close()
 				db := localQueryStore{rawDB}
@@ -95,8 +101,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("checking local library: %w", err)
 				}
 				if totalStored == 0 {
-					fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-					return nil
+					return errUnsyncedStoreFor(cmd, flags)
 				}
 
 				report, err := queryLibraryWrappedReport(db, flagYear)
@@ -104,17 +109,26 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("querying wrapped report: %w", err)
 				}
 				if flagCard != "" {
-					if err := writeLibraryWrappedCard(flagCard, report, flagCardStyle); err != nil {
+					if flags.dryRun {
+						if err := previewDryRunFileWrite(cmd.ErrOrStderr(), "the wrapped SVG card", flagCard); err != nil {
+							return err
+						}
+						report.DryRun = true
+					} else if err := writeLibraryWrappedCard(flagCard, report, flagCardStyle); err != nil {
 						return err
 					}
 					report.CardPath = flagCard
 				}
-				if flags.asJSON {
+				if flags.quiet {
+					return nil
+				}
+				if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 					return printCommandJSON(cmd.OutOrStdout(), report, flags)
 				}
 				return printLibraryWrapped(cmd, report)
 			}
-			if strings.TrimSpace(flagCard) == "" {
+			// A dry run writes no card, so it takes no lock either.
+			if strings.TrimSpace(flagCard) == "" || flags.dryRun {
 				return run()
 			}
 			// A card names an output path, so it joins the output collision
@@ -129,7 +143,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&flagYear, "year", flagYear, "Year to summarize")
-	cmd.Flags().StringVar(&flagCard, "card", "", "Write an 800x418 SVG share card to this path")
+	cmd.Flags().StringVar(&flagCard, "card", "", "Write an 800x418 SVG share card to this path (with --dry-run, report the path and write nothing)")
 	cmd.Flags().StringVar(&flagCardStyle, "card-style", "overview", "Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three)")
 	return cmd
 }
@@ -372,7 +386,9 @@ func printLibraryWrapped(cmd *cobra.Command, report libraryWrappedReport) error 
 
 	if report.Items.Total == 0 {
 		fmt.Fprintf(w, "No items were added in %d.\n", report.Year)
-		if report.CardPath != "" {
+		if report.CardPath != "" && report.DryRun {
+			fmt.Fprintf(w, "SVG card would be written (dry run): %s\n", report.CardPath)
+		} else if report.CardPath != "" {
 			fmt.Fprintf(w, "SVG card written: %s\n", report.CardPath)
 		}
 		return nil
@@ -433,9 +449,12 @@ func printLibraryWrapped(cmd *cobra.Command, report libraryWrappedReport) error 
 		fmt.Fprintf(w, "%s  %d/%d (%d%%)  %s\n\n", bold("PDF coverage"), c.WithAttachment, c.Total, c.Percent, coverageBar(c.Percent))
 	}
 
-	if report.CardPath != "" {
+	switch {
+	case report.CardPath != "" && report.DryRun:
+		fmt.Fprintf(w, "SVG card would be written (dry run): %s\n", report.CardPath)
+	case report.CardPath != "":
 		fmt.Fprintf(w, "SVG card written: %s\n", report.CardPath)
-	} else {
+	default:
 		fmt.Fprintln(w, dim("Share it: zotio library wrapped --card wrapped.svg (--card-style overview|rhythm|picks|cycle)"))
 	}
 	return nil

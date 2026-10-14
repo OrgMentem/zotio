@@ -103,6 +103,12 @@ or text-only PDFs may report "unidentified".`,
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			pdfs, err := listPDFs(args[0], flagLimit)
 			if err != nil {
 				return err
@@ -159,34 +165,40 @@ or text-only PDFs may report "unidentified".`,
 		},
 	}
 	cmd.Flags().BoolVar(&flagResolve, "resolve", false, "Fetch titles for 'new' PDFs from CrossRef, then DataCite (network)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Scan at most N PDFs (0 = all)")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Scan at most N PDFs (0 = no limit)")
 	return cmd
 }
 
 func listPDFs(dir string, limit int) ([]string, error) {
+	pdfs, _, err := listPDFsLimited(dir, limit)
+	return pdfs, err
+}
+
+// listPDFsLimited lists the PDFs directly inside dir, at most limit of them
+// (0 = no limit). truncated reports that more PDFs existed than were returned.
+func listPDFsLimited(dir string, limit int) (pdfs []string, truncated bool, err error) {
 	info, err := os.Stat(dir)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", dir, err)
+		return nil, false, usageErr(fmt.Errorf("reading %s: %w", dir, err))
 	}
 	if info.Mode().IsRegular() {
-		return nil, fmt.Errorf("import scan expects a directory; for a single file use `zotio import pdf %s`", dir)
+		return nil, false, usageErr(fmt.Errorf("import scan expects a directory; for a single file use `zotio import pdf %s`", dir))
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", dir, err)
+		return nil, false, fmt.Errorf("reading %s: %w", dir, err)
 	}
-	var pdfs []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".pdf") {
 			continue
 		}
-		pdfs = append(pdfs, filepath.Join(dir, e.Name()))
 		if limit > 0 && len(pdfs) >= limit {
-			break
+			return pdfs, true, nil
 		}
+		pdfs = append(pdfs, filepath.Join(dir, e.Name()))
 	}
-	return pdfs, nil
+	return pdfs, false, nil
 }
 
 // importItemsMirrorReady reports whether the mirror holds a completed items

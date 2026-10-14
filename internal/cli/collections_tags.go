@@ -3,10 +3,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 )
 
@@ -16,64 +12,38 @@ func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
 	var flagQ string
 	var flagQMode string
 	cmd := &cobra.Command{
-		Use:   "tags <collectionKey>",
-		Short: "List tags used within a collection",
-		// use a collection key placeholder, not a token.
-		Example:     "  zotio collections tags COLLECTIONKEY",
+		Use:         "tags <collectionKey>",
+		Short:       "List tags used within a collection",
+		Example:     "  zotio collections tags ABCD2345 --query ethics",
 		Annotations: map[string]string{"zotio:endpoint": "collections.tags", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/tags", "mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			params, err := tagListParams(flagLimit, flagStart, flagQ, flagQMode)
+			if err != nil {
+				return usageErr(err)
+			}
 			c, err := flags.newClient()
 			if err != nil {
+				return err
+			}
+			if err := verifyCollectionExists(cmd.Context(), c, flags, args[0]); err != nil {
 				return err
 			}
 
 			path := "/collections/{collectionKey}/tags"
 			path = replacePathParam(path, "collectionKey", args[0])
-			params, err := tagListParams(flagLimit, flagStart, flagQ, flagQMode)
-			if err != nil {
-				return usageErr(err)
-			}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "collections", false, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
 			data = truncateJSONArray(data, flagLimit)
-			// Print provenance to stderr for human-facing output
-			printProvenance(cmd, countResultItems(data), prov)
-			// For JSON output, wrap with provenance envelope before passing through flags.
-			// --select wins over --compact when both are set; --compact only runs when
-			// no explicit fields were requested.
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						return err
-					}
-					if len(items) >= 25 {
-						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
-					}
-					return nil
-				}
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printCollectionsRead(cmd, flags, data, prov)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of tags to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of tags to return (0 = no limit)")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset")
 	cmd.Flags().StringVar(&flagQ, "query", "", "Filter tags by name substring")
 	cmd.Flags().StringVar(&flagQMode, "query-mode", "contains", "Tag query mode: contains or startsWith")

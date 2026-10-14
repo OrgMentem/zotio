@@ -56,6 +56,12 @@ for that stage. Run 'zotio items duplicates resolve' to actually remove duplicat
 before exporting the certified corpus.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			by := strings.ToLower(strings.TrimSpace(flagBy))
 			switch by {
 			case "doi", "title", "all":
@@ -68,8 +74,7 @@ before exporting the certified corpus.`,
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable duplicate detection.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{Store: rawDB}
@@ -93,7 +98,10 @@ before exporting the certified corpus.`,
 			if err != nil {
 				return fmt.Errorf("assembling PRISMA report: %w", err)
 			}
-			if flags.asJSON {
+			if flags.quiet {
+				return nil
+			}
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(report)
 				if err != nil {
 					return err

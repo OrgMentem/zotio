@@ -65,12 +65,12 @@ func TestItemsStaleFiltersAndLimit(t *testing.T) {
 }
 
 func TestItemsStaleCommandEnvelopeAndInvalidDays(t *testing.T) {
-	cmd := newItemsStaleCmd(&rootFlags{asJSON: true})
-	cmd.SetArgs([]string{"--days", "-1"})
+	cmd := newItemsStaleCmd(&rootFlags{asJSON: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--older-than-days", "-1"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err == nil || err.Error() != "--days must be non-negative" {
-		t.Fatalf("negative days error = %v, want --days must be non-negative", err)
+	if err := cmd.Execute(); err == nil || ExitCode(err) != 2 {
+		t.Fatalf("negative --older-than-days error = %v, want a usage error (exit 2)", err)
 	}
 
 	seedLocalQueryPlannerDB(t)
@@ -87,8 +87,8 @@ func TestItemsStaleCommandEnvelopeAndInvalidDays(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cmd = newItemsStaleCmd(&rootFlags{asJSON: true})
-	cmd.SetArgs([]string{"--days", "30"})
+	cmd = newItemsStaleCmd(&rootFlags{asJSON: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--older-than-days", "30"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})

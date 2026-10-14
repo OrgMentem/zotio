@@ -36,7 +36,7 @@ func zoteroDeepLink(targetType, key string) (uri, normType, libScope string, err
 	case "attachment", "pdf":
 		uri, normType = "zotero://open-pdf/"+seg+"/items/"+keySeg, "attachment"
 	default:
-		return "", "", "", fmt.Errorf("invalid --type %q: must be item, collection, or attachment", targetType)
+		return "", "", "", usageErr(fmt.Errorf("invalid --target %q: must be item, collection, or attachment", targetType))
 	}
 	return uri, normType, libScope, nil
 }
@@ -49,7 +49,7 @@ func newItemsOpenCmd(flags *rootFlags) *cobra.Command {
 		Use:   "open <key>",
 		Short: "Print or launch a Zotero desktop deep link (item, collection, or PDF)",
 		Long: `Build a zotero:// desktop deep link for an item (default), a collection
-(--type collection), or a PDF attachment (--type attachment), then print it or
+(--target collection), or a PDF attachment (--target attachment), then print it or
 launch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,
 rundll32 on Windows).
 
@@ -65,6 +65,13 @@ command emits {uri, target_type, library_scope, launched}.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			uri, targetType, libScope, err := zoteroDeepLink(flagType, args[0])
 			if err != nil {
+				return err
+			}
+			keyKind := "item"
+			if targetType == "collection" {
+				keyKind = "collection"
+			}
+			if err := validateKeyArg(keyKind, args[0]); err != nil {
 				return err
 			}
 			emit := func(launched bool) error {
@@ -102,7 +109,7 @@ command emits {uri, target_type, library_scope, launched}.`,
 		},
 	}
 	cmd.Flags().BoolVar(&flagLaunch, "launch", false, "Launch the deep link via the OS handler (open/xdg-open/rundll32)")
-	cmd.Flags().StringVar(&flagType, "type", "item", "Target type: item, collection, or attachment (PDF)")
+	cmd.Flags().StringVar(&flagType, "target", "item", "Target type: item, collection, or attachment (PDF)")
 
 	return cmd
 }

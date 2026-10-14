@@ -191,7 +191,7 @@ func TestItemsEnrichMissingMeshPlansAutomaticMeshTags(t *testing.T) {
 		`{"key":"KATT","version":4,"data":{"key":"KATT","itemType":"attachment","parentItem":"KPMID","PMID":"555","title":"pdf"}}`,
 	)
 
-	env, err := runMeshEnrich(t, &rootFlags{asJSON: true}, "--missing-mesh", "--email", "me@example.com")
+	env, err := runMeshEnrich(t, &rootFlags{asJSON: true, maxChanges: -1}, "--missing-mesh", "--email", "me@example.com")
 	if err != nil {
 		t.Fatalf("enrich --missing-mesh: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestItemsEnrichMissingMeshAppliesOnlyWithYes(t *testing.T) {
 
 	// Preview, then --dry-run with --yes: neither may write.
 	for _, flags := range []*rootFlags{
-		{asJSON: true},
+		{asJSON: true, maxChanges: -1},
 		{asJSON: true, yes: true, dryRun: true, maxChanges: -1},
 	} {
 		env, err := runMeshEnrich(t, flags, "--missing-mesh")
@@ -344,7 +344,7 @@ func TestItemsEnrichMissingMeshProviderFailureIsAnError(t *testing.T) {
 			seedMeshStore(t,
 				`{"key":"KPMID","version":4,"data":{"key":"KPMID","itemType":"journalArticle","title":"T","PMID":"111","tags":[]}}`)
 
-			env, err := runMeshEnrich(t, &rootFlags{asJSON: true}, "--missing-mesh")
+			env, err := runMeshEnrich(t, &rootFlags{asJSON: true, maxChanges: -1}, "--missing-mesh")
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) {
 				t.Fatalf("err = %v, want the provider's HTTP %d reported as an error", err, status)
 			}
@@ -354,11 +354,16 @@ func TestItemsEnrichMissingMeshProviderFailureIsAnError(t *testing.T) {
 			if len(env.Plan.Operations) != 0 {
 				t.Errorf("plan = %+v, want no proposal for a failed lookup", env.Plan.Operations)
 			}
-			// The failure is also recorded against the item, not lost.
-			journal, _ := env.Journal.(map[string]any)
-			skipped, _ := journal["skipped"].([]any)
-			if len(skipped) != 1 {
-				t.Errorf("journal = %+v, want the failed item listed once", env.Journal)
+			// The failure is an error entry on the envelope (ok:false) and the
+			// upstream exit code, not a benign journal skip.
+			if env.OK || env.Error == nil || !strings.Contains(env.Error.Message, fmt.Sprintf("HTTP %d", status)) {
+				t.Errorf("envelope ok=%v error=%+v, want ok:false with the provider failure", env.OK, env.Error)
+			}
+			if ExitCode(err) != 5 {
+				t.Errorf("ExitCode = %d, want 5 (upstream)", ExitCode(err))
+			}
+			if journal, _ := env.Journal.(map[string]any); journal["skipped"] != nil {
+				t.Errorf("journal = %+v, want the failure out of the benign skip list", env.Journal)
 			}
 		})
 	}

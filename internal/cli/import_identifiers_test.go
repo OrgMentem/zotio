@@ -116,12 +116,12 @@ func TestOpenLibraryItemFromData(t *testing.T) {
 		"publish_date":    "1952",
 		"publishers":      []any{map[string]any{"name": "Compiler Press"}},
 		"number_of_pages": float64(256),
-	}, "9781234567890")
+	}, "9781234567897")
 
 	if item["itemType"] != "book" || item["title"] != "Book Title" {
 		t.Fatalf("isbn item = %v", item)
 	}
-	if item["ISBN"] != "9781234567890" || item["publisher"] != "Compiler Press" || item["numPages"] != float64(256) {
+	if item["ISBN"] != "9781234567897" || item["publisher"] != "Compiler Press" || item["numPages"] != float64(256) {
 		t.Errorf("isbn mapped fields = %v", item)
 	}
 	creators, ok := item["creators"].([]map[string]any)
@@ -230,21 +230,21 @@ func TestImportArxivDryRun(t *testing.T) {
 func TestImportIsbnDryRun(t *testing.T) {
 	allowPrivateMetadataProviderServers(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/books" || r.URL.Query().Get("bibkeys") != "ISBN:9781234567890" {
+		if r.URL.Path != "/api/books" || r.URL.Query().Get("bibkeys") != "ISBN:9781234567897" {
 			t.Errorf("Open Library request URL = %s", r.URL.String())
 		}
 		if r.Header.Get("Accept") != "application/json" || r.Header.Get("User-Agent") != "zotio/1.0.0" {
 			t.Errorf("Open Library headers Accept=%q User-Agent=%q", r.Header.Get("Accept"), r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ISBN:9781234567890":{"title":"ISBN Dry Title","authors":[{"name":"Octavia Butler"}],"publish_date":"1979","publishers":[{"name":"Doubleday"}],"number_of_pages":264}}`))
+		_, _ = w.Write([]byte(`{"ISBN:9781234567897":{"title":"ISBN Dry Title","authors":[{"name":"Octavia Butler"}],"publish_date":"1979","publishers":[{"name":"Doubleday"}],"number_of_pages":264}}`))
 	}))
 	defer srv.Close()
 	withBase(t, &importOpenLibraryBase, srv.URL)
 
 	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second, dryRun: true, maxChanges: -1}
 	cmd := newImportIsbnCmd(flags)
-	cmd.SetArgs([]string{"9781234567890"})
+	cmd.SetArgs([]string{"9781234567897"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -256,13 +256,13 @@ func TestImportIsbnDryRun(t *testing.T) {
 	if env.Mode != "preview" || env.PreviewReason != "dry_run" {
 		t.Fatalf("mode=%q reason=%q, want preview/dry_run", env.Mode, env.PreviewReason)
 	}
-	if env.Source != "Open Library (9781234567890)" {
+	if env.Source != "Open Library (9781234567897)" {
 		t.Errorf("source = %q", env.Source)
 	}
 	if env.Item["itemType"] != "book" || env.Item["title"] != "ISBN Dry Title" {
 		t.Fatalf("isbn preview = %+v", env.Item)
 	}
-	if env.Item["ISBN"] != "9781234567890" {
+	if env.Item["ISBN"] != "9781234567897" {
 		t.Errorf("isbn preview ISBN = %v", env.Item["ISBN"])
 	}
 	assertIdentifierDryRunCreator(t, env.Item)
@@ -290,7 +290,7 @@ func TestSingleItemCreatorsPreviewWithoutWriting(t *testing.T) {
 
 	openLibrary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ISBN:9781234567890":{"title":"Gated ISBN"}}`))
+		_, _ = w.Write([]byte(`{"ISBN:9781234567897":{"title":"Gated ISBN"}}`))
 	}))
 	defer openLibrary.Close()
 	withBase(t, &importOpenLibraryBase, openLibrary.URL)
@@ -302,7 +302,7 @@ func TestSingleItemCreatorsPreviewWithoutWriting(t *testing.T) {
 	}{
 		{name: "import pmid", new: newImportPmidCmd, args: []string{"314159"}},
 		{name: "import arxiv", new: newImportArxivCmd, args: []string{"2401.00001"}},
-		{name: "import isbn", new: newImportIsbnCmd, args: []string{"9781234567890"}},
+		{name: "import isbn", new: newImportIsbnCmd, args: []string{"9781234567897"}},
 		{name: "items new", new: newItemsNewCmd, args: []string{"--item-type", "journalArticle"}},
 	}
 	modes := []struct {
@@ -388,9 +388,9 @@ func TestIdentifierProvidersRedirectPolicy(t *testing.T) {
 			name:     "OpenLibrary",
 			base:     &importOpenLibraryBase,
 			path:     "/api/books",
-			response: `{"ISBN:9781234567890":{"title":"Redirected Book"}}`,
+			response: `{"ISBN:9781234567897":{"title":"Redirected Book"}}`,
 			fetch: func(cmd *cobra.Command) error {
-				_, err := fetchOpenLibraryItem(cmd, time.Second, "9781234567890")
+				_, err := fetchOpenLibraryItem(cmd, time.Second, "9781234567897")
 				return err
 			},
 		},

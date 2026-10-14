@@ -3,11 +3,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
@@ -17,7 +20,7 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 		Use:   "children <itemKey>",
 		Short: "Get child items (attachments and notes) for an item",
 		// Use an item key placeholder, not a token.
-		Example:     "  zotio items children ABC12345",
+		Example:     "  zotio items children ABCD2345",
 		Annotations: map[string]string{"zotio:endpoint": "items.children", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/children", "mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -26,6 +29,9 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			if err := requireParentItem(cmd.Context(), c, flags, args[0]); err != nil {
+				return err
+			}
 			path := "/items/{itemKey}/children"
 			path = replacePathParam(path, "itemKey", args[0])
 			params := map[string]string{}
@@ -42,11 +48,12 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, ferr := applyFieldFlags(data, flags)
+				if ferr != nil {
+					return ferr
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -73,4 +80,16 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by type (attachment or note)")
 
 	return cmd
+}
+
+// requireParentItem verifies that an item exists before its children are read.
+// The Zotero local API answers /items/<unknown>/children with the whole
+// library, so a missing parent must be detected with a separate read (404 ->
+// exit 3).
+func requireParentItem(ctx context.Context, c *client.Client, flags *rootFlags, itemKey string) error {
+	path := replacePathParam("/items/{itemKey}", "itemKey", itemKey)
+	if _, _, err := resolveRead(ctx, c, flags, "items", false, path, nil, nil); err != nil {
+		return classifyAPIError(err, flags)
+	}
+	return nil
 }

@@ -102,11 +102,11 @@ func newItemsSimilarCmd(flags *rootFlags) *cobra.Command {
 			"'zotio sync --fulltext' to include the fulltext signal. --min-score filters the " +
 			"resulting weighted composite score.",
 		Args:        cobra.ExactArgs(1),
-		Example:     "  zotio items similar ABC12345\n  zotio items similar ABC12345 --limit 5 --min-score 0.2 --json",
+		Example:     "  zotio items similar ABCD2345\n  zotio items similar ABCD2345 --limit 5 --min-score 0.2 --json",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if opts.Limit < 0 {
-				return usageErr(fmt.Errorf("--limit must be >= 0"))
+			if err := validateLimitFlag("--limit", opts.Limit); err != nil {
+				return err
 			}
 			if opts.MinScore < 0 || math.IsNaN(opts.MinScore) || math.IsInf(opts.MinScore, 0) {
 				return usageErr(fmt.Errorf("--min-score must be a finite value >= 0"))
@@ -119,15 +119,7 @@ func newItemsSimilarCmd(flags *rootFlags) *cobra.Command {
 				return preconditionErr(fmt.Errorf("run 'zotio sync' first to enable item similarity"))
 			}
 			if !found {
-				if flags.asJSON {
-					data, err := graphNotFoundJSON(args[0])
-					if err != nil {
-						return err
-					}
-					return printOutput(cmd.OutOrStdout(), data, true)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Item not found: %s\n", args[0])
-				return nil
+				return graphNotFound(args[0])
 			}
 			if flags.asJSON {
 				return printCommandJSON(cmd.OutOrStdout(), report, flags)
@@ -135,7 +127,7 @@ func newItemsSimilarCmd(flags *rootFlags) *cobra.Command {
 			return printItemSimilarReport(cmd, report)
 		},
 	}
-	cmd.Flags().IntVar(&opts.Limit, "limit", itemSimilarDefaultLimit, "Maximum number of similar items to return")
+	cmd.Flags().IntVar(&opts.Limit, "limit", itemSimilarDefaultLimit, "Maximum number of similar items to return (0 = no limit)")
 	cmd.Flags().Float64Var(&opts.MinScore, "min-score", 0, "Minimum composite similarity score to include")
 	return cmd
 }
@@ -213,7 +205,7 @@ func buildItemSimilarReport(ctx context.Context, db localQueryStore, key string,
 		}
 		return entries[i].Score > entries[j].Score
 	})
-	if opts.Limit >= 0 && len(entries) > opts.Limit {
+	if opts.Limit > 0 && len(entries) > opts.Limit {
 		entries = entries[:opts.Limit]
 	}
 	for i := range entries {

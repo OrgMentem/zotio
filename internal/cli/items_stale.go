@@ -21,16 +21,21 @@ func newItemsStaleCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Find old items without PDFs or annotations",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			if flagDays < 0 {
-				return fmt.Errorf("--days must be non-negative")
+				return usageErr(fmt.Errorf("--older-than-days must be 0 or greater"))
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
 			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
@@ -43,33 +48,47 @@ func newItemsStaleCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Local-mirror read: same envelope pipeline as every other read
-			// command, so `.results` stays a JSON array (this used to print a
-			// bare top-level array).
 			prov := localProvenance(rawDB, "items", "local_only")
 			printProvenance(cmd, len(rows), prov)
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			return printMirrorRows(cmd, flags, data, prov)
 		},
 	}
-	cmd.Flags().IntVar(&flagDays, "days", 365, "Items added more than this many days ago")
+	cmd.Flags().IntVar(&flagDays, "older-than-days", 365, "Items added more than this many days ago")
 	cmd.Flags().BoolVar(&flagNoPDF, "no-pdf", false, "Include only items without a PDF attachment")
 	cmd.Flags().BoolVar(&flagNoAnnotations, "no-annotations", false, "Include only items without annotation children")
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of items to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of items to return (0 = no limit)")
 
 	return cmd
+}
+
+// errUnsyncedStoreFor is the precondition error for a mirror reader that finds
+// no synced store. It carries the shared precondition envelope: kind, code,
+// capability, precondition "synced_store", detail and remediation, printed
+// under --json/--agent or piped output.
+func errUnsyncedStoreFor(cmd *cobra.Command, flags *rootFlags) error {
+	return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionSyncedStore,
+		"local store not found; no synced data", preconditionRemediation(preconditionSyncedStore))
+}
+
+// printMirrorRows prints a local-mirror row list: the {meta, results} envelope
+// for JSON/piped output, a table (or --plain/--csv) otherwise. Field flags
+// apply to the rows in both forms.
+func printMirrorRows(cmd *cobra.Command, flags *rootFlags, data json.RawMessage, prov DataProvenance) error {
+	if !wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+		return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+	}
+	if flags.quiet {
+		return nil
+	}
+	filtered, err := applyFieldFlags(data, flags)
+	if err != nil {
+		return err
+	}
+	wrapped, err := wrapWithProvenance(filtered, prov)
+	if err != nil {
+		return err
+	}
+	return printOutput(cmd.OutOrStdout(), wrapped, true)
 }
 
 func queryStaleItems(db localQueryStore, days int, noPDF, noAnnotations bool, limit int) ([]map[string]any, error) {

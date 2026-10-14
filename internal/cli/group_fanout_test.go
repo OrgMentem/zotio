@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -433,7 +434,7 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "destructive write", args: []string{"items", "delete", "ABCD1234", "--yes"}, want: []string{"items delete", fanoutSideEffectFree}},
+		{name: "destructive write", args: []string{"items", "delete", "ABCD2345", "--yes"}, want: []string{"items delete", fanoutSideEffectFree}},
 		{name: "write", args: []string{"tags", "rename", "--from", "old", "--to", "new", "--yes"}, want: []string{"tags rename", fanoutSideEffectFree}},
 		{name: "sync", args: []string{"sync"}, want: []string{"sync", fanoutSideEffectFree}},
 		{name: "introspect", args: []string{"doctor"}, want: []string{"doctor", fanoutLibraryScoped}},
@@ -451,7 +452,7 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 		// first would resurrect the bug. Pinned here so that becomes a test
 		// failure rather than a rediscovery.
 		{name: "vault sync writeback", args: []string{"vault", "sync"}, want: []string{"vault sync", fanoutSideEffectFree}},
-		{name: "attachments writeback", args: []string{"attachments", "add", "ABCD1234", "/tmp/x.pdf"}, want: []string{"attachments add", fanoutSideEffectFree}},
+		{name: "attachments writeback", args: []string{"attachments", "add", "ABCD2345", "/tmp/x.pdf"}, want: []string{"attachments add", fanoutSideEffectFree}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -547,20 +548,25 @@ func TestGroupFanoutReadsEachLibrarysOwnMirror(t *testing.T) {
 		dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
 		seedTwoDistinctMirrors(t, dataDir)
 
+		// Group 100 has no mirror at all: analytics now refuses it with the
+		// synced_store precondition (exit 9), so the run is partial (exit 13)
+		// and that library reports its own failure.
 		out, _, err := runFanoutCmd(t, "analytics", "--type", "items", "--group", "all", "--json")
-		if err != nil {
-			t.Fatalf("analytics --group all: %v (out=%s)", err, out)
+		if err == nil || ExitCode(err) != 13 {
+			t.Fatalf("analytics --group all: %v (exit %d), want partial exit 13 (out=%s)", err, ExitCode(err), out)
 		}
 		report := decodeFanoutReport(t, out)
 		byLib := fanoutRowsByLibrary(t, report.Results)
-		// 2 personal, 1 group 99, 0 for the group with no mirror at all.
 		for _, want := range []struct {
 			library string
 			count   float64
-		}{{"0", 2}, {"99", 1}, {"100", 0}} {
+		}{{"0", 2}, {"99", 1}} {
 			if got := fanoutRowCount(t, byLib, want.library, "count"); got != want.count {
 				t.Errorf("library %s count = %v, want %v (the first library's count is 2, so 2 here means the mirror path leaked)", want.library, got, want.count)
 			}
+		}
+		if block := fanoutBlock(t, report, "100"); block.Status != "failed" || block.ExitCode != 9 {
+			t.Errorf("group 100 block = status %q exit %d, want failed with exit 9 (no mirror)", block.Status, block.ExitCode)
 		}
 	})
 
@@ -733,7 +739,7 @@ func TestGroupFanoutRefusesCommandsWritingOneCallerNamedFile(t *testing.T) {
 		flag string
 	}{
 		{name: "export snapshot", args: []string{"export", "snapshot", "--output", target}},
-		{name: "collections bundle", args: []string{"collections", "bundle", "COL1"}},
+		{name: "collections bundle", args: []string{"collections", "bundle", "ABCD2345"}},
 		{name: "library health report", args: []string{"library", "health", "--report", target}, flag: "--report"},
 		{name: "library health baseline", args: []string{"library", "health", "--write-baseline", target}, flag: "--write-baseline"},
 		{name: "library wrapped card", args: []string{"library", "wrapped", "--card", target}, flag: "--card"},
@@ -1064,7 +1070,9 @@ func TestGroupFanoutKeepsEachLibrarysNearTitleReport(t *testing.T) {
 	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, []json.RawMessage{
 		json.RawMessage(`{"key":"FRST","version":1,"data":{"key":"FRST","itemType":"journalArticle","title":"Random Forests","date":"2001"}}`),
 	})
-	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, nil)
+	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"GBM1","version":1,"data":{"key":"GBM1","itemType":"journalArticle","title":"Gradient Boosting Machines"}}`),
+	})
 
 	out, _, err := runFanoutCmd(t, "items", "find", "--group", "all", "--json", "--title", "Attention Is All You Nead")
 	if err != nil {
@@ -1135,35 +1143,46 @@ func TestGroupFanoutTextModeKeepsTheLibrariesThatAnswered(t *testing.T) {
 	fx := newFanoutFixture(t, "")
 	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
 	synced := time.Now().Add(-time.Hour).Truncate(time.Second)
-	// The personal library has no mirror at all, so `items find` answers it in
-	// prose ("Run 'zotio sync' first"), which the aggregate cannot parse. Group
-	// 99 holds the paper and answers with a JSON envelope.
+	seedFanoutLibraryStore(t, dataDir, "data.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"RF01","version":1,"data":{"key":"RF01","itemType":"journalArticle","title":"Random Forests"}}`),
+	})
 	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, []json.RawMessage{
 		json.RawMessage(`{"key":"ATTN","version":1,"data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","date":"2017-06-12"}}`),
+		json.RawMessage(`{"key":"ATT2","version":1,"data":{"key":"ATT2","itemType":"journalArticle","title":"Attention Is All You Need","date":"2017-06-12"}}`),
 	})
-	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, nil)
+	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"GBM1","version":1,"data":{"key":"GBM1","itemType":"journalArticle","title":"Gradient Boosting Machines"}}`),
+	})
 
-	out, _, err := runFanoutCmd(t, "items", "find", "--group", "all", "--json", "--title", "Attention Is All You Need")
-	if err != nil {
-		t.Fatalf("items find --group all: %v (out=%s)", err, out)
+	// No allowlisted command prints prose into the capture buffer (piped
+	// output is JSON by contract), so the run function is a stand-in that
+	// prints a per-library line the aggregate cannot parse.
+	counts := map[string]string{"": "1", "99": "2", "100": "1"}
+	flags := &rootFlags{groupFanout: true, timeout: 5 * time.Second, dataSource: "auto"}
+	cmd := &cobra.Command{Use: "prisma"}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetContext(context.Background())
+	run := func(cmd *cobra.Command, _ []string) error {
+		fmt.Fprintf(cmd.OutOrStdout(), "Records identified: %s\n", counts[flags.group])
+		return nil
 	}
-	// Text render, not the JSON aggregate: one library printed prose.
+	if err := runGroupFanout(cmd, nil, flags, run); err != nil {
+		t.Fatalf("fan-out: %v (out=%s)", err, buf.String())
+	}
+	out := buf.String()
+	// Text render, not the JSON aggregate: every library printed prose.
 	if strings.HasPrefix(strings.TrimSpace(out), "{") {
 		t.Fatalf("aggregate was serialized as JSON despite an unparseable payload:\n%s", out)
 	}
-	if !strings.Contains(out, "Run 'zotio sync' first") {
-		t.Errorf("the un-synced library's own message is missing:\n%s", out)
-	}
 	labHeading := strings.Index(out, "Lab (group 99)")
-	answer := strings.Index(out, "ATTN")
-	if labHeading < 0 {
-		t.Fatalf("group 99 heading is missing:\n%s", out)
+	rgHeading := strings.Index(out, "Reading Group (group 100)")
+	if labHeading < 0 || rgHeading < labHeading {
+		t.Fatalf("library headings missing or out of order:\n%s", out)
 	}
-	if answer < 0 {
-		t.Fatalf("group 99 answered with the paper and the aggregate printed only its heading:\n%s", out)
-	}
-	if answer < labHeading {
-		t.Errorf("group 99's answer printed above its own heading:\n%s", out)
+	if !strings.Contains(out[labHeading:rgHeading], "2") {
+		t.Errorf("group 99's own answer is missing under its heading:\n%s", out)
 	}
 	if !strings.Contains(out, "3 libraries: 3 ok, 0 failed") {
 		t.Errorf("summary line missing or wrong:\n%s", out)

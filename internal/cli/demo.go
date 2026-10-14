@@ -41,14 +41,15 @@ func demoActive() bool {
 }
 
 // demoDBPath returns the sandbox database path: the same directory as the
-// real store but a distinct demo.db file, so the two never collide. The
-// group-suffix logic in defaultDBPath is irrelevant in demo mode.
-func demoDBPath(name string) (string, error) {
-	home, err := cliutil.HomeDir()
+// real store (the resolved data directory, so ZOTERO_DATA_DIR and friends
+// apply) but a distinct demo.db file, so the two never collide. The
+// group-suffix logic in defaultDBPathFor is irrelevant in demo mode.
+func demoDBPath(_ string) (string, error) {
+	dataDir, err := cliutil.DataDir()
 	if err != nil {
-		return "", fmt.Errorf("resolving home directory for demo db: %w", err)
+		return "", fmt.Errorf("resolving data directory for demo db: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", name, "demo.db"), nil
+	return filepath.Join(dataDir, "demo.db"), nil
 }
 
 // demoFixture is the on-disk shape of the embedded sample library.

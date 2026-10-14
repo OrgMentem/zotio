@@ -41,6 +41,9 @@ func seedSearchesRunStore(t *testing.T, conditions string, items ...json.RawMess
 			t.Fatalf("seed items: %v", err)
 		}
 	}
+	if err := db.SaveSyncState("searches", "", 1); err != nil {
+		t.Fatalf("seed searches sync state: %v", err)
+	}
 	if err := db.SaveSyncState("items", "", len(items)); err != nil {
 		t.Fatalf("seed items sync state: %v", err)
 	}
@@ -193,12 +196,14 @@ func TestSearchesRunReturnsEmptyArrayOnEmptyResults(t *testing.T) {
 	if strings.Contains(out, "leaked") {
 		t.Fatalf("library item leaked into output for an empty saved search: %q", out)
 	}
-	var items []json.RawMessage
-	if err := json.Unmarshal([]byte(out), &items); err != nil {
-		t.Fatalf("output is not a JSON array (%v); an empty search must not become a refusal: %q", err, out)
+	var env struct {
+		Results []json.RawMessage `json:"results"`
 	}
-	if len(items) != 0 {
-		t.Fatalf("output = %q, want an empty array", out)
+	if err := json.Unmarshal([]byte(out), &env); err != nil || env.Results == nil {
+		t.Fatalf("output is not a {meta,results} envelope (%v); an empty search must not become a refusal: %q", err, out)
+	}
+	if len(env.Results) != 0 {
+		t.Fatalf("output = %q, want an empty results array", out)
 	}
 	if strings.Contains(errOut, "precondition") {
 		t.Fatalf("a working endpoint with 0 hits must not report a precondition: %q", errOut)
@@ -232,12 +237,15 @@ func searchesRunLiveResultsServer(t *testing.T, definition string, resultsStatus
 // searchesRunOutputKeys decodes a searches run result array into item keys.
 func searchesRunOutputKeys(t *testing.T, out string) []string {
 	t.Helper()
-	var items []struct {
-		Key string `json:"key"`
+	var env struct {
+		Results []struct {
+			Key string `json:"key"`
+		} `json:"results"`
 	}
-	if err := json.Unmarshal([]byte(out), &items); err != nil {
-		t.Fatalf("output is not a JSON array of items (%v): %q", err, out)
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("output is not a {meta,results} envelope (%v): %q", err, out)
 	}
+	items := env.Results
 	keys := make([]string, len(items))
 	for i, item := range items {
 		keys[i] = item.Key
@@ -301,8 +309,11 @@ func TestSearchesRunLocalDataSourceEmptyResultIsAnEmptyArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searches run --data-source local: %v\noutput: %s", err, out)
 	}
-	if got := strings.TrimSpace(out); got != "[]" {
-		t.Fatalf("output = %q, want []", got)
+	var env struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil || env.Results == nil || len(env.Results) != 0 {
+		t.Fatalf("output = %q, want an envelope with a non-nil empty results array (%v)", out, err)
 	}
 }
 
@@ -402,7 +413,7 @@ func TestSearchesRunLocalDataSourceRefusesWhenItemsNeverSynced(t *testing.T) {
 func TestSearchesRunLocalDataSourceAbsentSearchIsNotFound(t *testing.T) {
 	srv := newSearchesRunTestServer(t, http.StatusOK, nil)
 	seedSearchesRunStore(t, ssConds([3]string{"title", "contains", "x"}))
-	out, _, err := runSearchesRunTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dataSource: "local"}, "MISSING")
+	out, _, err := runSearchesRunTestCmdWithFlags(t, srv, &rootFlags{asJSON: true, dataSource: "local"}, "ZZZZ9999")
 	if err == nil {
 		t.Fatalf("searches run of an unmirrored search succeeded; output %q", out)
 	}

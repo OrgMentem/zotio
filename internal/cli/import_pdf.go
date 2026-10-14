@@ -55,13 +55,15 @@ type importPDFResult struct {
 }
 
 // zoteroCollectionKeyRE matches Zotero's real key format (8 uppercase
-// alphanumerics). --collection accepts a key or a name; this is the only shape
-// trusted as a key, since a human-chosen name could otherwise collide with it.
+// alphanumerics). --to is a key; --collection-name is always a name. Only this
+// shape is trusted as a key, since a human-chosen name could otherwise collide
+// with it.
 var zoteroCollectionKeyRE = regexp.MustCompile(`^[A-Z0-9]{8}$`)
 
 // Import pdf is connector-only because PDF recognition exists only in Zotero desktop.
 func newImportPDFCmd(flags *rootFlags) *cobra.Command {
-	var collectionFlag string
+	var toFlag string
+	var collectionNameFlag string
 	var onDuplicateFlag string
 	cmd := &cobra.Command{
 		Use:   "pdf <path...>",
@@ -81,11 +83,12 @@ Before importing, each PDF is classified against your synced library the same wa
 synced library is required for that check, and its absence only disables the check,
 never the import.
 
---collection <key|name> files the created item into a collection after import,
-creating a same-named collection when one doesn't already exist (like 'items
-add-to-collection'). This is a separate step, not part of the connector call: the
-saveStandaloneAttachment endpoint saves into whatever the desktop pane currently
-targets and accepts no collection parameter.
+--to <key> files the created item into the collection with that key after import.
+--collection-name <name> does the same by exact name, creating the collection
+when it does not exist (like 'items add-to-collection'). Pass at most one. This
+is a separate step, not part of the connector call: the saveStandaloneAttachment
+endpoint saves into whatever the desktop pane currently targets and accepts no
+collection parameter.
 
 --via connector hands work to the running Zotero desktop, which surfaces its
 own progress UI; zotio cannot dismiss it and the connector protocol exposes no
@@ -107,48 +110,79 @@ does not pace connector calls.`,
 			switch dupMode {
 			case "skip", "attach", "create":
 			default:
-				return fmt.Errorf("--on-duplicate must be one of skip, attach, create")
+				return usageErr(fmt.Errorf("--on-duplicate must be one of skip, attach, create"))
 			}
-			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {
-				return preconditionErr(fmt.Errorf("import pdf requires the desktop connector: %w", err))
-			} else if via != "connector" {
-				return preconditionErr(fmt.Errorf("import pdf requires the desktop connector (local base URL + Zotero running)"))
+			if cmd.Flags().Changed("to") && cmd.Flags().Changed("collection-name") {
+				return usageErr(fmt.Errorf("--to and --collection-name are mutually exclusive"))
 			}
-			conn, err := flags.newConnector()
-			if err != nil {
+			if err := validateImportDestination(toFlag); err != nil {
 				return err
 			}
-			collection := strings.TrimSpace(collectionFlag)
+			collection := strings.TrimSpace(toFlag)
+			collectionIsName := false
+			if name := strings.TrimSpace(collectionNameFlag); name != "" {
+				collection = name
+				collectionIsName = true
+			}
 			idx, dupWarning := loadImportPDFDuplicateIndex(cmd.Context())
-			ops := make([]mutation.Op, 0, len(args))
-			for i, arg := range args {
+			type pdfInput struct {
+				path string
+				scan scanResult
+			}
+			inputs := make([]pdfInput, 0, len(args))
+			for _, arg := range args {
 				path, err := filepath.Abs(arg)
 				if err != nil {
-					return fmt.Errorf("resolving PDF path %q: %w", arg, err)
+					return usageErr(fmt.Errorf("resolving PDF path %q: %w", arg, err))
 				}
-				index := i + 1
-				label := filepath.Base(path)
-				scan := classifyPDF(cmd.Context(), path, idx, nil)
-				ops = append(ops, importPDFOpWithOptions(cmd, flags, conn, path, label, index, importPDFOptions{
-					Collection:  collection,
-					OnDuplicate: dupMode,
-					Duplicate:   scan,
-				}))
+				inputs = append(inputs, pdfInput{path: path, scan: classifyPDF(cmd.Context(), path, idx, nil)})
+			}
+			buildOps := func(conn *connector.Client) []mutation.Op {
+				ops := make([]mutation.Op, 0, len(inputs))
+				for i, in := range inputs {
+					ops = append(ops, importPDFOpWithOptions(cmd, flags, conn, in.path, filepath.Base(in.path), i+1, importPDFOptions{
+						Collection:       collection,
+						CollectionIsName: collectionIsName,
+						OnDuplicate:      dupMode,
+						Duplicate:        in.scan,
+					}))
+				}
+				return ops
+			}
+			// Local input is validated before the connector is probed, so a
+			// missing PDF reports invalid (exit 2) even with no desktop.
+			ops := buildOps(nil)
+			invalid := false
+			for _, op := range ops {
+				if op.InvalidReason != "" {
+					invalid = true
+					break
+				}
+			}
+			if !invalid {
+				if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {
+					return preconditionErr(fmt.Errorf("import pdf requires the desktop connector: %w", err))
+				} else if via != "connector" {
+					return preconditionErr(fmt.Errorf("import pdf requires the desktop connector (local base URL + Zotero running)"))
+				}
+				conn, err := flags.newConnector()
+				if err != nil {
+					return err
+				}
+				ops = buildOps(conn)
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "import.pdf", ops)
 			if dupWarning != "" {
 				env.Warnings = append(env.Warnings, dupWarning)
 			}
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
 			if runErr == nil && env.Result != nil && env.Result.Summary.Applied > 0 {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
-	cmd.Flags().StringVar(&collectionFlag, "collection", "", "Collection key or name to file the created item into (the name is created if it doesn't exist)")
+	cmd.Flags().StringVar(&toFlag, "to", "", "Destination collection key to file the created item into")
+	cmd.Flags().StringVar(&collectionNameFlag, "collection-name", "", "Exact collection name to file the created item into (created if absent)")
 	cmd.Flags().StringVar(&onDuplicateFlag, "on-duplicate", "skip", "How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create")
 	return cmd
 }
@@ -158,8 +192,12 @@ does not pace connector calls.`,
 // apply's manifest-driven "recognize" step uses only SessionCollection — the
 // manifest's own review step already decided what to do with each file.
 type importPDFOptions struct {
-	// Collection is the --collection value (key or name); empty disables filing.
+	// Collection is the destination: a collection key (--to) or, when
+	// CollectionIsName is set, a collection name (--collection-name). Empty
+	// disables filing.
 	Collection string
+	// CollectionIsName marks Collection as a name to look up or create.
+	CollectionIsName bool
 	// SessionCollection is a verified collection key that the recognition's
 	// own connector save session files the new item into (updateSession),
 	// the way a stored create's session is filed. It is mapped to a desktop
@@ -205,7 +243,7 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 	if opts.SessionCollection != "" {
 		changes = append(changes, mutation.Change{Field: "collection", Add: opts.SessionCollection})
 	}
-	return mutation.Op{
+	op := mutation.Op{
 		ID:      fmt.Sprintf("import.pdf.%03d", index),
 		Key:     path,
 		Kind:    kind,
@@ -233,7 +271,7 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 					status, reason, err := applyImportPDFAttach(cmd.Context(), flags, path, opts.Duplicate)
 					if opts.Collection != "" {
 						if result, ok := reason.(importPDFResult); ok {
-							result.CollectionNote = "not filed: --collection only applies to newly created items"
+							result.CollectionNote = "not filed: the destination only applies to newly created items"
 							reason = result
 						}
 					}
@@ -323,7 +361,7 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 				result.CollectionNote = "not filed: item key could not be resolved (see keys_note)"
 				return "applied", result, nil
 			}
-			collectionKey, status, note := fileImportPDFIntoCollection(flags, result.ItemKey, opts.Collection)
+			collectionKey, status, note := fileImportPDFIntoCollection(flags, result.ItemKey, opts.Collection, opts.CollectionIsName)
 			result.CollectionKey = collectionKey
 			result.CollectionNote = note
 			if status != "applied" && status != "no_op" {
@@ -332,6 +370,12 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 			return "applied", result, nil
 		},
 	}
+	if info, err := os.Stat(path); err != nil {
+		op.InvalidReason = fmt.Sprintf("cannot read PDF %q: %v", path, err)
+	} else if info.IsDir() {
+		op.InvalidReason = fmt.Sprintf("PDF path %q is a directory; for a folder use `zotio import scan`", path)
+	}
+	return op
 }
 
 func isImportPDFDuplicate(scan scanResult) bool {
@@ -401,16 +445,16 @@ func applyImportPDFAttach(ctx context.Context, flags *rootFlags, path string, sc
 	return status, result, err
 }
 
-// fileImportPDFIntoCollection resolves --collection to a key (creating a
-// same-named collection when absent, like 'items add-to-collection') and adds
-// itemKey to it, reusing the same membership writer as 'items move'
+// fileImportPDFIntoCollection resolves the destination to a key (creating a
+// same-named collection when a name is absent, like 'items add-to-collection')
+// and adds itemKey to it, reusing the same membership writer as 'items move'
 // (applyItemCollectionMove) instead of a second PATCH path.
-func fileImportPDFIntoCollection(flags *rootFlags, itemKey, collectionValue string) (collectionKey, status, note string) {
+func fileImportPDFIntoCollection(flags *rootFlags, itemKey, collectionValue string, isName bool) (collectionKey, status, note string) {
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return "", "failed", err.Error()
 	}
-	collectionKey, err = resolveImportPDFCollectionKey(c, collectionValue)
+	collectionKey, err = resolveImportPDFCollectionKey(c, collectionValue, isName)
 	if err != nil {
 		return "", "failed", err.Error()
 	}
@@ -432,12 +476,13 @@ func fileImportPDFIntoCollection(flags *rootFlags, itemKey, collectionValue stri
 	return collectionKey, status, note
 }
 
-// resolveImportPDFCollectionKey resolves --collection to a collection key. A
-// value in Zotero's real key shape is trusted as a key outright; anything else
-// is resolved (and created when absent) the same way 'items add-to-collection'
-// resolves --collection-name, so the two commands behave consistently.
-func resolveImportPDFCollectionKey(c *client.Client, value string) (string, error) {
-	if zoteroCollectionKeyRE.MatchString(value) {
+// resolveImportPDFCollectionKey resolves the destination to a collection key.
+// A name (--collection-name) is looked up, and created when absent, the same
+// way 'items add-to-collection' resolves --collection-name. Otherwise a value
+// in Zotero's real key shape is trusted as a key outright; anything else is
+// treated as a name.
+func resolveImportPDFCollectionKey(c *client.Client, value string, isName bool) (string, error) {
+	if !isName && zoteroCollectionKeyRE.MatchString(value) {
 		return value, nil
 	}
 	collections, err := collectionsByName(c)

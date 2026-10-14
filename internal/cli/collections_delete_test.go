@@ -23,7 +23,7 @@ func TestCollectionsDeleteAppliedRendersMutationEnvelope(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"COLLKEY1"})
+	cmd.SetArgs([]string{"CLCTAB23"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("collections delete: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestCollectionsDeleteAppliedRendersMutationEnvelope(t *testing.T) {
 		t.Fatalf("envelope result = %+v, want one item", env.Result)
 	}
 	item := env.Result.Items[0]
-	if item.Key != "COLLKEY1" || item.Status != "applied" {
-		t.Errorf("result item = key %q status %q, want COLLKEY1 applied", item.Key, item.Status)
+	if item.Key != "CLCTAB23" || item.Status != "applied" {
+		t.Errorf("result item = key %q status %q, want CLCTAB23 applied", item.Key, item.Status)
 	}
 }

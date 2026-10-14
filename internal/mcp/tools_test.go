@@ -715,9 +715,10 @@ func TestDBPathRejectsUnresolvedHome(t *testing.T) {
 	}
 }
 
-// Demo mode resolves demo.db from HOME alone. With HOME unset but a data
-// directory override present, the CLI refuses; MCP used to retry the data
-// directory on its own and hand search and sql the operator's real mirror.
+// Demo mode resolves demo.db in the resolved data directory (ZOTERO_DATA_DIR
+// and friends apply), never the operator's real data.db. When no data
+// directory resolves at all, it fails with the demo resolution error instead
+// of falling back to a real mirror path.
 func TestDBPathInDemoModeNeverFallsBackToTheRealMirror(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("HOME", "")
@@ -728,8 +729,17 @@ func TestDBPathInDemoModeNeverFallsBackToTheRealMirror(t *testing.T) {
 	t.Setenv("ZOTIO_DEMO", "1")
 
 	path, err := dbPath()
+	if err != nil {
+		t.Fatalf("dbPath() with a data directory override: %v", err)
+	}
+	if filepath.Base(path) != "demo.db" || filepath.Dir(path) != dataDir {
+		t.Fatalf("dbPath() = %q, want demo.db under %s (never data.db)", path, dataDir)
+	}
+
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	path, err = dbPath()
 	if err == nil {
-		t.Fatalf("dbPath() = %q, nil; want the demo resolution error, not a path under %s", path, dataDir)
+		t.Fatalf("dbPath() = %q, nil; want the demo resolution error", path)
 	}
 	if !strings.Contains(err.Error(), "demo db") {
 		t.Errorf("dbPath() error = %v, want the CLI's demo resolution error", err)

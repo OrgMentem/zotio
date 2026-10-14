@@ -16,29 +16,49 @@ const missingPDFItemTypesSQL = `
 `
 
 func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
-	var flagType, flagCollection, flagKeys string
+	var flagItemType, flagCollection, flagKeys, flagScope string
 	var flagLimit int
 	cmd := &cobra.Command{
 		Use:         "missing-pdf",
 		Short:       "List items that should have an attached PDF but do not",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if flagCollection != "" {
+				if err := validateKeyArg("collection", flagCollection); err != nil {
+					return err
+				}
+			}
+			keys, err := parseMissingPDFKeys(flagKeys)
+			if err != nil {
+				return err
+			}
+			scopeExpr, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			if err != nil {
+				return err
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			keys, err := parseMissingPDFKeys(flagKeys)
+			sel, err := resolveScopeSelection(cmd, flags, "items missing-pdf", db, scopeExpr)
 			if err != nil {
 				return err
 			}
-			rows, err := queryMissingPDFItemsForKeys(db, flagType, flagLimit, flagCollection, keys)
+			rows, err := scopedAuditRows(sel, flagLimit, func(queryLimit int) ([]map[string]any, error) {
+				return queryMissingPDFItemsForKeys(db, flagItemType, queryLimit, flagCollection, keys)
+			})
 			if err != nil {
 				return fmt.Errorf("querying missing PDFs: %w", err)
 			}
@@ -46,34 +66,18 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// This command reads the local mirror only, so route it through the
-			// same envelope pipeline as every other read command and keep
-			// `.results` a JSON array. It used to print a bare top-level array
-			// while its siblings `items find`/`items list` did not, which cost a
-			// downstream consumer a whole debugging cycle (papio field report
-			// 2026-08-22, finding 1).
+			// This command reads the local mirror only and keeps `.results` a
+			// JSON array (papio field report 2026-08-22, finding 1).
 			prov := localProvenance(rawDB, "items", "local_only")
 			printProvenance(cmd, len(rows), prov)
-			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			return printMirrorRows(cmd, flags, data, prov)
 		},
 	}
-	cmd.Flags().StringVar(&flagType, "type", "", "Filter to a specific Zotero item type")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Filter to an exact Zotero collection key")
+	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter to a specific Zotero item type")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Filter to an exact Zotero collection key (same as --scope collection:KEY)")
 	cmd.Flags().StringVar(&flagKeys, "keys", "", "Comma-separated exact parent item keys")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 	return cmd
 }
 
@@ -207,8 +211,8 @@ func parseMissingPDFKeys(value string) ([]string, error) {
 	keys := make([]string, 0, 8)
 	for _, key := range strings.Split(value, ",") {
 		key = strings.TrimSpace(key)
-		if !zoteroItemKeyRE.MatchString(key) {
-			return nil, fmt.Errorf("invalid item key %q", key)
+		if err := validateKeyArg("item", key); err != nil {
+			return nil, err
 		}
 		if !seen[key] {
 			seen[key] = true
@@ -216,7 +220,7 @@ func parseMissingPDFKeys(value string) ([]string, error) {
 		}
 	}
 	if len(keys) > 50 {
-		return nil, fmt.Errorf("--keys supports at most 50 item keys")
+		return nil, usageErr(fmt.Errorf("--keys supports at most 50 item keys"))
 	}
 	return keys, nil
 }

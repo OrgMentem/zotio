@@ -22,7 +22,7 @@ import (
 )
 
 // wdTailFeed serves a change feed: the first poll (no since) lists OLD1 as
-// the current set; later polls report an upsert of AAAA1111 and a deletion
+// the current set; later polls report an upsert of AAAA2222 and a deletion
 // of DDDD4444. Any other request counts as unexpected.
 func wdTailFeed(t *testing.T, unexpected *atomic.Int32) *httptest.Server {
 	t.Helper()
@@ -31,13 +31,19 @@ func wdTailFeed(t *testing.T, unexpected *atomic.Int32) *httptest.Server {
 		if r.Method != http.MethodGet {
 			unexpected.Add(1)
 		}
+		if r.URL.Query().Get("itemKey") != "" {
+			// The preview reads the selected item before planning its tag write.
+			w.Header().Set("Last-Modified-Version", "7")
+			_, _ = io.WriteString(w, `[{"key":"AAAA2222","version":7,"data":{"key":"AAAA2222","version":7,"itemType":"book","tags":[]}}]`)
+			return
+		}
 		if r.URL.Query().Get("since") == "" {
 			w.Header().Set("Last-Modified-Version", "6")
-			_, _ = io.WriteString(w, `[{"key":"OLD11111","version":6}]`)
+			_, _ = io.WriteString(w, `[{"key":"QRST2222","version":6}]`)
 			return
 		}
 		w.Header().Set("Last-Modified-Version", "7")
-		_, _ = io.WriteString(w, `[{"key":"AAAA1111","version":7}]`)
+		_, _ = io.WriteString(w, `[{"key":"AAAA2222","version":7}]`)
 	})
 	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -76,11 +82,11 @@ func TestWdEmitChangesHandsTheEventBatchToTheHook(t *testing.T) {
 	if len(batches) != 2 {
 		t.Fatalf("hook ran %d times, want 2", len(batches))
 	}
-	if !batches[0].Baseline || len(batches[0].Events) != 1 || batches[0].Events[0].Key != "OLD11111" {
+	if !batches[0].Baseline || len(batches[0].Events) != 1 || batches[0].Events[0].Key != "QRST2222" {
 		t.Fatalf("first batch = %+v, want the baseline listing", batches[0])
 	}
 	want := []workflowRunTriggerEvent{
-		{Event: "upsert", Resource: "items", Key: "AAAA1111"},
+		{Event: "upsert", Resource: "items", Key: "AAAA2222"},
 		{Event: "delete", Resource: "items", Key: "DDDD4444"},
 	}
 	if batches[1].Baseline || !reflect.DeepEqual(batches[1].Events, want) {
@@ -151,8 +157,8 @@ func TestWdTailWorkflowSelectsOnlyTheChangedItemInPreview(t *testing.T) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("decode step output %q: %v", data, err)
 	}
-	if len(envelope.Plan.Operations) != 1 || envelope.Plan.Operations[0].Key != "AAAA1111" {
-		t.Fatalf("planned operations = %+v, want only the changed item AAAA1111", envelope.Plan.Operations)
+	if len(envelope.Plan.Operations) != 1 || envelope.Plan.Operations[0].Key != "AAAA2222" {
+		t.Fatalf("planned operations = %+v, want only the changed item AAAA2222", envelope.Plan.Operations)
 	}
 	if unexpected.Load() != 0 {
 		t.Fatalf("unexpected API requests: %d; a preview must not write", unexpected.Load())

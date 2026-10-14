@@ -175,7 +175,7 @@ func TestGroupsInspect_JSONReadiness(t *testing.T) {
 	if found["name"] != "Lab" {
 		t.Errorf("name = %v, want Lab", found["name"])
 	}
-	if found["num_items"] != "10" {
+	if found["num_items"] != float64(10) {
 		t.Errorf("num_items = %v, want 10", found["num_items"])
 	}
 	if found["ready_for_write"] != true {

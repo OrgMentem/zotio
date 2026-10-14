@@ -173,3 +173,135 @@ func TestCollectAgentCommandsSkipsHiddenAndSelfAndSortsRecursively(t *testing.T)
 		t.Fatalf("parent subcommands = %+v, want alpha and zeta only", got[1].Subcommands)
 	}
 }
+
+func agentContextFind(t *testing.T, cmds []agentContextCommand, path ...string) agentContextCommand {
+	t.Helper()
+	for _, c := range cmds {
+		if c.Name != path[0] {
+			continue
+		}
+		if len(path) == 1 {
+			return c
+		}
+		return agentContextFind(t, c.Subcommands, path[1:]...)
+	}
+	t.Fatalf("agent-context has no command %v", path)
+	return agentContextCommand{}
+}
+
+// The zotio:* safety annotations come from the capability registry, never from
+// a literal on the command, so agent-context cannot contradict `capabilities`.
+func TestAgentContextAnnotationsComeFromTheRegistry(t *testing.T) {
+	ctx := buildAgentContext(RootCmd())
+	check := func(path []string, want map[string]string) {
+		t.Helper()
+		cmd := agentContextFind(t, ctx.Commands, path...)
+		for key, value := range want {
+			if got := cmd.Annotations[key]; got != value {
+				t.Errorf("%v annotation %s = %q, want %q", path, key, got, value)
+			}
+		}
+	}
+	check([]string{"items", "add-to-collection"}, map[string]string{
+		"zotio:supports-dry-run":           "true",
+		"zotio:destructive":                "false",
+		"zotio:requires-allow-destructive": "false",
+		"zotio:default-max-changes":        "500",
+		"zotio:default-max-changes-agent":  "50",
+	})
+	check([]string{"items", "create"}, map[string]string{
+		"zotio:supports-dry-run": "true",
+		"mcp:effect":             "write",
+	})
+	check([]string{"items", "delete"}, map[string]string{
+		"zotio:destructive":                "true",
+		"zotio:requires-allow-destructive": "true",
+	})
+	check([]string{"creators", "rename"}, map[string]string{"zotio:destructive": "true"})
+	check([]string{"workflow", "run"}, map[string]string{"zotio:destructive": "true"})
+	check([]string{"init"}, map[string]string{"zotio:supports-dry-run": "false"})
+	check([]string{"library", "wrapped"}, map[string]string{
+		"zotio:supports-dry-run": "true",
+		"mcp:effect":             "local-file",
+	})
+	check([]string{"library", "stats"}, map[string]string{"mcp:effect": "read"})
+
+	// Every write command is covered, and the registry says so for each.
+	registry := registryByPath(ctx.Capabilities)
+	var walk func(prefix []string, cmds []agentContextCommand)
+	walk = func(prefix []string, cmds []agentContextCommand) {
+		for _, c := range cmds {
+			path := append(append([]string{}, prefix...), c.Name)
+			if entry, ok := registry[strings.Join(path, " ")]; ok && entry.Operation == "write" {
+				if c.Annotations["zotio:supports-dry-run"] == "" || c.Annotations["zotio:default-max-changes"] == "" {
+					t.Errorf("write command %v lacks the registry-derived annotations: %v", path, c.Annotations)
+				}
+			}
+			walk(path, c.Subcommands)
+		}
+	}
+	walk(nil, ctx.Commands)
+}
+
+func TestAgentContextPublishesExitCodesAndGlobalFlags(t *testing.T) {
+	ctx := buildAgentContext(RootCmd())
+
+	kinds := map[int]string{}
+	meanings := map[int]string{}
+	for _, row := range ctx.ExitCodes {
+		if row.Meaning == "" {
+			t.Errorf("exit code %d has no meaning", row.Code)
+		}
+		kinds[row.Code] = row.Kind
+		meanings[row.Code] = row.Meaning
+	}
+	// ADR-0008: a conflict exits 1, so exit 13 must not claim predicted conflicts.
+	if want := "Partial: part of a write applied and part failed for a non-conflict reason, or part of a read was unreadable."; meanings[13] != want {
+		t.Errorf("exit code 13 meaning = %q, want %q", meanings[13], want)
+	}
+	for code, kind := range map[int]string{0: "ok", 2: "usage", 3: "not_found", 9: "precondition_unmet", 11: "gate", 13: "degraded"} {
+		if kinds[code] != kind {
+			t.Errorf("exit code %d kind = %q, want %q", code, kinds[code], kind)
+		}
+	}
+
+	applies := map[string]string{}
+	for _, f := range ctx.GlobalFlags {
+		applies[f.Name] = f.AppliesTo
+	}
+	for name, want := range map[string]string{"json": "all", "dry-run": "writes", "yes": "writes", "data-source": "reads-with-data-source"} {
+		if applies[name] != want {
+			t.Errorf("global flag --%s applies_to = %q, want %q", name, applies[name], want)
+		}
+	}
+
+	if len(ctx.AnnotationSemantics["mcp:read-only"]) == 0 {
+		t.Error("annotation_semantics does not explain the three-state mcp:read-only annotation")
+	}
+}
+
+func TestAgentContextFlagsCarryRequiredAndTypedExitCodes(t *testing.T) {
+	ctx := buildAgentContext(RootCmd())
+
+	bundle := agentContextFind(t, ctx.Commands, "collections", "bundle")
+	required := false
+	for _, f := range bundle.Flags {
+		if f.Name == "output-dir" {
+			required = f.Required
+		}
+		if f.Name == "yes" || f.Name == "json" {
+			t.Errorf("collections bundle lists global flag --%s as a command flag; globals belong in global_flags", f.Name)
+		}
+	}
+	if !required {
+		t.Error("collections bundle --output-dir is required but agent-context does not say so")
+	}
+
+	which := agentContextFind(t, ctx.Commands, "which")
+	if len(which.TypedExitCodes) != 2 || which.TypedExitCodes[0] != 0 || which.TypedExitCodes[1] != 2 {
+		t.Errorf("which typed_exit_codes = %v, want [0 2]", which.TypedExitCodes)
+	}
+	if _, dup := which.Annotations[typedExitCodesAnnotation]; dup {
+		t.Error("which publishes the typed exit codes both as typed_exit_codes and as an annotation")
+	}
+}

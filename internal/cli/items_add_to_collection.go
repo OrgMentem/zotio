@@ -16,17 +16,14 @@ import (
 )
 
 // newItemsAddToCollectionCmd adds one item to a named top-level collection.
-// The collection is resolved by exact name and created when absent; membership
-// is delegated to items move so version guards and idempotency stay identical
-// to the established collection mutation path.
+// The collection is resolved by exact name and created when absent.
 //
-// Preview mode (no --yes) only reads: it fetches the item and looks up whether
-// a same-named collection already exists, then reports what apply would do.
-// Apply mode routes an on-demand collection create through the mutation engine
-// so it is gated by --max-changes and journaled like every other write, then
-// delegates the membership change to items move. Two journal entries for one
-// invocation — a collection create plus an item move — is correct: two writes
-// really did happen.
+// Preview and apply run the same reads (the item and the collection list) and
+// build the same plan, so a preview predicts the apply: one mutation envelope
+// with an optional collection create followed by the item's membership change.
+// The create is counted against --max-changes and journaled like every other
+// write; the membership op reads the created key when it runs. Two operations
+// for one invocation is correct: two writes really happen.
 func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 	var collectionName string
 
@@ -39,21 +36,18 @@ collection when no collection of that name exists.
 Prefer this when you know the collection by name. When you already have the
 collection key, or need to move many items at once or remove a membership, use
 'zotio items move --to <collectionKey>' (also --from, --keys-from); this command
-resolves the name and then delegates the membership change to it.
+resolves the name and then applies the same membership change.
 
-Apply mode journals two writes for one invocation when the collection has to be
-created — a collection create plus an item move — because two writes happen.`,
-		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "false",
-			"zotio:requires-allow-destructive": "false",
-		},
-		Args: cobra.ExactArgs(1),
+The plan holds two operations when the collection has to be created -- a
+collection create plus an item membership change -- because two writes happen.`,
+		Example: `  zotio items add-to-collection ABCD2345 --collection-name "Reading list"
+  zotio items add-to-collection ABCD2345 --collection-name "Reading list" --yes`,
+		Annotations: map[string]string{"mcp:read-only": "false"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(collectionName)
 			if name == "" {
-				return fmt.Errorf("--collection-name is required")
+				return usageErr(fmt.Errorf("--collection-name is required"))
 			}
 			c, err := flags.newWriteClient()
 			if err != nil {
@@ -64,86 +58,122 @@ created — a collection create plus an item move — because two writes happen.
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			if _, err := itemCollections(itemData); err != nil {
+			current, err := itemCollections(itemData)
+			if err != nil {
 				return err
 			}
 			collections, err := collectionsByName(c)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			existingKey := collections[name]
 
-			mode := resolveMutationMode(flags)
-			if !mode.Apply {
-				collectionAction := "create"
-				if existingKey != "" {
-					collectionAction = "reuse"
-				}
-				report := map[string]any{
-					"action":            "add-to-collection",
-					"resource":          "items",
-					"key":               args[0],
-					"collection_name":   name,
-					"collection_action": collectionAction,
-					"status":            0,
-					"success":           false,
-					"dry_run":           true,
-					"preview_reason":    mode.PreviewReason,
-				}
-				if existingKey != "" {
-					report["collection_key"] = existingKey
-				}
-				return printJSONFiltered(cmd.OutOrStdout(), report, flags)
-			}
-
-			collectionKey := existingKey
-			if collectionKey == "" {
-				created, err := createCollectionThroughMutation(cmd, flags, c, name)
-				if err != nil {
-					return err
-				}
-				collectionKey = created
-			}
-			return runItemsMoveMutation(cmd, flags, "", collectionKey, "", args)
+			ops, applyErr := addToCollectionOps(c, flags, itemPath, args[0], name, collections[name], current)
+			env, runErr := runMutation(cmd.Context(), flags, "items.add-to-collection", ops)
+			return renderMutationResult(cmd, flags, env, preferApplyErr(runErr, *applyErr), addToCollectionLine(name))
 		},
 	}
 	cmd.Flags().StringVar(&collectionName, "collection-name", "", "Exact collection name; create it when absent")
 	return cmd
 }
 
-// createCollectionThroughMutation creates the on-demand collection through the
-// shared mutation engine instead of a bare HTTP POST, so the create is counted
-// against --max-changes and journaled like any other write. Kind and Changes
-// follow the same "collection_create" / non-string Add convention as
-// collections create, so the mirror never mistakes a collection key for an
-// item field and reverse.go correctly refuses to invert it.
-func createCollectionThroughMutation(cmd *cobra.Command, flags *rootFlags, c *client.Client, name string) (string, error) {
+// addToCollectionOps plans the writes: a collection create when no collection
+// of that name exists (existingKey is empty), then the item's membership
+// change. The returned error pointer receives the classified error of the write
+// that failed.
+func addToCollectionOps(c *client.Client, flags *rootFlags, itemPath, itemKey, name, existingKey string, current []string) ([]mutation.Op, *error) {
 	var (
 		createdKey string
 		applyErr   error
 	)
-	ops := []mutation.Op{{
-		ID:      "items.add-to-collection:" + name,
-		Key:     name,
-		Kind:    "collection_create",
-		Changes: []mutation.Change{{Field: "collection", Add: map[string]any{"name": name}}},
+	ops := make([]mutation.Op, 0, 2)
+	if existingKey == "" {
+		// Kind and Changes follow the same "collection_create" / non-string Add
+		// convention as collections create, so the mirror never mistakes a
+		// collection key for an item field and reverse.go correctly refuses to
+		// invert it.
+		ops = append(ops, mutation.Op{
+			ID:      "items.add-to-collection:create:" + name,
+			Key:     name,
+			Kind:    "collection_create",
+			Changes: []mutation.Change{{Field: "collection", Add: map[string]any{"name": name}}},
+			Apply: func() (string, any, error) {
+				key, err := createCollectionByName(c, name)
+				if err != nil {
+					applyErr = classifyAPIError(err, flags)
+					return "failed", nil, applyErr
+				}
+				createdKey = key
+				return "applied", map[string]any{"key": key}, nil
+			},
+		})
+	}
+
+	member := mutation.Op{
+		ID:   "items.add-to-collection:" + itemKey,
+		Key:  itemKey,
+		Kind: "collection_add",
 		Apply: func() (string, any, error) {
-			key, err := createCollectionByName(c, name)
+			target := existingKey
+			if target == "" {
+				target = createdKey
+			}
+			if target == "" {
+				err := fmt.Errorf("collection %q has no key to add the item to", name)
+				applyErr = err
+				return "failed", err.Error(), err
+			}
+			status, reason, err := applyItemCollectionMove(c, itemPath, "", target)
 			if err != nil {
 				applyErr = classifyAPIError(err, flags)
-				return "failed", nil, applyErr
 			}
-			createdKey = key
-			return "applied", nil, nil
+			return status, reason, err
 		},
-	}}
-	if _, runErr := runMutation(cmd.Context(), flags, "items.add-to-collection", ops); runErr != nil {
-		if applyErr != nil {
-			return "", applyErr
-		}
-		return "", runErr
 	}
-	return createdKey, nil
+	if existingKey != "" {
+		member.Changes = collectionMutationChanges(current, "", existingKey)
+		member.NoOpReason = itemCollectionNoOpReason("", existingKey)
+	} else {
+		// The key does not exist yet: plan the membership by name, then report
+		// (Effective) and journal (Revert) the key the create returned.
+		member.Changes = []mutation.Change{{Field: "collections", Add: map[string]any{"name": name}}}
+		member.Effective = func() []mutation.Change {
+			if createdKey == "" {
+				return nil
+			}
+			return []mutation.Change{{Field: "collections", Add: createdKey}}
+		}
+		member.Revert = func() []mutation.Change {
+			if createdKey == "" {
+				return nil
+			}
+			return []mutation.Change{{Field: "collections", Remove: createdKey}}
+		}
+	}
+	ops = append(ops, member)
+	return ops, &applyErr
+}
+
+// addToCollectionLine words the one-operation case (an existing collection)
+// for a terminal; the two-operation plan prints the standard summary.
+func addToCollectionLine(name string) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
+		key := ""
+		if len(env.Plan.Operations) == 1 {
+			key = env.Plan.Operations[0].Key
+		}
+		if env.Mode == "apply" && env.Result != nil && len(env.Result.Items) == 1 {
+			switch status := env.Result.Items[0].Status; status {
+			case "applied":
+				return fmt.Sprintf("added %s → %s", key, name)
+			default:
+				return fmt.Sprintf("%s %s → %s", status, key, name)
+			}
+		}
+		if len(env.Plan.Operations) == 1 && len(env.Plan.Operations[0].Changes) == 0 {
+			return fmt.Sprintf("no_op %s → %s", key, name)
+		}
+		return fmt.Sprintf("would add %s → %s", key, name)
+	}
 }
 
 // createCollectionByName POSTs a new top-level collection and returns its key.

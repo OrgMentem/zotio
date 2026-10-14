@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1252,7 +1253,7 @@ func seedEnrichPDFStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	item := json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`)
+	item := json.RawMessage(`{"key":"KPDFAAAA","version":4,"data":{"key":"KPDFAAAA","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`)
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{item}); err != nil {
 		t.Fatalf("seed PDF item: %v", err)
 	}
@@ -1404,7 +1405,7 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KCOL","version":1,"data":{"key":"KCOL","itemType":"journalArticle","title":"In Collection","collections":["COLX"]}}`),
+		json.RawMessage(`{"key":"KCOL","version":1,"data":{"key":"KCOL","itemType":"journalArticle","title":"In Collection","collections":["CXXXXXXX"]}}`),
 		json.RawMessage(`{"key":"KOUT","version":2,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Collection"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -1412,9 +1413,9 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	}
 	_ = db.Close()
 
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi", "--collection", "COLX"})
+	cmd.SetArgs([]string{"--missing-doi", "--collection", "CXXXXXXX"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1447,8 +1448,8 @@ func TestItemsEnrichRepairPDFCollectionScope(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf","collections":["COLX"]}}`),
-		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+		json.RawMessage(`{"key":"KPDFAAAA","version":4,"data":{"key":"KPDFAAAA","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf","collections":["CXXXXXXX"]}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDFAAAA","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -1463,8 +1464,8 @@ func TestItemsEnrichRepairPDFCollectionScope(t *testing.T) {
 	t.Cleanup(upw.Close)
 	withBase(t, &enrichUnpaywallBase, upw.URL)
 
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
-	cmd.SetArgs([]string{"--repair-pdf", "--collection", "COLX", "--email", "me@example.com"})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--repair-pdf", "--collection", "CXXXXXXX", "--email", "me@example.com"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1476,8 +1477,8 @@ func TestItemsEnrichRepairPDFCollectionScope(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
-	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "KPDF" {
-		t.Fatalf("plan = %+v, want one repair for collection item KPDF", env.Plan)
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "KPDFAAAA" {
+		t.Fatalf("plan = %+v, want one repair for collection item KPDFAAAA", env.Plan)
 	}
 }
 
@@ -1504,7 +1505,7 @@ func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KIN","version":1,"data":{"key":"KIN","itemType":"journalArticle","title":"In Selection"}}`),
+		json.RawMessage(`{"key":"KINAAAAA","version":1,"data":{"key":"KINAAAAA","itemType":"journalArticle","title":"In Selection"}}`),
 		json.RawMessage(`{"key":"KOUT","version":2,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Selection"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -1512,9 +1513,9 @@ func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 	}
 	_ = db.Close()
 
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi", "--keys", "KIN"})
+	cmd.SetArgs([]string{"--missing-doi", "--keys", "KINAAAAA"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1529,8 +1530,8 @@ func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
 		t.Fatalf("expected one exact-key proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
 	}
-	if env.Plan.Operations[0].Key != "KIN" {
-		t.Errorf("proposal key = %q, want KIN", env.Plan.Operations[0].Key)
+	if env.Plan.Operations[0].Key != "KINAAAAA" {
+		t.Errorf("proposal key = %q, want KINAAAAA", env.Plan.Operations[0].Key)
 	}
 	if len(requested) != 1 || !strings.Contains(requested[0], "In Selection") {
 		t.Errorf("provider calls = %v, want only In Selection", requested)
@@ -1550,7 +1551,7 @@ func TestItemsEnrichMissingCitationConsumesHealthReport(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"CPIPE","version":5,"data":{"key":"CPIPE","itemType":"journalArticle","title":"Needs Venue","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","DOI":"10.1/pipe"}}`),
+		json.RawMessage(`{"key":"CPIPEAAA","version":5,"data":{"key":"CPIPEAAA","itemType":"journalArticle","title":"Needs Venue","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","DOI":"10.1/pipe"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -1560,7 +1561,7 @@ func TestItemsEnrichMissingCitationConsumesHealthReport(t *testing.T) {
 	report := FindingsReport{Findings: []Finding{{
 		Kind:        "missing_citation",
 		Severity:    sevHigh,
-		ItemKey:     "CPIPE",
+		ItemKey:     "CPIPEAAA",
 		Source:      FindingSource{Kind: "local"},
 		Autofixable: true,
 	}}}
@@ -1569,7 +1570,7 @@ func TestItemsEnrichMissingCitationConsumesHealthReport(t *testing.T) {
 		t.Fatalf("marshal report: %v", err)
 	}
 
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--missing-citation", "--keys-from", "-"})
 	cmd.SetIn(bytes.NewReader(piped))
@@ -1588,8 +1589,8 @@ func TestItemsEnrichMissingCitationConsumesHealthReport(t *testing.T) {
 		t.Fatalf("expected one proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
 	}
 	op := env.Plan.Operations[0]
-	if op.Key != "CPIPE" {
-		t.Fatalf("proposal key = %q, want CPIPE", op.Key)
+	if op.Key != "CPIPEAAA" {
+		t.Fatalf("proposal key = %q, want CPIPEAAA", op.Key)
 	}
 	var venue string
 	for _, change := range op.Changes {
@@ -1639,7 +1640,7 @@ func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
 	}
 	items := make([]json.RawMessage, 0, 26)
 	for i := range 26 {
-		key := fmt.Sprintf("K%02d", i)
+		key := fmt.Sprintf("KEYAAAA%c", rune('A'+i))
 		title := fmt.Sprintf("Candidate %02d", i)
 		item, err := json.Marshal(map[string]any{
 			"key":     key,
@@ -1664,10 +1665,10 @@ func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
 	}
 
 	keysPath := filepath.Join(t.TempDir(), "keys.txt")
-	if err := os.WriteFile(keysPath, []byte("K00\n"), 0o600); err != nil {
+	if err := os.WriteFile(keysPath, []byte("KEYAAAAA\n"), 0o600); err != nil {
 		t.Fatalf("write keys: %v", err)
 	}
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar", "--keys-from", keysPath})
 	var out bytes.Buffer
@@ -1684,8 +1685,8 @@ func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
 	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
 		t.Fatalf("expected oldest requested item in plan, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
 	}
-	if env.Plan.Operations[0].Key != "K00" {
-		t.Errorf("proposal key = %q, want oldest requested key K00", env.Plan.Operations[0].Key)
+	if env.Plan.Operations[0].Key != "KEYAAAAA" {
+		t.Errorf("proposal key = %q, want oldest requested key KEYAAAAA", env.Plan.Operations[0].Key)
 	}
 }
 
@@ -1791,7 +1792,7 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	_ = seedEnrichStore(t) // sets HOME to the seeded store
 
-	flags := &rootFlags{asJSON: true} // no yes -> preview only
+	flags := &rootFlags{asJSON: true, maxChanges: -1} // no yes -> preview only
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
 	var out bytes.Buffer
@@ -1818,7 +1819,7 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 }
 
 func TestItemsEnrichAttachModeRequiresMissingPDF(t *testing.T) {
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SetArgs([]string{"--missing-doi", "--attach-mode", "linked-file"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -1829,7 +1830,7 @@ func TestItemsEnrichAttachModeRequiresMissingPDF(t *testing.T) {
 }
 
 func TestItemsEnrichLinkedFileRequiresPDFDir(t *testing.T) {
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "linked-file"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -1843,7 +1844,7 @@ func TestItemsEnrichLinkedFileRequiresPDFDir(t *testing.T) {
 // HAVE a PDF", so an unscoped apply would attach a second open-access copy to
 // every healthy item in the library.
 func TestItemsEnrichRepairPDFRefusesAnUnnamedCohort(t *testing.T) {
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SetArgs([]string{"--repair-pdf"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -1855,7 +1856,7 @@ func TestItemsEnrichRepairPDFRefusesAnUnnamedCohort(t *testing.T) {
 
 // The attachment flags belong to the PDF path, and --repair-pdf is on it.
 func TestItemsEnrichRepairPDFAcceptsAttachmentFlags(t *testing.T) {
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SetArgs([]string{"--repair-pdf", "--keys", "P1", "--attach-mode", "linked-file"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -1866,7 +1867,7 @@ func TestItemsEnrichRepairPDFAcceptsAttachmentFlags(t *testing.T) {
 }
 
 func TestItemsEnrichStoredModePointsAtAttachmentsAdd(t *testing.T) {
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, via: "web"})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, via: "web", maxChanges: -1})
 	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "stored"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -1891,7 +1892,7 @@ func TestItemsEnrichLinkedFilePreviewDoesNotDownload(t *testing.T) {
 	withBase(t, &enrichUnpaywallBase, upw.URL)
 
 	destDir := filepath.Join(t.TempDir(), "pdfs")
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--missing-pdf", "--email", "me@example.com", "--attach-mode", "linked-file", "--pdf-dir", destDir})
 	var out bytes.Buffer
@@ -1911,7 +1912,7 @@ func TestItemsEnrichLinkedFilePreviewDoesNotDownload(t *testing.T) {
 		t.Fatalf("plan = %+v ops=%+v, want one PDF proposal", env.Plan.Summary, env.Plan.Operations)
 	}
 	got := fmt.Sprint(env.Plan.Operations[0].Changes[0].Add)
-	if !strings.Contains(got, "linked-file ->") || !strings.Contains(got, filepath.Join(destDir, "KPDF.pdf")) || !strings.Contains(got, pdfSrv.URL+"/paper.pdf") {
+	if !strings.Contains(got, "linked-file ->") || !strings.Contains(got, filepath.Join(destDir, "KPDFAAAA.pdf")) || !strings.Contains(got, pdfSrv.URL+"/paper.pdf") {
 		t.Fatalf("preview change = %q, want mode, destination, and download URL", got)
 	}
 }
@@ -1928,8 +1929,8 @@ func TestItemsEnrichRepairPDFProposesForAnAlreadyAttachedItem(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`),
-		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+		json.RawMessage(`{"key":"KPDFAAAA","version":4,"data":{"key":"KPDFAAAA","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDFAAAA","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -1946,8 +1947,8 @@ func TestItemsEnrichRepairPDFProposesForAnAlreadyAttachedItem(t *testing.T) {
 
 	run := func(flag string) mutation.Envelope {
 		t.Helper()
-		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
-		cmd.SetArgs([]string{flag, "--keys", "KPDF", "--email", "me@example.com"})
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
+		cmd.SetArgs([]string{flag, "--keys", "KPDFAAAA", "--email", "me@example.com"})
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&bytes.Buffer{})
@@ -2065,7 +2066,7 @@ func TestItemsEnrichMissingSubjectsPlansAutomaticConceptTags(t *testing.T) {
 	t.Cleanup(srv.Close)
 	withBase(t, &enrichOpenAlexBase, srv.URL)
 
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SetArgs([]string{"--missing-subjects"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -2272,7 +2273,7 @@ func TestMissingTagsQueueHonorsCollectionScope(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KIN","version":1,"data":{"key":"KIN","itemType":"journalArticle","title":"In scope","tags":[],"collections":["COLX"],"dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"KINAAAAA","version":1,"data":{"key":"KINAAAAA","itemType":"journalArticle","title":"In scope","tags":[],"collections":["CXXXXXXX"],"dateAdded":"2026-01-01T00:00:00Z"}}`),
 		json.RawMessage(`{"key":"KOUT","version":1,"data":{"key":"KOUT","itemType":"journalArticle","title":"Out of scope","tags":[],"collections":["COLY"],"dateAdded":"2026-01-02T00:00:00Z"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -2290,12 +2291,12 @@ func TestMissingTagsQueueHonorsCollectionScope(t *testing.T) {
 	}
 
 	// The enrich queue, which WRITES, must respect the collection.
-	scoped, err := enrichWorkQueue(q, "missing_subjects", 0, "COLX")
+	scoped, err := enrichWorkQueue(q, "missing_subjects", 0, "CXXXXXXX")
 	if err != nil {
 		t.Fatalf("enrichWorkQueue: %v", err)
 	}
-	if len(scoped) != 1 || sqlStringValue(scoped[0]["key"]) != "KIN" {
-		t.Fatalf("collection-scoped queue = %+v, want only KIN", scoped)
+	if len(scoped) != 1 || sqlStringValue(scoped[0]["key"]) != "KINAAAAA" {
+		t.Fatalf("collection-scoped queue = %+v, want only KINAAAAA", scoped)
 	}
 }
 
@@ -2309,8 +2310,8 @@ func TestItemsEnrichRepairPDFIsIdempotent(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf"}}`),
-		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+		json.RawMessage(`{"key":"KPDFAAAA","version":4,"data":{"key":"KPDFAAAA","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf"}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDFAAAA","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -2350,7 +2351,7 @@ func TestItemsEnrichRepairPDFIsIdempotent(t *testing.T) {
 	run := func() mutation.Envelope {
 		t.Helper()
 		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
-		cmd.SetArgs([]string{"--repair-pdf", "--keys", "KPDF", "--email", "me@example.com"})
+		cmd.SetArgs([]string{"--repair-pdf", "--keys", "KPDFAAAA", "--email", "me@example.com"})
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&bytes.Buffer{})
@@ -2391,7 +2392,7 @@ func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
 
 	var gotBody []map[string]any
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/items/KPDF/children" {
+		if r.Method == http.MethodGet && r.URL.Path == "/items/KPDFAAAA/children" {
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
@@ -2417,7 +2418,7 @@ func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
 		t.Fatalf("enrich linked-file apply: %v; out=%s", err, out.String())
 	}
 
-	wantPath := filepath.Join(destDir, "KPDF.pdf")
+	wantPath := filepath.Join(destDir, "KPDFAAAA.pdf")
 	gotPDF, err := os.ReadFile(wantPath)
 	if err != nil {
 		t.Fatalf("read linked PDF: %v", err)
@@ -2429,7 +2430,7 @@ func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
 		t.Fatalf("attachment POST body = %+v, want one item", gotBody)
 	}
 	att := gotBody[0]
-	if att["linkMode"] != "linked_file" || att["parentItem"] != "KPDF" || att["path"] != wantPath || att["contentType"] != "application/pdf" {
+	if att["linkMode"] != "linked_file" || att["parentItem"] != "KPDFAAAA" || att["path"] != wantPath || att["contentType"] != "application/pdf" {
 		t.Fatalf("attachment = %+v, want linked_file child pointing at downloaded path", att)
 	}
 }
@@ -2796,7 +2797,7 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 	}
 	_ = db.Close()
 
-	flags := &rootFlags{asJSON: true}
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--validate"})
 	var out bytes.Buffer
@@ -2983,10 +2984,10 @@ func TestResolveDOIViaSemanticScholar_PunctuationOnlyLocalTitleReturnsNoMatch(t 
 // OUTP is a perfect candidate that simply is not in the collection.
 func enrichScopeParityItems() []json.RawMessage {
 	return []json.RawMessage{
-		json.RawMessage(`{"key":"PA","version":1,"data":{"key":"PA","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLP"]}}`),
-		json.RawMessage(`{"key":"PB","version":1,"data":{"key":"PB","itemType":"journalArticle","title":"Beta","DOI":"10.1/b","dateAdded":"2020-01-02T00:00:00Z","collections":["COLP"],"creators":[{"lastName":"Doe","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
-		json.RawMessage(`{"key":"NOTEP","version":1,"data":{"key":"NOTEP","itemType":"note","note":"standalone","dateAdded":"2020-01-03T00:00:00Z","collections":["COLP"]}}`),
-		json.RawMessage(`{"key":"ATTP","version":1,"data":{"key":"ATTP","itemType":"attachment","linkMode":"linked_url","url":"http://x","dateAdded":"2020-01-04T00:00:00Z","collections":["COLP"]}}`),
+		json.RawMessage(`{"key":"PA","version":1,"data":{"key":"PA","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["CPPPPPPP"]}}`),
+		json.RawMessage(`{"key":"PB","version":1,"data":{"key":"PB","itemType":"journalArticle","title":"Beta","DOI":"10.1/b","dateAdded":"2020-01-02T00:00:00Z","collections":["CPPPPPPP"],"creators":[{"lastName":"Doe","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
+		json.RawMessage(`{"key":"NOTEP","version":1,"data":{"key":"NOTEP","itemType":"note","note":"standalone","dateAdded":"2020-01-03T00:00:00Z","collections":["CPPPPPPP"]}}`),
+		json.RawMessage(`{"key":"ATTP","version":1,"data":{"key":"ATTP","itemType":"attachment","linkMode":"linked_url","url":"http://x","dateAdded":"2020-01-04T00:00:00Z","collections":["CPPPPPPP"]}}`),
 		json.RawMessage(`{"key":"OUTP","version":1,"data":{"key":"OUTP","itemType":"journalArticle","title":"Gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
 	}
 }
@@ -3009,7 +3010,7 @@ func enrichQueueKeys(t *testing.T, rows []map[string]any) map[string]bool {
 func TestEnrichWorkQueueScopeMatchesCollectionFlag(t *testing.T) {
 	db := seedEnrichWorkQueueStore(t, enrichScopeParityItems())
 
-	scope, err := resolveScope(db, scopeSpec{Type: "collection", Value: "COLP"})
+	scope, err := resolveScope(db, scopeSpec{Type: "collection", Value: "CPPPPPPP"})
 	if err != nil {
 		t.Fatalf("resolveScope: %v", err)
 	}
@@ -3023,7 +3024,7 @@ func TestEnrichWorkQueueScopeMatchesCollectionFlag(t *testing.T) {
 
 	matched := 0
 	for _, category := range []string{"missing_doi", "missing_abstract", "missing_pdf", "missing_citation"} {
-		viaFlag, err := enrichWorkQueue(db, category, 0, "COLP")
+		viaFlag, err := enrichWorkQueue(db, category, 0, "CPPPPPPP")
 		if err != nil {
 			t.Fatalf("%s via --collection: %v", category, err)
 		}
@@ -3067,7 +3068,7 @@ func TestItemsEnrichScopeCollectionTargetsSameKeysAsCollectionFlag(t *testing.T)
 
 	plannedKeys := func(t *testing.T, args ...string) map[string]bool {
 		t.Helper()
-		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 		cmd.SilenceErrors, cmd.SilenceUsage = true, true
 		var out bytes.Buffer
 		cmd.SetOut(&out)
@@ -3087,8 +3088,8 @@ func TestItemsEnrichScopeCollectionTargetsSameKeysAsCollectionFlag(t *testing.T)
 		return keys
 	}
 
-	viaFlag := plannedKeys(t, "--missing-doi", "--collection", "COLP")
-	viaScope := plannedKeys(t, "--missing-doi", "--scope", "collection:COLP")
+	viaFlag := plannedKeys(t, "--missing-doi", "--collection", "CPPPPPPP")
+	viaScope := plannedKeys(t, "--missing-doi", "--scope", "collection:CPPPPPPP")
 	if !reflect.DeepEqual(viaFlag, viaScope) {
 		t.Fatalf("--collection targeted %v, --scope collection: targeted %v", viaFlag, viaScope)
 	}
@@ -3108,7 +3109,7 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 	seedEnrichWorkQueueStore(t, enrichScopeParityItems())
 
 	run := func(args ...string) error {
-		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 		cmd.SilenceErrors, cmd.SilenceUsage = true, true
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
@@ -3116,7 +3117,7 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 		return cmd.Execute()
 	}
 
-	err := run("--missing-doi", "--scope", "collection:COLP", "--collection", "OTHER")
+	err := run("--missing-doi", "--scope", "collection:CPPPPPPP", "--collection", "OTHER")
 	if err == nil {
 		t.Fatal("disagreeing --scope/--collection was accepted")
 	}
@@ -3131,11 +3132,11 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 	}))
 	t.Cleanup(empty.Close)
 	withBase(t, &enrichCrossRefBase, empty.URL)
-	if err := run("--missing-doi", "--no-openalex", "--no-semantic-scholar", "--scope", "collection:COLP", "--collection", "COLP"); err != nil {
+	if err := run("--missing-doi", "--no-openalex", "--no-semantic-scholar", "--scope", "collection:CPPPPPPP", "--collection", "CPPPPPPP"); err != nil {
 		t.Fatalf("agreeing --scope/--collection was refused: %v", err)
 	}
 
-	err = run("--missing-doi", "--scope", "collection:COLP", "--keys", "PA")
+	err = run("--missing-doi", "--scope", "collection:CPPPPPPP", "--keys", "PA")
 	if err == nil {
 		t.Fatal("--scope with --keys was accepted")
 	}
@@ -3147,11 +3148,11 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 func TestItemsEnrichCollectionCannotCombineWithExplicitKeys(t *testing.T) {
 	seedEnrichWorkQueueStore(t, enrichScopeParityItems())
 
-	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--missing-doi", "--collection", "COLP", "--keys", "KOUT"})
+	cmd.SetArgs([]string{"--missing-doi", "--collection", "CPPPPPPP", "--keys", "KOUT"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("--collection with --keys was accepted and could widen the explicit key filter to the whole collection")
@@ -3459,9 +3460,9 @@ func TestResolveEnrichmentFallbackAfterProviderError(t *testing.T) {
 	}
 }
 
-// At the command seam a provider outage is an error: every affected item is
-// listed with the provider's reason and the build returns a non-nil error. A
-// 404 stays an ordinary skip with no error.
+// At the command seam a provider outage is an error, never a skip: every
+// affected item is named in the returned error and none lands in the benign
+// skip list. A 404 stays an ordinary skip with no error.
 func TestBuildEnrichProposalsProviderOutageIsAnErrorNotASkip(t *testing.T) {
 	db := seedEnrichStore(t)
 
@@ -3473,12 +3474,12 @@ func TestBuildEnrichProposalsProviderOutageIsAnErrorNotASkip(t *testing.T) {
 	if len(proposals) != 0 {
 		t.Fatalf("proposals = %+v, want none during an outage", proposals)
 	}
-	if len(skipped) != 2 {
-		t.Fatalf("skipped = %+v, want both items listed", skipped)
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want the failed lookups out of the benign skip list", skipped)
 	}
-	for _, skip := range skipped {
-		if strings.Contains(skip.Reason, "no confident") || !strings.Contains(skip.Reason, "HTTP 500") {
-			t.Errorf("skip %s reason = %q, want the provider failure, not an authoritative miss", skip.Key, skip.Reason)
+	for _, key := range []string{"K1", "K2"} {
+		if !strings.Contains(err.Error(), "enriching item "+key) {
+			t.Errorf("err = %v, want item %s named", err, key)
 		}
 	}
 
@@ -3494,5 +3495,56 @@ func TestBuildEnrichProposalsProviderOutageIsAnErrorNotASkip(t *testing.T) {
 		if !strings.Contains(skip.Reason, "no confident") {
 			t.Errorf("skip %s reason = %q, want the no-match reason", skip.Key, skip.Reason)
 		}
+	}
+}
+
+// Provider status decides the exit class: auth 4, client error 2, upstream 5.
+func TestEnrichLookupExitCodeFollowsProviderStatus(t *testing.T) {
+	lookup := func(msg string) error {
+		return fmt.Errorf("enriching item K1 (missing_doi): %w", &enrichProviderError{err: errors.New(msg)})
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"5xx", lookup("CrossRef: HTTP 503"), 5},
+		{"429", lookup("CrossRef: HTTP 429: slow down"), 5},
+		{"transport", lookup("CrossRef: dial tcp: connection refused"), 5},
+		{"400", lookup("CrossRef: HTTP 400: bad query"), 2},
+		{"401", lookup("Unpaywall: HTTP 401"), 4},
+		{"403", lookup("Unpaywall: HTTP 403"), 4},
+		{"auth beats outage", errors.Join(lookup("A: HTTP 503"), lookup("B: HTTP 403")), 4},
+		{"client beats outage", errors.Join(lookup("A: HTTP 503"), lookup("B: HTTP 400")), 2},
+		{"local read", fmt.Errorf("loading enrichment item K1: %w", &enrichLocalReadError{err: errors.New("db")}), 1},
+	} {
+		if got := enrichLookupExitCode(tc.err); got != tc.want {
+			t.Errorf("%s: exit class = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A lookup failure alongside other run errors still lands on the envelope; a
+// gate refusal keeps its own error; a run that applied something exits 13.
+func TestEnrichLookupFailureEnvelopeAndExit(t *testing.T) {
+	lookupErrs := []error{fmt.Errorf("enriching item K1 (missing_doi): %w", &enrichProviderError{err: errors.New("CrossRef: HTTP 400")})}
+
+	env := mutation.Envelope{OK: true}
+	err := enrichLookupFailure(&env, errors.New("mutation incomplete"), lookupErrs)
+	if env.OK || env.Error == nil || env.Error.Code != "enrich_lookup_failed" || ExitCode(err) != 2 {
+		t.Errorf("other run error: env ok=%v error=%+v exit=%d, want ok:false, lookup error entry, exit 2", env.OK, env.Error, ExitCode(err))
+	}
+
+	gate := &mutation.Error{Code: "max_changes_exceeded", Message: "too many"}
+	env = mutation.Envelope{Error: gate}
+	err = enrichLookupFailure(&env, gate, lookupErrs)
+	if env.Error != gate || err == nil {
+		t.Errorf("gate refusal: env error = %+v, want the gate error kept", env.Error)
+	}
+
+	env = mutation.Envelope{OK: true, Result: &mutation.Result{Summary: mutation.ResultSummary{Applied: 1}}}
+	err = enrichLookupFailure(&env, nil, lookupErrs)
+	if ExitCode(err) != 13 || env.OK {
+		t.Errorf("partial apply: exit=%d ok=%v, want 13 and ok:false", ExitCode(err), env.OK)
 	}
 }

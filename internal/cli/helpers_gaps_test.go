@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -701,22 +704,14 @@ func TestHelpersWriteNoopAndAPIErrorEnvelopeUseCommandWriters(t *testing.T) {
 		t.Fatal("capture-writers command succeeded, want API conflict")
 	}
 
+	// The API error object is no longer written by the classifier: the central
+	// error printer renders it once, from main.
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("command stdout lines = %q, want JSON no-op and API error envelope", stdout.String())
+	if len(lines) != 1 {
+		t.Fatalf("command stdout lines = %q, want only the JSON no-op", stdout.String())
 	}
 	if lines[0] != `{"status":"noop","reason":"already_deleted"}` {
 		t.Fatalf("JSON no-op = %q", lines[0])
-	}
-	var envelope struct {
-		Error string `json:"error"`
-		Code  int    `json:"code"`
-	}
-	if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
-		t.Fatalf("decode API error envelope %q: %v", lines[1], err)
-	}
-	if envelope.Error != classified.Error() || envelope.Code != ExitCode(classified) {
-		t.Fatalf("API error envelope = %+v, want error=%q code=%d", envelope, classified, ExitCode(classified))
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("command stderr = %q, want no JSON output", stderr.String())
@@ -766,7 +761,9 @@ func TestHelpersWriterAccessorsFallBackForBareFlags(t *testing.T) {
 	}()
 
 	flags := &rootFlags{asJSON: true}
-	_ = classifyAPIError(helpersTestAPIError(409, "already exists"), flags)
+	if err := writeNoop(flags.out(), flags.errOut(), flags, "already_exists", "already exists (no-op)"); err != nil {
+		t.Fatalf("write JSON no-op: %v", err)
+	}
 	flags.asJSON = false
 	if err := writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)"); err != nil {
 		t.Fatalf("write prose no-op: %v", err)
@@ -788,5 +785,166 @@ func TestHelpersWriterAccessorsFallBackForBareFlags(t *testing.T) {
 	}
 	if len(processOut) == 0 || len(processErr) == 0 {
 		t.Fatalf("bare flags did not use fallback writers: stdout=%q stderr=%q", processOut, processErr)
+	}
+}
+
+func TestClassifyAPIErrorKeepsTypedErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"usage", usageErr(errors.New("bad flag")), 2},
+		{"not found", notFoundErr(errors.New("no such collection")), 3},
+		{"precondition", preconditionErr(errors.New("synced store missing")), 9},
+		{"wrapped typed", fmt.Errorf("context: %w", notFoundErr(errors.New("gone"))), 3},
+	} {
+		got := classifyAPIError(tt.err, &rootFlags{})
+		if !errors.Is(got, tt.err) || ExitCode(got) != tt.want {
+			t.Errorf("%s: classifyAPIError = %v (exit %d), want unchanged exit %d", tt.name, got, ExitCode(got), tt.want)
+		}
+	}
+}
+
+func TestClassifyAPIErrorTransportFailuresArePreconditions(t *testing.T) {
+	dial := func(rawURL, addr string) error {
+		host, port, _ := net.SplitHostPort(addr)
+		portNum, _ := strconv.Atoi(port)
+		return &url.Error{Op: "Get", URL: rawURL, Err: &net.OpError{
+			Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.ParseIP(host), Port: portNum},
+			Err: errors.New("connection refused"),
+		}}
+	}
+	local := classifyAPIError(dial("http://127.0.0.1:23119/api/users/0/items", "127.0.0.1:23119"), &rootFlags{})
+	if ExitCode(local) != 9 || !strings.Contains(local.Error(), "Zotero desktop is not running") {
+		t.Errorf("local transport failure = %v (exit %d), want exit 9 with the start-Zotero hint", local, ExitCode(local))
+	}
+	remote := classifyAPIError(dial("https://api.zotero.org/users/1/items", "93.184.216.34:443"), &rootFlags{})
+	if ExitCode(remote) != 9 || !strings.Contains(remote.Error(), "cannot reach the Zotero Web API") {
+		t.Errorf("remote transport failure = %v (exit %d), want exit 9 with the network hint", remote, ExitCode(remote))
+	}
+	if got := classifyAPIError(helpersTestAPIError(500, "boom"), &rootFlags{}); ExitCode(got) != 5 {
+		t.Errorf("HTTP 500 = exit %d, want 5", ExitCode(got))
+	}
+}
+
+// A command that prints its report and then returns a typed error (degraded,
+// gate, ok:false) must leave exactly one JSON document on stdout.
+func TestReportErrorKeepsOneJSONDocumentWhenCommandAlreadyPrinted(t *testing.T) {
+	flags := &rootFlags{}
+	root := newRootCmd(flags)
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	var stdout, stderr bytes.Buffer
+	counter := &stdoutCounter{w: &stdout}
+	root.SetOut(counter)
+	root.SetErr(&stderr)
+	root.AddCommand(&cobra.Command{
+		Use: "print-then-degrade",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			fmt.Fprintln(cmd.OutOrStdout(), `{"results":[],"warnings":["unreadable note"]}`)
+			return degradedErr(errors.New("1 note unreadable"))
+		},
+	})
+	root.SetArgs([]string{"--json", "print-then-degrade"})
+	err := ExecuteRootInProcess(context.Background(), root)
+	if err == nil {
+		t.Fatal("command succeeded, want degraded error")
+	}
+	recordErrorOutputMode(errorOutputMode{json: true, wroteStdout: counter.Wrote()})
+	var human bytes.Buffer
+	if code := ReportError(&stdout, &human, err); code != 13 {
+		t.Fatalf("exit code = %d, want 13", code)
+	}
+	dec := json.NewDecoder(&stdout)
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("decode first document: %v", err)
+	}
+	if _, ok := doc["warnings"]; !ok {
+		t.Fatalf("first document = %v, want the command's report", doc)
+	}
+	if dec.More() {
+		t.Fatalf("stdout carries a second document: %q", stdout.String())
+	}
+	if !strings.Contains(human.String(), "1 note unreadable") {
+		t.Fatalf("stderr = %q, want the human error line", human.String())
+	}
+}
+
+func TestSanitizeForTerminalKeepsNewlineAndStripsEscape(t *testing.T) {
+	got := sanitizeErrorForTerminal("line one\nline\ttwo\x1b[31m\x07\r")
+	if !strings.Contains(got, "line one\nline\ttwo") {
+		t.Fatalf("sanitizeErrorForTerminal dropped newline or tab: %q", got)
+	}
+	if strings.ContainsAny(got, "\x1b\x07\r") {
+		t.Fatalf("sanitizeErrorForTerminal kept a control byte: %q", got)
+	}
+	if strict := sanitizeForTerminal("a\nb\tc"); strict != "a\uFFFDb\tc" {
+		t.Fatalf("sanitizeForTerminal = %q, want newline neutralized and tab kept", strict)
+	}
+}
+
+func TestPrintCSVFlattensEnvelopeRows(t *testing.T) {
+	data := json.RawMessage(`{"meta":{"source":"local"},"results":[{"key":"ABCD2345","tags":["a","b"],"data":{"title":"T, with comma","creators":[{"lastName":"Doe"}]}}]}`)
+	var buf bytes.Buffer
+	if err := printCSV(&buf, data, false); err != nil {
+		t.Fatalf("printCSV: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "map[") || strings.Contains(out, "[map") {
+		t.Fatalf("CSV leaked Go formatting: %q", out)
+	}
+	if !strings.Contains(out, `"[{""lastName"":""Doe""}]"`) || !strings.Contains(out, `"T, with comma"`) {
+		t.Fatalf("CSV cells are not flat JSON-encoded values: %q", out)
+	}
+	var empty bytes.Buffer
+	if err := printCSV(&empty, json.RawMessage(`{"meta":{},"results":[]}`), false); err != nil || empty.Len() != 0 {
+		t.Fatalf("empty CSV result = %q, %v; want nothing", empty.String(), err)
+	}
+}
+
+func TestPrintOutputWithFlagsSelectUnknownFieldIsUsageError(t *testing.T) {
+	data := json.RawMessage(`[{"key":"ABCD2345","date_added":"2026-01-01"}]`)
+	var buf bytes.Buffer
+	err := printOutputWithFlags(&buf, data, &rootFlags{selectFields: "nonesuch"})
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "nonesuch") {
+		t.Fatalf("unknown --select error = %v (exit %d), want usage error naming the field", err, ExitCode(err))
+	}
+	buf.Reset()
+	if err := printOutputWithFlags(&buf, data, &rootFlags{selectFields: "dateAdded"}); err != nil {
+		t.Fatalf("camelCase --select of a snake_case field: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2026-01-01") {
+		t.Fatalf("dateAdded did not select date_added: %q", buf.String())
+	}
+}
+
+func TestPrintErrorJSONPrintsOnceForUsageAndPrecondition(t *testing.T) {
+	var usage bytes.Buffer
+	PrintErrorJSON(&usage, usageErr(errors.New("bad flag\nhint: try --limit")))
+	var obj map[string]any
+	if err := json.Unmarshal(usage.Bytes(), &obj); err != nil || strings.Count(usage.String(), "\n") != 1 {
+		t.Fatalf("usage error output = %q, want exactly one JSON object", usage.String())
+	}
+	if obj["kind"] != "usage" || obj["code"] != float64(2) || obj["message"] != "bad flag" || obj["hint"] != "try --limit" {
+		t.Fatalf("usage error object = %v", obj)
+	}
+
+	var stdout bytes.Buffer
+	err := emitPreconditionUnmetWithRemediation(&stdout, &rootFlags{asJSON: true}, "items list", preconditionSyncedStore, "no store", []string{"zotio sync"})
+	PrintErrorJSON(&stdout, err)
+	if strings.Count(stdout.String(), "\n") != 1 {
+		t.Fatalf("precondition printed %q, want exactly one object", stdout.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode precondition envelope: %v", err)
+	}
+	if env["kind"] != "precondition_unmet" || env["code"] != float64(9) || env["message"] == "" || env["precondition"] != preconditionSyncedStore {
+		t.Fatalf("precondition envelope = %v", env)
+	}
+	if ExitCode(err) != 9 {
+		t.Fatalf("exit code = %d, want 9", ExitCode(err))
 	}
 }

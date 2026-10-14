@@ -163,7 +163,7 @@ Remediation plan (preview-first)
 
 Three properties make it suitable for gating:
 
-- **It gates CI.** `--fail-on critical|high|info|none` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
+- **It gates CI.** `--fail-on critical|high|info|any|none` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
 - **It reports what it could not check.** A check that needs the desktop app (broken attachments) becomes a **loud skip with a remedy**. If that skip is gate-relevant, the run exits **`9`** (setup required) instead of passing.
 - **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`). `library health` reports problems; the named commands fix them.
 
@@ -188,15 +188,18 @@ See it running for real: zotio's own docs deploy publishes a [live badge](https:
 
 ## Safe by default: the write engine
 
-Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items preprint-check fix`, `items create/update/move/delete`, and `import apply` — share one plan and result format.
+Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items preprint-check fix`, `items create/update/move/delete/add-to-collection`, `collections create/update/delete/move`, and `import apply` — share one plan and result format.
 
 ![preview-first write lifecycle with journal and undo](docs/assets/write-safety.svg)
 
 - **Preview is the default.** You get a plan/result envelope with zero changes. `--yes` applies; `--dry-run` always wins.
+- **A preview predicts the apply.** It runs the same reads and evaluates the same gates (`--max-changes`, `--allow-destructive`, local input checks) as `--yes`. A preview that apply would refuse prints `ok:false` with `error:{code,message}` and exits with the code apply would use. A destructive preview shows `ok:true` only with `--allow-destructive`; a conflict exits `1` in preview and apply alike.
+- **`--dry-run` writes nothing at all.** No Zotero write, no local file or `.lock` sibling, no config save, no mirror write-through. Reads still run, and `--deliver` still routes the command's output. `sync`, `watch`, and `init` cannot preview and reject `--dry-run` with exit 2.
 - **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
-- **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
+- **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash, `creators rename`, `vault resolve --keep-vault|--keep-remote`) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** Supported mutation-envelope writes update an existing local mirror when they apply; a follow-up mirror read can see the change without another `sync`.
 - **Journaled + reversible.** Each applied mutation-envelope run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, `items enrich` DOI/abstract/citation-field/tag writes — which also takes the provenance line back out of Extra — and creates, reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, other field overwrites) rather than guessing. Vault writes use the same `--yes` approval gate but have a separate per-note report and no journal entry.
+- **Local-state commands.** Commands that destroy local state preview by default and apply with `--yes`: `auth logout` and `profile delete`. Commands that only create local state apply directly: `auth set-token` and `profile save`.
 
 ---
 
@@ -218,7 +221,7 @@ zotio import apply manifest.json --yes         # schema-valid creation via the W
 - **Resolve** turns findings into an editable JSON manifest, enriching create-entries from CrossRef. This is the human touchpoint.
 - **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file|stored` contract. `stored` uploads the file bytes: `--via connector` hands the item and its file to Zotero desktop in one session, while the direct Web API route is guarded by the file-storage precondition (`--allow-zotero-cloud` to override).
 
-One-shot importers are there too: `import doi|pmid|arxiv|isbn|url|file|pdf`.
+One-shot importers are there too: `import doi|pmid|arxiv|isbn|url|file|pdf`. They take the destination collection key with `--to`.
 
 ---
 
@@ -237,7 +240,7 @@ zotio vault pull --dry-run    # remote note edits → your ## Notes region (fast
 
 Each note has a **managed region** (frontmatter + a fenced annotations block, refreshed on every sync) and **your region** (`## Notes`, prose preserved untouched). Write-back is fast-forward only: if both sides changed, `zotio` never merges blindly — it writes a **reviewable conflict artifact** under `_vault-zotero-conflicts/` and reports it, so divergence becomes something you resolve on purpose (`vault resolve --keep-vault | --keep-remote | --recreate`), never a silent overwrite. Run `vault audit` for a read-only preflight before any push.
 
-Configure the vault once in `~/.config/zotio/config.toml`:
+Configure the vault once in `~/.config/zotio/config.toml` (the `--vault` flag overrides it):
 
 ```toml
 [vault]
@@ -265,7 +268,7 @@ format = "obsidian"      # or "logseq"
 ### Reading & synthesis
 
 - **`items summarize`** — assemble a bounded, synthesis-ready bundle for an item or collection (citation + abstract + your annotations + a capped fulltext excerpt + known metadata gaps + a synthesis prompt) and hand it to any LLM. `zotio` does the budgeting; it never calls the model. Ask a question with `--focus "TERMS"` and each item instead carries the ranked PDF-text passages and annotations that match, with item and attachment keys — `--max-chars` caps the passages and `--max-annotations` the annotations — so a finding on page 30 beats the introduction. An item with no synced PDF text says so rather than reporting "no match".
-- **`annotations export` · `annotations timeline` · `annotations search`** — pull highlights and notes as Markdown or JSON, ordered by date or searched by text.
+- **`annotations export` · `annotations timeline` · `annotations search`** — pull highlights and notes as Markdown or JSON (`annotations export --output|-o` writes a file), ordered by date or searched by text.
 - **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
 - **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.
 - **`items open`** — print or launch a `zotero://` deep link to an item, collection, or PDF (cross-platform).
@@ -284,7 +287,7 @@ format = "obsidian"      # or "logseq"
 
 - **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` (or a `.docx`/`.odt` written with the Zotero plugin) exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys. `--scope` accepts AND-joined cohorts such as `collection:KEY AND tag:NAME`.
 - **`collections export`** — a whole collection and its subcollections as one BibTeX, RIS, or CSL-JSON file, structure preserved in comments.
-- **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
+- **`export snapshot`** — a reproducible, resumable, fully paginated export (JSONL by default; `--format bibtex|ris|csljson`) with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
 
 ### Freshness & schema
 
@@ -297,9 +300,9 @@ format = "obsidian"      # or "logseq"
 
 `zotio` publishes a machine-readable trust model so an MCP host, CI job, or shell script can discover what's safe, fresh, and writable *before* it acts.
 
-- **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.)
+- **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.) Under `--json`/`--agent` a typed error prints one flat JSON object `{kind, code, message, hint?}` on stdout; a failed mutation keeps its `ok:false` envelope, and a `which` miss prints `{"matches":[]}` and exits 2.
 - **`capabilities`** — the full command registry, each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions. Commands with several write routes also list each route's target and preconditions.
-- **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints.
+- **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints, the `exit_codes` table, the `global_flags` (listed once, not per command), and `annotation_semantics`, which explains the three-state `mcp:read-only` annotation.
 - **`which "<capability in your words>"`** — resolve a natural-language query to the command that does it.
 - **Stable envelopes** — one mutation plan/result shape, one finding shape, and one exit-code contract across commands.
 
@@ -314,7 +317,26 @@ Join arms with ` AND ` (capital letters, a space on each side) to select only th
 
 `saved-search:KEY` is evaluated by Zotero desktop when it answers. When the desktop is not reachable or refuses local API access, zotio evaluates the synced search definition against the local mirror and prints a `notice:` line; `--data-source live` turns the fallback off. The local evaluator supports text fields, creator, tag, collection, item type, and date conditions with any/all join and the child-item flags. A search that uses any other condition (full text, notes, nested searches) exits 9 naming the condition.
 
-**Exit codes:** `0` ok · `2` usage (including a missing required argument; an explicit `--help` exits 0) · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup (including *another writer holds the lock* — retry) · `10` config · `11` quality-gate failed · `12` freshness-gate failed · `13` degraded — incomplete: part of a read was unreadable, or part of a batched write was rejected after other elements succeeded. Output is not guaranteed; read the reported failures and reconcile before retrying. · `14` timed out — a bounded wait (`desktop wait --timeout`) ended before Zotero's connector answered; wait again. · `15` Zotero open but stuck — `desktop wait` found Zotero running past its startup window with a connector that does not answer or is off; tell the user.
+**Exit codes** (the same table is in `SKILL.md` and under `exit_codes` in `agent-context --json`):
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error (anything without a typed code, or a write where nothing applied) |
+| 2 | Usage error: bad flag value, wrong argument count, invalid key, invalid enum or limit, mutually exclusive flags; also a `which` miss and `--dry-run` on `sync`/`watch`/`init` |
+| 3 | Resource not found: the key or name does not exist |
+| 4 | Authentication required |
+| 5 | API error (upstream issue) |
+| 7 | Rate limited (wait and retry) |
+| 9 | Precondition unmet: unsynced store, Zotero or the Web API unreachable when required, or a writer lock is held |
+| 10 | Config error |
+| 11 | Quality gate failed (`--fail-on` on `library health`, `items bibcheck`, `doctor`; `items bibcheck --fail-on-unknown`) |
+| 12 | Stale data (`--require-fresh`) |
+| 13 | Incomplete — part of a write applied and part failed for a non-conflict reason, or part of a read was unreadable; reconcile before retrying |
+| 14 | Timed out — `desktop wait --timeout` ended before Zotero's connector answered; wait again |
+| 15 | Zotero is open but its connector is hung or off (`desktop wait`); tell the user rather than wait |
+
+An explicit `--help` exits 0.
 
 ---
 
@@ -454,7 +476,7 @@ Once installed (above), invoke `/zotio <query>` in Claude Code. The skill drives
 
 ### Use the MCP server in an agent host
 
-Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`dev/adr/0001-mcp-command-surface.md`](dev/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely, inspect-library, export-reading-notes, prepare-citation-export, synthesize).
+Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`dev/adr/0001-mcp-command-surface.md`](dev/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). Commands that write local files expose `--dry-run`, and `annotations search` is available. Tool hints come from the capability registry: `destructiveHint` is true only for destructive commands and local file writers, and commands that read only the local mirror report `openWorldHint: false`. It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely, inspect-library, export-reading-notes, prepare-citation-export, synthesize).
 
 ---
 
@@ -463,12 +485,12 @@ Once registered (above), the MCP server exposes a **command-orchestration facade
 ```bash
 zotio collections list                       # human table (JSON when piped)
 zotio collections list --json                # JSON for scripting and agents
-zotio collections list --json --select id,name,status   # only the fields you need
-zotio collections list --dry-run             # writes are previewed, never sent; reads like this one still run
+zotio collections list --json --select key,data.name   # only the fields you need
+zotio collections list --dry-run             # no write of any kind; reads like this one still run
 zotio collections list --agent               # JSON + compact + non-interactive + no color
 ```
 
-Also available: `--csv`, `--plain`, `--quiet`, `--compact`, and `--deliver stdout|file:<path>|webhook:<url>`.
+Also available: `--csv`, `--plain` (commands with no tabular form reject both with exit 2), `--quiet` (print nothing; the exit code is the answer), `--compact`, and `--deliver stdout|file:<path>|webhook:<url>`. `--deliver` routes the command's output, also under `--dry-run`. `--select` naming a field the output lacks exits 2.
 
 ---
 
@@ -480,7 +502,7 @@ zotio desktop status    # is Zotero desktop running, and does its connector acce
 ```
 
 - **`doctor: connection refused`** — open Zotero desktop and enable **Settings → Advanced → "Allow other applications to communicate with Zotero."**
-- **`items missing-pdf` / analytics return nothing** — run `zotio sync` first to populate the local mirror.
+- **`items missing-pdf` / analytics / any mirror reader fail with exit 9** — the local mirror is not synced. Run `zotio sync` first; the `synced_store` precondition envelope says so.
 - **`annotations export` outputs empty sections** — PDF annotations must be made in Zotero's built-in PDF reader, not an external app.
 - **`citekey-conflicts` finds no keys** — install the Better BibTeX extension; citation keys live in the `extra` field.
 - **Authentication errors (exit 4)** — `zotio doctor` to check credentials; verify `echo $ZOTERO_API_KEY`.

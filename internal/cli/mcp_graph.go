@@ -7,6 +7,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 )
 
 const graphNodeCap = 500
@@ -62,18 +64,16 @@ type graphItemContext struct {
 	Truncated       bool     `json:"truncated"`
 }
 
+// graphUnsyncedJSON reports an unsynced mirror as the typed precondition error
+// (exit 9) instead of a success-shaped note.
 func graphUnsyncedJSON() ([]byte, error) {
-	return json.MarshalIndent(map[string]any{
-		"synced": false,
-		"note":   "local store not synced; run sync",
-	}, "", "  ")
+	return nil, preconditionErr(errors.New("local store not synced; run 'zotio sync' first"))
 }
 
-func graphNotFoundJSON(key string) ([]byte, error) {
-	return json.MarshalIndent(map[string]any{
-		"error": "not found",
-		"key":   key,
-	}, "", "  ")
+// graphNotFound is the typed not-found error for graph lookups: exit 3, never
+// an error object printed with exit 0.
+func graphNotFound(key string) error {
+	return notFoundErr(fmt.Errorf("item %s not found", key))
 }
 
 // CollectionTreeJSON returns the named collection and bounded nested
@@ -99,7 +99,7 @@ WHERE resource_type='collections' AND id=?`, key)
 		return nil, err
 	}
 	if len(rows) == 0 {
-		return graphNotFoundJSON(key)
+		return nil, graphNotFound(key)
 	}
 
 	truncated := false
@@ -194,7 +194,7 @@ func ItemChildrenJSON(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	if !found {
-		return graphNotFoundJSON(key)
+		return nil, graphNotFound(key)
 	}
 
 	rows, err := qs.QueryRawContext(ctx, `
@@ -240,7 +240,7 @@ func ItemAttachmentsJSON(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	if !found {
-		return graphNotFoundJSON(key)
+		return nil, graphNotFound(key)
 	}
 
 	rows, err := qs.QueryRawContext(ctx, `
@@ -297,7 +297,7 @@ WHERE resource_type='items' AND id=?`, key)
 		return nil, err
 	}
 	if len(rows) == 0 {
-		return graphNotFoundJSON(key)
+		return nil, graphNotFound(key)
 	}
 
 	collections, collectionsTruncated, err := graphStringList(ctx, qs, `
@@ -355,7 +355,7 @@ func ItemRelatedJSON(ctx context.Context, key string) ([]byte, error) {
 		return graphUnsyncedJSON()
 	}
 	if !found {
-		return graphNotFoundJSON(key)
+		return nil, graphNotFound(key)
 	}
 	return json.MarshalIndent(report, "", "  ")
 }

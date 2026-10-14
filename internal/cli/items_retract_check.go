@@ -70,6 +70,7 @@ type crossrefUpdateNotice struct {
 func newItemsRetractCheckCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagCollection string
+	var flagScope string
 
 	cmd := &cobra.Command{
 		Use:   "retract-check",
@@ -80,25 +81,56 @@ and corrections without writing to Zotero. Run 'zotio sync' first so the local
 store is current.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if flagCollection != "" {
+				if err := validateKeyArg("collection", flagCollection); err != nil {
+					return err
+				}
+			}
+			scopeExpr, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			if err != nil {
+				return err
+			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
+				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
+			db := localQueryStore{rawDB}
 
-			report, err := runRetractionCheck(cmd.Context(), localQueryStore{rawDB}, &http.Client{Timeout: enrichTimeout(flags.timeout)}, flagLimit, flagCollection)
+			sel, err := resolveScopeSelection(cmd, flags, "items retract-check", db, scopeExpr)
 			if err != nil {
 				return err
 			}
-			return renderRetractionCheckReport(cmd, flags, report)
+			report, err := runRetractionCheckCached(cmd.Context(), db, &http.Client{Timeout: enrichTimeout(flags.timeout)}, flagLimit, flagCollection, nil, sel.Keys)
+			if err != nil {
+				return err
+			}
+			if err := renderRetractionCheckReport(cmd, flags, report); err != nil {
+				return err
+			}
+			if report.Summary.Errors > 0 {
+				// The report above already lists every failed DOI in errors[], so
+				// the central printer must not add a second JSON document.
+				return markRendered(degradedErr(fmt.Errorf("items retract-check: %d CrossRef lookup(s) failed; results incomplete", report.Summary.Errors)))
+			}
+			return nil
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum DOI-bearing items to check (0 = all)")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope checks to items in a collection key")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum DOI-bearing items to check (0 = no limit)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope checks to items in a collection key (same as --scope collection:KEY)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 
 	return cmd
 }
@@ -118,12 +150,8 @@ type retractionLookupCache interface {
 	store(doi string, notices []crossrefUpdateNotice, registered bool)
 }
 
-// runRetractionCheck scans DOI-bearing rows while preserving the report-only exit contract.
-func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string) (retractionCheckReport, error) {
-	return runRetractionCheckCached(ctx, db, httpClient, limit, collection, nil, nil)
-}
-
-// runRetractionCheckCached is runRetractionCheck with an optional per-DOI
+// runRetractionCheckCached scans DOI-bearing rows while preserving the
+// report-only exit contract, with an optional per-DOI
 // cache; cache hits skip both the request and the pacing sleep. A non-nil
 // keys set restricts the lookup to that cohort before any network request;
 // nil means the whole library.

@@ -238,7 +238,7 @@ func TestExportCollectionWalksEveryItemPage(t *testing.T) {
 	}
 }
 
-// --limit is a page size, not a cap on the export: the API clamps anything
+// --page-size is a page size, not a cap on the export: the API clamps anything
 // over 100, so asking for 200 must not become a 200-item ceiling.
 func TestExportCollectionClampsPageSizeAndStillExportsEverything(t *testing.T) {
 	ids := manyIDs("item", 250)
@@ -600,6 +600,9 @@ func seedCollectionExportStore(t *testing.T) {
 	if _, _, err := db.UpsertBatch("collections", collectionExportFixtureCollections); err != nil {
 		t.Fatalf("seed collections: %v", err)
 	}
+	if err := db.SaveSyncState("collections", "", len(collectionExportFixtureCollections)); err != nil {
+		t.Fatalf("save collections sync state: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -634,6 +637,9 @@ func newCollectionExportServer(t *testing.T) *httptest.Server {
 			_, _ = w.Write(body)
 		}
 		switch path := strings.TrimPrefix(r.URL.Path, "/users/0"); path {
+		case "/collections/ROOT", "/collections/SUB":
+			// The existence check every collection-scoped command runs first.
+			_, _ = w.Write(collectionExportFixtureCollections[map[string]int{"ROOT": 0, "SUB": 1}[strings.Split(path, "/")[2]]])
 		case "/collections/ROOT/items", "/collections/SUB/items":
 			encode(byCollection[strings.Split(path, "/")[2]])
 		case "/collections/ROOT/collections", "/collections/SUB/collections":
@@ -774,5 +780,195 @@ func TestCollectionsExportTranslatorFormatRefusesWhenZoteroGoesAway(t *testing.T
 	}
 	if strings.Contains(out, "Root Item") {
 		t.Fatalf("translator export degraded into mirrored item JSON: %q", out)
+	}
+}
+
+// bibtexExportServer serves one BibTeX page for ROOT and answers any other
+// collection's /items the way Zotero's local API does: with library data
+// instead of a 404. Only /collections/<key> itself reveals the miss.
+func bibtexExportServer(t *testing.T, requests *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*requests++
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		switch {
+		case path == "/collections/ROOT":
+			_, _ = w.Write([]byte(`{"key":"ROOT","version":1,"data":{"key":"ROOT","name":"Root"}}`))
+		case path == "/collections/ROOT/collections":
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(path, "/items"):
+			w.Header().Set("Total-Results", "1")
+			switch {
+			case r.URL.Query().Get("format") == "keys" && r.URL.Query().Get("start") == "0":
+				_, _ = w.Write([]byte("IROOTAB2\n"))
+			case r.URL.Query().Get("format") == "keys":
+			default:
+				_, _ = w.Write([]byte("@article{rootitem}\n"))
+			}
+		default:
+			http.Error(w, "Collection not found", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func runCollectionsExportCmdWithStderr(t *testing.T, flags *rootFlags, args ...string) (string, string, error) {
+	t.Helper()
+	cmd := newCollectionsExportCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), errOut.String(), err
+}
+
+// Zotero's local API answers /collections/<unknown>/items with the whole
+// library. The export must refuse an unknown key (exit 3) before it reads or
+// writes anything, so `collections export KEY > refs.bib` can never produce a
+// plausible .bib of the wrong library.
+func TestCollectionsExportUnknownCollectionIsNotFound(t *testing.T) {
+	seedCollectionExportStore(t)
+	for _, format := range []string{"bibtex", "json"} {
+		t.Run(format, func(t *testing.T) {
+			var requests int
+			srv := bibtexExportServer(t, &requests)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			target := filepath.Join(t.TempDir(), "refs.out")
+
+			out, stderr, err := runCollectionsExportCmdWithStderr(t, &rootFlags{dataSource: "live", noCache: true, timeout: 5 * time.Second}, "MISSAB23", "--format", format, "-o", target)
+			if err == nil || ExitCode(err) != 3 {
+				t.Fatalf("error = %v, exit=%d; want not found (exit 3)", err, ExitCode(err))
+			}
+			if out != "" || stderr != "" {
+				t.Fatalf("stdout=%q stderr=%q, want nothing printed", out, stderr)
+			}
+			for _, path := range []string{target, target + ".lock"} {
+				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("%s exists after a refused export: %v", path, statErr)
+				}
+			}
+		})
+	}
+
+	t.Run("local mirror", func(t *testing.T) {
+		_, _, err := runCollectionsExportCmdWithStderr(t, &rootFlags{dataSource: "local", noCache: true, timeout: 5 * time.Second}, "MISSAB23", "--format", "json")
+		if err == nil || ExitCode(err) != 3 {
+			t.Fatalf("error = %v, exit=%d; want not found (exit 3)", err, ExitCode(err))
+		}
+	})
+}
+
+// A bad --format is a usage error (exit 2) decided before any request.
+func TestCollectionsExportRejectsBadFormatBeforeWork(t *testing.T) {
+	var requests int
+	srv := bibtexExportServer(t, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	_, _, err := runCollectionsExportCmdWithStderr(t, &rootFlags{noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", "bogus")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("error = %v, exit=%d; want usage error (exit 2)", err, ExitCode(err))
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want none before the format is validated", requests)
+	}
+}
+
+// --dry-run reads the collection but writes nothing: no file, no temporary
+// file, no .lock sibling, and an existing target keeps its bytes.
+func TestCollectionsExportDryRunWritesNothing(t *testing.T) {
+	var requests int
+	srv := bibtexExportServer(t, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing.bib")
+	if err := os.WriteFile(existing, []byte("PRECIOUS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, "fresh.bib")
+
+	for _, tc := range []struct {
+		target       string
+		wantReplaced bool
+		wantMessage  string
+	}{
+		{existing, true, "replacing the existing file; nothing was written"},
+		{fresh, false, "new file"},
+	} {
+		out, stderr, err := runCollectionsExportCmdWithStderr(t, &rootFlags{dryRun: true, noCache: true, timeout: 5 * time.Second}, "ROOT", "--flat", "-o", tc.target)
+		if err != nil {
+			t.Fatalf("dry-run export to %s: %v", tc.target, err)
+		}
+		if out != "" || !strings.Contains(stderr, "Dry run: would write") || !strings.Contains(stderr, tc.wantMessage) || !strings.Contains(stderr, "nothing was written") {
+			t.Fatalf("stdout=%q stderr=%q, want the dry-run notice on stderr only", out, stderr)
+		}
+
+		jsonOut, _, err := runCollectionsExportCmdWithStderr(t, &rootFlags{asJSON: true, dryRun: true, noCache: true, timeout: 5 * time.Second}, "ROOT", "--flat", "-o", tc.target)
+		if err != nil {
+			t.Fatalf("dry-run export --json to %s: %v", tc.target, err)
+		}
+		var result collectionExportResult
+		if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+			t.Fatalf("decode %q: %v", jsonOut, err)
+		}
+		if !result.DryRun || result.Replaced != tc.wantReplaced || result.Bytes == 0 || result.Output != tc.target {
+			t.Fatalf("result = %+v, want a dry run of %s (replaced=%v) that counts the bytes", result, tc.target, tc.wantReplaced)
+		}
+	}
+	if got, _ := os.ReadFile(existing); string(got) != "PRECIOUS" {
+		t.Fatalf("existing file = %q, want it untouched by --dry-run", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("directory holds %d entries, want only existing.bib (no new file, temp file or .lock)", len(entries))
+	}
+}
+
+// A real export reports whether it replaced a file, like `export -o`.
+func TestCollectionsExportOutputReportsReplaced(t *testing.T) {
+	var requests int
+	srv := bibtexExportServer(t, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	target := filepath.Join(t.TempDir(), "refs.bib")
+
+	for i, wantReplaced := range []bool{false, true} {
+		out, _, err := runCollectionsExportCmdWithStderr(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second}, "ROOT", "--flat", "-o", target)
+		if err != nil {
+			t.Fatalf("export %d: %v", i, err)
+		}
+		var result collectionExportResult
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("decode %q: %v", out, err)
+		}
+		if result.Replaced != wantReplaced || result.DryRun || result.Bytes != int64(len("@article{rootitem}\n")) {
+			t.Fatalf("export %d result = %+v, want replaced=%v", i, result, wantReplaced)
+		}
+	}
+	if got, _ := os.ReadFile(target); string(got) != "@article{rootitem}\n" {
+		t.Fatalf("exported file = %q", got)
+	}
+}
+
+// Under --json/--agent a text export is one JSON document.
+func TestCollectionsExportJSONWrapsTextPayload(t *testing.T) {
+	var requests int
+	srv := bibtexExportServer(t, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, _, err := runCollectionsExportCmdWithStderr(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second}, "ROOT", "--flat")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	var wrapped struct {
+		Format  string `json:"format"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(out), &wrapped); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if wrapped.Format != "bibtex" || wrapped.Content != "@article{rootitem}\n" {
+		t.Fatalf("wrapped = %+v, want the bibtex text as content", wrapped)
 	}
 }

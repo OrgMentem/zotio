@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -58,6 +60,10 @@ func collChildCacheSeedCollections(t *testing.T, rows []json.RawMessage) string 
 		_ = db.Close()
 		t.Fatalf("seed collections: %v", err)
 	}
+	if err := db.SaveSyncState("collections", "", len(rows)); err != nil {
+		_ = db.Close()
+		t.Fatalf("save collections sync state: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -80,23 +86,28 @@ func collChildCacheOpenMirror(t *testing.T, dbPath string) *store.Store {
 // may be present under the collections resource.
 func TestCollectionsItemsAutoWriteThroughTargetsItems(t *testing.T) {
 	collChildCacheIsolateMirror(t)
-	const itemPayload = `{"key":"IT1","version":1,"data":{"key":"IT1","itemType":"book","title":"In collection","collections":["COL1"]}}`
+	const itemPayload = `{"key":"ITEMAB23","version":1,"data":{"key":"ITEMAB23","itemType":"book","title":"In collection","collections":["CLCTAB23"]}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/collections/COL1/items" {
-			t.Errorf("path = %q, want /collections/COL1/items", r.URL.Path)
+		switch r.URL.Path {
+		case "/collections/CLCTAB23":
+			// The existence check: same row the mirror already holds.
+			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`))
+		case "/collections/CLCTAB23/items":
+			_, _ = w.Write([]byte(`[` + itemPayload + `]`))
+		default:
+			t.Errorf("path = %q, want the collection or its items", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`[` + itemPayload + `]`))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL)
 
 	dbPath := collChildCacheSeedCollections(t, []json.RawMessage{
-		json.RawMessage(`{"key":"COL1","version":1,"data":{"key":"COL1","name":"Mine","parentCollection":false}}`),
+		json.RawMessage(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`),
 	})
 
 	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
 	cmd := newCollectionsItemsCmd(flags)
-	cmd.SetArgs([]string{"COL1"})
+	cmd.SetArgs([]string{"CLCTAB23"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -107,17 +118,17 @@ func TestCollectionsItemsAutoWriteThroughTargetsItems(t *testing.T) {
 	if env.Meta.Source != "live" {
 		t.Fatalf("provenance source = %q, want live", env.Meta.Source)
 	}
-	if !strings.Contains(string(env.Results), "IT1") {
-		t.Fatalf("results = %s, want the live IT1 row", env.Results)
+	if !strings.Contains(string(env.Results), "ITEMAB23") {
+		t.Fatalf("results = %s, want the live ITEMAB23 row", env.Results)
 	}
 
 	mirror := collChildCacheOpenMirror(t, dbPath)
 	if n, err := mirror.Count("collections"); err != nil || n != 1 {
-		t.Fatalf("collections rows = %d, err = %v; want exactly the seeded COL1", n, err)
+		t.Fatalf("collections rows = %d, err = %v; want exactly the seeded CLCTAB23", n, err)
 	}
-	got, err := mirror.Get("items", "IT1")
+	got, err := mirror.Get("items", "ITEMAB23")
 	if err != nil {
-		t.Fatalf("item IT1 not written through to the items resource: %v", err)
+		t.Fatalf("item ITEMAB23 not written through to the items resource: %v", err)
 	}
 	if string(got) != itemPayload {
 		t.Fatalf("cached item = %q, want %q", got, itemPayload)
@@ -130,8 +141,8 @@ func TestCollectionsItemsAutoWriteThroughTargetsItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("local collections list: %v", err)
 	}
-	if !strings.Contains(string(localData), "COL1") || strings.Contains(string(localData), "IT1") {
-		t.Fatalf("local collections = %s, want only the seeded COL1", localData)
+	if !strings.Contains(string(localData), "CLCTAB23") || strings.Contains(string(localData), "ITEMAB23") {
+		t.Fatalf("local collections = %s, want only the seeded CLCTAB23", localData)
 	}
 	if prov.Source != "local" || prov.ResourceType != "collections" {
 		t.Fatalf("local provenance = %+v, want local collections", prov)
@@ -145,17 +156,21 @@ func TestResolveReadCollectionItemsRenderedFormatSkipsWriteThrough(t *testing.T)
 	collChildCacheIsolateMirror(t)
 	const bibtex = "@book{it1,\n\ttitle = {In collection}\n}\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/collections/COL1/items" {
-			t.Errorf("path = %q, want /collections/COL1/items", r.URL.Path)
+		switch r.URL.Path {
+		case "/collections/CLCTAB23":
+			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`))
+		case "/collections/CLCTAB23/items":
+			_, _ = w.Write([]byte(bibtex))
+		default:
+			t.Errorf("path = %q, want the collection or its items", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(bibtex))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL)
 
 	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
 	cmd := newCollectionsItemsCmd(flags)
-	cmd.SetArgs([]string{"COL1", "--format", "bibtex"})
+	cmd.SetArgs([]string{"CLCTAB23", "--format", "bibtex"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -165,9 +180,73 @@ func TestResolveReadCollectionItemsRenderedFormatSkipsWriteThrough(t *testing.T)
 
 	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	mirror := collChildCacheOpenMirror(t, dbPath)
-	for _, resource := range []string{"collections", "items", "tags"} {
+	for _, resource := range []string{"items", "tags"} {
 		if n, err := mirror.Count(resource); err != nil || n != 0 {
 			t.Fatalf("%s rows = %d, err = %v; want nothing cached from a rendered response", resource, n, err)
 		}
 	}
+	// Only the collection row the existence check read may be cached, never
+	// the rendered payload.
+	if n, err := mirror.Count("collections"); err != nil || n != 1 {
+		t.Fatalf("collections rows = %d, err = %v; want only the verified collection", n, err)
+	}
+	row, err := mirror.Get("collections", "CLCTAB23")
+	if err != nil || strings.Contains(string(row), "@book") {
+		t.Fatalf("cached collection = %q, err = %v; want the JSON row, not the rendered payload", row, err)
+	}
+}
+
+// Zotero's local API answers /collections/<unknown>/items with the whole
+// library, so an unknown key must be refused before the items are read: exit 3
+// and no output, never another collection's data with exit 0.
+func TestCollectionScopedReadsRefuseUnknownCollection(t *testing.T) {
+	collChildCacheIsolateMirror(t)
+	var itemReads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/collections/MISSAB23":
+			http.Error(w, "Collection not found", http.StatusNotFound)
+		default:
+			itemReads++
+			_, _ = w.Write([]byte(`[{"key":"ITEMAB23","version":1,"data":{"key":"ITEMAB23"}}]`))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+
+	for name, build := range map[string]func(*rootFlags) *cobra.Command{
+		"items":          newCollectionsItemsCmd,
+		"subcollections": newCollectionsSubcollectionsCmd,
+		"tags":           newCollectionsTagsCmd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := build(&rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"MISSAB23"})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if err == nil || ExitCode(err) != 3 {
+				t.Fatalf("error = %v, exit=%d; want not found (exit 3)", err, ExitCode(err))
+			}
+			if out.Len() != 0 || itemReads != 0 {
+				t.Fatalf("out=%q itemReads=%d; want nothing read or printed for an unknown collection", out.String(), itemReads)
+			}
+		})
+	}
+
+	t.Run("local mirror", func(t *testing.T) {
+		collChildCacheSeedCollections(t, []json.RawMessage{
+			json.RawMessage(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`),
+		})
+		cmd := newCollectionsItemsCmd(&rootFlags{asJSON: true, dataSource: "local", timeout: time.Second})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetArgs([]string{"MISSAB23"})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err == nil || ExitCode(err) != 3 {
+			t.Fatalf("error = %v, exit=%d; want not found (exit 3)", err, ExitCode(err))
+		}
+	})
 }

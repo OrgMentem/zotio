@@ -94,7 +94,7 @@ func TestDupResolvePlanSetsTrashedCopiesAside(t *testing.T) {
 				dupTrashInMirror(t, key)
 			}
 
-			env, _, err := dupExecResolve(t, nil, &rootFlags{asJSON: true, maxChanges: -1}, "resolve", "--doi")
+			env, _, err := dupExecResolve(t, nil, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
 			if err != nil {
 				t.Fatalf("preview: %v", err)
 			}
@@ -178,16 +178,10 @@ func dupAssertSyncedStoreRefusal(t *testing.T, out string) {
 	}
 }
 
-// TestDuplicatesResolveAnnotationsMatchDestructiveGate pins the agent-context
-// annotations to the registry and the mutation gate, which both treat a merge
-// (it trashes the duplicate) as destructive.
-func TestDuplicatesResolveAnnotationsMatchDestructiveGate(t *testing.T) {
-	cmd := newItemsDuplicatesResolveCmd(&rootFlags{})
-	for _, key := range []string{"zotio:destructive", "zotio:requires-allow-destructive"} {
-		if got := cmd.Annotations[key]; got != "true" {
-			t.Errorf("annotation %s = %q, want \"true\"", key, got)
-		}
-	}
+// TestDuplicatesResolveRegistryMatchesDestructiveGate pins the capability
+// registry, the single source of the destructive annotations, to the mutation
+// gate: a merge trashes the duplicate, so both treat it as destructive.
+func TestDuplicatesResolveRegistryMatchesDestructiveGate(t *testing.T) {
 	var found bool
 	for _, e := range buildCapabilityRegistry(RootCmd()) {
 		if e.Path == "items duplicates resolve" {

@@ -86,7 +86,7 @@ func TestResolveCiteKeyPrefersFieldWithExtraFallback(t *testing.T) {
 // decodes the rows it prints.
 func runCitekeyConflicts(t *testing.T, args ...string) []citekeyConflictRow {
 	t.Helper()
-	cmd := newItemsCitekeyConflictsCmd(&rootFlags{})
+	cmd := newItemsCitekeyConflictsCmd(&rootFlags{maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs(args)
 	var out bytes.Buffer
@@ -95,9 +95,19 @@ func runCitekeyConflicts(t *testing.T, args ...string) []citekeyConflictRow {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("items citekey-conflicts %v: %v", args, err)
 	}
-	var rows []citekeyConflictRow
-	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
-		t.Fatalf("decode citekey-conflicts rows %q: %v", out.String(), err)
+	// Piped output is the findings object, the same as --json.
+	var report FindingsReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode citekey-conflicts report %q: %v", out.String(), err)
+	}
+	rows := make([]citekeyConflictRow, 0, len(report.Findings))
+	for _, f := range report.Findings {
+		row := citekeyConflictRow{Key: f.ItemKey, Title: f.Title, Type: "missing"}
+		if f.Kind == "citekey_conflict" {
+			row.Type = "conflict"
+			row.CiteKey, _ = f.Evidence["cite_key"].(string)
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }

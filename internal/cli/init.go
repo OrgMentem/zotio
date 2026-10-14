@@ -67,6 +67,9 @@ Without a terminal prompt (--no-input or --agent), the first sync runs only with
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "false", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.dryRun {
+				return usageErr(fmt.Errorf("init cannot preview: --dry-run is not supported (it writes config, credentials, and the local store as it goes)"))
+			}
 			report, exitErr := runInit(cmd, flags, launch)
 			if renderErr := renderInitReport(cmd, flags, report); renderErr != nil {
 				return renderErr

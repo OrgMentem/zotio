@@ -32,10 +32,10 @@ This complements 'items open' (which launches the Zotero desktop app): 'items fi
 hands you the actual file so an agent or script can read or process it. The local
 API must be enabled (Settings → Advanced → "Allow other applications…").`,
 		Example: `  # Path of an item's PDF
-  zotio items file ABCD1234
+  zotio items file ABCD2345
 
   # JSON envelope (item key, resolved attachment key, url, path)
-  zotio items file ABCD1234 --json`,
+  zotio items file ABCD2345 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -50,7 +50,7 @@ API must be enabled (Settings → Advanced → "Allow other applications…").`,
 				return classifyAPIError(err, flags)
 			}
 			if fileURL == "" {
-				return fmt.Errorf("no attachment file found for item %s", itemKey)
+				return notFoundErr(fmt.Errorf("no attachment file found for item %s", itemKey))
 			}
 
 			path := fileURLToPath(fileURL)
@@ -80,14 +80,20 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 	} else if ok {
 		return itemKey, fileURL, nil
 	}
-	// Otherwise resolve the item's PDF attachment among its children.
+	// Otherwise resolve the item's PDF attachment among its children. The
+	// Zotero local API answers children of an unknown key with the whole
+	// library, so the parent must be proven to exist first and only its own
+	// attachments may qualify.
+	if _, err := c.Get(replacePathParam("/items/{itemKey}", "itemKey", itemKey), nil); err != nil {
+		return "", "", err
+	}
 	// replacePathParam encodes the user-supplied key as one Zotero path segment.
 	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", itemKey)
 	children, err := c.Get(childrenPath, nil)
 	if err != nil {
 		return "", "", err
 	}
-	pdfKey, err := findPDFAttachmentKey(children)
+	pdfKey, err := findPDFAttachmentKeyForParent(children, itemKey)
 	if err != nil {
 		return "", "", err
 	}

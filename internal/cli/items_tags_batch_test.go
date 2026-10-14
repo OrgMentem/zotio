@@ -55,6 +55,22 @@ func newBatchTagServer(t *testing.T, keys []string) *batchTagServer {
 	}
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/items") && r.URL.Query().Get("itemKey") != "":
+			// Batched planning read: one list answers for every requested key.
+			b.getCount++
+			rows := make([]map[string]any, 0)
+			for _, key := range strings.Split(r.URL.Query().Get("itemKey"), ",") {
+				version, ok := b.versions[key]
+				if !ok {
+					continue
+				}
+				rows = append(rows, map[string]any{
+					"key": key, "version": version,
+					"data": map[string]any{"key": key, "version": version, "tags": b.tagsFor(key)},
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rows)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/items/"):
 			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			version, ok := b.versions[key]
@@ -151,7 +167,7 @@ func runBatchTagCmd(t *testing.T, b *batchTagServer, args ...string) (mutation.E
 // The whole point of the flag: N items must cost one write request, not N,
 // and each object must carry its own precondition.
 func TestItemsTagsBatchSendsOneRequestWithPerItemVersions(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
 
 	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
@@ -185,7 +201,7 @@ func TestItemsTagsBatchSendsOneRequestWithPerItemVersions(t *testing.T) {
 func TestItemsTagsBatchVerifyModeShortCircuitsWrite(t *testing.T) {
 	t.Setenv("ZOTIO_VERIFY", "1")
 	t.Setenv("ZOTIO_VERIFY_LIVE_HTTP", "")
-	keys := []string{"K1", "K2"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3"}
 	b := newBatchTagServer(t, keys)
 
 	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
@@ -195,17 +211,17 @@ func TestItemsTagsBatchVerifyModeShortCircuitsWrite(t *testing.T) {
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != len(keys) {
 		t.Fatalf("envelope = %+v, want both simulated writes applied", env)
 	}
-	if b.getCount != len(keys) || len(b.posts) != 0 {
-		t.Fatalf("reads = %d, writes = %d; want %d planning reads and no writes", b.getCount, len(b.posts), len(keys))
+	if b.getCount != 1 || len(b.posts) != 0 {
+		t.Fatalf("reads = %d, writes = %d; want one batched planning read and no writes", b.getCount, len(b.posts))
 	}
 }
 
 // Attribution is the claim the whole design rests on: a rejected object must
 // land on its own item, as its own conflict, without disturbing its neighbours.
 func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
-	b.reject["K2"] = 412
+	b.reject["ITEMAAA3"] = 412
 
 	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
 	if err == nil {
@@ -218,14 +234,14 @@ func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {
 	for _, item := range env.Result.Items {
 		byKey[item.Key] = item
 	}
-	if got := byKey["K2"].Status; got != "conflict" {
-		t.Errorf("K2 status = %q, want conflict (code 412 is a lost precondition)", got)
+	if got := byKey["ITEMAAA3"].Status; got != "conflict" {
+		t.Errorf("ITEMAAA3 status = %q, want conflict (code 412 is a lost precondition)", got)
 	}
-	if got := byKey["K1"].Status; got != "applied" {
-		t.Errorf("K1 status = %q, want applied; a batch-mate's rejection must not taint it", got)
+	if got := byKey["ITEMAAA2"].Status; got != "applied" {
+		t.Errorf("ITEMAAA2 status = %q, want applied; a batch-mate's rejection must not taint it", got)
 	}
-	if got := byKey["K3"].Status; got != "applied" {
-		t.Errorf("K3 status = %q, want applied; fail-fast must not report a sent object as not_attempted", got)
+	if got := byKey["ITEMAAA4"].Status; got != "applied" {
+		t.Errorf("ITEMAAA4 status = %q, want applied; fail-fast must not report a sent object as not_attempted", got)
 	}
 	if env.Result.Summary.Conflicts != 1 || env.Result.Summary.Applied != 2 {
 		t.Errorf("summary = %+v, want 2 applied and 1 conflict", env.Result.Summary)
@@ -242,9 +258,9 @@ func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {
 	if errors.As(err, &cliErr) {
 		t.Errorf("conflict error = %v, want the mutation engine's exit 1, not classified request error %d", err, cliErr.code)
 	}
-	reason := fmt.Sprint(byKey["K2"].Reason)
-	if !strings.Contains(reason, "rejected K2") {
-		t.Errorf("K2 reason = %q, want the server's own message for that object", reason)
+	reason := fmt.Sprint(byKey["ITEMAAA3"].Reason)
+	if !strings.Contains(reason, "rejected ITEMAAA3") {
+		t.Errorf("ITEMAAA3 reason = %q, want the server's own message for that object", reason)
 	}
 }
 
@@ -252,7 +268,7 @@ func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {
 func TestItemsTagsBatchSplitsAtZoteroCeiling(t *testing.T) {
 	keys := make([]string, 0, 120)
 	for i := range 120 {
-		keys = append(keys, fmt.Sprintf("K%03d", i))
+		keys = append(keys, batchTestKey(i))
 	}
 	b := newBatchTagServer(t, keys)
 
@@ -271,23 +287,23 @@ func TestItemsTagsBatchSplitsAtZoteroCeiling(t *testing.T) {
 			t.Errorf("request %d carried %d objects, want %d", i, got, want)
 		}
 	}
-	// The saving is in writes only; each item is still read once.
-	if b.getCount != 120 {
-		t.Errorf("reads = %d, want one per item", b.getCount)
+	// Planning reads are batched too: one list request per 50 keys.
+	if b.getCount != 3 {
+		t.Errorf("reads = %d, want 3 list reads for 120 items", b.getCount)
 	}
 }
 
 // --max-failures promises to stop early. A batch cannot, so the combination is
 // refused rather than silently ignored.
 func TestItemsTagsBatchRefusesMaxFailures(t *testing.T) {
-	b := newBatchTagServer(t, []string{"K1"})
+	b := newBatchTagServer(t, []string{"ITEMAAA2"})
 	t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	cmd := newItemsTagsCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1, maxFailures: 2})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"add", "--batch", "--tag", "sweep", "K1"})
+	cmd.SetArgs([]string{"add", "--batch", "--tag", "sweep", "ITEMAAA2"})
 
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--max-failures cannot be honoured with --batch") {
@@ -303,49 +319,49 @@ func TestItemsTagsBatchRefusesMaxFailures(t *testing.T) {
 // drift, an item reads another item's outcome — silently. This is the case the
 // original suite could not reach, because its fixture gave every item zero tags.
 func TestItemsTagsBatchKeepsAlignmentWhenAnItemIsANoOp(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
-	b.existing["K2"] = []map[string]any{{"tag": "sweep"}} // already tagged
-	b.reject["K3"] = 400                                  // must land on K3, not K2
+	b.existing["ITEMAAA3"] = []map[string]any{{"tag": "sweep"}} // already tagged
+	b.reject["ITEMAAA4"] = 400                                  // must land on ITEMAAA4, not ITEMAAA3
 
 	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
 	if err == nil {
 		t.Fatal("a rejected object must make the run report an error")
 	}
 	if len(b.posts) != 1 || len(b.posts[0]) != 2 {
-		t.Fatalf("request carried %v objects, want exactly 2 (K2 is a no-op)", b.posts)
+		t.Fatalf("request carried %v objects, want exactly 2 (ITEMAAA3 is a no-op)", b.posts)
 	}
-	if b.posts[0][0]["key"] != "K1" || b.posts[0][1]["key"] != "K3" {
-		t.Fatalf("objects = %v/%v, want K1 then K3", b.posts[0][0]["key"], b.posts[0][1]["key"])
+	if b.posts[0][0]["key"] != "ITEMAAA2" || b.posts[0][1]["key"] != "ITEMAAA4" {
+		t.Fatalf("objects = %v/%v, want ITEMAAA2 then ITEMAAA4", b.posts[0][0]["key"], b.posts[0][1]["key"])
 	}
 	byKey := map[string]mutation.ResultItem{}
 	for _, item := range env.Result.Items {
 		byKey[item.Key] = item
 	}
-	if got := byKey["K2"].Status; got != "no_op" {
-		t.Errorf("K2 status = %q, want no_op", got)
+	if got := byKey["ITEMAAA3"].Status; got != "no_op" {
+		t.Errorf("ITEMAAA3 status = %q, want no_op", got)
 	}
-	if got := byKey["K3"].Status; got != "failed" {
-		t.Errorf("K3 status = %q, want failed; a non-412 rejection is not a conflict", got)
+	if got := byKey["ITEMAAA4"].Status; got != "failed" {
+		t.Errorf("ITEMAAA4 status = %q, want failed; a non-412 rejection is not a conflict", got)
 	}
-	if got := byKey["K1"].Status; got != "applied" {
-		t.Errorf("K1 status = %q, want applied", got)
+	if got := byKey["ITEMAAA2"].Status; got != "applied" {
+		t.Errorf("ITEMAAA2 status = %q, want applied", got)
 	}
 	// The rejection is reported on the item it belongs to, naming the item
 	// rather than a position in an array the operator never sees. Alignment
-	// is what makes that possible: K3's failure must not land on K2.
-	if reason := fmt.Sprint(byKey["K3"].Reason); !strings.Contains(reason, "rejected K3") {
-		t.Errorf("K3 reason = %q, want its own server message", reason)
+	// is what makes that possible: ITEMAAA4's failure must not land on ITEMAAA3.
+	if reason := fmt.Sprint(byKey["ITEMAAA4"].Reason); !strings.Contains(reason, "rejected ITEMAAA4") {
+		t.Errorf("ITEMAAA4 reason = %q, want its own server message", reason)
 	}
-	if byKey["K2"].Reason != nil && strings.Contains(fmt.Sprint(byKey["K2"].Reason), "rejected") {
-		t.Errorf("K2 reason = %v, want no rejection on the no-op item", byKey["K2"].Reason)
+	if byKey["ITEMAAA3"].Reason != nil && strings.Contains(fmt.Sprint(byKey["ITEMAAA3"].Reason), "rejected") {
+		t.Errorf("ITEMAAA3 reason = %v, want no rejection on the no-op item", byKey["ITEMAAA3"].Reason)
 	}
 }
 
 // The submitted version must be a precondition the server can enforce, not a
 // field that merely appears in the payload.
 func TestItemsTagsBatchStaleVersionBecomesThatItemsConflict(t *testing.T) {
-	keys := []string{"K1", "K2"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3"}
 	b := newBatchTagServer(t, keys)
 	b.enforceVersion = true
 
@@ -360,11 +376,11 @@ func TestItemsTagsBatchStaleVersionBecomesThatItemsConflict(t *testing.T) {
 	// Now move the server's version out from under the planning read.
 	b2 := newBatchTagServer(t, keys)
 	b2.enforceVersion = true
-	b2.versions["K2"] = 9999
-	b2.existing["K2"] = nil
+	b2.versions["ITEMAAA3"] = 9999
+	b2.existing["ITEMAAA3"] = nil
 	// The planning GET reports 9999 too, so shift only after planning by
-	// rejecting K2's submitted version explicitly.
-	b2.reject["K2"] = 412
+	// rejecting ITEMAAA3's submitted version explicitly.
+	b2.reject["ITEMAAA3"] = 412
 	env2, err2 := runBatchTagCmd(t, b2, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
 	if ExitCode(err2) != 1 {
 		t.Errorf("exit code = %d, want 1 for a lost precondition", ExitCode(err2))
@@ -376,7 +392,7 @@ func TestItemsTagsBatchStaleVersionBecomesThatItemsConflict(t *testing.T) {
 
 // A failed request must fail its items loudly, not report them applied.
 func TestItemsTagsBatchTransportFailureFailsEveryItemInTheRequest(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
 	b.postFailureStatus = http.StatusBadGateway
 
@@ -396,7 +412,7 @@ func TestItemsTagsBatchTransportFailureFailsEveryItemInTheRequest(t *testing.T) 
 // The engine also marks every item failed, so this checks that its generic
 // "mutation incomplete" error cannot mask the request error.
 func TestItemsTagsBatchClassifiesAuthorizationFailure(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
 	b.postFailureStatus = http.StatusUnauthorized
 
@@ -430,18 +446,13 @@ func TestItemsTagsBatchUnattributableIndexFailsClosed(t *testing.T) {
 	// admits the bogus index once start is past zero.
 	keys := make([]string, 0, 60)
 	for i := range 60 {
-		keys = append(keys, fmt.Sprintf("K%03d", i))
+		keys = append(keys, batchTestKey(i))
 	}
 	b := newBatchTagServer(t, keys)
 	b.server.Close()
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			w.Header().Set("Last-Modified-Version", "100")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"key": key, "version": 100,
-				"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
-			})
+			writeBatchTagFixtureGet(w, r)
 			return
 		}
 		// An index far outside the submitted array, which also overflows a
@@ -482,24 +493,19 @@ func TestItemsTagsBatchUnattributableIndexFailsClosed(t *testing.T) {
 // unknown outcome, never report its items applied.
 func TestItemsTagsBatchNonEnvelopeBodyFailsClosed(t *testing.T) {
 	bodies := map[string]string{
-		"singleton": `{"key":"K1","version":101}`,
+		"singleton": `{"key":"ITEMAAA2","version":101}`,
 		"empty":     `{}`,
 		"truncated": `{"successful":{"0":{}`,
-		"partial":   `{"successful":{"0":{"key":"K1"}},"unchanged":{},"failed":{}}`,
+		"partial":   `{"successful":{"0":{"key":"ITEMAAA2"}},"unchanged":{},"failed":{}}`,
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
-			keys := []string{"K1", "K2"}
+			keys := []string{"ITEMAAA2", "ITEMAAA3"}
 			b := newBatchTagServer(t, keys)
 			b.server.Close()
 			b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
-					key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-					w.Header().Set("Last-Modified-Version", "100")
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"key": key, "version": 100,
-						"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
-					})
+					writeBatchTagFixtureGet(w, r)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -534,17 +540,12 @@ func TestItemsTagsBatchNonEnvelopeBodyFailsClosed(t *testing.T) {
 // not a generic mutation-incomplete. The envelope marks the items failed and
 // the command keeps the request detail and exit code.
 func TestItemsTagsBatchTransportFailureKeepsRequestError(t *testing.T) {
-	keys := []string{"K1", "K2", "K3"}
+	keys := []string{"ITEMAAA2", "ITEMAAA3", "ITEMAAA4"}
 	b := newBatchTagServer(t, keys)
 	b.server.Close()
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			w.Header().Set("Last-Modified-Version", "100")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"key": key, "version": 100,
-				"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
-			})
+			writeBatchTagFixtureGet(w, r)
 			return
 		}
 		// Close the connection mid-body so the client reports a transport
@@ -582,7 +583,7 @@ func TestItemsTagsBatchTransportFailureKeepsRequestError(t *testing.T) {
 func TestItemsTagsBatchCancellationPreservesDispatchedSiblingStatus(t *testing.T) {
 	keys := make([]string, 0, zoteroBatchWriteMax+1)
 	for i := range zoteroBatchWriteMax + 1 {
-		keys = append(keys, fmt.Sprintf("K%03d", i))
+		keys = append(keys, batchTestKey(i))
 	}
 	b := newBatchTagServer(t, keys)
 	b.postStarted = make(chan struct{})
@@ -632,20 +633,20 @@ func TestItemsTagsBatchCancellationPreservesDispatchedSiblingStatus(t *testing.T
 	for _, item := range env.Result.Items {
 		byKey[item.Key] = item
 	}
-	for _, key := range []string{"K001", "K049"} {
+	for _, key := range []string{batchTestKey(1), batchTestKey(49)} {
 		item := byKey[key]
 		if item.Status != "failed" || !strings.Contains(fmt.Sprint(item.Reason), "already sent") ||
 			!strings.Contains(fmt.Sprint(item.Reason), "verify before retrying") {
 			t.Errorf("%s = %+v, want failed unknown outcome for a dispatched sibling", key, item)
 		}
 	}
-	if item := byKey["K050"]; item.Status != "not_attempted" {
-		t.Errorf("K050 = %+v, want not_attempted because its later chunk was never dispatched", item)
+	if item := byKey[batchTestKey(50)]; item.Status != "not_attempted" {
+		t.Errorf("%s = %+v, want not_attempted because its later chunk was never dispatched", batchTestKey(50), item)
 	}
 }
 
 func TestItemsTagsBatchCancellationBeforeTransportKeepsSiblingsNotAttempted(t *testing.T) {
-	b := newBatchTagServer(t, []string{"K1", "K2"})
+	b := newBatchTagServer(t, []string{"ITEMAAA2", "ITEMAAA3"})
 	t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -655,11 +656,11 @@ func TestItemsTagsBatchCancellationBeforeTransportKeepsSiblingsNotAttempted(t *t
 		t.Fatal(err)
 	}
 	updater := newBatchItemUpdater(c, "/items", "items.tags.add", []map[string]any{
-		{"key": "K1", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
-		{"key": "K2", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
+		{"key": "ITEMAAA2", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
+		{"key": "ITEMAAA3", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
 	})
 	ops := make([]mutation.Op, 0, 2)
-	for index, key := range []string{"K1", "K2"} {
+	for index, key := range []string{"ITEMAAA2", "ITEMAAA3"} {
 		ops = append(ops, mutation.Op{
 			ID: key, Key: key, Kind: "tag_add",
 			Changes: []mutation.Change{{Field: "tags", Add: "sweep"}},
@@ -685,17 +686,17 @@ func TestItemsTagsBatchCancellationBeforeTransportKeepsSiblingsNotAttempted(t *t
 		env.Result.Summary.Failed != 1 || env.Result.Summary.NotAttempted != 1 {
 		t.Fatalf("result = %+v, want only the admitted operation failed", env.Result)
 	}
-	if item := env.Result.Items[1]; item.Key != "K2" || item.Status != "not_attempted" {
-		t.Fatalf("sibling = %+v, want K2 not_attempted", item)
+	if item := env.Result.Items[1]; item.Key != "ITEMAAA3" || item.Status != "not_attempted" {
+		t.Fatalf("sibling = %+v, want ITEMAAA3 not_attempted", item)
 	}
 }
 
 // remove --batch had no coverage at all.
 func TestItemsTagsBatchRemoveSendsRemainingTags(t *testing.T) {
-	b := newBatchTagServer(t, []string{"K1"})
-	b.existing["K1"] = []map[string]any{{"tag": "keep"}, {"tag": "drop"}}
+	b := newBatchTagServer(t, []string{"ITEMAAA2"})
+	b.existing["ITEMAAA2"] = []map[string]any{{"tag": "keep"}, {"tag": "drop"}}
 
-	env, err := runBatchTagCmd(t, b, "remove", "--batch", "--tag", "drop", "K1")
+	env, err := runBatchTagCmd(t, b, "remove", "--batch", "--tag", "drop", "ITEMAAA2")
 	if err != nil {
 		t.Fatalf("batch remove: %v", err)
 	}
@@ -715,7 +716,7 @@ func TestItemsTagsBatchRemoveSendsRemainingTags(t *testing.T) {
 }
 
 func TestItemsTagsBatchRefusesExplicitFailFast(t *testing.T) {
-	b := newBatchTagServer(t, []string{"K1"})
+	b := newBatchTagServer(t, []string{"ITEMAAA2"})
 	t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	// The whole root, because --continue-on-error is a persistent root flag
@@ -724,7 +725,7 @@ func TestItemsTagsBatchRefusesExplicitFailFast(t *testing.T) {
 	root.SilenceErrors, root.SilenceUsage = true, true
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"items", "tags", "add", "--batch", "--continue-on-error=false", "--yes", "--json", "--tag", "sweep", "K1"})
+	root.SetArgs([]string{"items", "tags", "add", "--batch", "--continue-on-error=false", "--yes", "--json", "--tag", "sweep", "ITEMAAA2"})
 
 	err := root.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--continue-on-error=false cannot be honoured with --batch") {
@@ -733,4 +734,31 @@ func TestItemsTagsBatchRefusesExplicitFailFast(t *testing.T) {
 	if len(b.posts) != 0 {
 		t.Errorf("refused command still wrote %d request(s)", len(b.posts))
 	}
+}
+
+// batchTestKey returns a distinct, valid 8-character Zotero key for index i.
+func batchTestKey(i int) string {
+	const alphabet = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
+	return "KEYAAA" + string(alphabet[(i/len(alphabet))%len(alphabet)]) + string(alphabet[i%len(alphabet)])
+}
+
+// writeBatchTagFixtureGet answers a planning read with every item at version
+// 100 and no tags: the batched list when itemKey is present, else one item.
+func writeBatchTagFixtureGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Last-Modified-Version", "100")
+	item := func(key string) map[string]any {
+		return map[string]any{
+			"key": key, "version": 100,
+			"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
+		}
+	}
+	if keys := r.URL.Query().Get("itemKey"); keys != "" {
+		rows := make([]map[string]any, 0)
+		for _, key := range strings.Split(keys, ",") {
+			rows = append(rows, item(key))
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(item(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]))
 }

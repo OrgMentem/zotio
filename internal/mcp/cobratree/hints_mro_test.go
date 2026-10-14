@@ -133,3 +133,41 @@ func mroBoolPtr(p *bool) any {
 	}
 	return *p
 }
+
+// The mirror hints follow the capability registry: only commands whose change
+// `journal undo` cannot reverse are destructive, additive writes are not, and a
+// command that reads only the local mirror is closed-world.
+func TestMirrorHintsFollowTheRegistry(t *testing.T) {
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, cli.RootCmd)
+
+	type want struct{ readOnly, destructive bool }
+	for name, w := range map[string]want{
+		"items_tags_add":     {readOnly: false, destructive: false},
+		"collections_create": {readOnly: false, destructive: false},
+		"items_delete":       {readOnly: false, destructive: true},
+		"collections_delete": {readOnly: false, destructive: true},
+		"creators_rename":    {readOnly: false, destructive: true},
+		"library_stats":      {readOnly: true, destructive: false},
+	} {
+		tool := s.GetTool(name)
+		if tool == nil {
+			t.Errorf("%s is not a mirrored tool", name)
+			continue
+		}
+		hints := tool.Tool.Annotations
+		if hints.ReadOnlyHint == nil || *hints.ReadOnlyHint != w.readOnly {
+			t.Errorf("%s readOnlyHint = %v, want %v", name, mroBoolPtr(hints.ReadOnlyHint), w.readOnly)
+		}
+		if hints.DestructiveHint == nil || *hints.DestructiveHint != w.destructive {
+			t.Errorf("%s destructiveHint = %v, want %v", name, mroBoolPtr(hints.DestructiveHint), w.destructive)
+		}
+	}
+
+	if hints := s.GetTool("library_stats").Tool.Annotations; hints.OpenWorldHint == nil || *hints.OpenWorldHint {
+		t.Errorf("library_stats reads only the local mirror but openWorldHint = %v, want false", mroBoolPtr(hints.OpenWorldHint))
+	}
+	if hints := s.GetTool("items_tags_add").Tool.Annotations; hints.OpenWorldHint != nil && !*hints.OpenWorldHint {
+		t.Error("items_tags_add writes through the Zotero API but is advertised closed-world")
+	}
+}

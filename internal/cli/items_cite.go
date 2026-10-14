@@ -4,6 +4,16 @@ package cli
 
 import "github.com/spf13/cobra"
 
+// printTextPayload prints a text payload (HTML, BibTeX, RIS, Markdown). Under
+// --json/--agent it is wrapped as {"format", "content"}; otherwise the raw
+// text is printed. --quiet prints nothing.
+func printTextPayload(cmd *cobra.Command, flags *rootFlags, format, text string) error {
+	if flags.asJSON {
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"format": format, "content": text}, flags)
+	}
+	return printRawTextOutput(cmd, flags, text)
+}
+
 func newItemsCiteCmd(flags *rootFlags) *cobra.Command {
 	var flagStyle string
 
@@ -14,9 +24,9 @@ func newItemsCiteCmd(flags *rootFlags) *cobra.Command {
 API renders citations using your installed CSL styles. For the most common
 styles (apa, chicago, mla), use the --style flag. For others, pass the
 CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
-		Example: `  zotio items cite ABCD1234
-  zotio items cite ABCD1234 --style apa
-  zotio items cite ABCD1234 --style bibtex`,
+		Example: `  zotio items cite ABCD2345
+  zotio items cite ABCD2345 --style apa
+  zotio items cite ABCD2345 --style bibtex --json`,
 		Annotations: map[string]string{"zotio:endpoint": "items.get", "zotio:method": "GET", "zotio:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,7 +59,7 @@ CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
-				return printRawTextOutput(cmd, flags, string(data))
+				return printTextPayload(cmd, flags, "bib", string(data))
 			}
 
 			data, err := c.Get(path, params)
@@ -57,9 +67,12 @@ CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
 				return classifyAPIError(err, flags)
 			}
 			if params["format"] == "csljson" {
+				if flags.asJSON {
+					return printTextPayload(cmd, flags, "csljson", string(data))
+				}
 				return printOutput(cmd.OutOrStdout(), data, false)
 			}
-			return printRawTextOutput(cmd, flags, string(data))
+			return printTextPayload(cmd, flags, params["format"], string(data))
 		},
 	}
 	cmd.Flags().StringVar(&flagStyle, "style", "", "Citation style (apa, mla, chicago, bibtex, ris, csljson) — default uses Zotero's current default style")

@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -54,7 +54,9 @@ func TestCollectionsExportEscapesCollectionPathSegments(t *testing.T) {
 	}
 }
 
-func TestAnnotationsExportEscapesCollectionPathSegment(t *testing.T) {
+// A collection key that is not a Zotero key never reaches a request path: it
+// is a usage error before any read.
+func TestAnnotationsExportRejectsHostileCollectionKey(t *testing.T) {
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.RequestURI)
@@ -67,23 +69,21 @@ func TestAnnotationsExportEscapesCollectionPathSegment(t *testing.T) {
 
 	cmd := newAnnotationsExportCmd(&rootFlags{asJSON: true, noCache: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
 	outputFile := filepath.Join(t.TempDir(), "annotations.json")
 	cmd.SetArgs([]string{"--collection", "../COLL/A", "--format", "json", "--refresh", "--limit", "1", "--output", outputFile})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("annotations export failed: %v; stderr: %s", err, errOut.String())
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("hostile collection key: err = %v (exit %d), want a usage error", err, ExitCode(err))
 	}
-	if len(requests) == 0 {
-		t.Fatal("annotations export made no requests")
+	if len(requests) != 0 {
+		t.Fatalf("requests = %v, want none", requests)
 	}
-	if !strings.HasPrefix(requests[0], "/users/0/collections/..%2FCOLL%2FA/items?") {
-		t.Fatalf("request path = %q, want escaped collection segment", requests[0])
+	if _, statErr := os.Stat(outputFile); !os.IsNotExist(statErr) {
+		t.Fatalf("output file created despite the refusal: %v", statErr)
 	}
-	assertFileMode(t, outputFile, 0o600)
 }
 
 func TestReplacePathParamEscapesPathMetacharacters(t *testing.T) {
@@ -115,8 +115,10 @@ func TestItemsGetAndFileEscapePathSegmentsOnce(t *testing.T) {
 			_, _ = w.Write([]byte(`{"key":"A/B"}`))
 		case "/users/0/items/PARENT%2FKEY/file/view/url":
 			http.NotFound(w, r)
+		case "/users/0/items/PARENT%2FKEY":
+			_, _ = w.Write([]byte(`{"key":"PARENT/KEY"}`))
 		case "/users/0/items/PARENT%2FKEY/children":
-			_, _ = w.Write([]byte(`[{"key":"ATTACH/KEY","itemType":"attachment","contentType":"application/pdf"}]`))
+			_, _ = w.Write([]byte(`[{"key":"ATTACH/KEY","itemType":"attachment","parentItem":"PARENT/KEY","contentType":"application/pdf"}]`))
 		case "/users/0/items/ATTACH%2FKEY/file/view/url":
 			_, _ = w.Write([]byte(`file:///tmp/attachment.pdf`))
 		default:
@@ -150,6 +152,7 @@ func TestItemsGetAndFileEscapePathSegmentsOnce(t *testing.T) {
 	want := []string{
 		"/users/0/items/A%2FB",
 		"/users/0/items/PARENT%2FKEY/file/view/url",
+		"/users/0/items/PARENT%2FKEY",
 		"/users/0/items/PARENT%2FKEY/children",
 		"/users/0/items/ATTACH%2FKEY/file/view/url",
 	}

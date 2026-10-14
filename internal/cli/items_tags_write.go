@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"zotio/internal/client"
@@ -24,11 +25,7 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 		Use:   "add --tag <tag> [itemKeys...]",
 		Short: "Add one or more tags to items",
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
+			"mcp:read-only": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true, automatic, batch)
@@ -51,11 +48,7 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "remove --tag <tag> [itemKeys...]",
 		Short: "Remove one or more tags from items",
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
-			"zotio:default-max-changes":        "500",
+			"mcp:read-only": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, automaticOnly, batch)
@@ -82,53 +75,32 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	}
 	keys, err := resolveKeys(args, keysFrom, cmd.InOrStdin())
 	if err != nil {
-		return err
+		return usageErr(err)
 	}
-	// Checked before the dry-run branch and before the write route is
-	// resolved, so a preview cannot succeed for a flag set the apply refuses,
-	// and the refusal cannot be pre-empted by a route or auth error.
+	// Checked before the write route is resolved, so a preview cannot succeed
+	// for a flag set the apply refuses, and the refusal cannot be pre-empted by
+	// a route or auth error.
 	if batch {
 		if flags.maxFailures > 0 {
-			return fmt.Errorf("--max-failures cannot be honoured with --batch: up to %d items travel in one request, so a failure cannot stop the items sent alongside it; drop one of the two flags", zoteroBatchWriteMax)
+			return usageErr(fmt.Errorf("--max-failures cannot be honoured with --batch: up to %d items travel in one request, so a failure cannot stop the items sent alongside it; drop one of the two flags", zoteroBatchWriteMax))
 		}
 		if cmd.Flags().Changed("continue-on-error") && !flags.continueOnError {
-			return fmt.Errorf("--continue-on-error=false cannot be honoured with --batch: up to %d items travel in one request, so the run cannot stop before the items already sent; drop one of the two flags", zoteroBatchWriteMax)
+			return usageErr(fmt.Errorf("--continue-on-error=false cannot be honoured with --batch: up to %d items travel in one request, so the run cannot stop before the items already sent; drop one of the two flags", zoteroBatchWriteMax))
 		}
 	}
-	if flags.dryRun {
-		ops := make([]mutation.Op, 0, len(keys))
-		for _, key := range keys {
-			changes := make([]mutation.Change, 0, len(tagNames))
-			for _, tagName := range tagNames {
-				change := mutation.Change{Field: "tags"}
-				if add {
-					change.Add = tagName
-					if automatic {
-						change.TagType = 1
-					}
-				} else {
-					change.Remove = tagName
-					if automatic {
-						change.TagType = 1
-					}
-				}
-				changes = append(changes, change)
-			}
-			ops = append(ops, mutation.Op{
-				ID:      operation + ":" + key,
-				Key:     key,
-				Kind:    kind,
-				Changes: changes,
-			})
-		}
-		env, runErr := runMutation(cmd.Context(), flags, operation, ops)
-		if renderErr := renderMutation(cmd, flags, env, itemTagsSingleLine(add, tagNames)); renderErr != nil {
-			return renderErr
-		}
-		return runErr
-	}
-
+	// Preview and apply run the same reads: each item is read through the write
+	// plane so the plan reports real no-ops and a missing key exits 3 in both.
+	// The client resolves the Web route without persisting or announcing it
+	// unless this run applies.
 	c, err := flags.newWriteClient()
+	if err != nil {
+		return err
+	}
+	// One list request per 50 keys replaces a GET per item, and the list is
+	// never served from the response cache: a stale version would turn every
+	// write into a 412.
+	c.NoCache = true
+	snapshots, err := fetchItemSnapshots(c, keys, flags)
 	if err != nil {
 		return err
 	}
@@ -136,11 +108,9 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	batchObjects := make([]map[string]any, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
-		data, version, err := c.GetWithVersion(path, nil)
-		if err != nil {
-			return classifyAPIError(err, flags)
-		}
-		currentTags, err := itemDataTags(data)
+		snapshot := snapshots[key]
+		version := snapshot.version
+		currentTags, err := itemDataTags(snapshot.data)
 		if err != nil {
 			return err
 		}
@@ -148,7 +118,6 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		changes := tagMutationChanges(currentTags, tagNames, add, automatic)
 		keyCopy := key
 		pathCopy := path
-		tagsCopy := append([]string(nil), tagNames...)
 		op := mutation.Op{
 			ID:              operation + ":" + keyCopy,
 			Key:             keyCopy,
@@ -160,21 +129,20 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		if add && len(changes) == 0 {
 			op.NoOpReason = map[string]any{"tag_types": observedTagTypes(currentTags, tagNames)}
 		}
+		// The write sends the tag array computed from the planned read and
+		// carries that read's version as its precondition, so a concurrent edit
+		// loses the precondition and is reported as that item's conflict.
+		nextTags := nextTagsForAdd(currentTags, tagNames, automatic)
+		if !add {
+			nextTags = nextTagsForRemove(currentTags, tagNames, automatic)
+		}
 		switch {
-		case batch:
+		case len(changes) == 0:
 			// The engine never calls Apply for a no-op op, so an item with
 			// nothing to change must not consume a batch slot either.
-			if len(changes) == 0 {
-				break
-			}
-			nextTags := nextTagsForAdd(currentTags, tagNames, automatic)
-			if !add {
-				nextTags = nextTagsForRemove(currentTags, tagNames, automatic)
-			}
-			if nextTags == nil {
-				op.Changes = nil
-				break
-			}
+		case nextTags == nil:
+			op.Changes = nil
+		case batch:
 			if version <= 0 {
 				// Same fail-closed rule as patchWithVersionGuard, and the
 				// same blast radius: the item fails, the run continues. An
@@ -192,13 +160,9 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 				"version": version,
 				"tags":    nextTags,
 			})
-		case add:
-			op.Apply = func() (string, any, error) {
-				return applyItemTagAdd(c, pathCopy, tagsCopy, automatic)
-			}
 		default:
 			op.Apply = func() (string, any, error) {
-				return applyItemTagRemove(c, pathCopy, tagsCopy, automatic)
+				return patchItemTags(c, pathCopy, version, nextTags)
 			}
 		}
 		ops = append(ops, op)
@@ -233,10 +197,6 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if updater != nil {
 		correctDispatchedNotAttempted(&env, ops, opObjectIndex, updater)
 	}
-	renderErr := renderMutation(cmd, flags, env, itemTagsSingleLine(add, tagNames))
-	if renderErr != nil {
-		return renderErr
-	}
 	// A request-level failure carries information the engine's generic error
 	// cannot express. It must win over runErr, because the same request failure
 	// also marks its items failed and therefore always makes runErr non-nil.
@@ -244,19 +204,17 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	// failed status still uses the engine's exit contract.
 	if updater != nil {
 		if batchErr := updater.Err(); batchErr != nil {
-			// The mutation envelope already reports every item as failed.
-			// A request-level 409 is not an idempotent create and must not
-			// append another JSON document after that envelope.
+			// The mutation envelope already reports every item as failed, and
+			// renderMutationResult marks the error rendered so no second JSON
+			// document follows it.
 			if cliutil.ClassifyHTTPError(batchErr.Error()) == cliutil.HTTPErrConflict {
-				return apiErr(redactedAPIError(batchErr, batchErr.Error(), liveSecrets(flags), ""))
+				runErr = apiErr(redactedAPIError(batchErr, batchErr.Error(), liveSecrets(flags), ""))
+			} else {
+				runErr = classifyAPIError(batchErr, flags)
 			}
-			return classifyAPIError(batchErr, flags)
 		}
 	}
-	if runErr != nil {
-		return runErr
-	}
-	return nil
+	return renderMutationResult(cmd, flags, env, runErr, itemTagsSingleLine(add, tagNames))
 }
 
 // correctDispatchedNotAttempted rewrites the engine's not_attempted verdict for
@@ -298,13 +256,13 @@ func correctDispatchedNotAttempted(env *mutation.Envelope, ops []mutation.Op, op
 
 func normalizeTagNames(rawTags []string) ([]string, error) {
 	if len(rawTags) == 0 {
-		return nil, fmt.Errorf("required flag %q not set", "tag")
+		return nil, usageErr(fmt.Errorf("required flag %q not set", "tag"))
 	}
 	seen := make(map[string]struct{}, len(rawTags))
 	tagNames := make([]string, 0, len(rawTags))
 	for _, tagName := range rawTags {
 		if tagName == "" {
-			return nil, fmt.Errorf("tag must not be empty")
+			return nil, usageErr(fmt.Errorf("tag must not be empty"))
 		}
 		if _, ok := seen[tagName]; ok {
 			continue
@@ -454,36 +412,75 @@ func nextTagsForRemove(currentTags []map[string]any, tagNames []string, automati
 	return nextTags
 }
 
-func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic bool) (string, any, error) {
-	currentData, currentVersion, err := c.GetWithVersion(path, nil)
-	if err != nil {
-		return "failed", err.Error(), err
-	}
-	currentTags, err := itemDataTags(currentData)
-	if err != nil {
-		return "failed", err.Error(), err
-	}
-	nextTags := nextTagsForAdd(currentTags, tagNames, automatic)
-	if nextTags == nil {
-		return "no_op", map[string]any{"tag_types": observedTagTypes(currentTags, tagNames)}, nil
-	}
-	return patchItemTags(c, path, currentVersion, nextTags)
+// itemSnapshot is one item as read while planning: its raw JSON (for the tags)
+// and the version a write must carry as its precondition.
+type itemSnapshot struct {
+	data    json.RawMessage
+	version int
 }
 
-func applyItemTagRemove(c *client.Client, path string, tagNames []string, automaticOnly bool) (string, any, error) {
-	currentData, currentVersion, err := c.GetWithVersion(path, nil)
-	if err != nil {
-		return "failed", err.Error(), err
+// fetchItemSnapshots reads every key with GET /items?itemKey=K1,K2,... (at most
+// zoteroBatchWriteMax keys per request) instead of one GET per item, taking
+// each item's version from the object itself. Preview and apply planning share
+// it, so both cost ceil(N/50) requests. A key the library does not return is
+// absent from the answer; it fails exactly like a single-item 404 (exit 3).
+func fetchItemSnapshots(c *client.Client, keys []string, flags *rootFlags) (map[string]itemSnapshot, error) {
+	snapshots := make(map[string]itemSnapshot, len(keys))
+	for start := 0; start < len(keys); start += zoteroBatchWriteMax {
+		end := min(start+zoteroBatchWriteMax, len(keys))
+		chunk := keys[start:end]
+		body, err := c.Get("/items", map[string]string{
+			"itemKey":        strings.Join(chunk, ","),
+			"limit":          strconv.Itoa(len(chunk)),
+			"includeTrashed": "1",
+		})
+		if err != nil {
+			return nil, classifyAPIError(err, flags)
+		}
+		var rows []json.RawMessage
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, apiErr(fmt.Errorf("parsing item list response: %w", err))
+		}
+		for _, row := range rows {
+			var head struct {
+				Key     string `json:"key"`
+				Version any    `json:"version"`
+				Data    struct {
+					Version any `json:"version"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(row, &head); err != nil || head.Key == "" {
+				continue
+			}
+			version := snapshotVersion(head.Version)
+			if version == 0 {
+				version = snapshotVersion(head.Data.Version)
+			}
+			snapshots[head.Key] = itemSnapshot{data: row, version: version}
+		}
+		for _, key := range chunk {
+			if _, ok := snapshots[key]; !ok {
+				return nil, classifyAPIError(fmt.Errorf("GET /items/%s returned HTTP 404: Not found", key), flags)
+			}
+		}
 	}
-	currentTags, err := itemDataTags(currentData)
-	if err != nil {
-		return "failed", err.Error(), err
+	return snapshots, nil
+}
+
+// snapshotVersion reads a Zotero version that may arrive as a number, a numeric
+// string, or the empty string the local API reports for never-pushed items.
+func snapshotVersion(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case string:
+		parsed, err := strconv.Atoi(n)
+		if err != nil {
+			return 0
+		}
+		return parsed
 	}
-	nextTags := nextTagsForRemove(currentTags, tagNames, automaticOnly)
-	if nextTags == nil {
-		return "no_op", "tag not present", nil
-	}
-	return patchItemTags(c, path, currentVersion, nextTags)
+	return 0
 }
 
 func patchItemTags(c *client.Client, path string, version int, tags []map[string]any) (string, any, error) {

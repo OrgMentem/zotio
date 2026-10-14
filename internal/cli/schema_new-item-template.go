@@ -21,11 +21,12 @@ func newSchemaNewItemTemplateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "new-item-template",
 		Short:       "Get a blank template for creating a new item of a given type",
-		Example:     "  zotio schema new-item-template --item-type example-value",
+		Example:     "  zotio schema new-item-template --item-type journalArticle",
 		Annotations: map[string]string{"zotio:endpoint": "schema.new-item-template", "zotio:method": "GET", "zotio:path": "/items/new", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "item-type")
+			// --dry-run has no effect on this read; the flag is validated first.
+			if !cmd.Flags().Changed("item-type") || strings.TrimSpace(flagItemType) == "" {
+				return usageErr(fmt.Errorf("required flag \"item-type\" not set"))
 			}
 			// /items/new is global (Web API), but the local API does not serve it.
 			// Build the same template from the global schema endpoints that local
@@ -46,11 +47,9 @@ func newSchemaNewItemTemplateCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

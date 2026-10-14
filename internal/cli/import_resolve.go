@@ -30,6 +30,12 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 		// buildImportManifestFromDir with the same envelope and exit code.
 		Annotations: map[string]string{"mcp:read-only": "true", preflightAnnotationKey: preflightAnnotationSkip},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if err := requireTabularOutput(flags, cmd.CommandPath()); err != nil {
+				return err
+			}
 			m, resolveErr := resolveImportManifest(cmd, flags, args[0], flagLimit)
 			// A manifest is a durable input to import apply. If cancellation
 			// leaves any source unresolved, emit no artifact rather than a
@@ -40,11 +46,14 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 			if m.SchemaVersion == 0 {
 				return resolveErr
 			}
+			if m.Truncated {
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: --limit %d reached; more PDFs exist in the directory and are not in this manifest\n", flagLimit)
+			}
 			writeErr := writeImportManifest(cmd.OutOrStdout(), m)
 			return errors.Join(resolveErr, writeErr)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 200, "Scan at most N PDFs when resolving a directory")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Scan at most N PDFs when resolving a directory (0 = no limit)")
 	return cmd
 }
 
@@ -95,7 +104,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 		return importManifest{}, fmt.Errorf("indexing library DOIs: %w", err)
 	}
 
-	paths, err := listPDFs(dir, limit)
+	paths, truncated, err := listPDFsLimited(dir, limit)
 	if err != nil {
 		return importManifest{}, err
 	}
@@ -105,6 +114,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 		SchemaVersion: importManifestSchemaVersion,
 		Dir:           dir,
 		Entries:       make([]importManifestEntry, 0, len(paths)),
+		Truncated:     truncated,
 	}
 	results, fanoutErrs := cliutil.FanoutRun(cmd.Context(), paths,
 		func(path string) string { return path },

@@ -36,7 +36,7 @@ proven mechanism has been established. Prefer one invocation with many items:
 import file --via connector and this command share one session, while import
 apply currently opens one per manifest entry. --rate-limit governs only Web
 API requests and does not pace connector calls.`,
-		Example:     "  zotio items create",
+		Example:     "  zotio items create --items '[{\"itemType\":\"journalArticle\",\"title\":\"A title\"}]'",
 		Annotations: map[string]string{"zotio:endpoint": "items.create", "zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			const path = "/items"
@@ -53,17 +53,17 @@ API requests and does not pace connector calls.`,
 			ops := itemsCreatePreflightOps(body)
 			if !resolveMutationMode(flags).Apply {
 				env, runErr := runMutation(cmd.Context(), flags, "items.create", ops)
-				if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-					return renderErr
-				}
-				return runErr
+				return renderMutationResult(cmd, flags, env, runErr, nil)
 			}
 			// Gate before any network call. Both routes send the whole batch in
 			// ONE request from the first op's Apply, so by the time the engine
 			// is applying, every item is already committed and a refusal part
-			// way through the ops could not un-write anything.
+			// way through the ops could not un-write anything. The engine runs
+			// the same gates first, so it renders the refusal as a typed
+			// envelope without calling any Apply.
 			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-				return fmt.Errorf("%s", gateFailure.Message)
+				env, runErr := runMutation(cmd.Context(), flags, "items.create", ops)
+				return renderMutationResult(cmd, flags, env, runErr, nil)
 			}
 			via, err := flags.resolveCreateVia(cmd.Context(), false)
 			if err != nil {
@@ -92,9 +92,6 @@ API requests and does not pace connector calls.`,
 			env, runErr := runMutation(cmd.Context(), flags, "items.create", ops, func(o *mutation.Options) {
 				o.ContinueOnError = true
 			})
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
 			if connectorItems != nil && createNeedsMirrorRefresh(env) {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
@@ -103,9 +100,9 @@ API requests and does not pace connector calls.`,
 			// guidance); the engine's generic "mutation incomplete" names
 			// neither the cause nor what to do next.
 			if batch.err != nil {
-				return batch.err
+				runErr = batch.err
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&bodyItems, "items", "", "Array of item objects to create, or a single item object (sent as a one-element array; use item-types and item-type-fields for schema)")
@@ -134,13 +131,13 @@ func itemsCreateBody(cmd *cobra.Command, bodyItems string, stdinBody bool) (any,
 		}
 		var jsonBody any
 		if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
-			return nil, fmt.Errorf("parsing stdin JSON: %w", err)
+			return nil, usageErr(fmt.Errorf("parsing stdin JSON: %w", err))
 		}
 		return normalizeItemsCreateBody(jsonBody), nil
 	case bodyItems != "":
 		var parsedItems any
 		if err := json.Unmarshal([]byte(bodyItems), &parsedItems); err != nil {
-			return nil, fmt.Errorf("parsing --items JSON: %w", err)
+			return nil, usageErr(fmt.Errorf("parsing --items JSON: %w", err))
 		}
 		return normalizeItemsCreateBody(parsedItems), nil
 	default:

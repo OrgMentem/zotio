@@ -6,36 +6,36 @@ The machine-readable registry every command is classified against — read vs. w
 | Command | Operation | Write target | Destructive | Requires |
 | --- | --- | --- | --- | --- |
 | `analytics` | read |  |  |  |
-| `annotations export` | read |  |  |  |
+| `annotations export` | read | `local_file` |  |  |
 | `annotations search` | read |  |  |  |
 | `annotations timeline` | read |  |  |  |
 | `attachments add` | write | `web_api` |  | `web_api_key`, `zotero_file_storage` |
 | `auth logout` | write | `local_state` |  |  |
 | `auth set-token` | write | `local_state` |  |  |
 | `auth status` | read |  |  |  |
-| `collections bundle` | read |  |  |  |
+| `collections bundle` | read | `local_file` |  | `synced_store` |
 | `collections create` | write | `web_api` |  | `web_api_key` |
 | `collections delete` | write | `web_api` | yes | `web_api_key` |
-| `collections export` | read |  |  | `live_local_api` |
+| `collections export` | read | `local_file` |  | `live_local_api` |
 | `collections gaps` | read |  |  |  |
 | `collections get` | read |  |  |  |
 | `collections items` | read |  |  |  |
 | `collections list` | read |  |  |  |
 | `collections move` | write | `web_api` |  | `web_api_key` |
-| `collections stats` | read |  |  |  |
+| `collections stats` | read |  |  | `synced_store` |
 | `collections subcollections` | read |  |  |  |
 | `collections tags` | read |  |  |  |
 | `collections top` | read |  |  |  |
 | `collections update` | write | `web_api` |  | `web_api_key` |
-| `creators audit` | read |  |  | `synced_store` |
-| `creators audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
-| `creators rename` | write | `web_api` |  | `synced_store`, `web_api_key` |
-| `demo` | read |  |  |  |
+| `creators audit` | read | `local_file` |  | `synced_store` |
+| `creators audit fix` | write | `web_api` | yes | `synced_store`, `web_api_key` |
+| `creators rename` | write | `web_api` | yes | `synced_store`, `web_api_key` |
+| `demo` | read | `local_file` |  |  |
 | `desktop status` | read |  |  |  |
 | `desktop wait` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
-| `export` | read |  |  |  |
-| `export snapshot` | read |  |  |  |
+| `export` | read | `local_file` |  |  |
+| `export snapshot` | read | `local_file` |  |  |
 | `export snapshot verify` | read |  |  | `synced_store` |
 | `feedback` | write | `local_state` |  |  |
 | `feedback list` | read |  |  |  |
@@ -44,11 +44,11 @@ The machine-readable registry every command is classified against — read vs. w
 | `import` | write | `web_api` |  | `web_api_key` |
 | `import apply` | write | `web_api` |  | `web_api_key` |
 | `import arxiv` | write | `web_api` |  | `web_api_key` |
-| `import discover` | read |  |  | `synced_store` |
+| `import discover` | read | `local_file` |  | `synced_store` |
 | `import doi` | write | `web_api` |  | `web_api_key` |
 | `import file` | write | `web_api` |  | `web_api_key` |
 | `import isbn` | write | `web_api` |  | `web_api_key` |
-| `import monitor` | read |  |  | `synced_store` |
+| `import monitor` | read | `local_file` |  | `synced_store` |
 | `import pdf` | write | `desktop_connector` |  | `desktop_connector` |
 | `import pmid` | write | `web_api` |  | `web_api_key` |
 | `import resolve` | read |  |  | `synced_store` |
@@ -60,7 +60,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items add-to-collection` | write | `web_api` |  | `web_api_key` |
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
-| `items authors` | read |  |  |  |
+| `items authors` | read |  |  | `synced_store` |
 | `items bibcheck` | read |  |  | `synced_store` |
 | `items bibliography` | read |  |  |  |
 | `items children` | read |  |  |  |
@@ -71,9 +71,9 @@ The machine-readable registry every command is classified against — read vs. w
 | `items delete` | write | `web_api` | yes | `web_api_key` |
 | `items duplicates` | read |  |  | `synced_store` |
 | `items duplicates resolve` | write | `web_api` | yes | `synced_store`, `web_api_key` |
-| `items enrich` | write | `web_api` |  | `web_api_key` |
+| `items enrich` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `items file` | read |  |  | `live_local_api` |
-| `items find` | read |  |  |  |
+| `items find` | read |  |  | `synced_store` |
 | `items fulltext` | read |  |  |  |
 | `items get` | read |  |  |  |
 | `items list` | read |  |  |  |
@@ -87,9 +87,9 @@ The machine-readable registry every command is classified against — read vs. w
 | `items recent` | read |  |  |  |
 | `items related` | read |  |  | `synced_store` |
 | `items restore` | write | `web_api` |  | `web_api_key` |
-| `items retract-check` | read |  |  |  |
+| `items retract-check` | read |  |  | `synced_store` |
 | `items similar` | read |  |  | `synced_store` |
-| `items stale` | read |  |  |  |
+| `items stale` | read |  |  | `synced_store` |
 | `items summarize` | read |  |  | `synced_store` |
 | `items tags` | read |  |  |  |
 | `items tags add` | write | `web_api` |  | `web_api_key` |
@@ -97,16 +97,16 @@ The machine-readable registry every command is classified against — read vs. w
 | `items tags remove` | write | `web_api` |  | `web_api_key` |
 | `items top` | read |  |  |  |
 | `items trash` | read |  |  |  |
-| `items unfiled` | read |  |  |  |
+| `items unfiled` | read |  |  | `synced_store` |
 | `items update` | write | `web_api` |  | `web_api_key` |
-| `items venues` | read |  |  |  |
+| `items venues` | read |  |  | `synced_store` |
 | `journal list` | read |  |  |  |
 | `journal show` | read |  |  |  |
 | `journal undo` | write | `web_api` |  | `web_api_key` |
-| `library health` | read |  |  | `synced_store` |
+| `library health` | read | `local_file` |  | `synced_store` |
 | `library prisma` | read |  |  | `synced_store` |
 | `library stats` | read |  |  | `synced_store` |
-| `library wrapped` | read |  |  |  |
+| `library wrapped` | read | `local_file` |  | `synced_store` |
 | `profile delete` | write | `local_state` |  |  |
 | `profile list` | read |  |  |  |
 | `profile save` | write | `local_state` |  |  |
@@ -117,7 +117,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `reading-list done` | write | `web_api` |  | `web_api_key` |
 | `reading-list start` | write | `web_api` |  | `web_api_key` |
 | `schema creator-fields` | read |  |  |  |
-| `schema drift` | read |  |  |  |
+| `schema drift` | read | `local_file` |  |  |
 | `schema item-fields` | read |  |  |  |
 | `schema item-type-creator-types` | read |  |  |  |
 | `schema item-type-fields` | read |  |  |  |
@@ -140,7 +140,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `vault conflicts` | read |  |  |  |
 | `vault pull` | write | `local_vault` |  | `web_api_key` |
 | `vault push` | write | `web_api` |  | `web_api_key` |
-| `vault resolve` | write | `web_api` |  | `web_api_key` |
+| `vault resolve` | write | `web_api` | yes | `web_api_key` |
 | `vault sync` | write | `local_vault` |  | `synced_store` |
 | `version` | introspect |  |  |  |
 | `watch` | sync |  |  |  |

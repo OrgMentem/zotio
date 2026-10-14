@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -25,45 +24,42 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 		// help request that exits 0.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
+			key := args[0]
+			path := replacePathParam("/items/{itemKey}", "itemKey", key)
 
 			// Route through the write target so the version GET and the PATCH hit the
 			// same library under hybrid routing: an item just created on the web and
-			// not yet synced locally still resolves. Built only in apply mode, so a
-			// preview needs no credentials and a config error keeps its own exit code.
-			var writeClient *client.Client
-			if resolveMutationMode(flags).Apply {
-				var clientErr error
-				writeClient, clientErr = flags.newWriteClient()
-				if clientErr != nil {
-					return clientErr
-				}
+			// not yet synced locally still resolves. Preview and apply run the same
+			// read, so a missing key exits 3 in both. The route is resolved without
+			// persisting or announcing it unless this run applies.
+			c, clientErr := flags.newWriteClient()
+			if clientErr != nil {
+				return clientErr
+			}
+			// Zotero requires If-Unmodified-Since-Version for key-based writes
+			// (PATCH returns HTTP 428 without it). Unlike items delete, a 404
+			// here is NOT a no-op: delete's target state ("gone") is already
+			// satisfied when the item is missing, but restore's ("present and
+			// undeleted") can never be reached, so it is a genuine error.
+			_, version, verErr := c.GetWithVersion(path, nil)
+			if verErr != nil {
+				return classifyAPIError(verErr, flags)
+			}
+			if version <= 0 {
+				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", key))
 			}
 
 			var applyErr error
 			ops := []mutation.Op{{
-				ID:   "items.restore:" + args[0],
-				Key:  args[0],
-				Kind: "item_restore",
+				ID:              "items.restore:" + key,
+				Key:             key,
+				Kind:            "item_restore",
+				ExpectedVersion: version,
 				// Boolean on purpose: keeps the mirror from replaying the
 				// restore and lets the field stay out of reverse.go's reversibleFields.
 				Changes: []mutation.Change{{Field: "deleted", Remove: true}},
 				Apply: func() (string, any, error) {
-					// Zotero requires If-Unmodified-Since-Version for key-based writes
-					// (PATCH returns HTTP 428 without it). Unlike items delete, a 404
-					// here is NOT a no-op: delete's target state ("gone") is already
-					// satisfied when the item is missing, but restore's ("present and
-					// undeleted") can never be reached, so it is a genuine error.
-					_, version, verErr := writeClient.GetWithVersion(path, nil)
-					if verErr != nil {
-						applyErr = verErr
-						return "failed", nil, verErr
-					}
-					if version <= 0 {
-						applyErr = apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
-						return "failed", nil, applyErr
-					}
-					status, detail, patchErr := patchWithVersionGuard(writeClient, path, map[string]any{"deleted": 0}, version)
+					status, detail, patchErr := patchWithVersionGuard(c, path, map[string]any{"deleted": 0}, version)
 					if patchErr != nil {
 						applyErr = patchErr
 					}
@@ -75,16 +71,10 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			// journal run_id was previously discarded so a restore could not be
 			// traced even though the journal recorded it.
 			env, runErr := runMutation(cmd.Context(), flags, "items.restore", ops)
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
+			if runErr != nil && applyErr != nil {
+				runErr = classifyAPIError(applyErr, flags)
 			}
-			if runErr != nil {
-				if applyErr != nil {
-					return classifyAPIError(applyErr, flags)
-				}
-				return runErr
-			}
-			return nil
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 

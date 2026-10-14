@@ -109,8 +109,8 @@ By default this previews the planned attachment; apply with --yes.`,
 				return usageErr(fmt.Errorf("--mode must be stored or linked-file"))
 			}
 			parentKey := strings.TrimSpace(args[0])
-			if !zoteroItemKeyRE.MatchString(parentKey) {
-				return usageErr(fmt.Errorf("invalid parent item key %q", parentKey))
+			if err := validateKeyArg("item", parentKey); err != nil {
+				return err
 			}
 			var req storedUploadRequest
 			var err error
@@ -169,10 +169,7 @@ By default this previews the planned attachment; apply with --yes.`,
 				},
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "attachments.add", []mutation.Op{op})
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&mode, "mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")

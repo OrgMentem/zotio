@@ -164,7 +164,7 @@ func TestItemsRelatedTruncatesIncomingEdgesAtGraphNodeCap(t *testing.T) {
 	}
 }
 
-func TestItemsRelatedNotFoundJSONUsesGraphConvention(t *testing.T) {
+func TestItemsRelatedNotFoundExitsThree(t *testing.T) {
 	seedItemsRelatedStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"Present"}}`),
 	})
@@ -177,27 +177,16 @@ func TestItemsRelatedNotFoundJSONUsesGraphConvention(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("items related missing: %v; stdout=%s", err, out.String())
+	err := cmd.Execute()
+	if ExitCode(err) != 3 {
+		t.Fatalf("items related missing exit = %d (err=%v), want 3", ExitCode(err), err)
 	}
-	var got map[string]string
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("decode not-found JSON %q: %v", out.String(), err)
-	}
-	if got["error"] != "not found" || got["key"] != "MISSING" {
-		t.Fatalf("not-found payload = %#v, want error=not found key=MISSING", got)
+	if out.Len() != 0 {
+		t.Fatalf("items related missing printed %q on stdout, want nothing", out.String())
 	}
 
-	mcpJSON, err := ItemRelatedJSON(context.Background(), "MISSING")
-	if err != nil {
-		t.Fatalf("ItemRelatedJSON missing: %v", err)
-	}
-	var mcpGot map[string]string
-	if err := json.Unmarshal(mcpJSON, &mcpGot); err != nil {
-		t.Fatalf("decode MCP not-found JSON %q: %v", string(mcpJSON), err)
-	}
-	if mcpGot["error"] != "not found" || mcpGot["key"] != "MISSING" {
-		t.Fatalf("MCP not-found payload = %#v, want graph not-found convention", mcpGot)
+	if _, err := ItemRelatedJSON(context.Background(), "MISSING"); ExitCode(err) != 3 {
+		t.Fatalf("ItemRelatedJSON missing exit = %d (err=%v), want 3", ExitCode(err), err)
 	}
 }
 

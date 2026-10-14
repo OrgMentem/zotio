@@ -93,13 +93,13 @@ func runImportDiscoverForwardCommand(t *testing.T, flags *rootFlags, args ...str
 	}
 	outPath := ""
 	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "--out" {
+		if args[i] == "--output" {
 			outPath = args[i+1]
 			break
 		}
 	}
 	if outPath == "" {
-		t.Fatalf("test bug: --out missing from args %v", args)
+		t.Fatalf("test bug: --output missing from args %v", args)
 	}
 	data, err := os.ReadFile(outPath)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestImportDiscoverForwardCOCICitationsWritesForwardDiscoveryCounts(t *testi
 
 	outPath := filepath.Join(t.TempDir(), "manifest.json")
 	data := runImportDiscoverForwardCommand(t, &rootFlags{asJSON: true, noCache: true, timeout: time.Second},
-		"--scope", "library", "--out", outPath, "--direction", "forward", "--limit", "10", "--min-count", "2")
+		"--scope", "library", "--output", outPath, "--direction", "forward", "--limit", "10", "--min-count", "2")
 	manifest := decodeImportDiscoverForwardManifest(t, data)
 	if len(manifest.Entries) != 1 {
 		t.Fatalf("manifest entries = %+v, want exactly the shared forward candidate", manifest.Entries)
@@ -417,7 +417,7 @@ func TestImportDiscoverBothMergesForwardAndBackwardCandidates(t *testing.T) {
 
 	outPath := filepath.Join(t.TempDir(), "manifest.json")
 	data := runImportDiscoverForwardCommand(t, &rootFlags{asJSON: true, noCache: true, timeout: time.Second},
-		"--scope", "item:SRC", "--out", outPath, "--direction", "both", "--limit", "10", "--min-count", "1")
+		"--scope", "item:SRC", "--output", outPath, "--direction", "both", "--limit", "10", "--min-count", "1")
 	manifest := decodeImportDiscoverForwardManifest(t, data)
 	if len(manifest.Entries) != 2 {
 		t.Fatalf("manifest entries = %+v, want merged and backward-only candidates", manifest.Entries)
@@ -480,9 +480,9 @@ func TestImportDiscoverBackwardOutputBytesUnchangedByDirectionFlag(t *testing.T)
 
 	flags := &rootFlags{asJSON: true, noCache: true, timeout: time.Second}
 	defaultBytes := runImportDiscoverForwardCommand(t, flags,
-		"--scope", "library", "--out", filepath.Join(t.TempDir(), "default.json"), "--limit", "10", "--min-count", "1")
+		"--scope", "library", "--output", filepath.Join(t.TempDir(), "default.json"), "--limit", "10", "--min-count", "1")
 	explicitBackwardBytes := runImportDiscoverForwardCommand(t, flags,
-		"--scope", "library", "--out", filepath.Join(t.TempDir(), "backward.json"), "--direction", "backward", "--limit", "10", "--min-count", "1")
+		"--scope", "library", "--output", filepath.Join(t.TempDir(), "backward.json"), "--direction", "backward", "--limit", "10", "--min-count", "1")
 	if !bytes.Equal(defaultBytes, explicitBackwardBytes) {
 		t.Fatalf("default backward manifest bytes changed with explicit --direction backward\ndefault: %s\nexplicit: %s", defaultBytes, explicitBackwardBytes)
 	}
@@ -522,14 +522,14 @@ func TestImportDiscoverForwardProviderGETsUseCacheOnRepeatRun(t *testing.T) {
 	flags := &rootFlags{asJSON: true, timeout: time.Second}
 	phase.Store(1)
 	first := decodeImportDiscoverForwardManifest(t, runImportDiscoverForwardCommand(t, flags,
-		"--scope", "item:SRC", "--out", filepath.Join(t.TempDir(), "first.json"), "--direction", "forward", "--limit", "10", "--min-count", "1"))
+		"--scope", "item:SRC", "--output", filepath.Join(t.TempDir(), "first.json"), "--direction", "forward", "--limit", "10", "--min-count", "1"))
 	if len(first.Entries) != 1 || first.Entries[0].Identifier != "10.7100/cached-citer" {
 		t.Fatalf("first manifest = %+v, want cached-citer candidate", first.Entries)
 	}
 
 	phase.Store(2)
 	second := decodeImportDiscoverForwardManifest(t, runImportDiscoverForwardCommand(t, flags,
-		"--scope", "item:SRC", "--out", filepath.Join(t.TempDir(), "second.json"), "--direction", "forward", "--limit", "10", "--min-count", "1"))
+		"--scope", "item:SRC", "--output", filepath.Join(t.TempDir(), "second.json"), "--direction", "forward", "--limit", "10", "--min-count", "1"))
 	if len(second.Entries) != 1 || second.Entries[0].Identifier != "10.7100/cached-citer" {
 		t.Fatalf("second manifest = %+v, want cached-citer candidate", second.Entries)
 	}

@@ -374,7 +374,7 @@ func TestResolveConnectorTargetRouting(t *testing.T) {
 			item:                map[string]any{"title": "No collections"},
 			collectionRequested: true,
 			targets:             nestedTree,
-			wantErr:             "--collection was requested but no collection key was present on the item",
+			wantErr:             "a destination (--to) was requested but no collection key was present on the item",
 		},
 		{
 			name:               "unknown collection key fails before the desktop is asked",

@@ -49,7 +49,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				}
 				var jsonBody map[string]any
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
-					return fmt.Errorf("parsing stdin JSON: %w", err)
+					return usageErr(fmt.Errorf("parsing stdin JSON: %w", err))
 				}
 				body = jsonBody
 			} else {
@@ -63,14 +63,14 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				if bodyTags != "" {
 					var parsedTags any
 					if err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {
-						return fmt.Errorf("parsing --tags JSON: %w", err)
+						return usageErr(fmt.Errorf("parsing --tags JSON: %w", err))
 					}
 					body["tags"] = parsedTags
 				}
 				if bodyCollections != "" {
 					var parsedCollections any
 					if err := json.Unmarshal([]byte(bodyCollections), &parsedCollections); err != nil {
-						return fmt.Errorf("parsing --collections JSON: %w", err)
+						return usageErr(fmt.Errorf("parsing --collections JSON: %w", err))
 					}
 					body["collections"] = parsedCollections
 				}
@@ -80,29 +80,27 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Route through the mutation engine so preview/apply share one stable
-			// envelope and applied runs expose journal.run_id. The precondition
-			// is resolved on the write plane at apply time via the shared
-			// helpers, so the PATCH never carries a stale plan-time version.
-			var writeClient *client.Client
-			var expectedVersion int
-			if resolveMutationMode(flags).Apply {
-				var err error
-				writeClient, err = flags.newWriteClient()
-				if err != nil {
-					return err
-				}
-				if v, hasVersion := body["version"]; hasVersion {
-					expectedVersion = mutationExpectedVersion(v)
-				} else {
-					_, v, err := writeClient.GetFromWriteBaseWithVersionContext(cmd.Context(), path, nil)
-					if err != nil {
-						return classifyAPIError(err, flags)
-					}
-					if v <= 0 {
-						return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
-					}
-					expectedVersion = v
-				}
+			// envelope and applied runs expose journal.run_id. Preview and apply
+			// run the same read: the item is fetched from the write plane before
+			// the plan is built, so a missing key exits 3 in both modes and the
+			// plan carries the real version instead of 0. The route is resolved
+			// without persisting or announcing it unless this run applies. The
+			// precondition is re-resolved on the write plane at apply time via the
+			// shared helpers, so the PATCH never carries a stale plan-time version.
+			writeClient, err := flags.newWriteClient()
+			if err != nil {
+				return err
+			}
+			_, readVersion, err := writeClient.GetFromWriteBaseWithVersionContext(cmd.Context(), path, nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+			if readVersion <= 0 {
+				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+			}
+			expectedVersion := readVersion
+			if v, hasVersion := body["version"]; hasVersion {
+				expectedVersion = mutationExpectedVersion(v)
 			}
 
 			var applyErr error
@@ -116,23 +114,14 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				ExpectedVersion: expectedVersion,
 				Changes:         itemsUpdateChanges(body),
 				Apply: func() (string, any, error) {
-					if writeClient == nil {
-						return "failed", "no write client", fmt.Errorf("no write client")
-					}
 					return applyItemsUpdateWithContext(cmd.Context(), writeClient, pathCopy, bodyCopy, &applyErr)
 				},
 			}}
 			env, runErr := runMutation(cmd.Context(), flags, "items.update", ops)
-			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-				return renderErr
+			if runErr != nil && applyErr != nil {
+				runErr = applyErr
 			}
-			if runErr != nil {
-				if applyErr != nil {
-					return applyErr
-				}
-				return runErr
-			}
-			return nil
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&bodyTitle, "title", "", "Item title")

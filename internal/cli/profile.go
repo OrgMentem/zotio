@@ -143,23 +143,23 @@ func (e *profileNotFoundError) Error() string {
 	return fmt.Sprintf("profile %q not found; available: %s", e.Name, strings.Join(e.Available, ", "))
 }
 
-// profileNotFound returns the not-found error (exit 3) for name and, under
-// --json or --agent, writes its structured envelope to stdout first.
-func profileNotFound(cmd *cobra.Command, flags *rootFlags, name string, available []string) error {
+// profileNotFound returns the typed not-found error (exit 3) for name. The
+// central error printer emits kind "profile_not_found" with the profile name
+// and the available profiles. cmd and flags are unused; they stay so the
+// callers in root.go keep one signature.
+func profileNotFound(_ *cobra.Command, _ *rootFlags, name string, available []string) error {
 	if available == nil {
 		available = []string{}
 	}
-	err := notFoundErr(&profileNotFoundError{Name: name, Available: available})
-	if flags != nil && (flags.asJSON || flags.agent) {
-		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
-			"error":              err.Error(),
-			"code":               ExitCode(err),
-			"kind":               "profile_not_found",
+	return &cliError{
+		code: 3,
+		kind: "profile_not_found",
+		err:  &profileNotFoundError{Name: name, Available: available},
+		fields: map[string]any{
 			"profile":            name,
 			"available_profiles": available,
-		})
+		},
 	}
-	return err
 }
 
 // GetProfile returns a profile by name, or (nil, nil) if not found.
@@ -327,12 +327,12 @@ saved: pass them on the command line of each command that writes. A saved
 To avoid creating empty profiles, at least one non-default flag must be
 present (other than --profile and --config).`,
 		Example: `  zotio profile save my-defaults --json --compact
-  zotio profile save tonight-defaults --region US`,
+  zotio profile save tonight-defaults --data-source local`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if strings.ContainsAny(name, `/\: `) {
-				return fmt.Errorf("profile name %q contains reserved characters", name)
+				return usageErr(fmt.Errorf("profile name %q contains reserved characters", name))
 			}
 			values := map[string]string{}
 			var ignored []string
@@ -357,7 +357,7 @@ present (other than --profile and --config).`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "notice: %s not saved: a profile never stores approval or gate flags; pass them on the command line of the command that writes\n", profileFlagList(ignored))
 			}
 			if len(values) == 0 {
-				return fmt.Errorf("no non-default flags set - pass at least one flag to save into %q", name)
+				return usageErr(fmt.Errorf("no non-default flags set - pass at least one flag to save into %q", name))
 			}
 			s, err := loadProfileStore()
 			if err != nil {
@@ -409,7 +409,7 @@ type profileSaveResult struct {
 func newProfileUseCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <name>",
-		Short: "Print the flag values a profile will apply (does not execute anything)",
+		Short: "Print the flag values a profile holds (does not apply or execute anything)",
 		Example: `  zotio profile use my-defaults
   zotio profile use tonight-defaults --json`,
 		Args: cobra.ExactArgs(1),
@@ -479,6 +479,10 @@ func newProfileListCmd(flags *rootFlags) *cobra.Command {
 					ResourceType: "profiles",
 				})
 			}
+			if len(names) == 0 && !flags.plain && !flags.csv && !flags.quiet {
+				fmt.Fprintln(cmd.OutOrStdout(), "No profiles found.")
+				return nil
+			}
 			headers := []string{"NAME", "FIELDS", "DESCRIPTION"}
 			rows := make([][]string, 0, len(names))
 			for _, n := range names {
@@ -515,8 +519,8 @@ func newProfileDeleteCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Remove a profile",
-		Long: `Removes a saved profile. Requires --yes; --dry-run reports what would be
-removed and writes nothing.`,
+		Long: `Previews by default: shows which profile would be removed and writes
+nothing. Pass --yes to remove it.`,
 		Example: `  zotio profile delete my-defaults --yes
   zotio profile delete old-profile --yes --json`,
 		Args: cobra.ExactArgs(1),
@@ -529,19 +533,19 @@ removed and writes nothing.`,
 			if _, ok := s.Profiles[name]; !ok {
 				return profileNotFound(cmd, flags, name, s.sortedNames())
 			}
-			if flags.dryRun {
+			if !flags.yes || flags.dryRun {
 				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					out := map[string]any{
 						"would_delete": name,
-						"dry_run":      true,
-					}, flags)
+						"preview":      true,
+					}
+					if flags.dryRun {
+						out["dry_run"] = true
+					}
+					return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would delete profile %q; nothing written\n", name)
+				fmt.Fprintf(cmd.OutOrStdout(), "Preview: would delete profile %q. Pass --yes to apply.\n", name)
 				return nil
-			}
-			if !flags.yes {
-				fmt.Fprintf(cmd.ErrOrStderr(), "refusing to delete %q without --yes\n", name)
-				return fmt.Errorf("confirmation required: pass --yes")
 			}
 			delete(s.Profiles, name)
 			if err := saveProfileStore(s); err != nil {

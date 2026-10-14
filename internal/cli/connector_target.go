@@ -58,7 +58,7 @@ func resolveConnectorTargetForItem(ctx context.Context, flags *rootFlags, conn *
 	}
 	collectionKey := connectorCollectionKeyFromItem(item)
 	if collectionKey == "" {
-		return "", fmt.Errorf("--collection was requested but no collection key was present on the item")
+		return "", fmt.Errorf("a destination (--to) was requested but no collection key was present on the item")
 	}
 	return resolveConnectorTarget(ctx, flags, conn, collectionKey)
 }

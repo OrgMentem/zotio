@@ -50,7 +50,7 @@ func TestFxfImportMonitorRefusesExistingManifestWithoutOverwrite(t *testing.T) {
 	seedImportDiscoverStore(t, nil)
 	requests := fxfMonitorServer(t)
 	path := fxfWriteEditedManifest(t)
-	_, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--out", path)
+	_, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--output", path)
 	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "--overwrite") {
 		t.Fatalf("existing manifest without --overwrite = %v (exit %d); want exit 9 naming --overwrite", err, ExitCode(err))
 	}
@@ -64,7 +64,7 @@ func TestFxfImportMonitorOverwriteReplacesAndReports(t *testing.T) {
 	seedImportDiscoverStore(t, nil)
 	fxfMonitorServer(t)
 	path := fxfWriteEditedManifest(t)
-	report, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--out", path, "--overwrite")
+	report, err := runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--output", path, "--overwrite")
 	if err != nil || !report.Replaced || report.DryRun || report.Emitted != 1 {
 		t.Fatalf("--overwrite report = %+v, %v; want replaced with one entry", report, err)
 	}
@@ -75,7 +75,7 @@ func TestFxfImportMonitorOverwriteReplacesAndReports(t *testing.T) {
 
 	// A fresh path reports replaced=false.
 	fresh := filepath.Join(t.TempDir(), "fresh.json")
-	report, err = runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--out", fresh, "--overwrite")
+	report, err = runImportMonitorTest(t, "--query", "graphs", "--since", "2026-01-01", "--output", fresh, "--overwrite")
 	if err != nil || report.Replaced {
 		t.Fatalf("fresh --overwrite report = %+v, %v; want replaced=false", report, err)
 	}
@@ -87,7 +87,7 @@ func TestFxfImportMonitorDryRunWritesNothing(t *testing.T) {
 	flags := &rootFlags{asJSON: true, noCache: true, dryRun: true, timeout: time.Second}
 
 	path := fxfWriteEditedManifest(t)
-	report, err := runImportMonitorTestWithFlags(t, flags, "--query", "graphs", "--since", "2026-01-01", "--out", path, "--overwrite")
+	report, err := runImportMonitorTestWithFlags(t, flags, "--query", "graphs", "--since", "2026-01-01", "--output", path, "--overwrite")
 	if err != nil || !report.DryRun || !report.Replaced || report.Emitted != 1 {
 		t.Fatalf("dry-run overwrite report = %+v, %v; want would-replace", report, err)
 	}
@@ -97,7 +97,7 @@ func TestFxfImportMonitorDryRunWritesNothing(t *testing.T) {
 	}
 
 	fresh := filepath.Join(t.TempDir(), "fresh.json")
-	report, err = runImportMonitorTestWithFlags(t, flags, "--query", "graphs", "--since", "2026-01-01", "--out", fresh)
+	report, err = runImportMonitorTestWithFlags(t, flags, "--query", "graphs", "--since", "2026-01-01", "--output", fresh)
 	if err != nil || !report.DryRun || report.Replaced {
 		t.Fatalf("dry-run fresh report = %+v, %v", report, err)
 	}

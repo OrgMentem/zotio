@@ -18,29 +18,36 @@ import (
 func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagDays int
-	var flagType string
+	var flagItemType string
 
 	cmd := &cobra.Command{
 		Use:         "recent",
 		Short:       "List recently added items",
 		Annotations: map[string]string{"zotio:endpoint": "items.recent", "zotio:method": "GET", "zotio:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if flagDays < 0 {
+				return usageErr(fmt.Errorf("--days must be 0 or greater"))
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
-			data, prov, err := fetchRecentItems(cmd.Context(), c, flags, flagLimit, flagDays, flagType)
+			data, prov, err := fetchRecentItems(cmd.Context(), c, flags, flagLimit, flagDays, flagItemType)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -63,9 +70,9 @@ func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to return")
-	cmd.Flags().IntVar(&flagDays, "days", 0, "Return only items added in the last N days")
-	cmd.Flags().StringVar(&flagType, "type", "", "Filter by item type")
+	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to return (0 = no limit)")
+	cmd.Flags().IntVar(&flagDays, "days", 0, "Return only items added in the last N days (0 = no date filter)")
+	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Filter by Zotero item type")
 
 	return cmd
 }

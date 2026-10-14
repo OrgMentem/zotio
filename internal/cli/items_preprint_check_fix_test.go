@@ -281,7 +281,7 @@ func TestItemsPreprintCheckFixDefaultsToPreviewWithoutPatch(t *testing.T) {
 
 	t.Setenv("ZOTERO_BASE_URL", zoteroServer.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	flags := &rootFlags{asJSON: true, timeout: time.Second}
+	flags := &rootFlags{asJSON: true, timeout: time.Second, maxChanges: -1}
 	cmd := newItemsPreprintCheckFixCmd(flags)
 	cmd.SetArgs([]string{"--limit", "1"})
 	var out bytes.Buffer

@@ -142,13 +142,13 @@ func woSeededLibrary(t *testing.T) *woLibrary {
 	lib := &woLibrary{
 		version: 10,
 		items: map[string]woObject{
-			"ITEM0001": woItem("ITEM0001", 5, "First", false),
-			"ITEM0002": woItem("ITEM0002", 6, "Second", false),
+			"ITEM2222": woItem("ITEM2222", 5, "First", false),
+			"ITEM3333": woItem("ITEM3333", 6, "Second", false),
 		},
-		trash: map[string]woObject{"TRSH0001": woItem("TRSH0001", 7, "Trashed", true)},
+		trash: map[string]woObject{"TRSH2222": woItem("TRSH2222", 7, "Trashed", true)},
 		collections: map[string]woObject{
-			"COLL0001": woCollection("COLL0001", 8, "Kept"),
-			"COLL0002": woCollection("COLL0002", 9, "Erased later"),
+			"CXLL2222": woCollection("CXLL2222", 8, "Kept"),
+			"CXLL3333": woCollection("CXLL3333", 9, "Erased later"),
 		},
 		tags: []string{woTag("method")},
 	}
@@ -179,7 +179,7 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			wantRun:  true,
 			change: func(l *woLibrary) {
 				l.version = 11
-				l.items["ITEM0001"] = woItem("ITEM0001", 11, "First, revised", false)
+				l.items["ITEM2222"] = woItem("ITEM2222", 11, "First, revised", false)
 			},
 		},
 		{
@@ -194,7 +194,7 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			wantRun:  true,
 			change: func(l *woLibrary) {
 				l.version = 11
-				delete(l.trash, "TRSH0001")
+				delete(l.trash, "TRSH2222")
 			},
 		},
 		{
@@ -203,7 +203,7 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			wantRun:  true,
 			change: func(l *woLibrary) {
 				l.version = 11
-				delete(l.collections, "COLL0002")
+				delete(l.collections, "CXLL3333")
 			},
 		},
 		{
@@ -213,7 +213,7 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			onChange: true,
 			change: func(l *woLibrary) {
 				l.version = 11
-				delete(l.collections, "COLL0002")
+				delete(l.collections, "CXLL3333")
 				l.failItems = true
 			},
 		},
@@ -223,7 +223,7 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			wantErr:  true,
 			change: func(l *woLibrary) {
 				l.version = 11
-				l.items["ITEM0001"] = woItem("ITEM0001", 11, "First, revised", false)
+				l.items["ITEM2222"] = woItem("ITEM2222", 11, "First, revised", false)
 				l.failAll = true
 			},
 		},

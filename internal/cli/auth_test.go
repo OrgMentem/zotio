@@ -201,32 +201,36 @@ func TestAuthSetTokenClearsLegacyHeaderAndActivatesSavedToken(t *testing.T) {
 }
 
 // TestAuthSetTokenRejectsUnsafeInput covers every refusal arm of the command.
-// Each arm must fail with the auth exit class, persist no secret, and leave the
+// Each arm must fail with a typed exit class, persist no secret, and leave the
 // pre-existing legacy credential exactly as it found it.
 func TestAuthSetTokenRejectsUnsafeInput(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		stdin   string
-		wantErr string
+		name     string
+		args     []string
+		stdin    string
+		wantErr  string
+		wantCode int
 	}{
 		{
-			name:    "stdin flag omitted",
-			args:    nil,
-			stdin:   authTestRejectedToken + "\n",
-			wantErr: "refusing token on command line",
+			name:     "stdin flag omitted",
+			args:     nil,
+			stdin:    authTestRejectedToken + "\n",
+			wantErr:  "refusing token on command line",
+			wantCode: 2,
 		},
 		{
-			name:    "empty stdin",
-			args:    []string{"--stdin"},
-			stdin:   "",
-			wantErr: "empty token on stdin",
+			name:     "empty stdin",
+			args:     []string{"--stdin"},
+			stdin:    "",
+			wantErr:  "empty token on stdin",
+			wantCode: 4,
 		},
 		{
-			name:    "whitespace only stdin",
-			args:    []string{"--stdin"},
-			stdin:   "  \t\r\n  \n",
-			wantErr: "empty token on stdin",
+			name:     "whitespace only stdin",
+			args:     []string{"--stdin"},
+			stdin:    "  \t\r\n  \n",
+			wantErr:  "empty token on stdin",
+			wantCode: 4,
 		},
 	}
 
@@ -248,8 +252,8 @@ func TestAuthSetTokenRejectsUnsafeInput(t *testing.T) {
 				t.Fatalf("error = %q, want it to mention %q", err.Error(), tc.wantErr)
 			}
 			var cErr *cliError
-			if !errors.As(err, &cErr) || cErr.code != 4 {
-				t.Fatalf("error = %#v, want *cliError with code 4", err)
+			if !errors.As(err, &cErr) || cErr.code != tc.wantCode {
+				t.Fatalf("error = %#v, want *cliError with code %d", err, tc.wantCode)
 			}
 			if strings.Contains(out, "Token saved to") {
 				t.Fatalf("output = %q, want no saved confirmation on refusal", out)

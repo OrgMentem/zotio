@@ -121,18 +121,42 @@ func parseScopeSpec(expr string) (scopeSpec, error) {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "AND" || strings.HasSuffix(part, scopeAndToken[:4]) {
-			return scopeSpec{}, fmt.Errorf("scope %q has an empty operand next to AND; name an arm on each side", expr)
+			return scopeSpec{}, usageErr(fmt.Errorf("scope %q has an empty operand next to AND; name an arm on each side", expr))
 		}
 		arm, err := parseScopeArm(part)
 		if err != nil {
 			return scopeSpec{}, err
 		}
 		if arm.Type == "library" {
-			return scopeSpec{}, fmt.Errorf("scope %q cannot combine library with AND: library already selects every item; drop it or name an arm", expr)
+			return scopeSpec{}, usageErr(fmt.Errorf("scope %q cannot combine library with AND: library already selects every item; drop it or name an arm", expr))
 		}
 		arms = append(arms, arm)
 	}
 	return scopeSpec{Type: scopeTypeIntersection, Arms: arms}, nil
+}
+
+// validateScopeKeys checks the key-valued arms of a parsed scope against
+// Zotero's key alphabet, so a malformed key is a usage error (exit 2) instead
+// of an empty or unscoped result. tag, query, and saved-search text are
+// free-form (a saved-search arm is validated as a search key).
+func validateScopeKeys(spec scopeSpec) error {
+	if spec.Type == scopeTypeIntersection {
+		for _, arm := range spec.Arms {
+			if err := validateScopeKeys(arm); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	switch spec.Type {
+	case "collection":
+		return validateKeyArg("collection", spec.Value)
+	case "item":
+		return validateKeyArg("item", spec.Value)
+	case "saved-search":
+		return validateKeyArg("search", spec.Value)
+	}
+	return nil
 }
 
 // splitScopeArms cuts expr at each AND token that is followed by an arm
@@ -188,7 +212,7 @@ func parseScopeArm(expr string) (scopeSpec, error) {
 	switch scopeType {
 	case "collection", "tag", "item", "query", "saved-search":
 		if value == "" {
-			return scopeSpec{}, fmt.Errorf("scope %q requires a value", scopeType)
+			return scopeSpec{}, usageErr(fmt.Errorf("scope %q requires a value", scopeType))
 		}
 		return scopeSpec{Type: scopeType, Value: value}, nil
 	default:
@@ -199,7 +223,7 @@ func parseScopeArm(expr string) (scopeSpec, error) {
 // unknownScopeTypeErr names the accepted arms from the one canonical help
 // string, so every --scope consumer reports the same vocabulary.
 func unknownScopeTypeErr(got string) error {
-	return fmt.Errorf("unknown scope type %q; valid: %s", got, scopeArmsUsage)
+	return usageErr(fmt.Errorf("unknown scope type %q; valid: %s", got, scopeArmsUsage))
 }
 
 // describes a resolved local item cohort plus any unmet live precondition.

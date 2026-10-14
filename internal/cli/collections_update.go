@@ -19,17 +19,13 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:   "update <collectionKey>",
-		Short: "Update a collection",
-		// use a collection key placeholder, not a token.
-		Example: "  zotio collections update COLLECTIONKEY",
+		Use:     "update <collectionKey>",
+		Short:   "Update a collection",
+		Example: "  zotio collections update ABCD2345 --name \"Reading list\"",
 		Annotations: map[string]string{
-			"zotio:endpoint":                   "collections.update",
-			"zotio:method":                     "PUT",
-			"zotio:path":                       "/collections/{collectionKey}",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
+			"zotio:endpoint": "collections.update",
+			"zotio:method":   "PUT",
+			"zotio:path":     "/collections/{collectionKey}",
 		},
 		// One key per run. Cobra's default for a command with no subcommands is
 		// ArbitraryArgs, so `collections update K1 K2` used to update K1 and drop
@@ -40,153 +36,43 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 		// request that exits 0.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := "/collections/{collectionKey}"
-			path = replacePathParam(path, "collectionKey", args[0])
-			var body map[string]any
-			if stdinBody {
-				stdinData, err := io.ReadAll(cmd.InOrStdin())
-				if err != nil {
-					return fmt.Errorf("reading stdin: %w", err)
-				}
-				var jsonBody map[string]any
-				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
-					return fmt.Errorf("parsing stdin JSON: %w", err)
-				}
-				body = jsonBody
-			} else {
-				body = map[string]any{}
-				if bodyName != "" {
-					body["name"] = bodyName
-				}
-				if cmd.Flags().Changed("parent-collection") {
-					if bodyParentCollection == "" || strings.EqualFold(bodyParentCollection, "false") {
-						body["parentCollection"] = false
-					} else {
-						body["parentCollection"] = bodyParentCollection
-					}
-				}
+			path := replacePathParam("/collections/{collectionKey}", "collectionKey", args[0])
+			// Every flag and payload check runs before the preview branch, so a
+			// preview never succeeds for input the apply refuses.
+			body, err := collectionUpdateBody(cmd, bodyName, bodyParentCollection, stdinBody)
+			if err != nil {
+				return err
 			}
-			ops := []mutation.Op{{
-				ID:      "collections.update:" + args[0],
-				Key:     args[0],
-				Kind:    "collection_update",
-				Changes: []mutation.Change{{Field: "collection", Add: body}},
-			}}
-			// Preview unless the caller explicitly applied. The body is planned
-			// first so the preview shows exactly what apply would send.
-			if mode := resolveMutationMode(flags); !mode.Apply {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"action":         "update",
-					"resource":       "collections",
-					"key":            args[0],
-					"path":           path,
-					"body":           body,
-					"status":         0,
-					"success":        false,
-					"dry_run":        true,
-					"preview_reason": mode.PreviewReason,
-				}, flags)
-			}
-			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-				return fmt.Errorf("%s", gateFailure.Message)
-			}
-			// Read from the write target immediately before the PUT so the
-			// precondition protects against concurrent collection edits. This stays
-			// outside the gated Apply closure (mirrors items update): it is not a
-			// change to record, and a failed read must abort with its own
-			// classifyAPIError result, not the engine's generic "mutation incomplete".
+			// Preview and apply run the same read: the collection must exist on
+			// the write plane, and its version becomes the plan's expected
+			// version and the apply's If-Unmodified-Since-Version guard.
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-			_, version, err := c.GetWithVersion(path, nil)
+			version, err := readCollectionVersion(c, flags, args[0])
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return err
 			}
-			// Only the PUT itself is the write; routing just this call through the
-			// mutation engine journals it and (best-effort) mirror-replays it.
-			var data json.RawMessage
-			var statusCode int
+			ops := []mutation.Op{{
+				ID:              "collections.update:" + args[0],
+				Key:             args[0],
+				Kind:            "collection_update",
+				ExpectedVersion: version,
+				Changes:         []mutation.Change{{Field: "collection", Add: body}},
+			}}
 			var applyErr error
+			// Only the PUT itself is the write; routing just this call through
+			// the mutation engine journals it and (best-effort) mirror-replays it.
 			ops[0].Apply = func() (string, any, error) {
-				var (
-					status string
-					detail any
-					putErr error
-				)
-				data, statusCode, status, detail, putErr = putWithVersionGuard(c, path, body, version)
+				_, _, status, detail, putErr := putWithVersionGuard(c, path, body, version)
 				if putErr != nil {
 					applyErr = putErr
 				}
 				return status, detail, putErr
 			}
-			if _, runErr := runMutation(cmd.Context(), flags, "collections.update", ops); runErr != nil {
-				if applyErr != nil {
-					return applyErr
-				}
-				return runErr
-			}
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				// Check if response contains an array (directly or wrapped in "data")
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: table rendering failed, falling back to JSON: %v\n", err)
-					} else {
-						return nil
-					}
-				} else {
-					var wrapped struct {
-						Data []map[string]any `json:"data"`
-					}
-					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
-						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "warning: table rendering failed, falling back to JSON: %v\n", err)
-						} else {
-							return nil
-						}
-					}
-				}
-			}
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				if flags.quiet {
-					return nil
-				}
-				// Apply --compact and --select to the API response before wrapping.
-				// --select wins when both are set: explicit field choice trumps the
-				// generic high-gravity allow-list. Otherwise --compact still applies
-				// when --agent is on but the user did not name fields.
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				envelope := map[string]any{
-					"action":   "put",
-					"resource": "collections",
-					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
-				}
-				if flags.dryRun {
-					envelope["dry_run"] = true
-					envelope["status"] = 0
-					envelope["success"] = false
-				}
-				if len(filtered) > 0 {
-					var parsed any
-					if err := json.Unmarshal(filtered, &parsed); err == nil {
-						envelope["data"] = parsed
-					}
-				}
-				envelopeJSON, err := json.Marshal(envelope)
-				if err != nil {
-					return err
-				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			env, runErr := runMutation(cmd.Context(), flags, "collections.update", ops)
+			return renderMutationResult(cmd, flags, env, preferApplyErr(runErr, applyErr), collectionWriteLine("update", "updated"))
 		},
 	}
 	cmd.Flags().StringVar(&bodyName, "name", "", "New collection name")
@@ -194,4 +80,48 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd
+}
+
+// collectionUpdateBody validates the update flags or stdin payload and returns
+// the fields to PUT.
+func collectionUpdateBody(cmd *cobra.Command, name, parent string, stdinBody bool) (map[string]any, error) {
+	nameSet, parentSet := cmd.Flags().Changed("name"), cmd.Flags().Changed("parent-collection")
+	if stdinBody {
+		if nameSet || parentSet {
+			return nil, usageErr(fmt.Errorf("--stdin cannot be combined with --name or --parent-collection"))
+		}
+		stdinData, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return nil, fmt.Errorf("reading stdin: %w", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(stdinData, &body); err != nil {
+			return nil, usageErr(fmt.Errorf("parsing stdin JSON: %w", err))
+		}
+		if len(body) == 0 {
+			return nil, usageErr(fmt.Errorf("parsing stdin JSON: the update body is empty"))
+		}
+		return body, nil
+	}
+	if !nameSet && !parentSet {
+		return nil, usageErr(fmt.Errorf("nothing to update: pass --name, --parent-collection, or --stdin"))
+	}
+	body := map[string]any{}
+	if nameSet {
+		if strings.TrimSpace(name) == "" {
+			return nil, usageErr(fmt.Errorf("--name must not be empty"))
+		}
+		body["name"] = name
+	}
+	if parentSet {
+		if parent == "" || strings.EqualFold(parent, "false") {
+			body["parentCollection"] = false
+		} else {
+			if err := validateKeyArg("collection", parent); err != nil {
+				return nil, err
+			}
+			body["parentCollection"] = parent
+		}
+	}
+	return body, nil
 }

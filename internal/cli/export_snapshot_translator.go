@@ -17,8 +17,11 @@ import (
 
 // The companion file retains the structured API items until the manifest is
 // published. Translator output alone cannot reconstruct their content hashes.
-func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Client, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, checkpointFile string, resume bool, format string) error {
+func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Client, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, checkpointFile string, resume bool, format string, replaced []string) error {
 	itemsFile := checkpointFile + ".items.jsonl"
+	if err := checkSnapshotStagingFile(itemsFile); err != nil {
+		return err
+	}
 	var items []json.RawMessage
 	if resume {
 		cp, _ := readExportCheckpoint(checkpointFile)
@@ -31,79 +34,87 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 		_ = os.Remove(checkpointFile)
 	}
 
-	// Rebuild from the committed items when resuming. An interrupted page may
-	// have written bytes before the engine advanced the checkpoint.
-	output, err := openPrivateOutputFile(outputFile, os.O_CREATE|os.O_RDWR|os.O_TRUNC)
-	if err != nil {
-		return fmt.Errorf("opening output: %w", err)
-	}
-	defer output.Close()
-	if format == "csljson" {
-		if _, err := output.WriteString("[]"); err != nil {
-			return err
-		}
-	}
-	// entries counts records written to the data file, not items fetched:
-	// non-bibliographic items are fetched and manifested but never written, so
-	// the CSL-JSON separator must follow what the file actually holds.
-	entries, skipped := 0, 0
-	if len(items) > 0 {
-		page, n, s, err := snapshotPageBytes(items, format)
-		if err != nil {
-			return err
-		}
-		if err := appendSnapshotPage(output, page, format, false); err != nil {
-			return err
-		}
-		entries, skipped = n, s
-	}
-
 	metadataFlags := os.O_CREATE | os.O_WRONLY
 	if resume {
 		metadataFlags |= os.O_APPEND
 	} else {
 		metadataFlags |= os.O_TRUNC
 	}
-	metadata, err := openPrivateOutputFile(itemsFile, metadataFlags)
+	metadata, err := openSnapshotStagingFile(itemsFile, metadataFlags)
 	if err != nil {
 		return fmt.Errorf("opening snapshot checkpoint items: %w", err)
 	}
 	defer metadata.Close()
 	metadataWriter := bufio.NewWriter(metadata)
-	onPage := func(page []json.RawMessage) error {
-		// Validate the whole page before writing any of it.
-		data, n, s, err := snapshotPageBytes(page, format)
-		if err != nil {
-			return err
-		}
-		var raw bytes.Buffer
-		for _, item := range page {
-			if err := json.Compact(&raw, item); err != nil {
-				return err
-			}
-			raw.WriteByte('\n')
-		}
-		if _, err := metadataWriter.Write(raw.Bytes()); err != nil {
-			return err
-		}
-		if err := metadataWriter.Flush(); err != nil {
-			return err
-		}
-		if n > 0 {
-			if err := appendSnapshotPage(output, data, format, entries > 0); err != nil {
+
+	// entries counts records written to the data file, not items fetched:
+	// non-bibliographic items are fetched and manifested but never written, so
+	// the CSL-JSON separator must follow what the file actually holds.
+	entries, skipped := 0, 0
+	var fetched int
+	// The data file is rebuilt from the committed items on every run (an
+	// interrupted page may have written bytes before the engine advanced the
+	// checkpoint), so it is staged in a temporary file and renamed into place
+	// only when the fetch completes. A failed run keeps the previous snapshot;
+	// --resume continues from the checkpoint items file, not from the output.
+	err = withAtomicOutputFile(snapshotPartialPath(outputFile), exportOutputFileMode, func(output io.Writer) error {
+		if format == "csljson" {
+			if _, err := io.WriteString(output, "["); err != nil {
 				return err
 			}
 		}
-		entries += n
-		skipped += s
-		items = append(items, page...)
+		if len(items) > 0 {
+			page, n, s, err := snapshotPageBytes(items, format)
+			if err != nil {
+				return err
+			}
+			if err := appendSnapshotPage(output, page, format, false); err != nil {
+				return err
+			}
+			entries, skipped = n, s
+		}
+		onPage := func(page []json.RawMessage) error {
+			// Validate the whole page before writing any of it.
+			data, n, s, err := snapshotPageBytes(page, format)
+			if err != nil {
+				return err
+			}
+			var raw bytes.Buffer
+			for _, item := range page {
+				if err := json.Compact(&raw, item); err != nil {
+					return err
+				}
+				raw.WriteByte('\n')
+			}
+			if _, err := metadataWriter.Write(raw.Bytes()); err != nil {
+				return err
+			}
+			if err := metadataWriter.Flush(); err != nil {
+				return err
+			}
+			if n > 0 {
+				if err := appendSnapshotPage(output, data, format, entries > 0); err != nil {
+					return err
+				}
+			}
+			entries += n
+			skipped += s
+			items = append(items, page...)
+			return nil
+		}
+		var fetchErr error
+		fetched, fetchErr = resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format, nil)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		if format == "csljson" {
+			if _, err := io.WriteString(output, "]"); err != nil {
+				return err
+			}
+		}
 		return nil
-	}
-	fetched, err := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format, nil)
+	})
 	if err != nil {
-		return err
-	}
-	if err := output.Close(); err != nil {
 		return err
 	}
 	if err := metadata.Close(); err != nil {
@@ -114,15 +125,13 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 		return err
 	}
 	manifestPath := outputFile + ".manifest.json"
-	manifest, err := openPrivateOutputFile(manifestPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-	if err != nil {
-		return fmt.Errorf("writing manifest: %w", err)
-	}
-	if err := writeExportLockfile(manifest, lf); err != nil {
-		_ = manifest.Close()
+	// Stage the manifest beside the staged data and publish both as one
+	// generation (see commitSnapshot), so --resume can finish an interrupted
+	// publication without refetching.
+	if err := stageSnapshotManifest(outputFile, lf); err != nil {
 		return err
 	}
-	if err := manifest.Close(); err != nil {
+	if err := commitSnapshot(outputFile); err != nil {
 		return err
 	}
 	_ = os.Remove(checkpointFile)
@@ -131,6 +140,7 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 		"scope": scopeLabel, "output": outputFile, "manifest": manifestPath,
 		"fetched": fetched, "count": lf.Count, "content_sha256": lf.ContentSHA256,
 		"entries": entries, "skipped_non_bibliographic": skipped,
+		"replaced": replaced,
 	})
 	return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
 }
@@ -218,26 +228,14 @@ func cslJSONRecords(value json.RawMessage) ([]json.RawMessage, bool) {
 	return records, true
 }
 
-func appendSnapshotPage(output *os.File, data []byte, format string, preceded bool) error {
-	if format == "csljson" {
-		if _, err := output.Seek(-1, io.SeekEnd); err != nil {
-			return err
-		}
-		if preceded {
-			if _, err := output.WriteString(","); err != nil {
-				return err
-			}
-		}
-	}
-	if _, err := output.Write(data); err != nil {
-		return err
-	}
-	if format == "csljson" {
-		if _, err := output.WriteString("]"); err != nil {
+func appendSnapshotPage(output io.Writer, data []byte, format string, preceded bool) error {
+	if format == "csljson" && preceded {
+		if _, err := io.WriteString(output, ","); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err := output.Write(data)
+	return err
 }
 
 // The checkpoint count, not the companion file length, is authoritative:

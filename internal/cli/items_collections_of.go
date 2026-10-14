@@ -51,11 +51,12 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 			}
 			printProvenance(cmd, len(rows), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := json.RawMessage(data)
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, ferr := applyFieldFlags(json.RawMessage(data), flags)
+				if ferr != nil {
+					return ferr
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {

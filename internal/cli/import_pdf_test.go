@@ -598,7 +598,7 @@ func TestImportPDFViaConnectorSurfacesUnderlyingError(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"dummy.pdf"})
+	cmd.SetArgs([]string{writeUploadFixture(t, "dummy.pdf", []byte("%PDF-1.4\n%%EOF"))})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatalf("import pdf with non-local base and --via connector succeeded, want precondition error")
@@ -625,7 +625,7 @@ func TestImportPDFViaConnectorUnreachableSurfacesCause(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"dummy.pdf"})
+	cmd.SetArgs([]string{writeUploadFixture(t, "dummy.pdf", []byte("%PDF-1.4\n%%EOF"))})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatalf("import pdf with unreachable connector succeeded, want precondition error")
@@ -645,7 +645,7 @@ func TestImportPDFAutoWithoutConnectorIsGeneric(t *testing.T) {
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"dummy.pdf"})
+	cmd.SetArgs([]string{writeUploadFixture(t, "dummy.pdf", []byte("%PDF-1.4\n%%EOF"))})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatalf("import pdf auto non-local succeeded, want precondition error")

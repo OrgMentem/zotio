@@ -291,7 +291,6 @@ func TestItemsDuplicatesNotesNearGroupsWhenTheFormatCannotCarryThem(t *testing.T
 		flags    *rootFlags
 		wantNote bool
 	}{
-		{name: "piped default", flags: &rootFlags{}, wantNote: true},
 		{name: "plain", flags: &rootFlags{plain: true}, wantNote: true},
 		{name: "csv", flags: &rootFlags{csv: true}, wantNote: true},
 		{name: "quiet", flags: &rootFlags{quiet: true}},
@@ -413,8 +412,9 @@ func TestItemsDuplicatesKeepsTheExactArrayForMachineReaders(t *testing.T) {
 	seedDuplicateResolveStore(t, nearDuplicatePairFixture())
 
 	out, _ := runItemsDuplicatesReport(t, &rootFlags{}, "--by", "title")
-	if !strings.Contains(out, "[]") {
-		t.Errorf("piped stdout = %q, want the exact-group array machine callers parse", out)
+	payload := decodeDuplicatesReport(t, out)
+	if payload.Groups == nil || len(payload.Groups) != 0 {
+		t.Errorf("piped groups = %v, want an empty exact-group array inside the report object", payload.Groups)
 	}
 	if strings.Contains(out, "no exact duplicate groups") {
 		t.Errorf("piped stdout = %q, want the human sentence withheld from a machine format", out)
@@ -604,7 +604,7 @@ func TestItemsDuplicatesReportsWhenTheCohortCapSuppressedComparisons(t *testing.
 			// The same fact for a reader with no JSON: the note names the
 			// boundary and prints with no rows at all, because the reader who
 			// was shown nothing is the one about to call the library clean.
-			_, plainErr := runItemsDuplicatesReport(t, &rootFlags{}, "--by", "title")
+			_, plainErr := runItemsDuplicatesReport(t, &rootFlags{plain: true}, "--by", "title")
 			hasNote := strings.Contains(plainErr, "too common to pair on") &&
 				strings.Contains(plainErr, "not a complete comparison")
 			if hasNote != (tt.wantScan == nearTitleScanCommonWordsSkipped) {

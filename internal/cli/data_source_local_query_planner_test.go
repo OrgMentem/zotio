@@ -947,7 +947,7 @@ func TestResolveLocalItemListRejectsInvalidPagination(t *testing.T) {
 		{"non-numeric start", map[string]string{"start": "abc"}, "invalid start"},
 		{"non-numeric limit", map[string]string{"limit": "xyz"}, "invalid limit"},
 		{"negative start", map[string]string{"start": "-1"}, `invalid start "-1": must be non-negative`},
-		{"negative limit", map[string]string{"limit": "-1"}, `invalid limit "-1": must be non-negative`},
+		{"negative limit", map[string]string{"limit": "-1"}, `invalid --limit -1: must be 0 (no limit) or greater`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1045,6 +1045,15 @@ func seedLocalTagParityDB(t *testing.T) *rootFlags {
 		_ = db.Close()
 		t.Fatalf("seed items: %v", err)
 	}
+	// COL1 must exist: collection-scoped commands verify it before reading.
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{json.RawMessage(`{"key":"COL1","version":1,"data":{"key":"COL1","name":"One"}}`)}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.SaveSyncState("collections", "", 1); err != nil {
+		_ = db.Close()
+		t.Fatalf("save collections sync state: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -1076,8 +1085,42 @@ func TestTagsListLiveLocalParityStartsWith(t *testing.T) {
 	}
 }
 
+// The local desktop API ignores q/qmode, so the client-side filter must give
+// the same rows the Web API (and the local mirror) give for each query mode.
+func TestTagsListLiveClientFilterHonorsQueryMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Ignore q/qmode exactly like the local API and return every tag.
+		_, _ = w.Write([]byte(`[` + string(tagParityTags[0]) + `,` + string(tagParityTags[1]) + `,` + string(tagParityTags[2]) + `]`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"contains is case-insensitive substring", []string{"--query", "PHA", "--query-mode", "contains"}, []string{"Alpha", "alphabet"}},
+		{"contains mid-word", []string{"--query", "HERE", "--query-mode", "contains"}, []string{"Elsewhere"}},
+		{"startsWith is case-insensitive prefix", []string{"--query", "ALP", "--query-mode", "startsWith"}, []string{"Alpha", "alphabet"}},
+		{"startsWith rejects mid-word", []string{"--query", "pha", "--query-mode", "startsWith"}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			liveNames, _ := runTagsListCommand(t, &rootFlags{asJSON: true, dataSource: "live", noCache: true, timeout: time.Second}, tc.args)
+			if !equalKeys(liveNames, tc.want) {
+				t.Fatalf("live tags = %v, want %v", liveNames, tc.want)
+			}
+		})
+	}
+}
+
 func TestCollectionsTagsLiveLocalParity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/collections/COL1" {
+			// The existence check every collection-scoped command runs first.
+			_, _ = w.Write([]byte(`{"key":"COL1","version":1,"data":{"key":"COL1","name":"One"}}`))
+			return
+		}
 		if r.URL.Path != "/collections/COL1/tags" {
 			t.Errorf("path = %q, want /collections/COL1/tags", r.URL.Path)
 		}
@@ -1310,5 +1353,41 @@ func TestResolveReadLocalSubcollectionsPaginateAndRejectUnsupportedParams(t *tes
 	// child list as if the filter had been applied.
 	if _, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/ROOT/collections", map[string]string{"since": "40"}, nil); err == nil {
 		t.Fatal("resolveRead with ?since returned no error; an unapplied filter must refuse")
+	}
+}
+
+// A keyed read missing from a synced mirror is not-found (exit 3); an absent
+// or never-synced mirror is the synced_store precondition (exit 9).
+func TestResolveLocalKeyedReadExitCodes(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	flags := &rootFlags{dataSource: "local", noCache: true, timeout: time.Second}
+
+	// Items rows exist but no sync completed: the mirror cannot answer.
+	_, _, err := resolveRead(context.Background(), nil, flags, "items", false, "/items/MISSING1", nil, nil)
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("unsynced mirror err = %v (exit %d), want exit 9", err, ExitCode(err))
+	}
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.SaveSyncState("items", "", 3); err != nil {
+		_ = db.Close()
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	_, _, err = resolveRead(context.Background(), nil, flags, "items", false, "/items/MISSING1", nil, nil)
+	if err == nil || ExitCode(err) != 3 {
+		t.Fatalf("synced mirror missing key err = %v (exit %d), want exit 3", err, ExitCode(err))
+	}
+
+	// Mirror file absent entirely.
+	t.Setenv("HOME", t.TempDir())
+	_, _, err = resolveRead(context.Background(), nil, flags, "items", false, "/items/MISSING1", nil, nil)
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("absent mirror err = %v (exit %d), want exit 9", err, ExitCode(err))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,83 @@ import (
 var importPubMedBase = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 var importArxivBase = "https://export.arxiv.org/api"
 var importOpenLibraryBase = "https://openlibrary.org"
+
+var (
+	pmidArgPattern  = regexp.MustCompile(`^[0-9]+$`)
+	arxivNewPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$`)
+	arxivOldPattern = regexp.MustCompile(`^[a-z-]+(\.[A-Za-z]{2})?/[0-9]{7}(v[0-9]+)?$`)
+)
+
+// validateImportDestination checks that a --to destination is a Zotero
+// collection key. An empty value means no destination.
+func validateImportDestination(to string) error {
+	if strings.TrimSpace(to) == "" {
+		return nil
+	}
+	return validateKeyArg("collection", strings.TrimSpace(to))
+}
+
+// validatePMIDArg rejects a PubMed ID that is not all digits, before any
+// network call.
+func validatePMIDArg(pmid string) error {
+	if !pmidArgPattern.MatchString(pmid) {
+		return usageErr(fmt.Errorf("invalid PubMed ID %q: expected digits only, for example 31452104", pmid))
+	}
+	return nil
+}
+
+// validateArxivIDArg rejects an arXiv ID that has neither the new
+// (YYMM.NNNNN) nor the old (archive/NNNNNNN) form, before any network call.
+func validateArxivIDArg(id string) error {
+	if !arxivNewPattern.MatchString(id) && !arxivOldPattern.MatchString(id) {
+		return usageErr(fmt.Errorf("invalid arXiv ID %q: expected 2101.00001 or hep-th/9901001 (optionally with a version suffix)", id))
+	}
+	return nil
+}
+
+// validateISBNArg rejects a value that is not a well-formed ISBN-10 or
+// ISBN-13 (hyphens and spaces allowed), before any network call.
+func validateISBNArg(isbn string) error {
+	digits := strings.NewReplacer("-", "", " ", "").Replace(isbn)
+	valid := false
+	switch len(digits) {
+	case 10:
+		sum := 0
+		valid = true
+		for i, r := range digits {
+			var v int
+			switch {
+			case r >= '0' && r <= '9':
+				v = int(r - '0')
+			case (r == 'X' || r == 'x') && i == 9:
+				v = 10
+			default:
+				valid = false
+			}
+			sum += v * (10 - i)
+		}
+		valid = valid && sum%11 == 0
+	case 13:
+		sum := 0
+		valid = true
+		for i, r := range digits {
+			if r < '0' || r > '9' {
+				valid = false
+				break
+			}
+			v := int(r - '0')
+			if i%2 == 1 {
+				v *= 3
+			}
+			sum += v
+		}
+		valid = valid && sum%10 == 0 && (strings.HasPrefix(digits, "978") || strings.HasPrefix(digits, "979"))
+	}
+	if !valid {
+		return usageErr(fmt.Errorf("invalid ISBN %q: expected a valid ISBN-10 or ISBN-13", isbn))
+	}
+	return nil
+}
 
 type arxivFeed struct {
 	Entries []arxivEntry `xml:"entry"`
@@ -52,6 +130,12 @@ wins over --yes.`,
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pmid := args[0]
+			if err := validatePMIDArg(pmid); err != nil {
+				return err
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
+			}
 			item, err := fetchPubMedItem(cmd, flags.timeout, pmid)
 			if err != nil {
 				return err
@@ -67,7 +151,7 @@ wins over --yes.`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add the item to")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -98,7 +182,7 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 		return nil, fmt.Errorf("reading PubMed response: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("PubMed ID not found: %s", pmid)
+		return nil, notFoundErr(fmt.Errorf("PubMed ID not found: %s", pmid))
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("PubMed request failed: HTTP %d", resp.StatusCode)
@@ -112,7 +196,7 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 	}
 	rec, ok := decoded.Result[pmid].(map[string]any)
 	if !ok || len(rec) == 0 {
-		return nil, fmt.Errorf("PubMed ID not found: %s", pmid)
+		return nil, notFoundErr(fmt.Errorf("PubMed ID not found: %s", pmid))
 	}
 	return pubmedItemFromSummary(rec, pmid), nil
 }
@@ -178,6 +262,12 @@ wins over --yes.`,
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
+			if err := validateArxivIDArg(id); err != nil {
+				return err
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
+			}
 			item, err := fetchArxivItem(cmd, flags.timeout, id)
 			if err != nil {
 				return err
@@ -193,7 +283,7 @@ wins over --yes.`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add the item to")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -224,7 +314,7 @@ func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[s
 		return nil, fmt.Errorf("reading arXiv response: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("arXiv ID not found: %s", id)
+		return nil, notFoundErr(fmt.Errorf("arXiv ID not found: %s", id))
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("arXiv request failed: HTTP %d", resp.StatusCode)
@@ -235,7 +325,7 @@ func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[s
 		return nil, fmt.Errorf("parsing arXiv response: %w", err)
 	}
 	if len(feed.Entries) == 0 {
-		return nil, fmt.Errorf("arXiv ID not found: %s", id)
+		return nil, notFoundErr(fmt.Errorf("arXiv ID not found: %s", id))
 	}
 	return arxivItemFromEntry(feed.Entries[0], id), nil
 }
@@ -282,6 +372,12 @@ wins over --yes.`,
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isbn := args[0]
+			if err := validateISBNArg(isbn); err != nil {
+				return err
+			}
+			if err := validateImportDestination(flagCollection); err != nil {
+				return err
+			}
 			item, err := fetchOpenLibraryItem(cmd, flags.timeout, isbn)
 			if err != nil {
 				return err
@@ -297,7 +393,7 @@ wins over --yes.`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add the item to")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -329,7 +425,7 @@ func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string
 		return nil, fmt.Errorf("reading Open Library response: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("ISBN not found: %s", isbn)
+		return nil, notFoundErr(fmt.Errorf("ISBN not found: %s", isbn))
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("Open Library request failed: HTTP %d", resp.StatusCode)
@@ -341,7 +437,7 @@ func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string
 	}
 	rec, ok := decoded[key].(map[string]any)
 	if !ok || len(rec) == 0 {
-		return nil, fmt.Errorf("ISBN not found: %s", isbn)
+		return nil, notFoundErr(fmt.Errorf("ISBN not found: %s", isbn))
 	}
 	return openLibraryItemFromData(rec, isbn), nil
 }

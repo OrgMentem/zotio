@@ -244,18 +244,30 @@ func TestParseTagAuditPreferRejectsUnknownValue(t *testing.T) {
 	}
 }
 
-// runTagsAuditReportCmd runs `zotio tags audit` (no subcommand) against a
-// seeded local store and returns the plain-text human report.
+// runTagsAuditReportCmd renders the human `zotio tags audit` report against a
+// seeded local store. The command itself prints JSON when stdout is not a
+// terminal, so the test reads the audit and renders the text report directly.
 func runTagsAuditReportCmd(t *testing.T, args ...string) string {
 	t.Helper()
+	prefer := tagAuditPreferFrequency
+	if len(args) == 2 && args[0] == "--prefer" {
+		parsed, err := parseTagAuditPrefer(args[1])
+		if err != nil {
+			t.Fatalf("parse --prefer %q: %v", args[1], err)
+		}
+		prefer = parsed
+	}
 	cmd := newTagsAuditCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetContext(context.Background())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
+	res, err := readTagAudit(cmd, &rootFlags{}, prefer)
+	if err != nil {
 		t.Fatalf("tags audit: %v", err)
+	}
+	if err := printTagAuditReport(cmd, res.TotalTags, res.Plans, prefer); err != nil {
+		t.Fatalf("print tags audit report: %v", err)
 	}
 	return out.String()
 }
@@ -572,18 +584,24 @@ func openTagAuditTestStore(t *testing.T) localQueryStore {
 // also bound the batch to that item -- `tags audit fix` otherwise applies the
 // whole library-wide plan, so the pipe is the only item selector it has.
 func TestTagsAuditFindingPipesIntoItsFixer(t *testing.T) {
+	// Key-valued --keys-from input is validated, so the fixture uses real
+	// 8-char Zotero keys.
 	items := duplicateTagAuditItems()
+	for i, raw := range items {
+		raw = json.RawMessage(strings.NewReplacer("K1", "KAAA2222", "K2", "KBBB3333", "K3", "KCCC4444").Replace(string(raw)))
+		items[i] = raw
+	}
 	seedTagsAuditFixStore(t, items)
 
 	env := decodeTagAuditEnvelope(t, runTagsAuditJSONCmd(t))
 	var selected Finding
 	for _, finding := range env.Findings {
-		if finding.ItemKey == "K3" {
+		if finding.ItemKey == "KCCC4444" {
 			selected = finding
 		}
 	}
 	if selected.ItemKey == "" {
-		t.Fatalf("no finding for K3 to pipe: %+v", env.Findings)
+		t.Fatalf("no finding for KCCC4444 to pipe: %+v", env.Findings)
 	}
 	if selected.RecommendedAction == nil || selected.RecommendedAction.Command != "zotio tags audit fix" {
 		t.Fatalf("finding action = %+v, want the tags audit fix command", selected.RecommendedAction)
@@ -622,18 +640,18 @@ func TestTagsAuditFindingPipesIntoItsFixer(t *testing.T) {
 	if mutationEnv.Plan.Summary.Planned != 1 {
 		t.Fatalf("planned = %d, want only the piped item (the unfiltered plan writes 2)", mutationEnv.Plan.Summary.Planned)
 	}
-	if _, ok := patches["/users/0/items/K3"]; !ok {
+	if _, ok := patches["/users/0/items/KCCC4444"]; !ok {
 		t.Fatalf("piped finding did not reach its fixer; patches = %#v", patches)
 	}
-	if _, ok := patches["/users/0/items/K2"]; ok {
-		t.Fatalf("--keys-from did not bound the batch: K2 was written too; patches = %#v", patches)
+	if _, ok := patches["/users/0/items/KBBB3333"]; ok {
+		t.Fatalf("--keys-from did not bound the batch: KBBB3333 was written too; patches = %#v", patches)
 	}
-	tags, _ := patches["/users/0/items/K3"]["tags"].([]any)
+	tags, _ := patches["/users/0/items/KCCC4444"]["tags"].([]any)
 	if len(tags) != 1 {
-		t.Fatalf("K3 tags = %#v, want the single canonical tag", patches["/users/0/items/K3"]["tags"])
+		t.Fatalf("KCCC4444 tags = %#v, want the single canonical tag", patches["/users/0/items/KCCC4444"]["tags"])
 	}
 	if tag, _ := tags[0].(map[string]any); tag["tag"] != "Data Science" {
-		t.Fatalf("K3 renamed to %v, want the canonical Data Science", tag["tag"])
+		t.Fatalf("KCCC4444 renamed to %v, want the canonical Data Science", tag["tag"])
 	}
 }
 

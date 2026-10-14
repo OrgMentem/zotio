@@ -139,7 +139,7 @@ func TestItemsDuplicatesResolvePreviewWritesNothing(t *testing.T) {
 		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 
-	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "resolve", "--doi")
+	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
 	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 		t.Fatalf("env = %+v, want preview with one planned merge", env)
 	}
@@ -206,7 +206,7 @@ func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
 			})
 			srv := newDuplicateResolveTestServer(t, map[string]int{}, map[string]map[string]any{})
 
-			env, stderr := runItemsDuplicatesResolveTestCmdWithStderr(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, tt.args...)
+			env, stderr := runItemsDuplicatesResolveTestCmdWithStderr(t, srv, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, tt.args...)
 			if !env.OK || env.Mode != "preview" {
 				t.Fatalf("env = %+v, want preview", env)
 			}

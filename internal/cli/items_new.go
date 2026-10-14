@@ -5,10 +5,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
+
+	"zotio/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -34,6 +37,11 @@ wins over --yes.`,
 			itemType := strings.TrimSpace(flagItemType)
 			if itemType == "" {
 				return usageErr(fmt.Errorf("required flag %q not set", "item-type"))
+			}
+			if c := strings.TrimSpace(flagCollection); c != "" {
+				if err := validateKeyArg("collection", c); err != nil {
+					return err
+				}
 			}
 
 			template, err := fetchItemTemplate(cmd.Context(), flags, itemType)
@@ -88,7 +96,7 @@ wins over --yes.`,
 	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Zotero item type to create (e.g. journalArticle)")
 	cmd.Flags().StringArrayVar(&flagFields, "field", nil, "Item field assignment name=value (repeatable)")
 	cmd.Flags().BoolVar(&flagStdin, "stdin", false, "Read a JSON object of item fields from stdin")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Collection key to add the item to (e.g. ABCD2345)")
 
 	return cmd
 }
@@ -113,7 +121,7 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	// error below.
 	if c.ResolveWriteBase != nil {
 		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
-			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+			return nil, routeResolutionErr(rerr)
 		} else if base != "" {
 			c.BaseURL = stripLibraryPrefix(base)
 		}
@@ -124,6 +132,13 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	c.DryRun = false
 	data, err := c.Get("/items/new", map[string]string{"itemType": itemType})
 	if err != nil {
+		// A 400 is the server rejecting the client's value (for example an
+		// unknown item type): usage error. Only a missing key or the local
+		// API not serving /items/new is a precondition.
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 400 {
+			return nil, usageErr(fmt.Errorf("invalid item type %q: %s", itemType, strings.TrimSpace(apiErr.Body)))
+		}
 		return nil, preconditionErr(fmt.Errorf("schema-validated item creation needs the Zotero Web API (/items/new is not served by the local API); set an API key / run online: %w", err))
 	}
 	// Zotero's Web API GET /items/new returns a single template object.

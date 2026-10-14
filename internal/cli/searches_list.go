@@ -19,6 +19,9 @@ func newSearchesListCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotio searches list",
 		Annotations: map[string]string{"zotio:endpoint": "searches.list", "zotio:method": "GET", "zotio:path": "/searches", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -41,11 +44,9 @@ func newSearchesListCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -69,7 +70,7 @@ func newSearchesListCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of searches to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of searches to return (0 = no limit)")
 
 	return cmd
 }

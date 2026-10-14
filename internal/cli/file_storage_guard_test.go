@@ -139,7 +139,7 @@ func TestAttachmentsAddStoredRefusedUnderWebDAV(t *testing.T) {
 		return nil
 	}
 
-	root.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored"})
+	root.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
 	err := root.Execute()
 	if err == nil {
 		t.Fatal("stored attach under WebDAV succeeded, want a refusal")
@@ -212,7 +212,7 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 		return nil
 	}
 
-	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored"})
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
 	err := cmdRoot.Execute()
 	if err == nil {
 		t.Fatal("a WebDAV sibling profile did not refuse the stored upload")
@@ -284,7 +284,7 @@ user_pref("extensions.zotero.sync.storage.enabled", false);
 		return nil
 	}
 
-	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored"})
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
 	err := cmdRoot.Execute()
 	if err == nil {
 		t.Fatal("a sync-disabled sibling profile did not refuse the stored upload")
@@ -414,13 +414,13 @@ func TestAttachmentsAddAllowedPathsUnaffectedByWebDAV(t *testing.T) {
 	}{
 		{
 			name:       "linked-file",
-			args:       []string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "linked-file"},
+			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "linked-file"},
 			executeErr: "linked-file attach under WebDAV failed: %v",
 			blockedErr: "linked-file attach was blocked; it never uploads bytes",
 		},
 		{
 			name:       "stored with override",
-			args:       []string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored", "--allow-zotero-cloud"},
+			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored", "--allow-zotero-cloud"},
 			executeErr: "stored attach with --allow-zotero-cloud failed: %v",
 			blockedErr: "--allow-zotero-cloud did not restore the upload path",
 		},
@@ -701,7 +701,7 @@ func TestImportApplyStoredCreateViaConnectorNotRefusedUnderWebDAV(t *testing.T) 
 	}}
 	manifestPath := writeImportApplyTestManifest(t, m)
 
-	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), maxChanges: -1}
 	_, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
 	if err != nil {
 		t.Fatalf("connector-route stored preview refused: %v; stderr=%s", err, stderr)
@@ -724,7 +724,7 @@ func TestImportApplyStoredCreateViaWebRefusedAtPreview(t *testing.T) {
 	}}
 	manifestPath := writeImportApplyTestManifest(t, m)
 
-	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
+	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", maxChanges: -1}, []string{"--attach-mode", "stored", manifestPath})
 	if err == nil {
 		t.Fatal("import apply --via web stored create under WebDAV succeeded, want a refusal")
 	}
@@ -1296,7 +1296,7 @@ func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
 	}
 
 	jsonOut := &bytes.Buffer{}
-	jsonErr := emitPreconditionUnmetWithRemediation(jsonOut, &rootFlags{asJSON: true}, "attachments add", preconditionZoteroFileStorage, "the store is wrong", preconditionRemediation(preconditionZoteroFileStorage))
+	jsonErr := emitPreconditionUnmetWithRemediation(jsonOut, &rootFlags{asJSON: true, maxChanges: -1}, "attachments add", preconditionZoteroFileStorage, "the store is wrong", preconditionRemediation(preconditionZoteroFileStorage))
 	var env struct {
 		Kind        string   `json:"kind"`
 		Remediation []string `json:"remediation"`

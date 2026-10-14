@@ -42,12 +42,12 @@ func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 		Use:   "fix",
 		Short: "Apply published DOIs to preprints that CrossRef reports as published",
 		Annotations: map[string]string{
-			"mcp:read-only":                    "false",
-			"zotio:destructive":                "false",
-			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
+			"mcp:read-only": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
 			readClient, err := flags.newClient()
 			if err != nil {
 				return err
@@ -72,11 +72,7 @@ func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "items preprint-check fix", ops)
-			renderErr := renderPreprintCheckFixMutation(cmd, flags, env, skipped)
-			if renderErr != nil {
-				return renderErr
-			}
-			return runErr
+			return renderPreprintCheckFixMutation(cmd, flags, env, skipped, runErr)
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of preprints to check")
@@ -240,20 +236,26 @@ func applyPreprintCheckFixProposal(ctx context.Context, c apiMutator, proposal p
 }
 
 // renderPreprintCheckFixMutation keeps skips visible in JSON/non-TTY envelopes and human terminal output.
-func renderPreprintCheckFixMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, skipped []preprintCheckFixSkip) error {
+// It returns runErr marked as rendered, so no second error object is printed.
+func renderPreprintCheckFixMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, skipped []preprintCheckFixSkip, runErr error) error {
 	if len(skipped) > 0 {
-		env.Journal = map[string]any{"skipped": skipped}
+		// Merge, never replace: an applied run keeps its run_id here.
+		journal, _ := env.Journal.(map[string]any)
+		if journal == nil {
+			journal = map[string]any{}
+		}
+		journal["skipped"] = skipped
+		env.Journal = journal
 	}
 	if err := renderMutation(cmd, flags, env, nil); err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
-	if len(skipped) == 0 || flags != nil && flags.asJSON || !isTerminal(out) {
-		return nil
+	if len(skipped) > 0 && (flags == nil || !flags.asJSON) && isTerminal(out) {
+		fmt.Fprintln(out, "Skips:")
+		for _, skip := range skipped {
+			fmt.Fprintf(out, "- %s %s (%s)\n", skip.Key, skip.Title, skip.Reason)
+		}
 	}
-	fmt.Fprintln(out, "Skips:")
-	for _, skip := range skipped {
-		fmt.Fprintf(out, "- %s %s (%s)\n", skip.Key, skip.Title, skip.Reason)
-	}
-	return nil
+	return markRendered(runErr)
 }

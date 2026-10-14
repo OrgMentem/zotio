@@ -26,6 +26,9 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			if err := requireParentItem(cmd.Context(), c, flags, args[0]); err != nil {
+				return err
+			}
 			path := "/items/{itemKey}/children"
 			path = replacePathParam(path, "itemKey", args[0])
 			params := map[string]string{"itemType": "annotation"}
@@ -41,11 +44,12 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				if flags.quiet {
+					return nil
+				}
+				filtered, ferr := applyFieldFlags(data, flags)
+				if ferr != nil {
+					return ferr
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -69,7 +73,7 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagColor, "color", "", "Filter by annotation color (yellow, red, green, blue, purple, orange)")
-	cmd.Flags().StringVar(&flagType, "type", "", "Filter by annotation type (highlight, note, image)")
+	cmd.Flags().StringVar(&flagType, "annotation-type", "", "Filter by annotation type (highlight, note, image)")
 
 	return cmd
 }

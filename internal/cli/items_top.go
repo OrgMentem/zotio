@@ -21,9 +21,15 @@ func newItemsTopCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "top",
 		Short:       "List top-level items only (excludes attachments and notes)",
-		Example:     "  zotio items top",
+		Example:     "  zotio items top --limit 20 --item-type journalArticle",
 		Annotations: map[string]string{"zotio:endpoint": "items.top", "zotio:method": "GET", "zotio:path": "/items/top", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimitFlag("--limit", flagLimit); err != nil {
+				return err
+			}
+			if err := validateEnumFlag("--sort", flagSort, itemsSortValues); err != nil {
+				return err
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -61,11 +67,9 @@ func newItemsTopCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
+				filtered, err := applyFieldFlags(data, flags)
+				if err != nil {
+					return err
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -89,7 +93,7 @@ func newItemsTopCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset")
 	cmd.Flags().StringVar(&flagSort, "sort", "", "Sort field")
 	cmd.Flags().StringVar(&flagTag, "tag", "", "Filter by tag")

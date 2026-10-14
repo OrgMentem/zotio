@@ -149,7 +149,7 @@ func TestApplyPulledRegion(t *testing.T) {
 
 func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"version":2,"data":{"itemType":"note","parentItem":"ITEMKEY1","note":"<p>remote changed</p>"}}`))
+		_, _ = w.Write([]byte(`{"version":2,"data":{"itemType":"note","parentItem":"ITEMKEY2","note":"<p>remote changed</p>"}}`))
 	}))
 	t.Cleanup(srv.Close)
 	c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
@@ -159,17 +159,17 @@ func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 	note := &pushNote{
 		path:      filepath.Join(outDir, "cite.md"),
 		citekey:   "cite",
-		itemKey:   "ITEMKEY1",
+		itemKey:   "ITEMKEY2",
 		hasRegion: true,
 		region:    "local changed",
 		state: pushState{
-			NoteKey:    "ABCD1234",
+			NoteKey:    "ABCD2345",
 			SourceHash: sha256hex("baseline"),
 		},
 	}
-	result := pullOne(c, outDir, "", note, &rootFlags{dryRun: true}, true)
-	if result.Status != "would conflict" {
-		t.Fatalf("dry-run conflict status = %q (%s), want would conflict", result.Status, result.Note)
+	result := pullOne(c, outDir, "", note, &rootFlags{dryRun: true, maxChanges: -1, allowDestructive: true}, true)
+	if result.Status != "would_conflict" {
+		t.Fatalf("dry-run conflict status = %q (%s), want would_conflict", result.Status, result.Note)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
 		t.Fatalf("dry-run created conflict artifact directory: %v", err)
@@ -187,8 +187,8 @@ func TestVaultPullPreviewsWithoutWriting(t *testing.T) {
 		name  string
 		flags rootFlags
 	}{
-		{name: "bare", flags: rootFlags{asJSON: true}},
-		{name: "agent", flags: rootFlags{asJSON: true, agent: true}},
+		{name: "bare", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true, maxChanges: -1, allowDestructive: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			region := "original local notes"
@@ -204,7 +204,7 @@ func TestVaultPullPreviewsWithoutWriting(t *testing.T) {
 				t.Helper()
 				state := pushState{
 					Schema:      noteStateSchema,
-					NoteKey:     "NOTEKEY1",
+					NoteKey:     "NTKEYAB2",
 					NoteVersion: 5,
 					SourceHash:  sha256hex(region),
 					RemoteHash:  sha256hex(markdownToNoteHTML("cite1", "original notes")),
@@ -220,7 +220,7 @@ func TestVaultPullPreviewsWithoutWriting(t *testing.T) {
 				return notePath, before
 			}
 			runVaultPreviewWithoutWriting(t, "pull", tc.name, tc.flags, newVaultPullCmd,
-				map[string][]byte{"/users/0/items/NOTEKEY1": respBody}, writeFixture, "would pull")
+				map[string][]byte{"/users/0/items/NTKEYAB2": respBody}, writeFixture, "would_pull")
 		})
 	}
 }

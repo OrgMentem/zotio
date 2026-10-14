@@ -2,7 +2,7 @@
 
 Gate a paper, thesis, or review repository on the health of its Zotero library — and wear the result as a live badge.
 
-The building blocks are all in the CLI: `library health` exits `11` when findings meet your severity bar (`--fail-on`), `12` when the local mirror is stale (`--require-fresh`), and `9` when a required precondition is missing — and `--badge` emits [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON. A CI job runs `library health` and fails on a non-zero exit code.
+The building blocks are all in the CLI: `library health` exits `11` when findings meet your severity bar (`--fail-on critical|high|info|any|none`), `12` when the local mirror is stale (`--require-fresh`), and `9` when a required precondition is missing — and `--badge` emits [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON. A CI job runs `library health` and fails on a non-zero exit code.
 
 ## The GitHub Action
 
@@ -66,7 +66,7 @@ The library gate catches bad references; `items bibcheck` catches the reverse �
 
 ```yaml
       - run: zotio items bibcheck thesis.tex chapters/*.md --follow-includes --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys or a broken include
-      # --fail-on high gates on finding severity instead, and also flags incomplete citations
+      # --fail-on critical|high|info|any|none gates on finding severity instead, and also flags incomplete citations
 ```
 
 To publish the bibliography the manuscript actually cites, export it with `--manuscript` instead of a scope. It uses the same parser and citekey resolution, keeps each item once in first-citation order, and writes nothing when a citekey is unknown or ambiguous: it names the file and line and exits 11. `--manuscript` and `--scope` cannot be combined (exit 2). Add `--follow-includes` to read chapters pulled in with `\input{…}` or `\include{…}`, exactly as bibcheck does; a missing or cyclic include also writes nothing and exits 11:
@@ -132,9 +132,11 @@ This site does exactly that: the zotio README badge is regenerated from the main
 | Code | Meaning |
 | --- | --- |
 | `0` | Gate passed. |
-| `9` | Setup/precondition failure (missing key, unmet check requirement). |
-| `11` | Quality gate failed — findings at or above `fail-on`. |
-| `12` | Freshness gate failed (`--require-fresh`). |
+| `9` | Setup/precondition failure (missing key, unmet check requirement, unsynced store, or a `--baseline` file that does not exist when `--fail-on-new` is set). |
+| `11` | Quality gate failed — findings at or above `--fail-on`, new findings at or above `--fail-on-new`, or `doctor --fail-on` with an error. |
+| `12` | Freshness gate failed (`--require-fresh`, or `doctor --fail-on` with a stale check). |
+
+`--baseline` reads finding identities from a file. If the file does not exist, `library health` reports `baseline: not found` and diffs nothing; with `--fail-on-new` it exits `9` instead of passing. Create the file with `--write-baseline` once to record the baseline. On a first run there is no file, so skip `--fail-on-new` then (see the script below). An invalid `--fail-on` value exits `2` before any work.
 
 ## Without the action
 
@@ -145,11 +147,13 @@ brew install orgmentem/tap/zotio          # or download a release binary
 export ZOTERO_API_KEY=...                 # and ZOTERO_BASE_URL=https://api.zotero.org/users/<id>
 zotio sync
 baseline="${HOME}/.local/share/zotio/health-baseline.json"
+gate=(--fail-on-new high)
+[ -f "$baseline" ] || gate=()   # first run: no baseline yet, record one
 zotio library health --for citation \
   --fail-on none \
   --baseline "$baseline" \
   --write-baseline "$baseline" \
-  --fail-on-new high \
+  "${gate[@]}" \
   --report health-report.json \
   --badge > badge.json
 ```

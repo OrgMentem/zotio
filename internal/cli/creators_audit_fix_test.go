@@ -125,7 +125,7 @@ func TestCreatorsAuditFixPreviewDefaultsToTier1OnlyWithoutWrites(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
 	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
-	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL)
+	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, allowDestructive: true, maxChanges: -1}, srv.server.URL)
 	if err != nil {
 		t.Fatalf("creators audit fix preview: %v", err)
 	}
@@ -139,8 +139,8 @@ func TestCreatorsAuditFixPreviewDefaultsToTier1OnlyWithoutWrites(t *testing.T) {
 		t.Fatalf("planned ops = summary %+v len %d, want exactly K2", env.Plan.Summary, len(env.Plan.Operations))
 	}
 	op := env.Plan.Operations[0]
-	if op.Key != "K2" || op.Kind != "creator_rename" || op.Destructive {
-		t.Fatalf("op = %+v, want non-destructive creator_rename for K2", op)
+	if op.Key != "K2" || op.Kind != "creator_rename" || !op.Destructive {
+		t.Fatalf("op = %+v, want destructive creator_rename for K2", op)
 	}
 	assertCreatorChange(t, op.Changes, "john smith", "John Smith")
 }
@@ -149,7 +149,7 @@ func TestCreatorsAuditFixExplicitMapPlansTier2(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
 	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
-	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL, "--map", "J. Smith=John Smith")
+	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err != nil {
 		t.Fatalf("creators audit fix mapped preview: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCreatorsAuditFixApplyPatchesFullCreatorsAndWritesThrough(t *testing.T) 
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = oldMirror })
 
-	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.server.URL, "--map", "J. Smith=John Smith")
+	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err != nil {
 		t.Fatalf("creators audit fix apply: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestCreatorsAuditFixMapAliasOutsideTier2IsUsageError(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
 	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
-	_, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL, "--map", "Smith=John Smith")
+	_, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, allowDestructive: true, maxChanges: -1}, srv.server.URL, "--map", "Smith=John Smith")
 	if err == nil {
 		t.Fatal("creators audit fix accepted --map alias outside tier-2 group, want usage error")
 	}
@@ -238,7 +238,7 @@ func TestCreatorsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
 	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
-	refused, refusedJSON, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 1}, srv.server.URL, "--map", "J. Smith=John Smith")
+	refused, refusedJSON, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: 1}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err == nil {
 		t.Fatal("creators audit fix apply succeeded, want max_changes_exceeded error")
 	}
@@ -256,7 +256,7 @@ func TestCreatorsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	}
 
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	allowed, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 2}, srv.server.URL, "--map", "J. Smith=John Smith")
+	allowed, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: 2}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err != nil {
 		t.Fatalf("creators audit fix apply at cap: %v", err)
 	}
@@ -363,5 +363,20 @@ func TestCreatorsAuditFixMissingStoreIsPreconditionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "zotio sync") {
 		t.Fatalf("error %q lacks remediation", err)
+	}
+}
+
+// A preview of a destructive op without --allow-destructive is refused the
+// same way apply is: ok:false, destructive_opt_in_required, non-zero exit.
+func TestCreatorsAuditFixPreviewRequiresAllowDestructive(t *testing.T) {
+	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
+
+	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, srv.server.URL)
+	if err == nil {
+		t.Fatal("preview without --allow-destructive succeeded, want refusal")
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "destructive_opt_in_required" {
+		t.Fatalf("envelope = %+v, want ok:false destructive_opt_in_required", env)
 	}
 }

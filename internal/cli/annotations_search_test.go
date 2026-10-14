@@ -125,8 +125,8 @@ func TestAnnotationsSearchLocalWithoutMirrorHasSyncGuidance(t *testing.T) {
 	if err == nil {
 		t.Fatal("annotations search --data-source local without a mirror succeeded")
 	}
-	if !strings.Contains(err.Error(), "zotio sync") {
-		t.Fatalf("missing-mirror error = %q, want zotio sync guidance", err)
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("missing-mirror exit code = %d (%v), want 9 (synced_store precondition)", got, err)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestAnnotationsSearchRejectsRefreshWithLocalSource(t *testing.T) {
 // outside the collection; the scope must filter before the limit.
 func TestAnnotationsSearchLocalScopeFiltersBeforeLimit(t *testing.T) {
 	seedAnnotationSearchStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["CDEF2345"]}}`),
 		json.RawMessage(`{"key":"OUTP","version":1,"data":{"key":"OUTP","itemType":"journalArticle","title":"Out"}}`),
 		json.RawMessage(`{"key":"INPDF","version":1,"data":{"key":"INPDF","itemType":"attachment","parentItem":"INP"}}`),
 		json.RawMessage(`{"key":"OUTPDF","version":1,"data":{"key":"OUTPDF","itemType":"attachment","parentItem":"OUTP"}}`),
@@ -163,9 +163,9 @@ func TestAnnotationsSearchLocalScopeFiltersBeforeLimit(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"needle", "--scope", "collection:COLL", "--limit", "1"}, "INA1"},
-		{[]string{"needle", "--scope", "collection:COLL"}, "INA1,INA2"},
-		{[]string{"needle", "--scope", "collection:EMPTY"}, ""},
+		{[]string{"needle", "--scope", "collection:CDEF2345", "--limit", "1"}, "INA1"},
+		{[]string{"needle", "--scope", "collection:CDEF2345"}, "INA1,INA2"},
+		{[]string{"needle", "--scope", "collection:EMPT2345"}, ""},
 	} {
 		cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "local"})
 		cmd.SetArgs(tc.args)
@@ -196,7 +196,7 @@ func TestAnnotationsSearchLocalScopeFiltersBeforeLimit(t *testing.T) {
 // --limit.
 func TestAnnotationsSearchLiveScopeFiltersByAttachmentParent(t *testing.T) {
 	seedAnnotationSearchStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["CDEF2345"]}}`),
 	})
 	const n = 60
 	anns := make([]string, 0, n)
@@ -239,7 +239,7 @@ func TestAnnotationsSearchLiveScopeFiltersByAttachmentParent(t *testing.T) {
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
 	cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})
-	cmd.SetArgs([]string{"needle", "--scope", "collection:COLL", "--limit", "5"})
+	cmd.SetArgs([]string{"needle", "--scope", "collection:CDEF2345", "--limit", "5"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -269,8 +269,8 @@ func TestAnnotationsSearchLiveScopeFiltersByAttachmentParent(t *testing.T) {
 // both the local and the live path.
 func TestAnnotationsSearchScopeKeepsStandaloneAttachmentAnnotations(t *testing.T) {
 	seedAnnotationSearchStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"SOLOPDF","version":1,"data":{"key":"SOLOPDF","itemType":"attachment","title":"Solo PDF","collections":["COLL"]}}`),
-		json.RawMessage(`{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SOLOPDF","annotationText":"needle in a standalone pdf"}}`),
+		json.RawMessage(`{"key":"SLPDF234","version":1,"data":{"key":"SLPDF234","itemType":"attachment","title":"Solo PDF","collections":["CDEF2345"]}}`),
+		json.RawMessage(`{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SLPDF234","annotationText":"needle in a standalone pdf"}}`),
 	})
 	var mu sync.Mutex
 	searches := 0
@@ -282,10 +282,10 @@ func TestAnnotationsSearchScopeKeepsStandaloneAttachmentAnnotations(t *testing.T
 			mu.Lock()
 			searches++
 			mu.Unlock()
-			_, _ = w.Write([]byte(`[{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SOLOPDF","annotationText":"needle in a standalone pdf"}}]`))
-		case r.URL.Path == "/users/0/items" && q.Get("itemKey") == "SOLOPDF":
+			_, _ = w.Write([]byte(`[{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SLPDF234","annotationText":"needle in a standalone pdf"}}]`))
+		case r.URL.Path == "/users/0/items" && q.Get("itemKey") == "SLPDF234":
 			// A standalone attachment carries no parentItem field.
-			_, _ = w.Write([]byte(`[{"key":"SOLOPDF","version":1,"data":{"key":"SOLOPDF","itemType":"attachment","title":"Solo PDF","collections":["COLL"]}}]`))
+			_, _ = w.Write([]byte(`[{"key":"SLPDF234","version":1,"data":{"key":"SLPDF234","itemType":"attachment","title":"Solo PDF","collections":["CDEF2345"]}}]`))
 		default:
 			t.Errorf("unexpected request %s", r.URL.String())
 			http.Error(w, "unexpected request", http.StatusNotFound)
@@ -298,10 +298,10 @@ func TestAnnotationsSearchScopeKeepsStandaloneAttachmentAnnotations(t *testing.T
 		source string
 		args   []string
 	}{
-		{"local", []string{"needle", "--scope", "item:SOLOPDF"}},
-		{"local", []string{"needle", "--scope", "collection:COLL"}},
-		{"live", []string{"needle", "--scope", "item:SOLOPDF"}},
-		{"live", []string{"needle", "--scope", "collection:COLL"}},
+		{"local", []string{"needle", "--scope", "item:SLPDF234"}},
+		{"local", []string{"needle", "--scope", "collection:CDEF2345"}},
+		{"live", []string{"needle", "--scope", "item:SLPDF234"}},
+		{"live", []string{"needle", "--scope", "collection:CDEF2345"}},
 	} {
 		cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: tc.source, noCache: true})
 		cmd.SetArgs(tc.args)
@@ -339,12 +339,106 @@ func TestAnnotationsSearchLiveScopeWithoutMirrorFails(t *testing.T) {
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
 	cmd := newAnnotationsSearchCmd(&rootFlags{dataSource: "auto"})
-	cmd.SetArgs([]string{"needle", "--refresh", "--scope", "collection:COLL"})
+	cmd.SetArgs([]string{"needle", "--refresh", "--scope", "collection:CDEF2345"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "zotio sync") {
-		t.Fatalf("scoped --refresh without a mirror: err = %v, want zotio sync guidance", err)
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("scoped --refresh without a mirror: err = %v, exit %d, want the synced_store precondition (exit 9)", err, ExitCode(err))
+	}
+}
+
+// With --data-source auto the search reads the local index first: its
+// stemming, operators and ranking have no live equivalent, so Zotero is not
+// contacted when a synced mirror exists.
+func TestAnnotationsSearchAutoIsLocalFirst(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"Needle Paper"}}`),
+		json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"PAPER1"}}`),
+		json.RawMessage(`{"key":"ANN1","version":1,"data":{"key":"ANN1","itemType":"annotation","parentItem":"PDF1","annotationText":"Local needle passage","annotationColor":"#ffd400"}}`),
+	})
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "auto", noCache: true})
+	cmd.SetArgs([]string{"needle"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auto search with a synced mirror: %v", err)
+	}
+	var env struct {
+		Results []annotationSummary `json:"results"`
+		Meta    DataProvenance      `json:"meta"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v; output=%q", err, out.String())
+	}
+	if len(env.Results) != 1 || env.Results[0].Key != "ANN1" {
+		t.Fatalf("results = %+v, want local annotation ANN1", env.Results)
+	}
+	if env.Meta.Source != "local" || env.Meta.Reason != "local_first" {
+		t.Fatalf("meta = %+v, want source local, reason local_first", env.Meta)
+	}
+	if requests != 0 {
+		t.Fatalf("auto search contacted Zotero %d times, want 0 with a synced mirror", requests)
+	}
+}
+
+// With no synced mirror, auto searches live and fills item_key and item_title
+// through the shared owner lookup.
+func TestAnnotationsSearchAutoFallsBackToLiveWithoutMirror(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/users/0/items" && r.URL.Query().Get("itemType") == "annotation":
+			_, _ = w.Write([]byte(`[{"key":"ANN1","version":1,"data":{"key":"ANN1","itemType":"annotation","parentItem":"PDF1","annotationText":"Live needle passage"}}]`))
+		case r.URL.Path == "/users/0/items/PDF1":
+			_, _ = w.Write([]byte(`{"key":"PDF1","data":{"key":"PDF1","itemType":"attachment","parentItem":"PAPER1"}}`))
+		case r.URL.Path == "/users/0/items/PAPER1":
+			_, _ = w.Write([]byte(`{"key":"PAPER1","data":{"key":"PAPER1","itemType":"journalArticle","title":"Needle Paper"}}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "auto", noCache: true})
+	cmd.SetArgs([]string{"needle"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auto search without a mirror: %v", err)
+	}
+	var env struct {
+		Results []annotationSummary `json:"results"`
+		Meta    DataProvenance      `json:"meta"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v; output=%q", err, out.String())
+	}
+	if len(env.Results) != 1 || env.Results[0].ItemKey != "PAPER1" || env.Results[0].ItemTitle != "Needle Paper" {
+		t.Fatalf("results = %+v, want ANN1 with item PAPER1 / Needle Paper", env.Results)
+	}
+	if env.Meta.Source != "live" || env.Meta.Reason != "no_local_store" {
+		t.Fatalf("meta = %+v, want source live, reason no_local_store", env.Meta)
 	}
 }
 

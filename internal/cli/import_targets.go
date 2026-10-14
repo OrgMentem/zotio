@@ -14,7 +14,7 @@ func newImportTargetsCmd(flags *rootFlags) *cobra.Command {
 		Use:   "targets",
 		Short: "List Zotero desktop Connector save targets",
 		Long: `List Zotero desktop Connector save targets for connector-backed imports.
-Use the id column (for example C78) with --connector-target when --collection is
+Use the id column (for example C78) with --connector-target when --to is
 ambiguous or the local Web API collection key cannot be mapped automatically.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,7 +33,7 @@ ambiguous or the local Web API collection key cannot be mapped automatically.`,
 					"library_name":  selected.LibraryName,
 					"selected_id":   selected.SelectedID,
 					"selected_name": selected.SelectedName,
-					"targets":       targets,
+					"results":       targets,
 				}, flags)
 			}
 			rows := make([][]string, 0, len(targets))
