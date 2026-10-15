@@ -29,7 +29,7 @@
     curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.deb" && sudo dpkg -i "${pkg}.deb"
 
     # Fedora / RHEL / openSUSE
-    curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.rpm" && sudo rpm -i "${pkg}.rpm"
+    curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.rpm" && sudo rpm -U "${pkg}.rpm"
 
     # Alpine
     curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.apk" && sudo apk add --allow-untrusted "${pkg}.apk"
@@ -111,7 +111,7 @@ See [Use in a coding agent](agent-skill.md) for how to drive it.
 
 ## 3. The MCP server — `zotio-mcp`
 
-`zotio-mcp` ships alongside the CLI — the Homebrew formula and every release archive include both binaries. Register it:
+`zotio-mcp` ships alongside the CLI — the Homebrew cask and every release archive include both binaries. Register it:
 
 ```bash
 # Claude Code
