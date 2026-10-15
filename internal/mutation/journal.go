@@ -102,7 +102,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 		// journal so undo targets the object that was actually created. If the
 		// route could not confirm a Zotero key (for example, a connector
 		// correlation ID), keep it empty rather than recording the item type.
-		if op.Kind == "item_create" {
+		if IsCreateKind(op.Kind) {
 			key = item.Key
 		} else if item.Key != "" {
 			key = item.Key

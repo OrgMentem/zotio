@@ -263,7 +263,7 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			collected++
 		}
 		item := ResultItem{OpID: op.ID, Key: op.Key}
-		if op.Kind == "item_create" {
+		if IsCreateKind(op.Kind) {
 			// A create's planned key is often the item type or source
 			// identifier, not a Zotero key. Keep the applied result empty until
 			// Apply confirms the real key, so the journal cannot target a

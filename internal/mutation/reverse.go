@@ -4,7 +4,9 @@
 // overwrites (DOI, abstract), renames, merges, and deletions are refused because
 // the prior value was not (or cannot be) captured, unless the op recorded its
 // own inverse at write time (JournalOp.Revert), which is then replayed as is.
-// An item create is reversed by moving the recorded created key to the trash.
+// An item create (item_create, import_create) is reversed by moving the
+// recorded created key to the trash; a resolver attachment_create on that same
+// key rides along, because trashing a parent trashes its child attachments.
 
 package mutation
 
@@ -54,7 +56,18 @@ type ReversalRefusal struct {
 // an unresolved write, so it becomes an explicit refusal with its recovery
 // evidence instead of disappearing as "nothing reversible".
 func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
+	trashed := map[string]bool{}
 	for _, op := range entry.Ops {
+		if op.Status == "applied" && IsCreateKind(op.Kind) && op.Key != "" {
+			trashed[op.Key] = true
+		}
+	}
+	for _, op := range entry.Ops {
+		// Whatever a resolver attachment did, trashing its parent covers it,
+		// including a failed resolver whose parent committed.
+		if op.Kind == "attachment_create" && trashed[op.Key] {
+			continue
+		}
 		if op.Status != "applied" {
 			if detail, ok := op.Reason.(map[string]any); ok && detail["committed"] == true {
 				refused = append(refused, ReversalRefusal{
@@ -68,7 +81,7 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 		if len(op.Changes) == 0 {
 			continue
 		}
-		if op.Kind == "item_create" {
+		if IsCreateKind(op.Kind) {
 			if op.Key == "" {
 				refused = append(refused, ReversalRefusal{
 					OpID: op.ID, Key: op.Key, Kind: op.Kind,
@@ -118,4 +131,11 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 		})
 	}
 	return inverse, refused
+}
+
+// IsCreateKind reports whether an op kind creates a new top-level item whose
+// Zotero key is only known once Apply returns it. Such ops never plan a real
+// key, and their inverse is a guarded move to the trash.
+func IsCreateKind(kind string) bool {
+	return kind == "item_create" || kind == "import_create"
 }

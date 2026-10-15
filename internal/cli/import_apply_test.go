@@ -1672,6 +1672,42 @@ func TestImportApplyManifestWithoutCollectionCreatesUnfiled(t *testing.T) {
 	}
 }
 
+// A Web import run journals each created item under its real Zotero key, so
+// `journal undo` plans one trash per created item instead of refusing the run.
+func TestImportApplyWebCreatesAreUndoable(t *testing.T) {
+	seedImportApplyCollections(t)
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	_, srv := startImportApplyCollectionWebFake(t)
+	m := importApplyCollectionManifest("")
+	m.Collection = ""
+	flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{writeImportApplyTestManifest(t, m)})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	journal, _ := env.Journal.(map[string]any)
+	runID, _ := journal["run_id"].(string)
+	entry, err := readJournalEntryForUndo(runID)
+	if err != nil {
+		t.Fatalf("read journal %q: %v", runID, err)
+	}
+	inverse, refused := mutation.InverseOps(entry)
+	if len(refused) != 0 {
+		t.Fatalf("refused = %+v, want none", refused)
+	}
+	var keys []string
+	for _, inv := range inverse {
+		if inv.Kind != "undo.item_create" {
+			t.Fatalf("inverse kind = %q, want undo.item_create", inv.Kind)
+		}
+		keys = append(keys, inv.Key)
+	}
+	if fmt.Sprint(keys) != "[NEWKEY01 NEWKEY02 NEWKEY03]" {
+		t.Fatalf("undo keys = %v, want the three created keys", keys)
+	}
+}
+
 func runImportApplyConnectorCollectionManifest(t *testing.T, override string) (*importApplySessionFake, mutation.Envelope, error) {
 	t.Helper()
 	seedImportApplyCollections(t, "C1", "C2", "ABCD2345")

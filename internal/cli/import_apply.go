@@ -706,6 +706,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							}
 							detail := map[string]any{
 								"via":               "web",
+								"key":               res.WebKey,
 								"parent_key":        res.WebKey,
 								"attachment_result": reason,
 							}
@@ -770,7 +771,9 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					if !ok {
 						return "failed", nil, fmt.Errorf("could not read created item key from /items response")
 					}
-					detail := map[string]any{"parent_key": createdKey}
+					// "key" is what the engine adopts as the journaled key, so
+					// `journal undo` can trash this item.
+					detail := map[string]any{"key": createdKey, "parent_key": createdKey}
 					if attachMode == "linked-file" && entryPath != "" {
 						attachmentKey, err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags)
 						if err != nil {

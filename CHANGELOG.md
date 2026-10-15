@@ -307,6 +307,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   The `command_run` description says read-only file writers expose dry-run and
   `yes` means "Apply writes (otherwise preview only)".
 
+### Added
+
+- **`journal undo` reverses an `import apply` run.** Each item the run created
+  is moved to Zotero's reversible trash with a version-guarded PATCH, never
+  deleted permanently; a resolver PDF from `--fetch-pdf` goes with its parent.
+  Web creates now journal their real Zotero key, so undo can find them. A
+  create whose key was never confirmed is still refused, with its evidence.
+
 ### Changed
 
 - **`capabilities` and `agent-context` carry more metadata.** Every

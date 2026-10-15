@@ -104,6 +104,37 @@ func TestInverseOpsTrashesCreatedItem(t *testing.T) {
 	}
 }
 
+// An import run's creates trash like any create, and the resolver PDF attached
+// to a trashed parent is covered by that trash rather than refused. A create
+// whose key was never confirmed stays refused, and so does its attachment.
+func TestInverseOpsTrashesImportedItems(t *testing.T) {
+	entry := JournalEntry{Ops: []JournalOp{
+		{ID: "import.apply:001:create", Key: "IMPORT01", Kind: "import_create", Status: "applied",
+			Changes: []Change{{Field: "item", Add: "Paper One"}, {Field: "collection", Add: "COLL0001"}}},
+		{ID: "import.apply:001:resolver-pdf", Key: "IMPORT01", Kind: "attachment_create", Status: "failed",
+			Changes: []Change{{Field: "attachment", Add: map[string]any{"source": "resolver"}}},
+			Reason:  map[string]any{"committed": true, "key": "IMPORT01", "message": "resolver PDF failed"}},
+		{ID: "import.apply:002:create", Key: "IMPORT02", Kind: "import_create", Status: "applied",
+			Changes: []Change{{Field: "item", Add: "Paper Two"}}},
+		{ID: "import.apply:003:create", Kind: "import_create", Status: "applied",
+			Changes: []Change{{Field: "item", Add: "Paper Three"}}},
+		{ID: "import.apply:003:resolver-pdf", Key: "Paper Three", Kind: "attachment_create", Status: "applied",
+			Changes: []Change{{Field: "attachment", Add: map[string]any{"source": "resolver"}}}},
+	}}
+	inverse, refused := InverseOps(entry)
+	if len(inverse) != 2 || inverse[0].Key != "IMPORT01" || inverse[1].Key != "IMPORT02" {
+		t.Fatalf("inverse = %+v, want trash of IMPORT01 and IMPORT02", inverse)
+	}
+	for _, inv := range inverse {
+		if inv.Kind != "undo.item_create" || len(inv.Changes) != 1 || inv.Changes[0].Field != "deleted" {
+			t.Fatalf("inverse %+v, want undo.item_create trash", inv)
+		}
+	}
+	if len(refused) != 2 || refused[0].OpID != "import.apply:003:create" || refused[1].OpID != "import.apply:003:resolver-pdf" {
+		t.Fatalf("refused = %+v, want the unkeyed create and its attachment", refused)
+	}
+}
+
 // An op that recorded its own inverse is reversed from that record, even though
 // its planned field change (a DOI overwrite) is not invertible on its own.
 func TestInverseOpsReplaysRecordedRevert(t *testing.T) {
