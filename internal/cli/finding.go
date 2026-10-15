@@ -34,4 +34,6 @@ type Finding struct {
 // FindingsReport is the common machine-readable diagnostic envelope.
 type FindingsReport struct {
 	Findings []Finding `json:"findings"`
+	// Errors lists per-candidate lookup failures; absent when every lookup succeeded.
+	Errors []preprintLookupError `json:"errors,omitempty"`
 }

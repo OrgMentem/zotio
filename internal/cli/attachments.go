@@ -106,7 +106,7 @@ By default this previews the planned attachment; apply with --yes.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode = strings.TrimSpace(mode)
 			if mode != "stored" && mode != "linked-file" {
-				return usageErr(fmt.Errorf("--mode must be stored or linked-file"))
+				return usageErr(fmt.Errorf("--attach-mode must be stored or linked-file"))
 			}
 			parentKey := strings.TrimSpace(args[0])
 			if err := validateKeyArg("item", parentKey); err != nil {
@@ -172,7 +172,7 @@ By default this previews the planned attachment; apply with --yes.`,
 			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
-	cmd.Flags().StringVar(&mode, "mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")
+	cmd.Flags().StringVar(&mode, "attach-mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")
 	cmd.Flags().StringVar(&title, "title", "", "Attachment title (default: the file name)")
 	return cmd
 }

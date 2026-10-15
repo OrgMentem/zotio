@@ -895,3 +895,13 @@ func TestPrintBibcheckReportRendersHostileFindingsAsInertData(t *testing.T) {
 		t.Fatalf("the manuscript location was truncated away:\n%s", out.String())
 	}
 }
+
+func TestBibcheckGateCountOnlyCountsAtOrAboveThreshold(t *testing.T) {
+	findings := []Finding{{Severity: sevCritical}, {Severity: sevHigh}, {Severity: sevInfo}, {Severity: sevInfo}}
+	cases := map[string]int{"critical": 1, "high": 2, "info": 4, "any": 4, "none": 0}
+	for gate, want := range cases {
+		if got := bibcheckGateCount(gate, findings); got != want {
+			t.Errorf("bibcheckGateCount(%q) = %d, want %d", gate, got, want)
+		}
+	}
+}

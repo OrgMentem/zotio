@@ -67,10 +67,12 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inspect <group-id>",
 		Short: "Check whether a Zotero group library is accessible and writable",
-		Long: `Probes one group library. The command always exits 0 when the probe itself
-works: "found": false means the group is not accessible (not a member, or the
-API key lacks access), not that the command failed. Read "found",
-"ready_for_read" and "ready_for_write" in the output.`,
+		Long: `Probes one group library. Without --quiet the command exits 0 when the probe
+itself works: "found": false means the group is not accessible (not a member,
+or the API key lacks access), not that the command failed. Read "found",
+"ready_for_read" and "ready_for_write" in the output. With --quiet nothing is
+printed; the exit code is 3 when the group is not found, 9 when it is not
+ready for write, and 0 otherwise.`,
 		Example:     "  zotio groups inspect 1234567 --json",
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
@@ -79,6 +81,9 @@ API key lacks access), not that the command failed. Read "found",
 				return err
 			}
 			groupID := args[0]
+			if n, convErr := strconv.Atoi(groupID); convErr != nil || n <= 0 {
+				return usageErr(fmt.Errorf("group ID %q must be a positive number; run `zotio groups list` to see your group IDs", groupID))
+			}
 			data, err := fetchAccessibleGroups(flags, "inspect groups")
 			if err != nil {
 				return err
@@ -144,20 +149,35 @@ API key lacks access), not that the command failed. Read "found",
 			if err != nil {
 				return err
 			}
+			found := report["found"].(bool)
+			if flags.quiet {
+				if !found {
+					return notFoundErr(fmt.Errorf("%s", report["note"]))
+				}
+				if report["ready_for_write"] != true {
+					return preconditionErr(fmt.Errorf("%s", report["note"]))
+				}
+				return nil
+			}
 			if flags.asJSON {
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(marshaled), flags)
 			}
-			if !report["found"].(bool) {
+			if !found {
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), report["note"])
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "group %s %s: read=%t write=%t, %d items\n",
+			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "group %s %s: read=%t write=%t, %d items\n",
 				groupID,
 				report["name"],
 				report["ready_for_read"],
 				report["ready_for_write"],
 				report["num_items"],
-			)
+			); err != nil {
+				return err
+			}
+			if report["ready_for_write"] != true {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "  note: %s\n", report["note"])
+			}
 			return err
 		},
 	}

@@ -380,9 +380,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	// hint. Surface the real cause and the Web API path forward instead.
 	if isLocalWriteRejection(msg) {
 		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the Zotero local API is read-only — writes are not supported there."+
-			"\n      Point the CLI at the Web API and provide a write-capable key:"+
-			"\n        export ZOTERO_BASE_URL=\"https://api.zotero.org/users/<your-user-id>\""+
-			"\n        export ZOTERO_API_KEY=\"<key>\"   (create at https://www.zotero.org/settings/keys)"+
+			"\n      Add a write-capable API key and writes route to the Web API automatically while reads stay local:"+
+			"\n        zotio auth set-token --stdin   (or export ZOTERO_API_KEY=\"<key>\"; create at https://www.zotero.org/settings/keys)"+
+			"\n      To create items without a key, use --via connector (desktop connector)."+
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
 			"\n      Run 'zotio doctor' to check writability."))
 	}

@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -261,5 +262,62 @@ func TestFetchAccessibleGroups_UsesThePersonalLibraryPrefix(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != "/users/0/groups" {
 		t.Fatalf("requests = %v, want one /users/0/groups", paths)
+	}
+}
+
+func TestGroupsInspect_NonNumericIDAndQuietExit(t *testing.T) {
+	oldAllow := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllow) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/groups"):
+			_, _ = io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup"},"meta":{"numItems":10}}]`)
+		case r.URL.Path == "/keys/current":
+			_, _ = io.WriteString(w, `{"userID":0,"access":{"groups":{"12345":{"library":true,"write":false}}}}`)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	oldBase := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	defer func() { zoteroWebAPIBase = oldBase }()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	run := func(flags *rootFlags, id string) (string, error) {
+		cmd := newGroupsCmd(flags)
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"inspect", id})
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	exitCode := func(err error) int {
+		var ce *cliError
+		if errors.As(err, &ce) {
+			return ce.code
+		}
+		return -1
+	}
+
+	if _, err := run(&rootFlags{}, "my-lab"); exitCode(err) != 2 || !strings.Contains(err.Error(), "zotio groups list") {
+		t.Errorf("non-numeric ID err = %v, want usage error naming `zotio groups list`", err)
+	}
+	out, err := run(&rootFlags{}, "12345")
+	if err != nil || !strings.Contains(out, "write=false") || !strings.Contains(out, "note:") {
+		t.Errorf("human output = %q, err = %v; want write=false and a note line", out, err)
+	}
+	if out, err := run(&rootFlags{quiet: true}, "99999"); exitCode(err) != 3 || out != "" {
+		t.Errorf("quiet not found: out=%q err=%v, want exit 3", out, err)
+	}
+	if out, err := run(&rootFlags{quiet: true}, "12345"); exitCode(err) != 9 || out != "" {
+		t.Errorf("quiet not writable: out=%q err=%v, want exit 9", out, err)
 	}
 }

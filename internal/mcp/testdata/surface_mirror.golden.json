@@ -141,7 +141,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -150,6 +150,10 @@
         },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "attach-mode": {
+          "description": "Attachment handling: stored (synced) or linked-file (local path) (default: stored)",
           "type": "string"
         },
         "connector-target": {
@@ -171,10 +175,6 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
-        },
-        "mode": {
-          "description": "Attachment handling: stored (synced) or linked-file (local path) (default: stored)",
-          "type": "string"
         },
         "title": {
           "description": "Attachment title (default: the file name)",
@@ -237,7 +237,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -287,7 +287,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -443,7 +443,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -565,7 +565,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -654,7 +654,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -703,7 +703,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -784,7 +784,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -890,7 +890,7 @@
   },
   {
     "name": "groups_inspect",
-    "description": "Probes one group library. The command always exits 0 when the probe itself\nworks: \"found\": false means the group is not accessible (not a member, or the\nAPI key lacks access), not that the command failed. Read \"found\",\n\"ready_for_read\" and \"ready_for_write\" in the output.",
+    "description": "Probes one group library. Without --quiet the command exits 0 when the probe\nitself works: \"found\": false means the group is not accessible (not a member,\nor the API key lacks access), not that the command failed. Read \"found\",\n\"ready_for_read\" and \"ready_for_write\" in the output. With --quiet nothing is\nprinted; the exit code is 3 when the group is not found, 9 when it is not\nready for write, and 0 otherwise.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -917,7 +917,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -965,7 +965,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1027,7 +1027,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1084,10 +1084,6 @@
     "description": "Discover missing references and write a reviewable import manifest",
     "inputSchema": {
       "properties": {
-        "collection": {
-          "description": "Default destination collection key recorded in the manifest for created items",
-          "type": "string"
-        },
         "direction": {
           "description": "Citation chase direction: backward, forward, or both (default: backward)",
           "type": "string"
@@ -1115,6 +1111,10 @@
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (required)",
           "type": "string"
+        },
+        "to": {
+          "description": "Default destination collection key recorded in the manifest for created items",
+          "type": "string"
         }
       },
       "required": [
@@ -1130,7 +1130,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1188,7 +1188,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1246,7 +1246,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1349,7 +1349,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1403,7 +1403,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1524,7 +1524,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1582,7 +1582,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1624,7 +1624,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1895,7 +1895,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -1949,7 +1949,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2009,7 +2009,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2059,7 +2059,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2341,7 +2341,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2395,7 +2395,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2482,7 +2482,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2546,7 +2546,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2624,7 +2624,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2788,7 +2788,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -2863,7 +2863,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3010,7 +3010,7 @@
           "type": "string"
         },
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3122,7 +3122,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3314,7 +3314,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3360,7 +3360,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3406,7 +3406,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3579,7 +3579,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3659,7 +3659,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3750,7 +3750,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3850,7 +3850,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3940,7 +3940,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -3986,7 +3986,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -4032,7 +4032,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -4090,7 +4090,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {
@@ -4160,7 +4160,7 @@
     "inputSchema": {
       "properties": {
         "allow-destructive": {
-          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
           "type": "boolean"
         },
         "allow-zotero-cloud": {

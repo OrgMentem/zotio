@@ -22,7 +22,7 @@ These flags are available on every command.
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--agent` | `bool` | `false` | Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate |
-| `--allow-destructive` | `bool` | `false` | Allow irreversible operations (merge, permanent delete, empty-trash) to apply |
+| `--allow-destructive` | `bool` | `false` | Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply |
 | `--allow-zotero-cloud` | `bool` | `false` | Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) |
 | `--compact` | `bool` | `false` | Return only key fields (id, name, status, timestamps) for minimal token usage |
 | `--config` | `string` |  | Config file path |
@@ -289,7 +289,7 @@ zotio attachments add <parent-key> <file> [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--mode` | `string` | `stored` | Attachment handling: stored (synced) or linked-file (local path) |
+| `--attach-mode` | `string` | `stored` | Attachment handling: stored (synced) or linked-file (local path) |
 | `--title` | `string` |  | Attachment title (default: the file name) |
 
 ## `zotio auth`
@@ -1174,10 +1174,12 @@ zotio groups
 
 Check whether a Zotero group library is accessible and writable
 
-Probes one group library. The command always exits 0 when the probe itself
-works: "found": false means the group is not accessible (not a member, or the
-API key lacks access), not that the command failed. Read "found",
-"ready_for_read" and "ready_for_write" in the output.
+Probes one group library. Without --quiet the command exits 0 when the probe
+itself works: "found": false means the group is not accessible (not a member,
+or the API key lacks access), not that the command failed. Read "found",
+"ready_for_read" and "ready_for_write" in the output. With --quiet nothing is
+printed; the exit code is 3 when the group is not found, 9 when it is not
+ready for write, and 0 otherwise.
 
 ```
 zotio groups inspect <group-id>
@@ -1322,12 +1324,12 @@ zotio import discover [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--collection` | `string` |  | Default destination collection key recorded in the manifest for created items |
 | `--direction` | `string` | `backward` | Citation chase direction: backward, forward, or both |
 | `--limit` | `int` | `25` | Maximum manifest entries to emit (0 = no limit) |
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
 | `--overwrite` | `bool` | `false` | Replace an existing manifest at --output; review edits in it are lost |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (required) |
+| `--to` | `string` |  | Default destination collection key recorded in the manifest for created items |
 | `-o, --output` | `string` |  | Path to write the reviewable import manifest |
 
 ### `zotio import doi`

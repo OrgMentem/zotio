@@ -248,6 +248,66 @@ func TestBuildPreprintCheckFixOpsStillPreprintSkip(t *testing.T) {
 	}
 }
 
+func TestBuildPreprintCheckFixOpsLookupFailureKeepsOtherResults(t *testing.T) {
+	withDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "export.arxiv.org" {
+			if req.URL.Query().Get("id_list") == "2401.00001" {
+				return testHTTPResponse(http.StatusInternalServerError, strings.Repeat("x", 1000)), nil
+			}
+			return testHTTPResponse(http.StatusOK, arxivAtomFeedXML(`<id>http://arxiv.org/abs/2401.00002</id>`)), nil
+		}
+		return testHTTPResponse(http.StatusNotFound, `{}`), nil
+	}))
+
+	getter := preprintFixGetter{preprintItems: json.RawMessage(`[
+		{"key":"KBAD","version":1,"data":{"key":"KBAD","title":"Fails","extra":"ArXiv: 2401.00001"}},
+		{"key":"KOK","version":1,"data":{"key":"KOK","title":"Fine","extra":"ArXiv: 2401.00002"}}
+	]`)}
+	cmd := newItemsPreprintCheckFixCmd(&rootFlags{})
+	cmd.SetContext(context.Background())
+	_, skipped, err := buildPreprintCheckFixOps(cmd, &rootFlags{timeout: time.Second}, getter, func() apiMutator { return nil }, 5)
+	if err != nil {
+		t.Fatalf("buildPreprintCheckFixOps: %v", err)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %+v, want 2 entries", skipped)
+	}
+	bySkip := map[string]preprintCheckFixSkip{}
+	for _, s := range skipped {
+		bySkip[s.Key] = s
+	}
+	if bySkip["KBAD"].Reason != "lookup_failed" || !strings.Contains(bySkip["KBAD"].Error, "HTTP 500") {
+		t.Fatalf("KBAD skip = %+v, want lookup_failed with HTTP 500", bySkip["KBAD"])
+	}
+	if len(bySkip["KBAD"].Error) > 400 {
+		t.Fatalf("error not truncated: %d bytes", len(bySkip["KBAD"].Error))
+	}
+	if bySkip["KOK"].Reason != "still_preprint" {
+		t.Fatalf("KOK skip = %+v, want still_preprint (processing continued)", bySkip["KOK"])
+	}
+}
+
+func TestPreprintCheckLookupFailureReportsErrorsAndKeepsResults(t *testing.T) {
+	withDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "export.arxiv.org" {
+			if req.URL.Query().Get("id_list") == "2401.00001" {
+				return testHTTPResponse(http.StatusBadGateway, "boom"), nil
+			}
+			return testHTTPResponse(http.StatusOK, arxivAtomFeedXML(`<arxiv:doi>10.1145/1.2</arxiv:doi>`)), nil
+		}
+		return testHTTPResponse(http.StatusOK, crossrefWorkJSON("10.1145/1.2", "Venue", 2024)), nil
+	}))
+	client := &http.Client{Timeout: time.Second}
+	ctx := context.Background()
+	if _, err := checkPreprintCandidate(ctx, map[string]any{"key": "KBAD", "extra": "ArXiv: 2401.00001"}, client); err == nil {
+		t.Fatal("want error for failing lookup")
+	}
+	res, err := checkPreprintCandidate(ctx, map[string]any{"key": "KOK", "extra": "ArXiv: 2401.00002"}, client)
+	if err != nil || res.Status != "published" {
+		t.Fatalf("res = %+v err = %v, want published", res, err)
+	}
+}
+
 func TestItemsPreprintCheckFixDefaultsToPreviewWithoutPatch(t *testing.T) {
 	var patchCount int
 	zoteroServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

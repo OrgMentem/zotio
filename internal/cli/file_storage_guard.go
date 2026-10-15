@@ -472,7 +472,7 @@ func storedUploadRefusalRemediation(reason storedUploadReason) []string {
 // the only way an operator recognises that is by being told which profile was
 // read and how to point at another one.
 func storedUploadRefusalSteps(v storedUploadVerdict) []string {
-	const linkedFile = "Use '--mode linked-file' (or '--attach-mode linked-file') to record the local path without uploading; the file stays on this machine and is not synced."
+	const linkedFile = "Use '--attach-mode linked-file' to record the local path without uploading; the file stays on this machine and is not synced."
 	const override = "Pass --allow-zotero-cloud to upload into Zotero's cloud storage anyway."
 
 	pin := fmt.Sprintf("Point %s at the Zotero profile this library belongs to, so the destination can be established.", zoteroprefs.ProfileDirEnv)

@@ -216,6 +216,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   | `items open` | `--type` | `--target` |
   | `items new` | `--collection` | `--to` |
   | `import doi\|arxiv\|isbn\|pmid\|url\|file\|apply` | `--collection` | `--to` |
+  | `import discover` | `--collection` | `--to` |
+  | `attachments add` | `--mode` | `--attach-mode` |
   | `import discover\|monitor` | `--out` | `--output`/`-o` |
   | `collections bundle` | `--out` | `--output-dir` |
   | `collections export`, `tags rename` | `--limit` | `--page-size` |

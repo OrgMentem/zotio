@@ -139,7 +139,7 @@ func TestAttachmentsAddStoredRefusedUnderWebDAV(t *testing.T) {
 		return nil
 	}
 
-	root.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
+	root.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--attach-mode", "stored"})
 	err := root.Execute()
 	if err == nil {
 		t.Fatal("stored attach under WebDAV succeeded, want a refusal")
@@ -212,7 +212,7 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 		return nil
 	}
 
-	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--attach-mode", "stored"})
 	err := cmdRoot.Execute()
 	if err == nil {
 		t.Fatal("a WebDAV sibling profile did not refuse the stored upload")
@@ -284,7 +284,7 @@ user_pref("extensions.zotero.sync.storage.enabled", false);
 		return nil
 	}
 
-	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored"})
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--attach-mode", "stored"})
 	err := cmdRoot.Execute()
 	if err == nil {
 		t.Fatal("a sync-disabled sibling profile did not refuse the stored upload")
@@ -414,13 +414,13 @@ func TestAttachmentsAddAllowedPathsUnaffectedByWebDAV(t *testing.T) {
 	}{
 		{
 			name:       "linked-file",
-			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "linked-file"},
+			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--attach-mode", "linked-file"},
 			executeErr: "linked-file attach under WebDAV failed: %v",
 			blockedErr: "linked-file attach was blocked; it never uploads bytes",
 		},
 		{
 			name:       "stored with override",
-			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--mode", "stored", "--allow-zotero-cloud"},
+			args:       []string{"--json", "attachments", "add", "PARENT23", "/tmp/x.pdf", "--attach-mode", "stored", "--allow-zotero-cloud"},
 			executeErr: "stored attach with --allow-zotero-cloud failed: %v",
 			blockedErr: "--allow-zotero-cloud did not restore the upload path",
 		},

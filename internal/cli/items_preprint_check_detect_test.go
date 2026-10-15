@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -259,14 +260,19 @@ func TestItemsPreprintCheckReportsPublishedPreprints(t *testing.T) {
 	}
 }
 
-func TestItemsPreprintCheckReturnsProviderError(t *testing.T) {
-	_, err := runPreprintCheckCmd(t, func(req *http.Request) (*http.Response, error) {
+func TestItemsPreprintCheckReportsProviderErrorsAsDegraded(t *testing.T) {
+	out, err := runPreprintCheckCmd(t, func(req *http.Request) (*http.Response, error) {
 		return testHTTPResponse(http.StatusInternalServerError, "upstream down"), nil
 	})
-	if err == nil {
-		t.Fatal("preprint-check succeeded, want the arXiv provider error")
+	var ce *cliError
+	if !errors.As(err, &ce) || ce.code != 13 {
+		t.Fatalf("err = %v, want degraded exit 13", err)
 	}
-	if !strings.Contains(err.Error(), "2401.00001") || !strings.Contains(err.Error(), "500") {
-		t.Fatalf("err = %v, want it to name the arXiv ID and HTTP 500", err)
+	var report FindingsReport
+	if jerr := json.Unmarshal([]byte(out), &report); jerr != nil {
+		t.Fatalf("output is not a findings report: %v\n%s", jerr, out)
+	}
+	if len(report.Errors) != 1 || report.Errors[0].ItemKey != "PUB1" || report.Errors[0].ArxivID != "2401.00001" || !strings.Contains(report.Errors[0].Error, "500") {
+		t.Fatalf("errors = %+v, want PUB1/2401.00001 with HTTP 500", report.Errors)
 	}
 }

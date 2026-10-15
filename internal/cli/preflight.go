@@ -438,7 +438,7 @@ func checkDesktopConnectorPrecondition(ctx context.Context, flags *rootFlags, cm
 // would silently bypass the operator's configured Zotero file store.
 //
 // It is scoped to invocations that actually request a stored attachment: the
-// mode flag is read from the command so that --mode linked-file, which never
+// mode flag is read from the command so that --attach-mode linked-file, which never
 // uploads bytes, is unaffected.
 func checkZoteroFileStoragePrecondition(ctx context.Context, flags *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
 	if !commandRequestsStoredUpload(cmd) {
@@ -470,7 +470,7 @@ func commandRequestsStoredUpload(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return true
 	}
-	for _, name := range []string{"mode", "attach-mode"} {
+	for _, name := range []string{"attach-mode"} {
 		if f := cmd.Flags().Lookup(name); f != nil {
 			return strings.TrimSpace(f.Value.String()) == "stored"
 		}

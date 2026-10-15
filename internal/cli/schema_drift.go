@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -159,7 +160,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 					if err := publish(live); err != nil {
 						return err
 					}
-					return renderSchemaDrift(cmd, flags, true, nil, path, live)
+					return renderSchemaDrift(cmd, flags, true, false, nil, path, live)
 				}
 
 				// Fast path: the Zotero-Schema-Version header covers the live schema,
@@ -179,7 +180,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 							if liveErr != nil {
 								return classifySchemaSnapshotError(cmd, flags, liveErr)
 							}
-							return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
+							return renderSchemaDrift(cmd, flags, false, false, diffSnapshots(base, live), path, live)
 						}
 						// The matching live version makes the baseline's global lists
 						// reusable, but --db selects the per-type snapshot for this run.
@@ -190,10 +191,10 @@ shared across libraries because the schema is global to the Zotero install.`,
 						live.ItemTypes = itemTypes
 						live.TypeFields = fields
 						live.TypeCreators = creators
-						return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
+						return renderSchemaDrift(cmd, flags, false, false, diffSnapshots(base, live), path, live)
 					}
 					base.SchemaVersion = schemaVersion
-					return renderSchemaDrift(cmd, flags, false, nil, path, base)
+					return renderSchemaDrift(cmd, flags, false, false, nil, path, base)
 				}
 
 				live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
@@ -206,7 +207,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 						return err
 					}
 				}
-				return renderSchemaDrift(cmd, flags, false, deltas, path, live)
+				return renderSchemaDrift(cmd, flags, false, update && !flags.dryRun, deltas, path, live)
 			}
 			// A dry run publishes nothing, so it stays lock-free like a pure
 			// comparison: the lock is itself a file beside the baseline.
@@ -574,10 +575,11 @@ func saveSchemaBaseline(path string, snap schemaSnapshot) error {
 // same schema state yields the same output on repeated runs. captured says the
 // run found no baseline and took live as the first one; under --dry-run that
 // baseline was not written, so it is not reported as captured.
-func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, deltas []schemaDelta, path string, live schemaSnapshot) error {
+func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured, updated bool, deltas []schemaDelta, path string, live schemaSnapshot) error {
 	if flags.asJSON {
 		payload := map[string]any{
 			"baseline_captured":     captured && !flags.dryRun,
+			"baseline_updated":      updated,
 			"drift":                 len(deltas) > 0,
 			"deltas":                deltas,
 			"baseline_path":         path,
@@ -615,7 +617,7 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 		} else {
 			fmt.Fprintln(w, "No schema drift: the live Zotero schema matches the saved baseline.")
 		}
-		return nil
+		return renderBaselineUpdated(w, updated, path, live)
 	}
 	fmt.Fprintf(w, "Schema drift detected in %d section(s):\n", len(deltas))
 	for _, d := range deltas {
@@ -626,5 +628,18 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 			fmt.Fprintf(w, "  - %s: %s\n", d.Section, r)
 		}
 	}
-	return nil
+	return renderBaselineUpdated(w, updated, path, live)
+}
+
+// renderBaselineUpdated confirms an --update run replaced the baseline.
+func renderBaselineUpdated(w io.Writer, updated bool, path string, live schemaSnapshot) error {
+	if !updated {
+		return nil
+	}
+	if live.SchemaVersion != "" {
+		_, err := fmt.Fprintf(w, "Baseline updated: %s (Zotero-Schema-Version %s)\n", path, live.SchemaVersion)
+		return err
+	}
+	_, err := fmt.Fprintf(w, "Baseline updated: %s\n", path)
+	return err
 }

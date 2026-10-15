@@ -432,7 +432,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent)")
-	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, empty-trash) to apply")
+	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowZoteroCloud, "allow-zotero-cloud", false, "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV)")
 	rootCmd.PersistentFlags().BoolVar(&flags.continueOnError, "continue-on-error", false, "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first")
 	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited)")

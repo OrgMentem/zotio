@@ -478,7 +478,7 @@ func TestAttachmentsAddLinkedReconcilesBeyondFirstChildPage(t *testing.T) {
 		Key: "MATCH004", LinkMode: "linked_file", Path: path,
 	})
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--attach-mode", "linked-file"})
 	if err != nil {
 		t.Fatalf("linked reconciliation: %v; stderr=%s", err, stderr)
 	}
@@ -719,7 +719,7 @@ func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--attach-mode", "linked-file"})
 	if err != nil {
 		t.Fatalf("linked apply: %v; stderr=%s", err, stderr)
 	}
@@ -729,7 +729,7 @@ func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
 		t.Fatalf("linked result = %+v", item)
 	}
 
-	retry, retryStderr, retryErr := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--mode", "linked-file"})
+	retry, retryStderr, retryErr := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path, "--attach-mode", "linked-file"})
 	if retryErr != nil {
 		t.Fatalf("linked retry: %v; stderr=%s", retryErr, retryStderr)
 	}
@@ -927,7 +927,7 @@ func TestAttachmentsAddUsageValidation(t *testing.T) {
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", path, "--mode", "copy"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--mode must be stored or linked-file") {
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "PARENTAB", path, "--attach-mode", "copy"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--attach-mode must be stored or linked-file") {
 		t.Fatalf("mode err = %v, want mode usage error", err)
 	}
 	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true, maxChanges: -1}, []string{"add", "../etc", path}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid Zotero item key") {

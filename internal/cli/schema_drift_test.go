@@ -859,3 +859,46 @@ func TestSchemaDriftUpdatePreservesSymlinkedBaseline(t *testing.T) {
 		t.Fatalf("compare updated baseline: %v", err)
 	}
 }
+
+func TestSchemaDriftUpdateReportsBaselineUpdated(t *testing.T) {
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	oldSrv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	if _, err := runSchemaDrift(t, oldSrv.URL, baseline, false); err != nil {
+		oldSrv.Close()
+		t.Fatalf("capture: %v", err)
+	}
+	oldSrv.Close()
+	newSrv := schemaServer(t, []string{"book", "preprint"}, []string{"title"}, []string{"firstName"})
+	defer newSrv.Close()
+
+	out, err := runSchemaDrift(t, newSrv.URL, baseline, false, "--update")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, "Baseline updated: "+baseline) {
+		t.Errorf("human output missing baseline-updated line:\n%s", out)
+	}
+
+	out, err = runSchemaDrift(t, newSrv.URL, baseline, true, "--update")
+	if err != nil {
+		t.Fatalf("update json: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decoding %q: %v", out, err)
+	}
+	if got["baseline_updated"] != true {
+		t.Errorf("baseline_updated = %v, want true", got["baseline_updated"])
+	}
+	out, err = runSchemaDrift(t, newSrv.URL, baseline, true)
+	if err != nil {
+		t.Fatalf("compare: %v", err)
+	}
+	got = nil
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decoding %q: %v", out, err)
+	}
+	if got["baseline_updated"] != false {
+		t.Errorf("baseline_updated without --update = %v, want false", got["baseline_updated"])
+	}
+}

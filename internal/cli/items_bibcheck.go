@@ -218,7 +218,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 				return gateErr(fmt.Errorf("bibcheck found %d unknown and %d ambiguous citation key(s)", report.Summary.Unknown, report.Summary.Ambiguous))
 			}
 			if bibcheckGateTriggered(gate, report.Findings) {
-				return gateErr(fmt.Errorf("bibcheck found %d finding(s) at or above %s", len(report.Findings), gate))
+				return gateErr(fmt.Errorf("bibcheck found %d finding(s) at or above %s", bibcheckGateCount(gate, report.Findings), gate))
 			}
 			// A retraction lookup that could not run leaves the gate unable to
 			// certify the manuscript: exit 9, like library health, not a pass.
@@ -1052,16 +1052,22 @@ func bibcheckLocationString(loc bibcheckLocation) string {
 }
 
 func bibcheckGateTriggered(failOn string, findings []Finding) bool {
+	return bibcheckGateCount(failOn, findings) > 0
+}
+
+// bibcheckGateCount counts the findings at or above the --fail-on threshold.
+func bibcheckGateCount(failOn string, findings []Finding) int {
 	threshold := failOnRank(failOn)
 	if threshold == 0 {
-		return false
+		return 0
 	}
+	n := 0
 	for _, finding := range findings {
 		if severityRank(finding.Severity) >= threshold {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckReport) error {

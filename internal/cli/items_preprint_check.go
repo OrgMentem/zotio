@@ -26,6 +26,18 @@ type preprintCheckResult struct {
 	Year    int    `json:"year,omitempty"`
 }
 
+// preprintLookupError records one candidate whose provider lookup failed.
+type preprintLookupError struct {
+	ItemKey string `json:"item_key"`
+	ArxivID string `json:"arxiv_id"`
+	Error   string `json:"error"`
+}
+
+// preprintProviderBody trims a provider response body for error messages.
+func preprintProviderBody(body []byte) string {
+	return truncate(strings.TrimSpace(string(body)), 200)
+}
+
 type crossrefMatch struct {
 	DOI   string
 	Venue string
@@ -71,17 +83,29 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 
 			httpClient := &http.Client{Timeout: flags.timeout}
 			results := make([]preprintCheckResult, 0, len(candidates))
+			var lookupErrors []preprintLookupError
 			for i, item := range candidates {
 				if i > 0 {
 					time.Sleep(200 * time.Millisecond)
 				}
 				result, err := checkPreprintCandidate(cmd.Context(), item, httpClient)
 				if err != nil {
-					return err
+					if cmd.Context().Err() != nil {
+						return err
+					}
+					lookupErrors = append(lookupErrors, preprintLookupError{ItemKey: zoteroString(item, "key"), ArxivID: extractArxivID(item), Error: err.Error()})
+					continue
 				}
 				results = append(results, result)
 			}
-			return printCommandJSON(cmd.OutOrStdout(), FindingsReport{Findings: preprintCheckFindings(results)}, flags)
+			if err := printCommandJSON(cmd.OutOrStdout(), FindingsReport{Findings: preprintCheckFindings(results), Errors: lookupErrors}, flags); err != nil {
+				return err
+			}
+			if len(lookupErrors) > 0 {
+				// The report above already lists every failed lookup in errors[].
+				return markRendered(degradedErr(fmt.Errorf("items preprint-check: %d lookup(s) failed; results incomplete", len(lookupErrors))))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of preprints to check")
@@ -276,7 +300,7 @@ func lookupArxivExternalDOI(ctx context.Context, httpClient *http.Client, arxivI
 		return "", false, fmt.Errorf("reading arXiv metadata for %s: %w", arxivID, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", false, fmt.Errorf("arXiv metadata lookup for %s returned HTTP %d: %s", arxivID, resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", false, fmt.Errorf("arXiv metadata lookup for %s returned HTTP %d: %s", arxivID, resp.StatusCode, preprintProviderBody(body))
 	}
 
 	var feed arxivAtomFeed
@@ -330,7 +354,7 @@ func lookupCrossrefDOI(ctx context.Context, httpClient *http.Client, doi string)
 		return crossrefMatch{}, false, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return crossrefMatch{}, false, fmt.Errorf("CrossRef lookup for DOI %s returned HTTP %d: %s", doi, resp.StatusCode, strings.TrimSpace(string(body)))
+		return crossrefMatch{}, false, fmt.Errorf("CrossRef lookup for DOI %s returned HTTP %d: %s", doi, resp.StatusCode, preprintProviderBody(body))
 	}
 
 	var decoded crossRefWorkResponse

@@ -9,12 +9,53 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"zotio/internal/mutation"
 )
+
+// importFailure attributes one failed record to its input line.
+type importFailure struct {
+	Record int    `json:"record,omitempty"`
+	Line   int    `json:"line"`
+	Reason string `json:"reason"`
+}
+
+func reasonString(r any) string {
+	switch v := r.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	default:
+		data, _ := json.Marshal(v)
+		return string(data)
+	}
+}
+
+// importRejection reads a Zotero write response and returns the message for
+// a record listed under "failed" (HTTP 200 can still reject objects).
+func importRejection(raw json.RawMessage) string {
+	var resp struct {
+		Failed map[string]struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"failed"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &resp) != nil || len(resp.Failed) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(resp.Failed))
+	for k := range resp.Failed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	f := resp.Failed[keys[0]]
+	return fmt.Sprintf("zotero rejected the record (code %d): %s", f.Code, f.Message)
+}
 
 func newImportCmd(flags *rootFlags) *cobra.Command {
 	var inputFile string
@@ -67,8 +108,11 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 			// is nothing to gate, apply, or journal for it) without aborting
 			// the scan of the remaining lines.
 			var records []map[string]any
-			var parseFailed, skipped int
+			var recordLines []int
+			var parseFailures []importFailure
+			var skipped, lineNo int
 			for scanner.Scan() {
+				lineNo++
 				line := strings.TrimSpace(scanner.Text())
 				if line == "" || line[0] == '#' {
 					skipped++
@@ -77,11 +121,12 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 
 				var body map[string]any
 				if err := json.Unmarshal([]byte(line), &body); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid JSON line: %v\n", err)
-					parseFailed++
+					fmt.Fprintf(cmd.ErrOrStderr(), "line %d: skipping invalid JSON: %v\n", lineNo, err)
+					parseFailures = append(parseFailures, importFailure{Line: lineNo, Reason: "invalid JSON: " + err.Error()})
 					continue
 				}
 				records = append(records, body)
+				recordLines = append(recordLines, lineNo)
 			}
 			if err := scanner.Err(); err != nil {
 				return fmt.Errorf("reading input: %w", err)
@@ -103,12 +148,20 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 			for i, record := range records {
 				record := record
 				ops[i] = mutation.Op{
-					ID:      fmt.Sprintf("import.%s:%03d", resource, i+1),
-					Kind:    resource + "_create",
-					Changes: []mutation.Change{{Field: "record", Add: record}},
+					ID:   fmt.Sprintf("import.%s:%03d", resource, i+1),
+					Kind: resource + "_create",
+					Changes: []mutation.Change{
+						{Field: "endpoint", Add: "POST " + path},
+						{Field: "record", Add: record},
+					},
 					Apply: func() (string, any, error) {
-						if _, _, err := writeClient.Post(path, record); err != nil {
+						// Zotero write endpoints take an array of objects.
+						raw, _, err := writeClient.Post(path, []any{record})
+						if err != nil {
 							return "failed", nil, classifyAPIError(err, flags)
+						}
+						if reason := importRejection(raw); reason != "" {
+							return "failed", nil, errors.New(reason)
 						}
 						return "applied", nil, nil
 					},
@@ -131,23 +184,58 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 				return renderMutationResult(cmd, flags, env, runErr, nil)
 			}
 
-			succeeded, failed := 0, parseFailed
-			if env.Result != nil {
-				succeeded = env.Result.Summary.Applied
-				// Failed/Conflicts are per-record apply outcomes; NotAttempted
-				// covers records left unattempted after a context cancellation
-				// mid-run. All three mean the record did not succeed, so they
-				// all fold into "failed" -- otherwise a canceled run could
-				// under-report and exit 0 despite dropped records.
-				failed += env.Result.Summary.Failed + env.Result.Summary.Conflicts + env.Result.Summary.NotAttempted
+			if env.Result == nil {
+				// Preview: show the plan, never an "Import complete" line.
+				if err := renderImportPreview(cmd, flags, env, runErr, path, records, recordLines); err != nil {
+					return err
+				}
+				// Unparseable lines were already attributed on stderr; the
+				// preview must not exit 0 for input apply would reject.
+				if len(parseFailures) > 0 {
+					return fmt.Errorf("import preview: %d input line(s) are not valid JSON", len(parseFailures))
+				}
+				return nil
 			}
 
-			// JSON envelope: {succeeded, failed, skipped}.
+			succeeded := env.Result.Summary.Applied
+			failures := append([]importFailure(nil), parseFailures...)
+			opIndex := make(map[string]int, len(ops))
+			for i := range ops {
+				opIndex[ops[i].ID] = i
+			}
+			for _, item := range env.Result.Items {
+				if item.Status == "applied" || item.Status == "no_op" {
+					continue
+				}
+				i, ok := opIndex[item.OpID]
+				if !ok {
+					continue
+				}
+				reason := reasonString(item.Reason)
+				if reason == "" {
+					reason = item.Status
+				}
+				failures = append(failures, importFailure{Record: i + 1, Line: recordLines[i], Reason: reason})
+			}
+			// Failed/Conflicts/NotAttempted all mean the record did not
+			// succeed; counting them keeps a canceled run from exiting 0.
+			failed := len(failures)
+			for _, f := range failures {
+				if f.Record > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "record %d (line %d): %s\n", f.Record, f.Line, SanitizeForTerminal(f.Reason))
+				}
+			}
+
 			if flags.asJSON {
+				if failures == nil {
+					failures = []importFailure{}
+				}
 				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"mode":      "apply",
 					"succeeded": succeeded,
 					"failed":    failed,
 					"skipped":   skipped,
+					"failures":  failures,
 				}, flags); err != nil {
 					return err
 				}
@@ -186,4 +274,31 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 	cmd.AddCommand(newImportTranslatorsCmd(flags))
 
 	return cmd
+}
+
+// renderImportPreview prints the plan for `import <resource>` without --yes:
+// the mutation envelope for JSON or piped output, otherwise one row per
+// record so the operator can review exactly what --yes would POST.
+func renderImportPreview(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, runErr error, path string, records []map[string]any, recordLines []int) error {
+	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+		return renderMutationResult(cmd, flags, env, runErr, nil)
+	}
+	if flags.quiet {
+		return runErr
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Plan: %d planned · POST %s (preview; pass --yes to apply)\n", env.Plan.Summary.Planned, path)
+	for i, record := range records {
+		if i == 50 {
+			fmt.Fprintf(out, "… %d more\n", len(records)-50)
+			break
+		}
+		data, _ := json.Marshal(record)
+		text := string(data)
+		if len(text) > 100 {
+			text = text[:100] + "…"
+		}
+		fmt.Fprintln(out, SanitizeForTerminal(fmt.Sprintf("  [planned] record %d (line %d): %s", i+1, recordLines[i], text)))
+	}
+	return runErr
 }

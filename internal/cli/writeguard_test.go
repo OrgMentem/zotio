@@ -26,8 +26,11 @@ func TestClassifyAPIErrorLocalWriteRejection(t *testing.T) {
 		"PATCH /items/ABCD returned HTTP 501: Method not implemented",
 	} {
 		got := classifyAPIError(fmt.Errorf("%s", msg), &rootFlags{}).Error()
-		if !strings.Contains(got, "read-only") || !strings.Contains(got, "ZOTERO_BASE_URL") {
+		if !strings.Contains(got, "read-only") || !strings.Contains(got, "auth set-token --stdin") || !strings.Contains(got, "--via connector") {
 			t.Errorf("%q -> expected read-only guidance, got: %s", msg, got)
+		}
+		if strings.Contains(got, "ZOTERO_BASE_URL") {
+			t.Errorf("%q -> hint must not tell the user to repoint ZOTERO_BASE_URL: %s", msg, got)
 		}
 	}
 }

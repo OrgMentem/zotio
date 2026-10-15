@@ -21,7 +21,10 @@ type preprintCheckFixSkip struct {
 	Title    string `json:"title"`
 	Category string `json:"category"`
 	Reason   string `json:"reason"`
+	Error    string `json:"error,omitempty"`
 }
+
+const preprintFixLookupFailed = "lookup_failed"
 
 // preprintCheckFixProposal carries a single schema-aware item update into the mutation engine.
 type preprintCheckFixProposal struct {
@@ -103,7 +106,11 @@ func buildPreprintCheckFixOps(cmd *cobra.Command, flags *rootFlags, readClient z
 
 		match, found, err := lookupCrossrefArxiv(cmd.Context(), httpClient, arxivID)
 		if err != nil {
-			return nil, nil, err
+			if cmd.Context().Err() != nil {
+				return nil, nil, err
+			}
+			skipped = append(skipped, preprintCheckFixSkip{Key: key, Title: title, Category: "preprint_check_fix", Reason: preprintFixLookupFailed, Error: err.Error()})
+			continue
 		}
 		if !found {
 			skipped = append(skipped, preprintCheckFixSkip{Key: key, Title: title, Category: "preprint_check_fix", Reason: "still_preprint"})
@@ -255,6 +262,17 @@ func renderPreprintCheckFixMutation(cmd *cobra.Command, flags *rootFlags, env mu
 		fmt.Fprintln(out, "Skips:")
 		for _, skip := range skipped {
 			fmt.Fprintf(out, "- %s %s (%s)\n", skip.Key, skip.Title, skip.Reason)
+		}
+	}
+	if runErr == nil {
+		failed := 0
+		for _, skip := range skipped {
+			if skip.Reason == preprintFixLookupFailed {
+				failed++
+			}
+		}
+		if failed > 0 {
+			runErr = degradedErr(fmt.Errorf("items preprint-check fix: %d lookup(s) failed; plan incomplete", failed))
 		}
 	}
 	return markRendered(runErr)

@@ -410,7 +410,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			}
 			// the badge is already JSON, so refuse ambiguous output modes.
 			if flagBadge && flags.asJSON {
-				return usageErr(fmt.Errorf("--badge cannot be combined with --json"))
+				return usageErr(fmt.Errorf("--badge cannot be combined with --json or --agent"))
 			}
 			if flagRequireFresh < 0 {
 				return usageErr(fmt.Errorf("invalid --require-fresh %s: must be zero (disabled) or positive", flagRequireFresh))

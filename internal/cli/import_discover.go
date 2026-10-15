@@ -115,7 +115,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("--min-count must be >= 1"))
 			}
 			if c := strings.TrimSpace(flagCollection); c != "" {
-				if err := validateKeyArg("collection", c); err != nil {
+				if err := validateKeyArg("to", c); err != nil {
 					return err
 				}
 			}
@@ -196,7 +196,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum manifest entries to emit (0 = no limit)")
 	cmd.Flags().IntVar(&flagMinCount, "min-count", 2, "Minimum number of source items citing a DOI")
 	cmd.Flags().StringVar(&flagDirection, "direction", importDiscoverDirectionBackward, "Citation chase direction: backward, forward, or both")
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "Default destination collection key recorded in the manifest for created items")
+	cmd.Flags().StringVar(&flagCollection, "to", "", "Default destination collection key recorded in the manifest for created items")
 	cmd.Flags().BoolVar(&flagOverwrite, "overwrite", false, "Replace an existing manifest at --output; review edits in it are lost")
 	_ = cmd.MarkFlagRequired("scope")
 	_ = cmd.MarkFlagRequired("output")

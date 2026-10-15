@@ -219,3 +219,92 @@ func TestGenericImportReadsStdinFromCommandReader(t *testing.T) {
 		t.Fatalf("succeeded = %d, want 1 (%s)", env.Succeeded, out.String())
 	}
 }
+
+// Zotero write endpoints take arrays: each record is POSTed as a
+// one-element array, and a 200 that lists the record under "failed" is a
+// failed record attributed to its input line on stderr and in the JSON.
+func TestGenericImportSendsArrayBodyAndAttributesFailures(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(r.Body)
+		bodies = append(bodies, buf.String())
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(buf.String(), `"B"`) {
+			_, _ = w.Write([]byte(`{"successful":{},"failed":{"0":{"key":"","code":400,"message":"bad itemType"}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"ABCD2345"}},"failed":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	filePath := writeImportGenericFixture(t, "{\"title\":\"A\"}\n\n{\"title\":\"B\"}\n{\"title\":\"C\"}\n")
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+	_, raw, stderr, err := runImportGeneric(t, flags, "items", "--input", filePath)
+	if err == nil {
+		t.Fatalf("expected incomplete error (%s)", raw)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("posted %d bodies, want 3", len(bodies))
+	}
+	for _, b := range bodies {
+		if !strings.HasPrefix(b, "[{") || !strings.HasSuffix(strings.TrimSpace(b), "}]") {
+			t.Fatalf("body %q is not a one-element array", b)
+		}
+	}
+	if !strings.Contains(stderr, "record 2 (line 3): zotero rejected the record (code 400): bad itemType") {
+		t.Fatalf("stderr lacks attribution: %q", stderr)
+	}
+	var out struct {
+		Mode      string `json:"mode"`
+		Succeeded int    `json:"succeeded"`
+		Failed    int    `json:"failed"`
+		Failures  []struct {
+			Record int    `json:"record"`
+			Line   int    `json:"line"`
+			Reason string `json:"reason"`
+		} `json:"failures"`
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if out.Mode != "apply" || out.Succeeded != 2 || out.Failed != 1 || len(out.Failures) != 1 ||
+		out.Failures[0].Record != 2 || out.Failures[0].Line != 3 || !strings.Contains(out.Failures[0].Reason, "bad itemType") {
+		t.Fatalf("unexpected output: %s", raw)
+	}
+}
+
+// The preview renders the real plan (mode, planned operations, endpoint).
+func TestGenericImportPreviewShowsPlan(t *testing.T) {
+	_, requests := recordingImportServer(t)
+	filePath := writeImportGenericFixture(t, "{\"title\":\"A\"}\n{\"title\":\"B\"}\n")
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
+	_, raw, _, err := runImportGeneric(t, flags, "items", "--input", filePath)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if *requests != 0 {
+		t.Fatalf("preview posted %d requests", *requests)
+	}
+	var env struct {
+		Mode string `json:"mode"`
+		Plan struct {
+			Operations []struct {
+				Changes []struct {
+					Field string `json:"field"`
+					Add   any    `json:"add"`
+				} `json:"changes"`
+			} `json:"operations"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if env.Mode != "preview" || len(env.Plan.Operations) != 2 {
+		t.Fatalf("want preview with 2 planned ops, got %s", raw)
+	}
+	if !strings.Contains(raw, "POST /items") {
+		t.Fatalf("plan lacks endpoint: %s", raw)
+	}
+}
