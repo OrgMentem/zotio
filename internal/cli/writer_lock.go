@@ -27,7 +27,7 @@ type writerLockOwnership struct {
 // installationWriterLockPath returns the host-user installation lock path.
 //
 // Profiles are persisted at ~/.zotio/profiles.json regardless of --config or
-// ZOTIO_DATA_DIR. Locking there keeps profile writers serialized with every
+// ZOTERO_DATA_DIR. Locking there keeps profile writers serialized with every
 // other installation writer that can also update shared credentials, cursors,
 // journals, or configuration. A distinct user home is an independent
 // installation scope; selecting a config file or data directory is not.

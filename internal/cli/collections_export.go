@@ -234,9 +234,12 @@ func writeCollectionExport(cmd *cobra.Command, flags *rootFlags, format, output 
 		if err != nil {
 			return fmt.Errorf("resolving output path: %w", err)
 		}
-		// The lock precedes the first source read, and covers the atomic
+		// The lock precedes the first item read, and covers the atomic
 		// publication that keeps a mid-walk failure from replacing the
-		// previous artifact with a valid-looking partial bibliography.
+		// previous artifact with a valid-looking partial bibliography. The
+		// callers' collection-existence check runs before this lock (see
+		// ADR-0005, Amendments), so an unknown collection or an unreachable
+		// desktop wins over a busy target.
 		if err := withPathWriterLock(cmd, lockPath, fmt.Sprintf("collections export to %q", canonicalTarget), func() error {
 			replaced, err := checkAtomicOutputTarget(output)
 			if err != nil {

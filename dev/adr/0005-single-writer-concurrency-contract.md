@@ -60,7 +60,7 @@ conflicts remain protected by `If-Unmodified-Since-Version`.
 - **Installation scope** — the host user's `~/.zotio/.writer.lock`, because profiles
   are persisted in `~/.zotio/profiles.json` even when configuration or data paths are
   overridden. `--config` and `ZOTERO_CONFIG` select only configuration; they never
-  create an independent writer scope. `ZOTIO_DATA_DIR` moves credentials and local
+  create an independent writer scope. `ZOTERO_DATA_DIR` moves credentials and local
   state but does not isolate the shared profile file, so it shares this lock too. A
   distinct user home is an independent installation scope.
 - **Output scope** — the transient sibling `<canonical target>.lock`. Every writer to
@@ -172,6 +172,47 @@ claim distributed locking across machines, NFS, or iCloud-backed paths.
   target untouched, and succeed once the lock is released.
 - Read-only local and MCP query paths must remain lock-free and concurrent while a
   writer is held.
+
+## Amendments
+
+- **2026-10-22 — file delivery is a pre-command lock, not a warn-only sink
+  (commit `70c88db`).** `RootCmd`'s pre-run takes `<target>.lock` for a
+  `--deliver file:` sink **before the command runs** and the spool holds it
+  through the rename (`acquireDeliverLock`, `deliverSpool.lock`). This supersedes
+  Decision 3's "the delivery sink is secondary ... runs after that command's
+  transaction has ended ... skips with a stderr warning", the matching
+  Consequences bullet, the "Make `--deliver=file` fail the command" row, and the
+  Validation bullet "a file delivery must skip with a warning". The rule now is:
+  - A busy target is refused up front as precondition exit 9, like any primary
+    writer, so the command does no work and the artifact being published is never
+    touched.
+  - The lock lives across the command and the rename, so a concurrent writer to
+    the same path is refused for that whole window rather than racing the rename.
+  - A delivery failure after a command that otherwise succeeded makes the
+    execution fail (`ExecuteRootInProcess` returns the delivery error); a command
+    that already failed keeps its own error and exit code, because delivery never
+    overrides it.
+  - `Deliver` called without a pre-held lock (no spool lock) still reports a busy
+    target as a `WriterLockBusyError` and leaves the target untouched.
+
+  `TestExecuteDeliverFailureOnSuccessfulCommandIsNonZero` and
+  `TestExecuteDeliverFailureKeepsCommandOutcome` pin the exit behavior;
+  `TestDeliverFileSkipsWhenTargetLockBusy` pins the lockless `Deliver` path.
+- **2026-10-22 — collection-existence validation precedes the export output
+  lock (commit `70c88db`).** The Validation rule "every export that names an
+  output path must refuse a busy target before its first source request" is
+  narrowed to the first **item** read. `collections export` (translator and
+  JSON routes) first proves the collection exists with one
+  `GET /collections/<key>` (`runTranslatorCollectionExport`,
+  `verifyCollectionExists`), because Zotero's local API answers an unknown
+  collection's `/items` with the whole library and an unvalidated export would
+  write a plausible file of the wrong library. That single existence request can
+  precede the output lock, so the error precedence is: (1) unknown collection
+  (exit 3) or unreachable desktop (exit 9, a different cause from a busy lock),
+  then (2) busy target (exit 9), then (3) the export reads. An unknown collection
+  leaves neither the output nor its `.lock` (`TestCollectionsExportUnknownCollectionIsNotFound`).
+  A collision still costs no item traffic, and publication stays inside the
+  output lock. Tests must assert the error identity, not only exit 9.
 
 ## References
 

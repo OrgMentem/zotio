@@ -234,14 +234,14 @@ func TestInstallationWriterLockIgnoresConfigAndDataDirSelection(t *testing.T) {
 		t.Fatal("different --config writer entered its handler")
 	}
 
-	t.Setenv("ZOTIO_DATA_DIR", filepath.Join(t.TempDir(), "other-data"))
+	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(t.TempDir(), "other-data"))
 	pathWithOtherDataDir, err := installationWriterLockPath(&rootFlags{})
 	if err != nil {
-		t.Fatalf("lock path with ZOTIO_DATA_DIR: %v", err)
+		t.Fatalf("lock path with ZOTERO_DATA_DIR: %v", err)
 	}
 	wantPath := filepath.Join(home, ".zotio", ".writer.lock")
 	if pathWithOtherDataDir != wantPath {
-		t.Fatalf("lock path with ZOTIO_DATA_DIR = %q, want shared profile scope %q", pathWithOtherDataDir, wantPath)
+		t.Fatalf("lock path with ZOTERO_DATA_DIR = %q, want shared profile scope %q", pathWithOtherDataDir, wantPath)
 	}
 
 	close(release)
@@ -696,7 +696,7 @@ func TestInstallationWriterLockCandidatesResolve(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "named.toml")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "env.toml"))
-	t.Setenv("ZOTIO_DATA_DIR", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(t.TempDir(), "data"))
 	fromFlag, err := installationWriterLockPath(&rootFlags{configPath: configPath})
 	if err != nil {
 		t.Fatalf("lock path from --config: %v", err)
