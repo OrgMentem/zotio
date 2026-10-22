@@ -22,7 +22,7 @@ Sleep 3s
 Hide
 Type "clear" Enter
 Show
-Type 'zotio search "memory"'
+Type 'zotio search --data-source local "memory"'
 Enter
 Sleep 4.5s
 Hide
