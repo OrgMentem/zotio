@@ -910,14 +910,21 @@ func normalizeFTSQuery(tokens []ftsQueryToken) string {
 				expectOperand = true
 			}
 		case !tok.quote && op == "NOT":
-			// FTS5 NOT is binary ("a NOT b"); "a AND NOT b" is a syntax
-			// error, so a NOT that follows AND replaces it.
-			if n := len(out); n > 0 && out[n-1] == "AND" {
-				out[n-1] = "NOT"
-			} else {
+			// FTS5 NOT is strictly binary ("a NOT b"). "a AND NOT b" is a
+			// syntax error, so a NOT that follows AND replaces it. A NOT with
+			// no left operand (start of query, after "(", after OR, after
+			// another NOT) cannot be an operator; it is searched as the
+			// literal word rather than emitted as a syntax error.
+			switch n := len(out); {
+			case !expectOperand:
 				out = append(out, "NOT")
+				expectOperand = true
+			case n > 0 && out[n-1] == "AND":
+				out[n-1] = "NOT"
+			default:
+				out = append(out, quoteFTSTerm(text))
+				expectOperand = false
 			}
-			expectOperand = true
 		default:
 			// Quoting is the user's explicit request for a literal term, so a
 			// quoted AND/OR/NOT is data, not syntax: it must fall through to

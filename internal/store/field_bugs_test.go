@@ -20,6 +20,10 @@ func TestFTSMatchQueryPreservesBooleanSyntax(t *testing.T) {
 		`"trust in automation" OR robots`: `"trust in automation" OR "robots"`,
 		`trust NOT robots`:                `"trust" NOT "robots"`,
 		`trust AND NOT robots`:            `"trust" NOT "robots"`,
+		// NOT needs a left operand; without one it is the literal word.
+		`NOT robots`:          `"NOT" "robots"`,
+		`trust OR NOT robots`: `"trust" OR "NOT" "robots"`,
+		`trust (NOT robots)`:  `"trust" AND ( "NOT" "robots" )`,
 	}
 	for input, want := range cases {
 		if got := ftsMatchQuery(input); got != want {
@@ -154,6 +158,45 @@ func TestMigratePurgesTopAliasResourceResidue(t *testing.T) {
 		}
 		if count != 0 {
 			t.Fatalf("sync_state %s count = %d, want 0", resourceType, count)
+		}
+	}
+}
+
+// FTS5 NOT is strictly binary, so a NOT with no left operand must not reach
+// MATCH as an operator: every one of these used to fail with a syntax error.
+func TestSearchNotWithoutLeftOperandIsALiteralWord(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	fixtures := map[string]json.RawMessage{
+		"A": json.RawMessage(`{"key":"A","data":{"title":"trust robots"}}`),
+		"B": json.RawMessage(`{"key":"B","data":{"title":"trust humans"}}`),
+		"C": json.RawMessage(`{"key":"C","data":{"title":"not robots"}}`),
+	}
+	for key, body := range fixtures {
+		if err := s.Upsert("items", key, body); err != nil {
+			t.Fatalf("upsert %s: %v", key, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{`NOT robots`, 1},           // the literal words "not" and "robots"
+		{`trust OR NOT robots`, 3},  // "trust" or both literal words
+		{`trust (NOT robots)`, 0},   // no item holds trust, not and robots
+		{`trust NOT robots`, 1},     // real binary NOT is unchanged
+		{`trust AND NOT robots`, 1}, // and so is AND NOT
+	} {
+		got, err := s.Search(tc.query, 10)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", tc.query, err)
+		}
+		if len(got) != tc.want {
+			t.Fatalf("Search(%q) returned %d rows, want %d", tc.query, len(got), tc.want)
 		}
 	}
 }
