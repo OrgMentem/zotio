@@ -21,7 +21,7 @@ Writes are preview-first. Every command that changes your Zotero library or your
 
 ## Across a whole workflow
 
-The contract scales from one command to a plan. `zotio workflow run` previews every mutating step by default and applies the whole plan on a single `--yes`; every mutation in the run shares one journal run ID (`journal list --workflow <id>`), and an interrupted run resumes from a checkpoint without replaying a write whose outcome is uncertain. See [Workflows & triggers](../guide/workflows.md).
+The contract scales from one command to a plan. `zotio workflow run` previews every mutating step by default and applies the whole plan on a single `--yes`; each mutation has its own journal `run_id` and all share one `workflow_run_id` (`journal list --workflow <id>` lists them; undo each entry by its `run_id`), and an interrupted run resumes from a checkpoint without replaying a write whose outcome is uncertain. See [Workflows & triggers](../guide/workflows.md).
 
 ## Where writes land
 

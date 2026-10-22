@@ -19,11 +19,11 @@ zotio workflow run fix-dois.json --yes    # apply it all on one approval
 
 The diagnose step reports the gaps; the fix step selects its own missing-DOI queue inside the scope rather than consuming the health output. `items enrich` requires at least one category flag; select the matching flags for other gaps (`--missing-abstract`, `--missing-pdf`, and the rest). The preview shows the whole plan; one `--yes` runs it.
 
-**Prove a bibliography is submission-ready.** Chain the checks that gate a paper so one command says pass or fail. Record the baseline first with `zotio export snapshot --output corpus.jsonl`, which writes the `corpus.jsonl.manifest.json` sidecar the verify step reads:
+**Prove a bibliography is submission-ready.** Chain the checks that gate a paper so one command says pass or fail. `--fail-on-unknown` makes the bibcheck step exit 11 when a cited key is unknown or ambiguous; without it bibcheck only reports findings. Record the baseline first with `zotio export snapshot --output corpus.jsonl`, which writes the `corpus.jsonl.manifest.json` sidecar the verify step reads:
 
 ```json
 { "steps": [
-  { "args": ["items", "bibcheck", "thesis.tex"] },
+  { "args": ["items", "bibcheck", "thesis.tex", "--fail-on-unknown"] },
   { "args": ["export", "snapshot", "verify", "corpus.jsonl.manifest.json", "--fail-on-drift"] }
 ]}
 ```
@@ -70,14 +70,14 @@ zotio workflow run workflow.json          # preview: write steps run --dry-run, 
 zotio workflow run workflow.json --yes    # apply the whole workflow on a single approval
 ```
 
-Without `--yes`, the runner injects `--dry-run` into every step that writes to Zotero, writes a local file, or declares its own `--dry-run`, while read-only steps run normally, so the plan reflects real data and a preview never rewrites an export, report, or baseline. A step that cannot preview, such as `sync`, is skipped with the reason `not previewable; runs only on apply`. A single `--yes` applies every step, and every mutation in the run shares one journal run ID. There is no rollback: if a later step fails, earlier successful writes stay applied.
+Without `--yes`, the runner injects `--dry-run` into every step that writes to Zotero, writes a local file, or declares its own `--dry-run`, while read-only steps run normally, so the plan reflects real data and a preview never rewrites an export, report, or baseline. A step that cannot preview, such as `sync`, is skipped with the reason `not previewable; runs only on apply`. A single `--yes` applies every step. Each mutation gets its own journal `run_id`, and all of them share one `workflow_run_id`. There is no rollback: if a later step fails, earlier successful writes stay applied.
 
 ```bash
-zotio journal list --workflow <id>    # everything that run changed
-zotio journal undo <run-id>           # reverse the reversible parts, as with any write
+zotio journal list --workflow <id>    # the entries that run created
+zotio journal undo <run-id>           # reverse one entry's reversible parts, as with any write
 ```
 
-`journal undo` reverses only the reversible operations and reports the rest as refused, so review the run's journal entries before assuming everything came back.
+The workflow ID is not an undo handle: `journal undo` and `journal show` take the `run_id` of one entry, so undo each listed entry in turn. `journal undo` reverses only the reversible operations and reports the rest as refused, so review the run's journal entries before assuming everything came back.
 
 !!! note "Rules the runner enforces"
     - `--dry-run` always wins — even alongside `--yes`, the run previews.
@@ -171,7 +171,7 @@ zotio watch --workflow workflow.json --workflow-on-change   # only after a cycle
 zotio tail  --workflow workflow.json          # once after a poll cycle that emitted change events
 ```
 
-`watch --workflow` fires after each successful sync; `tail --workflow` fires only on cycles that saw events (quiet when nothing changed). Triggered runs follow the same contract: they **preview unless the `watch`/`tail` invocation itself carries `--yes`**. A trigger failure is logged but never stops the loop, and a failed *applied* trigger leaves its checkpoint — later applied triggers refuse until you resume or delete it (`zotio workflow run workflow.json --yes --resume`).
+`watch --workflow` fires after each successful sync; `tail --workflow` fires only on cycles that saw events (quiet when nothing changed). Triggered runs follow the same contract: they **preview unless the `watch`/`tail` invocation itself carries `--yes`**. With `watch`, a trigger failure is logged and the loop continues. With `tail`, a triggered workflow failure stops the command with an error and holds the cursor, so restarting `tail` can redeliver the same changes. A failed *applied* trigger leaves its checkpoint (in either command) — later applied triggers refuse until you resume or delete it (`zotio workflow run workflow.json --yes --resume`).
 
 Add `--workflow-on-change` (it requires `--workflow`) to run the workflow only after a cycle that changed the local mirror. A change is a row that sync stored, rewrote with different content, or reaped because the object is gone upstream (an erased collection or a purged trash row). Tags and schema rows that come back unchanged are not changes. An unchanged cycle logs `workflow skipped: library unchanged`. A cycle whose sync failed, or in which any resource failed, never runs the workflow; its changes wait for the next complete cycle.
 
