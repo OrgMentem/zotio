@@ -28,6 +28,7 @@ func wwRunWorkflowArchive(t *testing.T, failPath string, args ...string) error {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "0")
 		_, _ = w.Write([]byte("[]"))
 	}))
 	t.Cleanup(srv.Close)

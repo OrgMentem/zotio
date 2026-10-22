@@ -354,6 +354,7 @@ func syncSweepGateServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "1")
 		_, _ = w.Write([]byte(`[{"key":"CHANGED","version":9,"data":{"key":"CHANGED","itemType":"book","title":"Edited"}}]`))
 	}))
 	t.Cleanup(server.Close)

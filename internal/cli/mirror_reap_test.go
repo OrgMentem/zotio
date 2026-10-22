@@ -285,6 +285,7 @@ func TestSyncRetiresTheDeletionMarkerOnceTheDeleteLands(t *testing.T) {
 	// Zotero has synced the delete down: a complete pass no longer lists it.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "1")
 		_, _ = w.Write([]byte(`[{"key":"SURVIVOR","version":1,"data":{"key":"SURVIVOR","itemType":"book","title":"Untouched"}}]`))
 	}))
 	defer server.Close()

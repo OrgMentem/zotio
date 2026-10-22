@@ -729,6 +729,14 @@ type syncHeaderHTTPClient interface {
 	GetWithHeaderContext(context.Context, string, map[string]string, string) (json.RawMessage, string, error)
 }
 
+// syncVersionHeaderHTTPClient reads one response header together with the
+// library version of the same response. Total-Results is completeness
+// evidence for the very page it arrives on; a second request for it would
+// describe a different snapshot.
+type syncVersionHeaderHTTPClient interface {
+	GetWithVersionAndHeaderContext(context.Context, string, map[string]string, string) (json.RawMessage, int, string, error)
+}
+
 func syncClientForResource(c syncHTTPClient, resource string) syncHTTPClient {
 	if !isSchemaSyncResource(resource) {
 		return c
@@ -1259,6 +1267,24 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// ANDed across pages: one narrowed request is enough to make the pass's
 	// absences meaningless.
 	observedEveryObject := true
+	// totals judges every page against the server's own Total-Results, so a
+	// short page counts as the end of the listing only when the server
+	// agrees. See pageTotals.
+	var totals pageTotals
+	failPass := func(err error) syncResult {
+		if !humanFriendly {
+			emitSyncEvent(ctx, struct {
+				Event    string `json:"event"`
+				Resource string `json:"resource"`
+				Error    string `json:"error"`
+			}{
+				Event:    "sync_error",
+				Resource: resource,
+				Error:    err.Error(),
+			})
+		}
+		return syncResult{Resource: resource, Count: totalCount, Err: err, Duration: time.Since(started)}
+	}
 	for {
 		params := map[string]string{}
 
@@ -1285,6 +1311,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 
 		var data json.RawMessage
 		var respVersion int
+		var totalHeader string
 		var err error
 		if resource == "schema" {
 			if headerClient, ok := requestClient.(syncHeaderHTTPClient); ok {
@@ -1296,6 +1323,8 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			} else {
 				data, respVersion, err = requestClient.GetWithVersionContext(ctx, path, params)
 			}
+		} else if totalClient, ok := requestClient.(syncVersionHeaderHTTPClient); ok {
+			data, respVersion, totalHeader, err = totalClient.GetWithVersionAndHeaderContext(ctx, path, params, "Total-Results")
 		} else {
 			data, respVersion, err = requestClient.GetWithVersionContext(ctx, path, params)
 		}
@@ -1364,6 +1393,17 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 		}
 
+		// Check the page against Total-Results before it is stored or the pass
+		// can end on it. A contradiction means the response is not the
+		// listing it claims to be: refuse the pass without sweeping or
+		// checkpointing instead of reading a partial array as complete.
+		pageStart, _ := strconv.Atoi(params[pageSize.cursorParam])
+		if isPage {
+			if terr := totals.observe(totalHeader, pageStart, len(items)); terr != nil {
+				return failPass(fmt.Errorf("fetching %s: %w", resource, terr))
+			}
+		}
+
 		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
 			// Zotero array endpoints paginate via start/limit and put Link headers
 			// outside the JSON body, so derive the next offset when a full page arrives.
@@ -1374,6 +1414,9 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 
 		if isPage && len(items) == 0 {
 			if !hasMore || nextCursor == "" {
+				if terr := totals.finish(pageStart + len(items)); terr != nil {
+					return failPass(fmt.Errorf("fetching %s: %w", resource, terr))
+				}
 				completedNaturally = true
 				break
 			}
@@ -1560,6 +1603,12 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 
 		terminalPage := !hasMore || len(items) < pageSize.limit || nextCursor == ""
 		if terminalPage {
+			// A short page ends the listing only if the server's count
+			// agrees; otherwise the response was partial and the sweep and
+			// the version checkpoint below must not treat it as complete.
+			if terr := totals.finish(pageStart + len(items)); terr != nil {
+				return failPass(fmt.Errorf("fetching %s: %w", resource, terr))
+			}
 			completedNaturally = true
 			break
 		}
@@ -1654,8 +1703,14 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// unreapable forever, because the live trash was legitimately empty on
 		// every pass.
 		observedEverything := completedNaturally && observedEveryObject
+		// A destructive pass needs the server's own count too: a short page
+		// whose Total-Results agrees is a complete listing, but a page with no
+		// header at all is missing evidence and must not read as "everything
+		// else was deleted" (the same rule as fetchPlaneKeySet). The global
+		// schema endpoints send no Total-Results, so they are exempt.
+		countsVerified := resource == "schema" || totals.verified()
 		shouldSweep := full || resource == "schema"
-		if shouldSweep && observedEverything && canonicalStoreResource(resource) == resource {
+		if shouldSweep && observedEverything && countsVerified && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
 			// type. A top-level alias fetches a strict subset, so the storage
 			// alias is correct for upserts but wrong for reaps. A sweep failure
@@ -1695,6 +1750,27 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Resource: canonicalStoreResource(resource),
 					Reason:   "sweep_skipped_filtered_pass",
 					Message:  "--full combined with a narrowing filter (--since-version): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
+				})
+			}
+		} else if full && canonicalStoreResource(resource) == resource {
+			// Unfiltered and complete by the page walk, but the API did not
+			// report Total-Results on every page, so completeness cannot be
+			// confirmed. Skip the sweep and say so, like the filtered case.
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr,
+					"warning: skipped reaping deleted %s rows because the API did not report Total-Results on every page, so the listing cannot be confirmed complete; rerun `zotio sync --full` against an API that does\n",
+					canonicalStoreResource(resource))
+			} else {
+				emitSyncEvent(ctx, struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+					Message  string `json:"message"`
+				}{
+					Event:    "sync_anomaly",
+					Resource: canonicalStoreResource(resource),
+					Reason:   "sweep_skipped_unverified_total",
+					Message:  "the API did not report Total-Results on every page, so the listing cannot be confirmed complete: no rows were reaped and no deletion markers were confirmed",
 				})
 			}
 		}

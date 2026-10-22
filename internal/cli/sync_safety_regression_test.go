@@ -106,6 +106,7 @@ func TestFullSyncSweepFailureFailsResourceWithoutCheckpoint(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "1")
 		_, _ = w.Write([]byte(`[` + string(pendingWritesTestItem("FRESH")) + `]`))
 	}))
 	defer server.Close()

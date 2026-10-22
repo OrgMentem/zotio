@@ -334,6 +334,7 @@ func TestSyncFullTopLevelAliasDoesNotReapChildRows(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "1")
 		_, _ = w.Write([]byte(`[{"key":"PARENT","version":2,"data":{"key":"PARENT","itemType":"book"}}]`))
 	}))
 	defer server.Close()
@@ -424,6 +425,7 @@ func TestSyncReapsPhantomFromAGenuinelyEmptyResource(t *testing.T) {
 	// The plane genuinely reports an empty trash — not a fetch failure.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Total-Results", "0")
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer srv.Close()
