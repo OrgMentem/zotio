@@ -89,7 +89,8 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	var fromStdin bool
 	cmd := &cobra.Command{
 		Use:     "set-token --stdin",
-		Short:   "Save an API token to the config file",
+		Short:   "Save an API token to the credentials file",
+		Long:    "Reads the token from stdin and saves it to the credentials file (credentials.toml in the data directory), not to the config file, which is rewritten without credentials. Under an agentcookie-managed store the token goes to the config file instead. Preview with --dry-run.",
 		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -125,16 +126,27 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("empty token on stdin"))
 			}
 
+			// Report where the token actually goes: the credentials file for an
+			// ordinary store, the config file only for an agentcookie-managed one.
+			destination, separate, destErr := cfg.CredentialDestination()
+			if destErr != nil {
+				return configErr(destErr)
+			}
+
 			// --dry-run reports the target and writes nothing.
 			if flags.dryRun {
 				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					out := map[string]any{
 						"saved":       false,
 						"dry_run":     true,
 						"config_path": cfg.Path,
-					}, flags)
+					}
+					if separate {
+						out["credentials_path"] = destination
+					}
+					return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would save the token to %s; nothing written\n", cfg.Path)
+				fmt.Fprintf(cmd.OutOrStdout(), "dry run: would save the token to %s; nothing written\n", describeCredentialDestination(destination, cfg.Path, separate))
 				return nil
 			}
 
@@ -153,19 +165,34 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
-			// JSON envelope: {saved, config_path}.
+			// JSON envelope: {saved, config_path, credentials_path?}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if separate {
+					out["credentials_path"] = destination
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", describeCredentialDestination(destination, cfg.Path, separate))
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "Read the API token from stdin")
 	return cmd
+}
+
+// describeCredentialDestination names the file that receives the token and,
+// for an ordinary store, says the config file keeps no credentials, so an
+// operator does not back up, mount or delete the config file expecting it to
+// carry the secret.
+func describeCredentialDestination(destination, configPath string, separate bool) string {
+	if !separate {
+		return destination + " (agentcookie-managed store: credentials stay in the config file)"
+	}
+	return fmt.Sprintf("%s (the config file %s keeps no credentials)", destination, configPath)
 }
 
 // readAllContext reads r to EOF but returns ctx.Err() as soon as ctx is done.

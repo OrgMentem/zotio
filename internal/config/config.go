@@ -374,6 +374,23 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	c.ZoteroApiKey = creds.ZoteroApiKey
 }
 
+// CredentialDestination reports the file SaveCredential writes the API key to.
+// An ordinary store keeps it in the credentials file, apart from the config
+// file, which is saved without credentials, and separate is true. An
+// agentcookie-managed store keeps credentials in the config file itself, so the
+// destination is the config path and separate is false. It mirrors the branch
+// in saveCredentialsFirst, which owns the decision.
+func (c *Config) CredentialDestination() (path string, separate bool, err error) {
+	if c.AgentcookieManagedByExternalStore() {
+		return c.Path, false, nil
+	}
+	path, err = cliutil.CredentialsFilePath()
+	if err != nil {
+		return "", true, fmt.Errorf("resolving credentials path: %w", err)
+	}
+	return path, true, nil
+}
+
 func (c *Config) saveCredentialsFirst() error {
 	if c.AgentcookieManagedByExternalStore() {
 		c.markAgentcookieManaged()
