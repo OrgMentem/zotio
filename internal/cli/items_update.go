@@ -54,10 +54,13 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-				if bodyTitle != "" {
+				// Changed, not != "": an explicit empty value is how an operator
+				// clears a field, and testing the value would drop it silently
+				// and report success while the old text stayed.
+				if cmd.Flags().Changed("title") {
 					body["title"] = bodyTitle
 				}
-				if bodyAbstractNote != "" {
+				if cmd.Flags().Changed("abstract-note") {
 					body["abstractNote"] = bodyAbstractNote
 				}
 				if bodyTags != "" {
@@ -74,7 +77,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 					}
 					body["collections"] = parsedCollections
 				}
-				if bodyExtra != "" {
+				if cmd.Flags().Changed("extra") {
 					body["extra"] = bodyExtra
 				}
 			}
@@ -124,11 +127,11 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
-	cmd.Flags().StringVar(&bodyTitle, "title", "", "Item title")
-	cmd.Flags().StringVar(&bodyAbstractNote, "abstract-note", "", "Abstract or summary")
+	cmd.Flags().StringVar(&bodyTitle, "title", "", "Item title (an empty value clears it)")
+	cmd.Flags().StringVar(&bodyAbstractNote, "abstract-note", "", "Abstract or summary (an empty value clears it)")
 	cmd.Flags().StringVar(&bodyTags, "tags", "", "Tags to apply (array of {tag: string} objects)")
 	cmd.Flags().StringVar(&bodyCollections, "collections", "", "Collection keys to assign this item to")
-	cmd.Flags().StringVar(&bodyExtra, "extra", "", "Extra notes field (also stores Better BibTeX citation key)")
+	cmd.Flags().StringVar(&bodyExtra, "extra", "", "Extra notes field, also stores Better BibTeX citation key (an empty value clears it)")
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd

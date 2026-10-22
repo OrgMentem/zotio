@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -560,5 +561,75 @@ func TestItemsUpdateCollectionsReplacementSurvivesStaleSync(t *testing.T) {
 	// so clearing it now would expose the next sync to the same rollback.
 	if !itemsUpdatePendingMarkerPresent(t, dbPath, "K1") {
 		t.Fatal("pending-write marker cleared by a stale sync: the next sync would roll the replacement back")
+	}
+}
+
+// An explicit empty --title/--abstract-note/--extra clears the field; an
+// omitted flag leaves it alone. The flag path used to test the value, so a
+// requested clear vanished from the plan and the request while the command
+// reported success.
+func TestItemsUpdateEmptyFlagValuesClearFields(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantBody map[string]any
+	}{
+		{"extra alone", []string{"--extra", ""}, map[string]any{"extra": ""}},
+		{"abstract alone", []string{"--abstract-note", ""}, map[string]any{"abstractNote": ""}},
+		{"title alone", []string{"--title", ""}, map[string]any{"title": ""}},
+		{"clear beside a new title", []string{"--title", "New", "--extra", ""}, map[string]any{"title": "New", "extra": ""}},
+		{"omitted flags stay untouched", []string{"--title", "New"}, map[string]any{"title": "New"}},
+	} {
+		for _, apply := range []bool{false, true} {
+			name := tc.name + map[bool]string{false: " (preview)", true: " (apply)"}[apply]
+			t.Run(name, func(t *testing.T) {
+				var patched map[string]any
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.Method {
+					case http.MethodGet:
+						w.Header().Set("Last-Modified-Version", "5")
+						_, _ = w.Write([]byte(`{"key":"K","version":5,"data":{"key":"K","version":5}}`))
+					case http.MethodPatch:
+						if err := json.NewDecoder(r.Body).Decode(&patched); err != nil {
+							t.Errorf("decode PATCH body: %v", err)
+						}
+						w.WriteHeader(http.StatusNoContent)
+					default:
+						http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+					}
+				}))
+				defer srv.Close()
+				t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+				cmd := newItemsUpdateCmd(&rootFlags{asJSON: true, yes: apply, maxChanges: -1})
+				cmd.SilenceErrors, cmd.SilenceUsage = true, true
+				var out bytes.Buffer
+				cmd.SetOut(&out)
+				cmd.SetErr(&bytes.Buffer{})
+				cmd.SetArgs(append([]string{"K"}, tc.args...))
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("items update: %v (output %s)", err, out.String())
+				}
+				var env mutation.Envelope
+				if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+					t.Fatalf("decode envelope: %v (output %s)", err, out.String())
+				}
+				planned := map[string]any{}
+				for _, change := range env.Plan.Operations[0].Changes {
+					planned[change.Field] = change.Add
+				}
+				if !reflect.DeepEqual(planned, tc.wantBody) {
+					t.Fatalf("planned changes = %v, want %v", planned, tc.wantBody)
+				}
+				if !apply {
+					if patched != nil {
+						t.Fatalf("preview sent a PATCH: %v", patched)
+					}
+					return
+				}
+				if !reflect.DeepEqual(patched, tc.wantBody) {
+					t.Fatalf("PATCH body = %v, want %v", patched, tc.wantBody)
+				}
+			})
+		}
 	}
 }
