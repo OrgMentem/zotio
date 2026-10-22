@@ -3,10 +3,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // atomicOutputTempPattern is deliberately a short fixed prefix rather than the
@@ -135,12 +138,53 @@ func abortAtomicOutput(tmp *os.File, tmpPath string, primary error) error {
 // publishedOutputMode reports the mode an atomic publication should use to
 // match what a direct write would have left behind. os.WriteFile does not
 // change an existing file's permissions, so preserving them is the
-// behaviour-compatible choice for callers that used it; fallback applies when
-// the target does not exist yet.
+// behaviour-compatible choice for callers that used it. When the target does
+// not exist yet a direct write creates it with fallback minus the process
+// umask, so that is what is reported; passing the bare fallback to
+// File.Chmod, which no umask masks, would publish a file more permissive than
+// the user's umask allows.
 func publishedOutputMode(target string, fallback os.FileMode) os.FileMode {
 	info, err := os.Lstat(target)
-	if err != nil || !info.Mode().IsRegular() {
+	switch {
+	case err == nil && info.Mode().IsRegular():
+		return info.Mode().Perm()
+	case errors.Is(err, os.ErrNotExist):
+		return newFileMode(filepath.Dir(target), fallback)
+	default:
+		// Not a regular file (the publication refuses it) or not inspectable
+		// (it fails on its own error): there is no direct write to mirror.
 		return fallback
 	}
-	return info.Mode().Perm()
+}
+
+// newFileMode reports the permission bits a file created in dir with perm
+// would carry, by creating a throwaway file with open(2) and reading back what
+// the kernel left after applying the umask. Probing in dir, rather than
+// reading the umask with syscall.Umask, neither flips process-wide state under
+// concurrent file creation nor misses a directory whose default ACL replaces
+// the umask. It returns perm unchanged where mode bits carry no such meaning
+// (Windows) or the probe cannot run (a directory that does not exist yet; the
+// publication that follows reports that failure itself).
+func newFileMode(dir string, perm os.FileMode) os.FileMode {
+	if runtime.GOOS == "windows" {
+		return perm
+	}
+	for range 8 {
+		probe := filepath.Join(dir, fmt.Sprintf(".zotio-mode-probe-%d.tmp", rand.Uint64()))
+		f, err := os.OpenFile(probe, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return perm
+		}
+		info, statErr := f.Stat()
+		_ = f.Close()
+		_ = os.Remove(probe)
+		if statErr != nil {
+			return perm
+		}
+		return info.Mode().Perm()
+	}
+	return perm
 }
