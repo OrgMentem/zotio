@@ -7,14 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
 
-// TestStoreGuardedDBSerializesWrites proves the guarded ad-hoc handle shares
-// the single-writer lock: a raw-handle write racing a batch upsert lands
-// without SQLITE_BUSY and neither write is lost.
+const guardedSyncInsert = `INSERT INTO sync_state (resource_type, last_cursor, total_count) VALUES (?, ?, ?)
+ ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor`
+
+// TestStoreGuardedDBSerializesWrites proves GuardedDB.ExecContext joins the
+// store's single-writer lock: while writeMu is held, a guarded write waits
+// and fails with the caller's deadline instead of bypassing serialization.
 func TestStoreGuardedDBSerializesWrites(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := OpenWithContext(context.Background(), dbPath)
@@ -23,46 +25,37 @@ func TestStoreGuardedDBSerializesWrites(t *testing.T) {
 	}
 	defer s.Close()
 
-	items := []json.RawMessage{
-		json.RawMessage(`{"id": "B1"}`),
-		json.RawMessage(`{"id": "B2"}`),
-	}
-
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
-	wg.Add(2)
+	s.writeMu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		if _, _, err := s.UpsertBatch("guarded", items); err != nil {
-			errCh <- err
-		}
+		_, err := s.DB().ExecContext(ctx, guardedSyncInsert, "guarded", "cursor-1", 2)
+		done <- err
 	}()
-	go func() {
-		defer wg.Done()
-		if _, err := s.DB().ExecContext(context.Background(),
-			`INSERT INTO sync_state (resource_type, last_cursor, total_count) VALUES (?, ?, ?)
-			 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor`,
-			"guarded", "cursor-1", 2,
-		); err != nil {
-			errCh <- err
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ExecContext err = %v, want context.DeadlineExceeded", err)
 		}
-	}()
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		t.Fatalf("guarded write failed: %v", err)
-	}
-
-	var count int
-	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = 'guarded'`).Scan(&count); err != nil {
-		t.Fatalf("count resources: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("resources = %d, want 2", count)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecContext did not return while write lock held")
 	}
 	cursor, _, _, _, err := s.GetSyncResumeState("guarded")
 	if err != nil {
 		t.Fatalf("read sync state: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor = %q while blocked, want empty", cursor)
+	}
+	s.writeMu.Unlock()
+
+	if _, err := s.DB().ExecContext(context.Background(), guardedSyncInsert, "guarded", "cursor-1", 2); err != nil {
+		t.Fatalf("retry ExecContext: %v", err)
+	}
+	cursor, _, _, _, err = s.GetSyncResumeState("guarded")
+	if err != nil {
+		t.Fatalf("read sync state after retry: %v", err)
 	}
 	if cursor != "cursor-1" {
 		t.Fatalf("cursor = %q, want %q", cursor, "cursor-1")
