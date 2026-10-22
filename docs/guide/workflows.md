@@ -74,7 +74,8 @@ Without `--yes`, the runner injects `--dry-run` into every step that writes to Z
 
 ```bash
 zotio journal list --workflow <id>    # the entries that run created
-zotio journal undo <run-id>           # reverse one entry's reversible parts, as with any write
+zotio journal undo <run-id>           # preview the reversal of one entry's reversible parts
+zotio journal undo <run-id> --yes     # apply it, as with any write
 ```
 
 The workflow ID is not an undo handle: `journal undo` and `journal show` take the `run_id` of one entry, so undo each listed entry in turn. `journal undo` reverses only the reversible operations and reports the rest as refused, so review the run's journal entries before assuming everything came back.

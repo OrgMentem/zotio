@@ -39,5 +39,6 @@ The [capabilities reference](../reference/capabilities.md) lists the operation, 
 zotio tags audit fix --agent            # preview: the merge plan, zero changes
 zotio tags audit fix --agent --yes      # apply
 zotio journal list                      # find the run id
-zotio journal undo <run-id>             # reverse the tag renames
+zotio journal undo <run-id>             # preview the undo: shows the reversal, changes nothing
+zotio journal undo <run-id> --yes       # apply it: reverse the tag renames
 ```
