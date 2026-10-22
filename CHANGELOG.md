@@ -263,7 +263,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   | `items new` | `--collection` | `--to` |
   | `import doi\|arxiv\|isbn\|pmid\|url\|file\|apply` | `--collection` | `--to` |
   | `import discover` | `--collection` | `--to` |
-  | `attachments add` | `--mode` | `--attach-mode` |
+  | `attachments add` | `--mode` (still accepted, deprecated) | `--attach-mode` |
   | `import discover\|monitor` | `--out` | `--output`/`-o` |
   | `collections bundle` | `--out` | `--output-dir` |
   | `collections export`, `tags rename` | `--limit` | `--page-size` |
@@ -274,6 +274,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   means the mirrored resource kind only. `search --type` and the unused
   `import --batch-size` are removed. `collections export --output` gains `-o`.
   A negative `--older-than-days` or `sync --since-version` exits 2.
+  `attachments add --mode` keeps working with a deprecation note on stderr,
+  because released papio versions pass it; passing both names exits 2.
 
 - **`--limit 0` and `--top 0` mean no limit; negatives exit 2.** Applies to
   `items similar`, `items authors|venues`, `analytics --limit`, `library stats

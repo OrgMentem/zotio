@@ -470,10 +470,13 @@ func commandRequestsStoredUpload(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return true
 	}
-	for _, name := range []string{"attach-mode"} {
-		if f := cmd.Flags().Lookup(name); f != nil {
-			return strings.TrimSpace(f.Value.String()) == "stored"
-		}
+	// attachments add still accepts the deprecated --mode for --attach-mode,
+	// and this precondition runs before the command maps one onto the other.
+	if f := cmd.Flags().Lookup("mode"); f != nil && f.Changed {
+		return strings.TrimSpace(f.Value.String()) == "stored"
+	}
+	if f := cmd.Flags().Lookup("attach-mode"); f != nil {
+		return strings.TrimSpace(f.Value.String()) == "stored"
 	}
 	return true
 }

@@ -1436,6 +1436,9 @@ func TestAttachmentsAddTerminalPreviewDescribesFileAndRoute(t *testing.T) {
 			[]string{path, "bytes, md5 ", "stored", "temporary parent", "trashes the temporary parent"}},
 		{"linked file", "", []string{"add", "PARENTAB", path, "--attach-mode", "linked-file"},
 			[]string{path, "linked-file", "no bytes are uploaded"}},
+		// papio passes the pre-0.30 flag name; it must keep selecting the mode.
+		{"legacy --mode alias", "", []string{"add", "PARENTAB", path, "--mode", "linked-file"},
+			[]string{path, "linked-file", "no bytes are uploaded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := &terminalCapture{tty: tty}
@@ -1492,5 +1495,29 @@ func TestAttachmentsAddAfterDeletingTheAttachmentMintsANewToken(t *testing.T) {
 				t.Fatalf("create tokens = %v, want two accepted creates under distinct tokens", f.createTokens)
 			}
 		})
+	}
+}
+
+// The storage precondition runs before the command maps the deprecated --mode
+// onto --attach-mode, so it must read the legacy flag itself: papio's
+// `--mode linked-file` uploads nothing and must not be refused as a stored
+// upload on a WebDAV library.
+func TestAttachmentsAddStoragePreconditionReadsLegacyModeFlag(t *testing.T) {
+	for _, tc := range []struct {
+		args       []string
+		wantStored bool
+	}{
+		{nil, true},
+		{[]string{"--attach-mode", "linked-file"}, false},
+		{[]string{"--mode", "linked-file"}, false},
+		{[]string{"--mode", "stored"}, true},
+	} {
+		cmd := newAttachmentsAddCmd(&rootFlags{})
+		if err := cmd.ParseFlags(tc.args); err != nil {
+			t.Fatalf("parse %v: %v", tc.args, err)
+		}
+		if got := commandRequestsStoredUpload(cmd); got != tc.wantStored {
+			t.Errorf("args %v: requests stored upload = %v, want %v", tc.args, got, tc.wantStored)
+		}
 	}
 }

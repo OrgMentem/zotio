@@ -62,7 +62,7 @@ func newAttachmentsCmd(flags *rootFlags) *cobra.Command {
 
 // newAttachmentsAddCmd uploads a local file as a stored child of an existing item.
 func newAttachmentsAddCmd(flags *rootFlags) *cobra.Command {
-	var mode string
+	var mode, legacyMode string
 	var title string
 
 	cmd := &cobra.Command{
@@ -106,6 +106,12 @@ By default this previews the planned attachment; apply with --yes.`,
 			"zotio:path":   "/items/{key}/file",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("mode") {
+				if cmd.Flags().Changed("attach-mode") {
+					return usageErr(fmt.Errorf("--mode is the deprecated name of --attach-mode; pass only --attach-mode"))
+				}
+				mode = legacyMode
+			}
 			mode = strings.TrimSpace(mode)
 			if mode != "stored" && mode != "linked-file" {
 				return usageErr(fmt.Errorf("--attach-mode must be stored or linked-file"))
@@ -185,6 +191,12 @@ By default this previews the planned attachment; apply with --yes.`,
 		},
 	}
 	cmd.Flags().StringVar(&mode, "attach-mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")
+	// --mode is the pre-0.30 name. papio still passes it (its zotio floor
+	// predates --attach-mode), so it stays accepted, hidden, with a stderr
+	// deprecation note, until papio's floor reaches the release that added
+	// --attach-mode.
+	cmd.Flags().StringVar(&legacyMode, "mode", "stored", "Deprecated: use --attach-mode")
+	_ = cmd.Flags().MarkDeprecated("mode", "use --attach-mode")
 	cmd.Flags().StringVar(&title, "title", "", "Attachment title (default: the file name)")
 	return cmd
 }
