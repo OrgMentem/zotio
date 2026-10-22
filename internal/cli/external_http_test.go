@@ -46,6 +46,11 @@ func TestIPv4MappedIPv6LiteralClassification(t *testing.T) {
 		{name: "mapped one seventy two private", host: "::ffff:172.16.0.1", private: true},
 		{name: "mapped one ninety two private", host: "::ffff:192.168.1.1", private: true},
 		{name: "mapped metadata link local", host: "::ffff:169.254.169.254", private: true},
+		{name: "cgnat lower bound", host: "100.64.0.1", private: true},
+		{name: "cgnat upper bound", host: "100.127.255.254", private: true},
+		{name: "mapped cgnat", host: "::ffff:100.100.100.100", private: true},
+		{name: "just below cgnat", host: "100.63.255.254", private: false},
+		{name: "just above cgnat", host: "100.128.0.1", private: false},
 		{name: "mapped public IPv4", host: "::ffff:8.8.8.8", private: false},
 		{name: "ordinary public IPv4", host: "8.8.4.4", private: false},
 		{name: "ordinary public IPv6", host: "2001:4860:4860::8888", private: false},
@@ -67,6 +72,7 @@ func TestMappedPrivateIPv6LiteralsRejectedByValidationAndDialResolution(t *testi
 		"::ffff:172.16.0.1",
 		"::ffff:192.168.1.1",
 		"::ffff:169.254.169.254",
+		"::ffff:100.64.0.1",
 	}
 
 	for _, host := range privateHosts {
