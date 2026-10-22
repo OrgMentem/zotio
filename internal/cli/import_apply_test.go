@@ -1502,6 +1502,45 @@ func TestConfirmStoredConnectorKeysTimesOut(t *testing.T) {
 	}
 }
 
+// TestConfirmStoredConnectorKeysReportsChildReadError pins the arm where a
+// matching parent's children cannot be read: after the deadline the child read
+// error comes back, so the committed write is not mislabelled as "the PDF never
+// appeared" and is never keyed from an unread parent.
+func TestConfirmStoredConnectorKeysReportsChildReadError(t *testing.T) {
+	fastRetryBackoff(t)
+	oldTimeout := storedConnectorRecoveryTimeout
+	oldInterval := connectorReparentPollInterval
+	storedConnectorRecoveryTimeout = 0
+	connectorReparentPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		storedConnectorRecoveryTimeout = oldTimeout
+		connectorReparentPollInterval = oldInterval
+	})
+	added := time.Now().UTC().Format(time.RFC3339)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]any{
+			map[string]any{"key": "PARENT01", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": added},
+		})
+	})
+	mux.HandleFunc("/users/0/items/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"children unavailable"}`, http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	flags := confirmStoredKeysTestFlags(t, srv)
+	item := map[string]any{"title": "Marked Paper", "itemType": "journalArticle"}
+
+	parentKey, attachmentKey, parentMatches, fileMatches, err := confirmStoredConnectorKeys(
+		context.Background(), flags, item, time.Now().Add(-time.Minute), "zotio-write-conn123", "d41d8cd98f00b204e9800998ecf8427e")
+	if err == nil || !strings.Contains(err.Error(), "listing children of PARENT01") {
+		t.Fatalf("err = %v, want the child read error", err)
+	}
+	if parentKey != "" || attachmentKey != "" || parentMatches != 1 || fileMatches != 0 {
+		t.Fatalf("keys=%q/%q matches=%d/%d, want no keys and 1/0 matches", parentKey, attachmentKey, parentMatches, fileMatches)
+	}
+}
+
 // seedImportApplyCollections points the default store at a fresh HOME and
 // records keys as synced collections, so destination verification can pass.
 func seedImportApplyCollections(t *testing.T, keys ...string) {
