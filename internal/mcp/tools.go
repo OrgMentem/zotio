@@ -200,9 +200,17 @@ func validateReadOnlyQuery(query string) error {
 	return nil
 }
 
+// hasAdditionalSQLStatement reports whether a second executable statement
+// follows the first. It mirrors SQLite's tokenizer for every form that can
+// hide a semicolon or a quote character: '...' strings, "..." and `...`
+// identifiers (a doubled delimiter escapes), [...] identifiers (no escape;
+// the first ] closes), and -- and /* */ comments. A form missing here lets a
+// quote inside it desynchronise the scan, so `SELECT 1 AS [']; VACUUM INTO
+// '/tmp/x'` would look like one statement while SQLite runs both.
 func hasAdditionalSQLStatement(query string) bool {
-	inSingle := false
-	inDouble := false
+	// quote is the closing delimiter of the quoted form being scanned; zero
+	// outside one. Brackets close with ']' and cannot escape it.
+	var quote byte
 	inLineComment := false
 	inBlockComment := false
 	for i := 0; i < len(query); i++ {
@@ -221,20 +229,12 @@ func hasAdditionalSQLStatement(query string) bool {
 				inBlockComment = false
 				i++
 			}
-		case inSingle:
-			if c == '\'' {
-				if next == '\'' {
+		case quote != 0:
+			if c == quote {
+				if quote != ']' && next == quote {
 					i++
 				} else {
-					inSingle = false
-				}
-			}
-		case inDouble:
-			if c == '"' {
-				if next == '"' {
-					i++
-				} else {
-					inDouble = false
+					quote = 0
 				}
 			}
 		default:
@@ -245,10 +245,10 @@ func hasAdditionalSQLStatement(query string) bool {
 			case c == '/' && next == '*':
 				inBlockComment = true
 				i++
-			case c == '\'':
-				inSingle = true
-			case c == '"':
-				inDouble = true
+			case c == '\'' || c == '"' || c == '`':
+				quote = c
+			case c == '[':
+				quote = ']'
 			case c == ';':
 				return stripLeadingSQLNoise(query[i+1:]) != ""
 			}

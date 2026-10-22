@@ -113,6 +113,10 @@ func TestValidateReadOnlyQueryRejectsStackedStatements(t *testing.T) {
 		"SELECT 1; -- trailing comment",
 		"SELECT 1; /* trailing comment */",
 		"WITH r AS (SELECT ';') SELECT * FROM r;",
+		"SELECT 1 -- ; not a separator",
+		"SELECT 1 AS [a;b]",
+		"SELECT 1 AS `a;b`",
+		"SELECT '[' AS open_bracket",
 	}
 	for _, q := range allowed {
 		if err := validateReadOnlyQuery(q); err != nil {
@@ -127,6 +131,19 @@ func TestValidateReadOnlyQueryRejectsStackedStatements(t *testing.T) {
 		"WITH r AS (SELECT 1) SELECT * FROM r; DELETE FROM resources",
 		"SELECT ';'; UPDATE resources SET resource_type = 'items'",
 		"SELECT 1 /* ; */; DROP TABLE resources",
+		"SELECT 1 -- note\n; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT \"a\"; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT \"a\"\"b\"; ATTACH DATABASE '/tmp/x.db' AS x",
+		"SELECT 'it''s'; DELETE FROM resources",
+		// A quote inside a [bracket] or `backtick` identifier is data to SQLite,
+		// so it must not open a string that swallows the stacked statement.
+		"SELECT 1 AS ['']; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT 1 AS [']; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT 1 AS [\"]; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT 1 AS `'`; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT 1 AS `a``'`; ATTACH DATABASE '/tmp/x.db' AS x",
+		"SELECT 1 AS [a]; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT '[' AS open_bracket; VACUUM INTO '/tmp/exfil.db'",
 	}
 	for _, q := range rejected {
 		if err := validateReadOnlyQuery(q); err == nil {
