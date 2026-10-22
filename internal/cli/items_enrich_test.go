@@ -1190,6 +1190,31 @@ func TestApplyEnrichProposalMissingPDFLostResponseDoesNotDuplicate(t *testing.T)
 	}
 }
 
+// Deleting the attachment an earlier run created makes the same parent and URL
+// eligible again, but Zotero answers a replayed write token with 412 whether or
+// not the object it created still exists. A deliberate re-add must advance to
+// the next token instead of failing on the spent one.
+func TestApplyEnrichProposalMissingPDFReattachesAfterDeletion(t *testing.T) {
+	lib := &fakeLinkedURLLibrary{}
+	srv := httptest.NewServer(lib.handler("ABC"))
+	t.Cleanup(srv.Close)
+
+	for run := 1; run <= 3; run++ {
+		p := missingPDFProposal()
+		status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), newEnrichWriteClient(t, srv.URL), &p, &rootFlags{})
+		if err != nil || status != "applied" {
+			t.Fatalf("run %d = (%q, %v, %v), want applied", run, status, reason, err)
+		}
+		if len(lib.children) != 1 {
+			t.Fatalf("run %d: children = %d, want 1", run, len(lib.children))
+		}
+		lib.children = nil // the operator deletes the attachment
+	}
+	if len(lib.tokens) != 3 {
+		t.Fatalf("distinct write tokens = %d, want one fresh token per re-add", len(lib.tokens))
+	}
+}
+
 // A child that exists only on the write plane (trashed children excluded) is
 // found; the same URL on a trashed child does not block a fresh attachment.
 func TestApplyEnrichProposalMissingPDFIgnoresTrashedChild(t *testing.T) {

@@ -1340,15 +1340,27 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			if existing != "" {
 				return "no_op", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
 			}
-			token := writeToken("zotio.items.enrich.linked-url", p.Key, p.DownloadURL)
-			resp, _, err := writer.PostWithHeaders("/items", []map[string]any{p.Attachment}, map[string]string{"Zotero-Write-Token": token})
-			if err != nil {
+			baseToken := writeToken("zotio.items.enrich.linked-url", p.Key, p.DownloadURL)
+			var resp json.RawMessage
+			for generation := 0; ; generation++ {
+				var err error
+				resp, _, err = writer.PostWithHeaders("/items", []map[string]any{p.Attachment}, map[string]string{"Zotero-Write-Token": writeTokenGeneration(baseToken, generation)})
+				if err == nil {
+					break
+				}
 				var apiErr *client.APIError
 				if client.IsAmbiguousWriteError(err) || (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusPreconditionFailed) {
 					// The token may already have committed the child. Only the
 					// live children can say.
-					if existing, rerr := findLinkedURLAttachment(ctx, writer, p.Key, p.DownloadURL); rerr == nil && existing != "" {
+					existing, rerr := findLinkedURLAttachment(ctx, writer, p.Key, p.DownloadURL)
+					if rerr == nil && existing != "" {
 						return "applied", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
+					}
+					// A used token with no live attachment left means the
+					// earlier one was deleted: a deliberate re-add takes the
+					// next token.
+					if rerr == nil && apiErr != nil && generation+1 < writeTokenMaxGenerations {
+						continue
 					}
 					err = fmt.Errorf("creating linked-url attachment: %w; the write token for %s under %s was already submitted but no matching attachment was found; review the item in Zotero before re-running", err, p.DownloadURL, p.Key)
 				}
