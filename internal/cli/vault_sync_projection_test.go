@@ -197,6 +197,23 @@ func TestVaultTagNamesAndStrictScalars(t *testing.T) {
 		"x y":     "x y",
 		"é-ok":    "é-ok",
 		"nullish": "nullish",
+		"+1":      `"+1"`,
+		"+1.5":    `"+1.5"`,
+		"+.inf":   `"+.inf"`,
+		"-.inf":   `"-.inf"`,
+		".inf":    `".inf"`,
+		".NaN":    `".NaN"`,
+		"0x1F":    `"0x1F"`,
+		"0o17":    `"0o17"`,
+		"0b101":   `"0b101"`,
+		"017":     `"017"`,
+		"1_000":   `"1_000"`,
+		"+0x1":    `"+0x1"`,
+		"NULL":    `"NULL"`,
+		"OFF":     `"OFF"`,
+		"inf":     "inf",
+		"nan":     "nan",
+		"a+1":     "a+1",
 	} {
 		if got := yamlStrictScalar(in); got != want {
 			t.Errorf("yamlStrictScalar(%q) = %s, want %s", in, got, want)

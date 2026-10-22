@@ -1280,8 +1280,10 @@ func yamlScalar(s string) string {
 
 // yamlStrictScalar is yamlScalar for free-text values a YAML parser would
 // otherwise retype: a tag "2020" or "true" must stay a string in frontmatter,
-// not become a number or boolean. It also quotes values that start with a YAML
-// indicator or a digit (dates, hex, exponents) and values with control bytes.
+// not become a number or boolean. Every YAML 1.1/1.2 numeric form starts with
+// a sign, a digit, or '.', so a value starting with any of those is quoted
+// (signed numbers, dates, hex/octal/binary, exponents, .inf/.nan), as are
+// values with a YAML indicator or control bytes.
 func yamlStrictScalar(s string) string {
 	if q := yamlScalar(s); q != s {
 		return q
@@ -1290,7 +1292,7 @@ func yamlStrictScalar(s string) string {
 	case "true", "false", "yes", "no", "on", "off", "y", "n", "null":
 		return strconv.Quote(s)
 	}
-	if strings.ContainsRune("-?,.~=0123456789", rune(s[0])) || strings.IndexFunc(s, unicode.IsControl) >= 0 {
+	if strings.ContainsRune("+-?,.~=0123456789", rune(s[0])) || strings.IndexFunc(s, unicode.IsControl) >= 0 {
 		return strconv.Quote(s)
 	}
 	return s
