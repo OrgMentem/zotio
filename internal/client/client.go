@@ -1253,9 +1253,16 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// proactive rate limiting must honor context
-		// cancellation before dialing.
-		c.backoff.WaitContext(ctx)
-		c.limiter.WaitContext(ctx)
+		// cancellation before dialing. A Backoff deadline another response
+		// installs while this worker waits on the limiter must still hold, so
+		// recheck it after the limiter and take a fresh slot once it lapses.
+		for {
+			c.backoff.WaitContext(ctx)
+			c.limiter.WaitContext(ctx)
+			if ctx.Err() != nil || !c.backoff.Active() {
+				break
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, 0, nil, wrapAmbiguous(attempt, err)
 		}
