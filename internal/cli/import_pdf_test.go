@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,7 +50,10 @@ type fakeImportPDFAPI struct {
 	itemVersion     map[string]int
 
 	saveStandaloneCalls int
-	patchedItems        []string
+	// recognizeStatus, when non-zero, answers getRecognizedItem with that
+	// HTTP status instead of the recognized item.
+	recognizeStatus int
+	patchedItems    []string
 
 	srv *httptest.Server
 }
@@ -79,6 +83,10 @@ func (f *fakeImportPDFAPI) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"canRecognize":true}`))
 	case r.Method == http.MethodPost && r.URL.Path == "/connector/getRecognizedItem":
+		if f.recognizeStatus != 0 {
+			http.Error(w, "recognizer exploded", f.recognizeStatus)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"title": f.recognizedTitle, "itemType": f.recognizedType})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/items/top":
 		_ = json.NewEncoder(w).Encode(f.topItems)
@@ -654,5 +662,71 @@ func TestImportPDFAutoWithoutConnectorIsGeneric(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "local base URL") {
 		t.Fatalf("error = %q, want generic 'local base URL' message", msg)
+	}
+}
+
+// Zotero has already saved the standalone attachment when recognition fails, so
+// the run must report a committed conflict that keeps the session and journals
+// the write, not a clean failure that invites a second import.
+func TestImportPDFRecognitionFailureAfterSaveIsCommittedConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+
+	f := newFakeImportPDFAPI(t)
+	f.recognizeStatus = http.StatusInternalServerError
+	added := time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339)
+	f.topItems = []map[string]any{{
+		"key":  "ATT1",
+		"data": map[string]any{"key": "ATT1", "itemType": "attachment", "title": "late.pdf", "dateAdded": added},
+	}}
+
+	path := writeImportPDFFixture(t, t.TempDir(), "late.pdf")
+	flags := f.flags(t)
+	flags.yes = true
+	op := importPDFOp(testApplyCmd(), flags, f.conn(), path, "late.pdf", 1, "")
+	env, err := runMutation(context.Background(), flags, "import.pdf", []mutation.Op{op})
+	if err == nil || env.Result == nil || env.Result.Summary.Conflicts != 1 || env.Result.Summary.Failed != 0 {
+		t.Fatalf("result = %+v err=%v, want one conflict and no failed op", env.Result, err)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["committed"] != true || reason["status"] != "recognition_unknown" ||
+		reason["session"] == "" || reason["session"] == nil || reason["attachment_key"] != "ATT1" {
+		t.Fatalf("reason = %#v, want committed evidence with session and resolved key", env.Result.Items[0].Reason)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(entries) != 1 || entries[0].Ops[0].Status != "conflict" {
+		t.Fatalf("journal = %+v err=%v, want the committed save recorded", entries, listErr)
+	}
+	if f.saveStandaloneCalls != 1 {
+		t.Fatalf("saveStandaloneAttachment calls = %d, want 1", f.saveStandaloneCalls)
+	}
+}
+
+// Ctrl-C while the recognizer runs lands in the same arm.
+func TestImportPDFCancelDuringRecognitionIsCommittedConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeImportPDFAPI(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/connector/getRecognizedItem" {
+			// The body must be drained before the server notices the client hanging up.
+			_, _ = io.Copy(io.Discard, r.Body)
+			cancel()
+			<-r.Context().Done()
+			return
+		}
+		f.handle(w, r)
+	})
+
+	path := writeImportPDFFixture(t, t.TempDir(), "ctrlc.pdf")
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	op := importPDFOp(cmd, f.flags(t), f.conn(), path, "ctrlc.pdf", 1, "")
+	status, reason, err := op.Apply()
+	detail, ok := reason.(map[string]any)
+	if status != "conflict" || err == nil || !ok || detail["committed"] != true || detail["session"] == "" {
+		t.Fatalf("apply = %q, %#v, %v; want committed conflict with the session", status, reason, err)
 	}
 }

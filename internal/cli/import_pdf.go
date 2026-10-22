@@ -6,6 +6,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -313,13 +314,24 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 			importedAfter := time.Now().UTC().Add(-importPDFClockSkew)
 			canRecognize, err := activeConn.SaveStandaloneAttachment(cmd.Context(), sessionID, filepath.Base(path), localFileURL(path), "application/pdf", data)
 			if err != nil {
+				if errors.Is(err, connector.ErrCommitted) {
+					// Zotero answered 201 but the body was unusable: the
+					// attachment exists, so a clean failure would invite a
+					// second import of the same PDF.
+					result := importPDFResult{File: path, Session: sessionID, Status: "recognition_unknown"}
+					return importPDFCommittedConflict(flags, result, filepath.Base(path), importedAfter, opts, err)
+				}
 				return "failed", nil, err
 			}
 			result := importPDFResult{File: path, Session: sessionID, Status: "standalone", CanRecognize: canRecognize}
 			if canRecognize {
 				item, recognized, err := activeConn.GetRecognizedItem(cmd.Context(), sessionID)
 				if err != nil {
-					return "failed", nil, err
+					// The standalone attachment is already saved. A recognizer
+					// error, timeout or Ctrl-C cannot un-save it, so report the
+					// committed session instead of a clean failure.
+					result.Status = "recognition_unknown"
+					return importPDFCommittedConflict(flags, result, filepath.Base(path), importedAfter, opts, err)
 				}
 				if recognized {
 					result.Status = "recognized"
@@ -351,7 +363,7 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 				// The item exists but sits wherever the desktop pointed, so
 				// this is a committed conflict, never a clean failure that
 				// invites a second import.
-				return "conflict", result, filingErr
+				return "conflict", importPDFCommittedDetail(result, filingErr), filingErr
 			}
 
 			if opts.Collection == "" {
@@ -376,6 +388,35 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 		op.InvalidReason = fmt.Sprintf("PDF path %q is a directory; for a folder use `zotio import scan`", path)
 	}
 	return op
+}
+
+// importPDFCommittedConflict reports a PDF that Zotero already saved but whose
+// later steps failed. It resolves the item keys where it can and returns a
+// conflict whose reason carries `committed: true`, which is what makes the
+// run journal the write and tells the operator not to import the file again.
+func importPDFCommittedConflict(flags *rootFlags, result importPDFResult, filename string, importedAfter time.Time, opts importPDFOptions, cause error) (string, any, error) {
+	if opts.Collection != "" || opts.SessionCollection != "" {
+		result.CollectionNote = "not filed: the saved PDF's later steps failed, so the item was left where the desktop put it"
+	}
+	resolveImportPDFKeys(flags, &result, filename, importedAfter)
+	return "conflict", importPDFCommittedDetail(result, cause), cause
+}
+
+// importPDFCommittedDetail wraps result as a committed-write reason: the
+// importPDFResult fields plus the markers recordMutationJournal and journal
+// undo read from a map reason.
+func importPDFCommittedDetail(result importPDFResult, cause error) map[string]any {
+	detail := map[string]any{}
+	if raw, err := json.Marshal(result); err == nil {
+		_ = json.Unmarshal(raw, &detail)
+	}
+	if _, ok := detail["title"]; !ok {
+		detail["title"] = filepath.Base(result.File)
+	}
+	detail["via"] = "connector"
+	detail["committed"] = true
+	detail["message"] = fmt.Sprintf("Zotero already saved %s (session %s) but a later step failed: %v. Do not import it again; check the library for the saved item.", filepath.Base(result.File), result.Session, cause)
+	return detail
 }
 
 func isImportPDFDuplicate(scan scanResult) bool {
