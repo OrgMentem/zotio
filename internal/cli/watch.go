@@ -48,7 +48,9 @@ Add --workflow-on-change to run the workflow only after a cycle that changed
 the mirror: a row stored, rewritten with different content, or reaped because
 its object no longer exists upstream. An unchanged cycle logs that it skipped
 the workflow. A cycle whose sync failed, or in which any resource failed, never
-runs it; its changes wait for the next complete cycle.
+runs it; its changes wait for the next complete cycle, even when that cycle
+is a later watch process or --once run: the wait is recorded beside the local
+mirror and cleared only when the workflow runs.
 
 Add --health-check-preprints to --health to watch the arXiv preprints in the
 library for a published record. Each cycle looks up the preprints whose last
@@ -128,12 +130,34 @@ preprint-check fix.`,
 			//
 			// pending holds mirror changes no workflow has handled yet. A cycle that
 			// fails after storing rows still adds them, so the next complete cycle
-			// runs the workflow even when it finds nothing new itself.
-			var pending syncChangeSummary
+			// runs the workflow even when it finds nothing new itself. Under
+			// --workflow-on-change it is also persisted (watch_workflow_owed.go), so
+			// a --once run or a restart inherits it instead of reading "library
+			// unchanged".
+			var pending watchWorkflowOwed
+			var owedPath string
+			if workflowOnChange {
+				var pathErr error
+				if owedPath, pathErr = watchWorkflowOwedPath(workflowPath); pathErr != nil {
+					return pathErr
+				}
+				var loadErr error
+				if pending, loadErr = loadWatchWorkflowOwed(owedPath); loadErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] workflow marker unusable, treating the workflow as owed: %v\n", loadErr)
+				}
+				if pending.Unknown {
+					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] a previous watch stopped before its changes ran the workflow; it runs after the next complete cycle\n")
+				}
+			}
 			runCycle := func(ctx context.Context) error {
 				var summary *syncChangeSummary
 				if workflowOnChange {
 					summary = &syncChangeSummary{}
+					// Recorded before the sync can commit a row, so a kill inside
+					// the cycle still leaves the obligation behind.
+					if err := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, true); err != nil {
+						return fmt.Errorf("recording the workflow marker before the cycle: %w", err)
+					}
 				}
 				syncCmd := newSyncCmdWithSummary(flags, summary)
 				syncCmd.SilenceErrors, syncCmd.SilenceUsage = true, true
@@ -143,8 +167,13 @@ preprint-check fix.`,
 				err := syncCmd.ExecuteContext(ctx)
 				now := time.Now().UTC()
 				if summary != nil {
-					pending.Upserted += summary.Upserted
-					pending.Deleted += summary.Deleted
+					pending.add(summary)
+					if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: recording the workflow marker: %v\n", now.Format(time.RFC3339), saveErr)
+						if err == nil {
+							err = saveErr
+						}
+					}
 				}
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: %v\n", now.Format(time.RFC3339), err)
@@ -167,7 +196,13 @@ preprint-check fix.`,
 							fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: triggered workflow failed: %v\n", now.Format(time.RFC3339), werr)
 							return werr
 						}
-						pending = syncChangeSummary{}
+						pending = watchWorkflowOwed{}
+						if owedPath != "" {
+							if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: clearing the workflow marker: %v\n", now.Format(time.RFC3339), saveErr)
+								return saveErr
+							}
+						}
 					}
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
@@ -239,7 +274,7 @@ func watchSyncArgs(args []string) []string {
 // watchWorkflowSkipReason says why a successful cycle does not run the
 // workflow, or returns "" to run it. A nil summary is the default policy:
 // run after every successful cycle.
-func watchWorkflowSkipReason(summary *syncChangeSummary, pending syncChangeSummary) string {
+func watchWorkflowSkipReason(summary *syncChangeSummary, pending watchWorkflowOwed) string {
 	switch {
 	case summary == nil:
 		return ""

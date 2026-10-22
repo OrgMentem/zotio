@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -115,6 +116,7 @@ func woServe(t *testing.T, lib *woLibrary) {
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_HOME", "")
 	t.Setenv("ZOTIO_DEMO", "")
 }
@@ -272,5 +274,78 @@ func TestWatchWorkflowOnChangeRequiresWorkflow(t *testing.T) {
 	}
 	if got := lib.requests.Load(); got != 0 {
 		t.Fatalf("watch sent %d API requests, want none before the usage check", got)
+	}
+}
+
+// A cycle that commits rows but does not complete (items failed, a collection
+// was reaped) owes the workflow for those rows. A later watch process starts
+// with no memory, so the obligation has to survive on disk: a scheduled
+// --once run must not read the already-stored change as "library unchanged".
+func TestWatchWorkflowOnChangeOwedChangesSurviveAcrossProcesses(t *testing.T) {
+	lib := woSeededLibrary(t)
+	lib.mu.Lock()
+	lib.version = 11
+	delete(lib.collections, "CXLL3333")
+	lib.failItems = true
+	lib.mu.Unlock()
+	spec := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	flags := []string{"--workflow", spec, "--workflow-on-change"}
+
+	stderr, err := woRunWatch(t, flags...)
+	if err != nil {
+		t.Fatalf("partial cycle: %v; stderr=%s", err, stderr)
+	}
+	if strings.Contains(stderr, "workflow preview") || !strings.Contains(stderr, "workflow skipped") {
+		t.Fatalf("partial cycle must skip the workflow; stderr=%s", stderr)
+	}
+
+	// A new process, every resource healthy, nothing new upstream.
+	lib.mu.Lock()
+	lib.failItems = false
+	lib.mu.Unlock()
+	stderr, err = woRunWatch(t, flags...)
+	if err != nil {
+		t.Fatalf("healthy cycle: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "workflow preview") {
+		t.Fatalf("the owed workflow did not run after the next complete cycle; stderr=%s", stderr)
+	}
+
+	// Discharged: a third, still-unchanged process skips again.
+	stderr, err = woRunWatch(t, flags...)
+	if err != nil {
+		t.Fatalf("third cycle: %v; stderr=%s", err, stderr)
+	}
+	if strings.Contains(stderr, "workflow preview") || !strings.Contains(stderr, "library unchanged") {
+		t.Fatalf("an unchanged library ran an already-handled workflow; stderr=%s", stderr)
+	}
+}
+
+// A watcher killed inside a cycle leaves its in-flight marker. Rows it may have
+// stored were never counted, so the next process owes the workflow.
+func TestWatchWorkflowOnChangeRunsForACycleKilledMidway(t *testing.T) {
+	woSeededLibrary(t)
+	spec := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	owedPath, err := watchWorkflowOwedPath(spec)
+	if err != nil {
+		t.Fatalf("watchWorkflowOwedPath: %v", err)
+	}
+	if err := os.WriteFile(owedPath, []byte(`{"upserted":0,"deleted":0,"in_flight":true}`), 0o600); err != nil {
+		t.Fatalf("seeding the marker a killed process leaves: %v", err)
+	}
+
+	stderr, err := woRunWatch(t, "--workflow", spec, "--workflow-on-change")
+	if err != nil {
+		t.Fatalf("watch: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "workflow preview") {
+		t.Fatalf("the workflow owed by a killed cycle did not run; stderr=%s", stderr)
+	}
+	if _, statErr := os.Stat(owedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("marker still present after the workflow ran: %v", statErr)
 	}
 }
