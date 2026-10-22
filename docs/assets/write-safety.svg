@@ -217,7 +217,7 @@
     <rect x="218" y="512" width="138" height="84" rx="10" fill="var(--write-bg)" stroke="var(--write-line)" stroke-width="1.4"/>
     <text x="234" y="535" class="node-title" fill="var(--write-text)">REFUSES rest</text>
     <text x="234" y="557" class="small" fill="var(--write-text)">merges, deletes</text>
-    <text x="234" y="575" class="small" fill="var(--write-text)">field overwrites</text>
+    <text x="234" y="575" class="small" fill="var(--write-text)">other field edits</text>
     <text x="234" y="590" class="tiny" fill="var(--write-text)">loud, not silent</text>
   </g>
 

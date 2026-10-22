@@ -49,11 +49,14 @@ func newLibraryPrismaCmd(flags *rootFlags) *cobra.Command {
 		Short: "Report PRISMA 2020 identification-stage counts from the local store",
 		Long: `Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.
 
-The report counts records identified (including their source databases), duplicate
-records removed, and the records-after-deduplication input to screening. Screening
+The report counts records identified (including their source databases), the duplicate
+records that resolving the current duplicate clusters would remove, and the
+projected records-after-deduplication input to screening. The removal figures
+are a projection over the corpus as it is now, not a record of past
+deduplication. Screening
 itself is deliberately out of scope: use Rayyan, ASReview, or another screening tool
 for that stage. Run 'zotio items duplicates resolve' to actually remove duplicates
-before exporting the certified corpus.`,
+first; the projected removals fall to zero once the clusters are resolved.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
