@@ -1262,7 +1262,7 @@ func importApplyEntryTitle(entry importManifestEntry, item map[string]any) strin
 }
 
 // attachImportLinkedFile attaches absPath to parentKey as a linked_file child
-// through the same idempotent helper as `attachments add --mode linked-file`:
+// through the same idempotent helper as `attachments add --attach-mode linked-file`:
 // an existing child with that path is reused (created=false), and the create
 // carries a deterministic write token whose ambiguous or 412 answer is
 // reconciled against the parent's children. Re-applying a manifest therefore

@@ -1434,7 +1434,7 @@ func TestAttachmentsAddTerminalPreviewDescribesFileAndRoute(t *testing.T) {
 			[]string{path, "bytes, md5 ", "stored", "Zotero Web API upload", "cloud storage"}},
 		{"stored connector", "connector", []string{"add", "PARENTAB", path},
 			[]string{path, "bytes, md5 ", "stored", "temporary parent", "trashes the temporary parent"}},
-		{"linked file", "", []string{"add", "PARENTAB", path, "--mode", "linked-file"},
+		{"linked file", "", []string{"add", "PARENTAB", path, "--attach-mode", "linked-file"},
 			[]string{path, "linked-file", "no bytes are uploaded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1466,7 +1466,7 @@ func TestAttachmentsAddAfterDeletingTheAttachmentMintsANewToken(t *testing.T) {
 			f.rejectReusedTokens = true
 			setUploadTestEnv(t, f)
 			path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
-			args := []string{"add", "PARENTAB", path, "--mode", mode}
+			args := []string{"add", "PARENTAB", path, "--attach-mode", mode}
 
 			if env, stderr, err := runAttachmentsAdd(t, applyFlags(), args); err != nil || env.Result.Summary.Applied != 1 {
 				t.Fatalf("first add: %+v, %v, %s", env, err, stderr)
