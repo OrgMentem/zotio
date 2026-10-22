@@ -670,10 +670,28 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							}
 							defer func() { _ = connectorSource.Close() }()
 						}
-						res, err := routeCreateItemViaWithOptions(
-							cmd.Context(), flags, via, writeClient, item, importEntrySourceURL(entry, item),
-							collectionRequested, routeCreateOptions{preserveUnresolvedConnectorWrite: true},
-						)
+						var res itemCreateResult
+						if via == "web" {
+							// The parent goes out under the entry's write token,
+							// like every other Web create here, so a lost response
+							// replays as a refusal instead of a second parent.
+							if writeClient == nil {
+								return "failed", nil, fmt.Errorf("missing Web API write client")
+							}
+							createdKey, conflict, err := postImportApplyParent(writeClient, flags, entryNumber, entryTitle, item)
+							if err != nil {
+								if conflict != nil {
+									return "conflict", conflict, err
+								}
+								return "failed", nil, err
+							}
+							res = itemCreateResult{Via: "web", WebKey: createdKey}
+						} else {
+							res, err = routeCreateItemViaWithOptions(
+								cmd.Context(), flags, via, writeClient, item, importEntrySourceURL(entry, item),
+								collectionRequested, routeCreateOptions{preserveUnresolvedConnectorWrite: true},
+							)
+						}
 						if err != nil {
 							// routeCreateItem deliberately returns a POPULATED
 							// result alongside its error when the item was
@@ -754,22 +772,12 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						return "failed", nil, err
 					}
 
-					data, _, err := writeClient.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": createBatchWriteToken("zotio.import.apply", strconv.Itoa(entryNumber), item)})
+					createdKey, conflict, err := postImportApplyParent(writeClient, flags, entryNumber, entryTitle, item)
 					if err != nil {
-						// The token is a pure function of the manifest entry, so
-						// applying the same manifest replays the same token: an
-						// entry Zotero already committed is answered 412 instead
-						// of duplicated, and the entry reports the committed
-						// conflict below instead of inviting another replay.
-						if isCommittedCreateConflict(err) {
-							refusal := ambiguousCreateRefusal("import apply", fmt.Sprintf("manifest entry %d %q", entryNumber, entryTitle), err)
-							return "conflict", map[string]any{"committed": true, "title": entryTitle, "message": refusal.Error()}, refusal
+						if conflict != nil {
+							return "conflict", conflict, err
 						}
-						return "failed", nil, classifyAPIError(err, flags)
-					}
-					createdKey, ok := createdItemKey(data)
-					if !ok {
-						return "failed", nil, fmt.Errorf("could not read created item key from /items response")
+						return "failed", nil, err
 					}
 					// "key" is what the engine adopts as the journaled key, so
 					// `journal undo` can trash this item.
@@ -896,6 +904,29 @@ func prepareStoredCreate(entryNumber int, entryPath string) (storedUploadRequest
 // importApplyStoredEntry is one stored create manifest entry and, once the
 // shared connector session has run, that entry's own outcome.
 type importApplyStoredEntry struct {
+// postImportApplyParent creates one manifest entry's parent item through the
+// Web API. The write token is a pure function of the manifest entry, so
+// applying the same manifest replays the same token: an entry Zotero already
+// committed is answered 412 instead of duplicated. A lost response, 5xx or
+// rejected replay returns a committed-conflict detail with the refusal as its
+// error, never a clean failure that invites another replay. A nil detail with
+// an error is an ordinary failure.
+func postImportApplyParent(writeClient importApplyPoster, flags *rootFlags, entryNumber int, entryTitle string, item map[string]any) (string, map[string]any, error) {
+	data, _, err := writeClient.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": createBatchWriteToken("zotio.import.apply", strconv.Itoa(entryNumber), item)})
+	if err != nil {
+		if isCommittedCreateConflict(err) {
+			refusal := ambiguousCreateRefusal("import apply", fmt.Sprintf("manifest entry %d %q", entryNumber, entryTitle), err)
+			return "", map[string]any{"committed": true, "title": entryTitle, "message": refusal.Error()}, refusal
+		}
+		return "", nil, classifyAPIError(err, flags)
+	}
+	createdKey, ok := createdItemKey(data)
+	if !ok {
+		return "", nil, fmt.Errorf("could not read created item key from /items response")
+	}
+	return createdKey, nil, nil
+}
+
 	number    int
 	title     string
 	path      string

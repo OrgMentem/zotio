@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,6 +143,79 @@ func TestImportApplyReplayedWriteTokenRefusesDuplicate(t *testing.T) {
 }
 
 // An items create batch lost in transit must report a committed conflict with
+// The stored Web route used to POST the parent without a write token, so a
+// lost response and a rerun of the same manifest created a second parent. The
+// parent now goes out under the entry's deterministic token, the lost response
+// is a committed conflict, and no attachment work starts without a parent key.
+func TestImportApplyStoredWebLostParentResponseReplaysSameToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	var tokens []string
+	var attachmentPosts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/0/items" && r.Method == http.MethodPost {
+			token := r.Header.Get("Zotero-Write-Token")
+			tokens = append(tokens, token)
+			if token == "" {
+				t.Error("stored Web parent POST arrived without Zotero-Write-Token")
+			}
+			if len(tokens) == 1 {
+				// Zotero commits the parent, then the response is lost.
+				hj, _ := w.(http.Hijacker)
+				conn, _, _ := hj.Hijack()
+				_ = conn.Close()
+				return
+			}
+			http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/file") || strings.Contains(r.URL.Path, "/children") {
+			attachmentPosts.Add(1)
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	pdf := writeUploadFixture(t, "stored-web.pdf", []byte("%PDF-1.4\nstored web\n%%EOF"))
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Stored Web Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Stored Web Paper"},
+		}},
+	})
+	for run := 1; run <= 2; run++ {
+		env, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", yes: true, maxChanges: -1},
+			[]string{"--attach-mode", "stored", manifestPath})
+		if err == nil || env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "conflict" {
+			t.Fatalf("run %d: result = %+v err=%v, want one committed conflict", run, env.Result, err)
+		}
+		detail, _ := env.Result.Items[0].Reason.(map[string]any)
+		if detail["committed"] != true || !strings.Contains(fmt.Sprint(detail["message"]), "refusing automatic retry") {
+			t.Fatalf("run %d: reason = %#v, want committed refusal evidence", run, env.Result.Items[0].Reason)
+		}
+		if journal, ok := env.Journal.(map[string]any); !ok || journal["run_id"] == nil {
+			t.Fatalf("run %d: ambiguous stored parent has no journal entry: %v", run, env.Journal)
+		}
+	}
+	// The client may itself replay the dropped POST; every send, and every
+	// rerun, must carry the same token.
+	if len(tokens) < 3 {
+		t.Fatalf("tokens = %q, want the first run and the rerun both to POST", tokens)
+	}
+	for _, token := range tokens[1:] {
+		if token != tokens[0] {
+			t.Fatalf("tokens = %q, want the same token replayed on every send and rerun", tokens)
+		}
+	}
+	if attachmentPosts.Load() != 0 {
+		t.Fatalf("attachment requests = %d, want none without a confirmed parent", attachmentPosts.Load())
+	}
+}
+
 // the deterministic write token attached, not a plain transport failure.
 func TestItemsCreateLostBatchResponseReportsCommittedConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
