@@ -11,6 +11,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -62,21 +63,32 @@ type pageContent struct {
 // found in the page metadata, otherwise embedded page metadata, otherwise a
 // bare webpage item. The returned string describes the source used. A
 // bot-challenge page is a hard error: its interstitial title must never
-// become an item.
+// become an item. So is a lookup that failed (CrossRef outage or throttle,
+// blocked or erroring landing page) when nothing else resolved: the bare
+// webpage fallback is for a URL with no metadata, not for one whose metadata
+// could not be read.
 func buildImportItemFromURL(ctx context.Context, httpClient *http.Client, rawURL string) (map[string]any, string, error) {
 	accessDate := time.Now().Format("2006-01-02")
+	var failures []string
 
 	if doi := extractDOIFromURL(rawURL); doi != "" {
-		if item, err := crossRefItemFromDOI(ctx, httpClient, doi); err == nil {
+		item, err := crossRefItemFromDOI(ctx, httpClient, doi)
+		if err == nil {
 			item["url"] = rawURL
 			item["accessDate"] = accessDate
 			return item, "CrossRef (DOI " + doi + ")", nil
 		}
+		if !crossRefLookupAbsent(err) {
+			failures = append(failures, err.Error())
+		}
 	}
 
-	page, ok := fetchPageMeta(ctx, httpClient, rawURL)
+	page, ok, fetchErr := fetchPageMeta(ctx, httpClient, rawURL)
+	if fetchErr != nil {
+		failures = append(failures, fetchErr.Error())
+	}
 	if !ok {
-		return fallbackWebpageItem(rawURL, accessDate), "fallback (no metadata)", nil
+		return fallbackOrFailure(rawURL, accessDate, failures)
 	}
 	if reason := challengeReason(page); reason != "" {
 		return nil, "", fmt.Errorf("import url: page at %s looks like a bot challenge (%s); not importing its placeholder title", rawURL, reason)
@@ -86,7 +98,11 @@ func buildImportItemFromURL(ctx context.Context, httpClient *http.Client, rawURL
 	primary := selectPrimaryJSONLD(ldDocs, page.metas, rawURL)
 	embedded := itemFromEmbeddedMeta(page, primary, rawURL, accessDate)
 	if doi := extractDOIFromPageMeta(page.metas, primary); doi != "" {
-		if item, err := crossRefItemFromDOI(ctx, httpClient, doi); err == nil {
+		item, err := crossRefItemFromDOI(ctx, httpClient, doi)
+		if err != nil && !crossRefLookupAbsent(err) {
+			failures = append(failures, err.Error())
+		}
+		if err == nil {
 			item["url"] = rawURL
 			item["accessDate"] = accessDate
 			// Crossref owns the record, but it can leave volume, issue, pages
@@ -102,7 +118,35 @@ func buildImportItemFromURL(ctx context.Context, httpClient *http.Client, rawURL
 		return embedded, "embedded metadata", nil
 	}
 
+	return fallbackOrFailure(rawURL, accessDate, failures)
+}
+
+// fallbackOrFailure returns the bare webpage item only when every lookup
+// answered "no metadata". If any lookup failed, the absence is unproven, so
+// the create is refused and a retry can still find the real record.
+func fallbackOrFailure(rawURL, accessDate string, failures []string) (map[string]any, string, error) {
+	if len(failures) > 0 {
+		return nil, "", apiErr(fmt.Errorf("import url: could not resolve metadata for %s (%s); not creating a bare webpage item, retry later", rawURL, strings.Join(failures, "; ")))
+	}
 	return fallbackWebpageItem(rawURL, accessDate), "fallback (no metadata)", nil
+}
+
+// crossRefNoTitleError marks a CrossRef answer that holds no usable record.
+type crossRefNoTitleError struct{ doi string }
+
+func (e *crossRefNoTitleError) Error() string {
+	return fmt.Sprintf("invalid CrossRef response for DOI %q: missing message title", e.doi)
+}
+
+// crossRefLookupAbsent reports whether err means CrossRef has no record for
+// the DOI (404/410 or an empty message) rather than a failed lookup.
+func crossRefLookupAbsent(err error) bool {
+	var noTitle *crossRefNoTitleError
+	if errors.As(err, &noTitle) {
+		return true
+	}
+	var status *httpStatusError
+	return errors.As(err, &status) && (status.Code == http.StatusNotFound || status.Code == http.StatusGone)
 }
 
 func fallbackWebpageItem(rawURL, accessDate string) map[string]any {
@@ -135,39 +179,42 @@ func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi strin
 		return nil, fmt.Errorf("fetching CrossRef metadata: %w", err)
 	}
 	if strings.TrimSpace(firstCrossRefString(resp.Message.Title, "")) == "" {
-		return nil, fmt.Errorf("invalid CrossRef response for DOI %q: missing message title", doi)
+		return nil, &crossRefNoTitleError{doi: doi}
 	}
 	return crossRefItemFromWork(resp.Message, doi), nil
 }
 
 // fetchPageMeta downloads an HTML page (size-capped) and returns its meta tags
 // keyed by name/property, the <title>, and the raw body for JSON-LD and
-// challenge checks. Returns ok=false for non-HTML responses (e.g. a raw PDF),
-// empty pages, or transport errors.
-func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) (pageContent, bool) {
+// challenge checks. ok=false means no usable page: a non-HTML response (e.g. a
+// raw PDF), an empty page, or a rejected URL, all of which are plain absence
+// of metadata with a nil error. A non-nil error means the fetch itself failed
+// (transport error, unreadable body, 5xx/429, or a 401/403/408 block), so the
+// page's absence of metadata is unproven.
+func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) (pageContent, bool, error) {
 	// URL imports may fetch
 	// arbitrary user input, so metadata scraping is limited to public HTTP(S)
 	// endpoints and never probes loopback/private/link-local services.
 	if err := validateExternalHTTPURL(rawURL, false); err != nil {
-		return pageContent{}, false
+		return pageContent{}, false, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return pageContent{}, false
+		return pageContent{}, false, nil
 	}
 	req.Header.Set("User-Agent", "zotio/1.0.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	resp, err := externalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
-		return pageContent{}, false
+		return pageContent{}, false, fmt.Errorf("page fetch: %w", err)
 	}
 	defer resp.Body.Close()
 	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "html") {
-		return pageContent{}, false
+		return pageContent{}, false, nil
 	}
 	body, err := readCappedExternalBody(resp.Body, 1<<20)
 	if err != nil {
-		return pageContent{}, false
+		return pageContent{}, false, fmt.Errorf("page fetch: %w", err)
 	}
 	metas, title := parseHTMLMeta(string(body))
 	page := pageContent{metas: metas, title: title, body: string(body), status: resp.StatusCode, headers: resp.Header}
@@ -176,16 +223,30 @@ func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) 
 		// body. Hand a challenge back so the caller refuses it; any other
 		// non-2xx page carries no metadata worth trusting.
 		if challengeReason(page) != "" {
-			return page, true
+			return page, true, nil
 		}
-		return pageContent{}, false
+		if pageStatusIsFailure(resp.StatusCode) {
+			return pageContent{}, false, fmt.Errorf("page fetch: HTTP %d", resp.StatusCode)
+		}
+		return pageContent{}, false, nil
 	}
 	// A challenge page with no metas and no title (AWS WAF serves an empty
 	// title) still returns ok: the caller must refuse it, not fall back.
 	if len(metas) == 0 && title == "" && !hasJSONLDBlock(page.body) && challengeReason(page) == "" {
-		return pageContent{}, false
+		return pageContent{}, false, nil
 	}
-	return page, true
+	return page, true, nil
+}
+
+// pageStatusIsFailure reports whether a non-2xx page status means the server
+// could not or would not answer (outage, throttle, block) rather than that the
+// page does not exist.
+func pageStatusIsFailure(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return status >= 500
 }
 
 // parseHTMLMeta extracts <meta> name/property -> content values (repeated keys

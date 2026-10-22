@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -346,5 +347,57 @@ func TestCreatorsFromMetaSemicolonSeparatedAuthors(t *testing.T) {
 	}
 	if creators[1]["lastName"] != "Shazeer" || creators[1]["firstName"] != "Noam" {
 		t.Errorf("creator[1] = %v, want Shazeer, Noam", creators[1])
+	}
+}
+
+// A failed lookup is not proof of absent metadata: only real absence may fall
+// back to a bare webpage item.
+func TestBuildImportItemFromURL_LookupFailureIsNotAbsence(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
+	const bareHTML = `<!doctype html><html><body>no metadata here</body></html>`
+	for _, tc := range []struct {
+		name         string
+		path         string
+		crossRefCode int
+		pageCode     int
+		pageBody     string
+		wantErr      string // substring; empty means success
+		wantSource   string
+	}{
+		{"crossref 503 and page 403", "/doi/10.1234/abc", 503, 403, bareHTML, "HTTP 503", ""},
+		{"crossref 429 and page ok without metadata", "/doi/10.1234/abc", 429, 200, bareHTML, "HTTP 429", ""},
+		{"crossref 404 and page 403", "/doi/10.1234/abc", 404, 403, bareHTML, "HTTP 403", ""},
+		{"no DOI and page 500", "/article", 0, 500, bareHTML, "HTTP 500", ""},
+		{"crossref 404 and bare page", "/doi/10.1234/abc", 404, 200, bareHTML, "", "fallback (no metadata)"},
+		{"crossref 410 and page 404", "/doi/10.1234/abc", 410, 404, bareHTML, "", "fallback (no metadata)"},
+		{"crossref 503 but page has metadata", "/doi/10.1234/abc", 503, 200, citationHTML, "", "embedded metadata"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			crsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.crossRefCode)
+			}))
+			defer crsrv.Close()
+			withBase(t, &enrichCrossRefBase, crsrv.URL)
+			pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(tc.pageCode)
+				_, _ = w.Write([]byte(tc.pageBody))
+			}))
+			defer pagesrv.Close()
+
+			item, source, err := buildImportItemFromURL(context.Background(), http.DefaultClient, pagesrv.URL+tc.path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || ExitCode(err) != 5 {
+					t.Fatalf("err = %v (exit %d), want API error containing %q", err, ExitCode(err), tc.wantErr)
+				}
+				if item != nil {
+					t.Fatalf("item = %v, want none", item)
+				}
+				return
+			}
+			if err != nil || source != tc.wantSource {
+				t.Fatalf("source = %q err = %v, want %q", source, err, tc.wantSource)
+			}
+		})
 	}
 }

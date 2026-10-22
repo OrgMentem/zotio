@@ -2523,6 +2523,12 @@ func reconstructAbstract(idx map[string][]int) string {
 	return strings.TrimSpace(b.String())
 }
 
+// httpStatusError is getJSON's error for a non-2xx answer, kept typed so a
+// caller can tell a missing record (404) from a provider failure.
+type httpStatusError struct{ Code int }
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+
 // getJSON performs a GET and decodes a JSON body, treating non-2xx as an error.
 func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -2537,7 +2543,7 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return &httpStatusError{Code: resp.StatusCode}
 	}
 	// Cap provider JSON bodies
 	// before decoding so a hostile CrossRef/Unpaywall/OpenAlex-compatible server
