@@ -2625,9 +2625,11 @@ What it reverses:
     restored, and a field you edited since is left as it is
   - created items (items create, import): the recorded items are moved to the
     Zotero trash, which is not a permanent delete; restore them from the trash
+  - trashed items (items delete) are restored from the trash, and restored
+    items (items restore) are trashed again
 
 What it refuses, and reports in "refused": field overwrites with no captured
-previous value, merges, deletions, renames that replace one tag or collection
+previous value, merges, permanent deletes, renames that replace one tag or collection
 with another, and creates whose Zotero key was not recorded. A refusal changes
 nothing, so review the entry with "journal show <run-id>" before you rely on a
 full reversal.

@@ -411,9 +411,11 @@ What it reverses:
     restored, and a field you edited since is left as it is
   - created items (items create, import): the recorded items are moved to the
     Zotero trash, which is not a permanent delete; restore them from the trash
+  - trashed items (items delete) are restored from the trash, and restored
+    items (items restore) are trashed again
 
 What it refuses, and reports in "refused": field overwrites with no captured
-previous value, merges, deletions, renames that replace one tag or collection
+previous value, merges, permanent deletes, renames that replace one tag or collection
 with another, and creates whose Zotero key was not recorded. A refusal changes
 nothing, so review the entry with "journal show <run-id>" before you rely on a
 full reversal.
@@ -455,8 +457,11 @@ entry it lists.`,
 					if writeClient == nil {
 						return "failed", "no write client", errors.New("no write client")
 					}
-					if inv.Kind == "undo.item_create" {
+					switch inv.Kind {
+					case "undo.item_create", "undo.item_restore":
 						return applyUndoCreate(writeClient, path)
+					case "undo.item_trash":
+						return applyUndoRestore(writeClient, path)
 					}
 					status, detail, landed, err := applyUndoMembership(writeClient, path, changes)
 					effective = landed
@@ -558,6 +563,64 @@ func applyUndoCreate(c *client.Client, path string) (string, any, error) {
 		detail = map[string]any{"deleted": true}
 	}
 	return status, detail, nil
+}
+
+// applyUndoRestore takes an item out of the trash, guarded by a version read
+// from the write plane. An item that is gone or no longer trashed is a no-op.
+func applyUndoRestore(c *client.Client, path string) (string, any, error) {
+	body, version, err := c.GetFromWriteBaseWithVersion(path, nil)
+	if err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return "no_op", map[string]any{
+				"code":    "item_gone",
+				"message": "item no longer exists on the write plane; nothing to restore",
+			}, nil
+		}
+		return "failed", err.Error(), err
+	}
+	if version <= 0 {
+		err := fmt.Errorf("reading item version: response did not include a version")
+		return "failed", err.Error(), err
+	}
+	if !itemIsTrashed(body) {
+		return "no_op", map[string]any{
+			"code":    "already_restored",
+			"message": "item is already restored (not in the trash)",
+		}, nil
+	}
+	status, detail, err := patchWithVersionGuard(c, path, map[string]any{"deleted": 0}, version)
+	if err != nil {
+		return status, detail, err
+	}
+	if detail == nil {
+		detail = map[string]any{"deleted": false}
+	}
+	return status, detail, nil
+}
+
+// itemIsTrashed reports whether an item response marks the item as trashed,
+// with the flag at the top level or under data.
+func itemIsTrashed(body json.RawMessage) bool {
+	var item struct {
+		Deleted any `json:"deleted"`
+		Data    struct {
+			Deleted any `json:"deleted"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &item) != nil {
+		return true
+	}
+	truthy := func(v any) bool {
+		switch t := v.(type) {
+		case bool:
+			return t
+		case float64:
+			return t != 0
+		}
+		return false
+	}
+	return truthy(item.Deleted) || truthy(item.Data.Deleted)
 }
 
 // applyUndoMembership re-reads the item and applies the inverse changes in a

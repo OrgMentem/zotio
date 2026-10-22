@@ -103,7 +103,9 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		// instead: without this, `items trash` could not see what `items delete`
 		// had just trashed, and a permanent delete left a row that offline reads
 		// still served and every count still included.
-		switch kindByOp[it.OpID] {
+		// Undoing a trash is a restore and undoing a restore is a trash, so the
+		// undo kinds replay through the same mirror cases.
+		switch undoKindToMirrorKind(kindByOp[it.OpID]) {
 		case "item_create":
 			// A create has no cached row to replay onto, so the generic path
 			// below bails out and the item stayed invisible to
@@ -997,4 +999,16 @@ func pendingChangesWithWas(db *store.Store, key string, changes []mutation.Chang
 		}
 	}
 	return entries
+}
+
+// undoKindToMirrorKind maps the journal-undo kinds for trash and restore to the
+// kind whose mirror replay they share; every other kind passes through.
+func undoKindToMirrorKind(kind string) string {
+	switch kind {
+	case "undo.item_trash":
+		return "item_restore"
+	case "undo.item_restore":
+		return "item_trash"
+	}
+	return kind
 }

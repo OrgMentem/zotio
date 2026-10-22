@@ -225,3 +225,27 @@ func TestInverseOpsReplaysRecordedRevert(t *testing.T) {
 		t.Fatalf("inverse changes = %+v, want the recorded revert verbatim", inverse[0].Changes)
 	}
 }
+
+func TestInverseOpsReversesTrashAndRestore(t *testing.T) {
+	entry := JournalEntry{Ops: []JournalOp{
+		{ID: "t", Key: "K1", Kind: "item_trash", Status: "applied", Changes: []Change{{Field: "deleted", Add: true}}},
+		{ID: "r", Key: "K2", Kind: "item_restore", Status: "applied", Changes: []Change{{Field: "deleted", Remove: true}}},
+		{ID: "p", Key: "K3", Kind: "item_delete", Status: "applied", Changes: []Change{{Field: "deleted", Add: true}}},
+		{ID: "m", Key: "K4", Kind: "duplicate_merge", Status: "applied", Changes: []Change{{Field: "deleted", Add: 1}}},
+	}}
+	inverse, refused := InverseOps(entry)
+	if len(inverse) != 2 || len(refused) != 2 {
+		t.Fatalf("inverse=%+v refused=%+v, want 2 and 2", inverse, refused)
+	}
+	if inverse[0].Kind != "undo.item_trash" || inverse[0].Key != "K1" || inverse[0].Changes[0] != (Change{Field: "deleted", Remove: true}) {
+		t.Errorf("trash inverse = %+v", inverse[0])
+	}
+	if inverse[1].Kind != "undo.item_restore" || inverse[1].Key != "K2" || inverse[1].Changes[0] != (Change{Field: "deleted", Add: true}) {
+		t.Errorf("restore inverse = %+v", inverse[1])
+	}
+	for _, r := range refused {
+		if r.Key != "K3" && r.Key != "K4" {
+			t.Errorf("unexpected refusal %+v", r)
+		}
+	}
+}

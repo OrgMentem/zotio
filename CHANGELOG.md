@@ -4,6 +4,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed
+
+- **`journal undo` reverses `items delete` (trash) and `items restore`.**
+  A trash run is undone by a version-guarded restore, and a restore run by a
+  trash. An item already restored or gone is a no-op with a reason. Permanent
+  deletes and merges are still refused. Older journal entries become undoable.
+
 ## [0.30.0] — 2026-10-22
 
 ### Added

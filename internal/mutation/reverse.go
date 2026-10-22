@@ -109,6 +109,26 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 			})
 			continue
 		}
+		// Trash and restore are a lossless toggle of one flag, so each inverts
+		// by kind. "deleted" stays out of reversibleFields: a permanent
+		// item_delete records the same field and must keep refusing.
+		if op.Kind == "item_trash" || op.Kind == "item_restore" {
+			if op.Key == "" {
+				refused = append(refused, ReversalRefusal{OpID: op.ID, Key: op.Key, Kind: op.Kind, Reason: "item key was not recorded"})
+				continue
+			}
+			ch := Change{Field: "deleted", Add: true}
+			if op.Kind == "item_trash" {
+				ch = Change{Field: "deleted", Remove: true}
+			}
+			inverse = append(inverse, Op{
+				ID:      "undo:" + op.ID,
+				Key:     op.Key,
+				Kind:    "undo." + op.Kind,
+				Changes: []Change{ch},
+			})
+			continue
+		}
 		// An op that captured its own inverse while it wrote (a field's prior
 		// value, the Extra line it appended) is reversed from that record: its
 		// planned Changes cannot be inverted on their own.
