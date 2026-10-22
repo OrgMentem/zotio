@@ -87,20 +87,53 @@ func TestInverseOpsRefusesCommittedConflict(t *testing.T) {
 		}
 	}
 }
-func TestInverseOpsTrashesCreatedItem(t *testing.T) {
-	entry := JournalEntry{Ops: []JournalOp{{
-		ID: "create", Key: "REALKEY1", Kind: "item_create", Status: "applied",
-		Changes: []Change{{Field: "source", Add: "manual"}, {Field: "item", Add: map[string]any{"itemType": "book"}}},
-	}}}
-	inverse, refused := InverseOps(entry)
-	if len(refused) != 0 {
-		t.Fatalf("create refusals = %+v, want none", refused)
-	}
-	if len(inverse) != 1 || inverse[0].Key != "REALKEY1" || inverse[0].Kind != "undo.item_create" {
-		t.Fatalf("create inverse = %+v, want undo.item_create on REALKEY1", inverse)
-	}
-	if len(inverse[0].Changes) != 1 || inverse[0].Changes[0].Field != "deleted" {
-		t.Fatalf("create inverse changes = %+v, want deleted trash change", inverse[0].Changes)
+
+// A create is undone through its confirmed Zotero key. An applied create whose
+// key was never recorded (a connector correlation id that no library lookup
+// resolved) has nothing safe to trash, so it is refused with recovery guidance
+// instead of becoming an undo op aimed at an empty key.
+func TestInverseOpsCreateUndoNeedsConfirmedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		key         string
+		wantInverse bool
+	}{
+		{name: "confirmed key", key: "REALKEY1", wantInverse: true},
+		{name: "no recorded key", key: "", wantInverse: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := JournalEntry{Ops: []JournalOp{{
+				ID: "create", Key: tc.key, Kind: "item_create", Status: "applied",
+				Changes: []Change{{Field: "source", Add: "manual"}, {Field: "item", Add: map[string]any{"itemType": "book"}}},
+			}}}
+			inverse, refused := InverseOps(entry)
+
+			if tc.wantInverse {
+				if len(refused) != 0 {
+					t.Fatalf("create refusals = %+v, want none", refused)
+				}
+				if len(inverse) != 1 || inverse[0].Key != "REALKEY1" || inverse[0].Kind != "undo.item_create" {
+					t.Fatalf("create inverse = %+v, want undo.item_create on REALKEY1", inverse)
+				}
+				if len(inverse[0].Changes) != 1 || inverse[0].Changes[0].Field != "deleted" || inverse[0].Changes[0].Add != true {
+					t.Fatalf("create inverse changes = %+v, want a deleted=true trash change", inverse[0].Changes)
+				}
+				return
+			}
+			if len(inverse) != 0 {
+				t.Fatalf("inverse = %+v, want no undo op aimed at an unconfirmed item", inverse)
+			}
+			if len(refused) != 1 {
+				t.Fatalf("refused = %+v, want exactly one refusal", refused)
+			}
+			got := refused[0]
+			if got.OpID != "create" || got.Kind != "item_create" || got.Key != "" {
+				t.Fatalf("refusal = %+v, want the original op id and kind with its empty key", got)
+			}
+			if !strings.Contains(got.Reason, "key was not recorded") {
+				t.Fatalf("refusal reason = %q, want it to say the created key was not recorded", got.Reason)
+			}
+		})
 	}
 }
 
