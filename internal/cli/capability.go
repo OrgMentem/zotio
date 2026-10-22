@@ -232,6 +232,8 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"collections move":         {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"collections delete":       {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"tags rename":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"tags delete":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"tags prune":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"tags audit fix":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"reading-list add":         {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"reading-list start":       {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},

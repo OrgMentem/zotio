@@ -3332,6 +3332,22 @@ zotio tags audit fix --yes
 | `--keys-from` | `string` |  | Read item keys from a file or '-' for stdin (the `tags audit --json` finding envelope is accepted directly), then rename tags only on those items |
 | `--prefer` | `string` | `frequency` | Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there. |
 
+### `zotio tags delete`
+
+Delete tags by removing them from every item that carries them
+
+Delete one or more tags by removing each from every item that carries it. Each carrier is one version-guarded item write, so the run is previewed by default, journaled, and undone with `journal undo`. Zotero's DELETE /tags endpoint is never called.
+
+```
+zotio tags delete <name>... [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--automatic-only` | `bool` | `false` | Remove only Zotero automatic tags (type 1) with this name; leave manual tags alone |
+| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. |
+| `--page-size` | `int` | `100` | Items to fetch per page while selecting carriers of the tag (1-100) |
+
 ### `zotio tags get`
 
 Get a specific tag by name
@@ -3378,6 +3394,22 @@ zotio tags list --query machine --limit 20
 | `--query` | `string` |  | Filter tags by name substring |
 | `--query-mode` | `string` | `contains` | Tag query mode: contains or startsWith |
 | `--start` | `int` | `0` | Pagination offset |
+
+### `zotio tags prune`
+
+Delete automatic tags carried by fewer than N items
+
+Find automatic (type 1) tags carried by fewer than --min-items items in the local mirror and remove them from their carriers. Without --yes the command only lists the candidates, from the mirror alone, with no network request. With --yes each carrier is one version-guarded item write, journaled and undone with `journal undo`.
+
+```
+zotio tags prune --automatic [--min-items N] [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--automatic` | `bool` | `false` | Prune automatic (type 1) tags; required |
+| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. |
+| `--min-items` | `int` | `2` | Prune automatic tags carried by fewer than this many items |
 
 ### `zotio tags rename`
 

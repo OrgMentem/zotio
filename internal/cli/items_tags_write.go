@@ -77,6 +77,16 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if err != nil {
 		return usageErr(err)
 	}
+	return runTagsMutationForKeys(cmd, flags, operation, kind, tagNames, keys, add, automatic, batch)
+}
+
+// runTagsMutationForKeys plans and applies one tag add/remove op per key. It is
+// the shared builder behind `items tags add|remove`, `tags delete` and
+// `tags prune`, so preview, --yes, --max-changes, --batch, journaling and
+// mirror write-through cannot drift between them. tagNames is already
+// normalised.
+func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kind string, tagNames, keys []string, add, automatic, batch bool) error {
+	var err error
 	// Checked before the write route is resolved, so a preview cannot succeed
 	// for a flag set the apply refuses, and the refusal cannot be pre-empted by
 	// a route or auth error.

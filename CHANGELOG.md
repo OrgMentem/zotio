@@ -4,6 +4,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+
+- **`tags delete` and `tags prune` finish the tag hygiene loop.** `zotio tags
+  delete <name>... [--automatic-only] [--batch]` removes a tag from every item
+  that carries it, walking all `/items?tag=` pages and writing one
+  version-guarded `tag_remove` per carrier exactly like `items tags remove`
+  (preview by default, `--yes`, `--max-changes`, `--batch`, journaled, undone
+  with `journal undo`, mirror updated). A tag no item carries reports a clear
+  no-carriers reason instead of an empty plan. `zotio tags prune --automatic
+  [--min-items N]` (default 2) lists automatic tags carried by fewer than N
+  items from the local mirror alone, with no network request; with `--yes` it
+  removes them through the same path. Neither command calls Zotero's
+  `DELETE /tags`, which bypasses versions, the journal, and the mirror.
+
 ### Changed
 
 - **`journal undo` reverses `items delete` (trash) and `items restore`.**

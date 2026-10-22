@@ -3795,6 +3795,60 @@
     }
   },
   {
+    "name": "tags_delete",
+    "description": "Delete one or more tags by removing each from every item that carries it. Each carrier is one version-guarded item write, so the run is previewed by default, journaled, and undone with `journal undo`. Zotero's DELETE /tags endpoint is never called.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "automatic-only": {
+          "description": "Remove only Zotero automatic tags (type 1) with this name; leave manual tags alone (default: false)",
+          "type": "boolean"
+        },
+        "batch": {
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "page-size": {
+          "description": "Items to fetch per page while selecting carriers of the tag (1-100) (default: 100)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "tags_get",
     "description": "Get a specific tag by name",
     "inputSchema": {
@@ -3842,6 +3896,60 @@
         "start": {
           "description": "Pagination offset (default: 0)",
           "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tags_prune",
+    "description": "Find automatic (type 1) tags carried by fewer than --min-items items in the local mirror and remove them from their carriers. Without --yes the command only lists the candidates, from the mirror alone, with no network request. With --yes each carrier is one version-guarded item write, journaled and undone with `journal undo`.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "automatic": {
+          "description": "Prune automatic (type 1) tags; required (default: false)",
+          "type": "boolean"
+        },
+        "batch": {
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "min-items": {
+          "description": "Prune automatic tags carried by fewer than this many items (default: 2)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
         }
       },
       "required": [],

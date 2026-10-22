@@ -17,5 +17,7 @@ func newTagsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newTagsAuditCmd(flags))
 	cmd.AddCommand(newTagsInventoryCmd(flags))
 	cmd.AddCommand(newTagsRenameCmd(flags))
+	cmd.AddCommand(newTagsDeleteCmd(flags))
+	cmd.AddCommand(newTagsPruneCmd(flags))
 	return cmd
 }

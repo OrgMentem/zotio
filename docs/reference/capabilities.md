@@ -131,9 +131,11 @@ The machine-readable registry every command is classified against — read vs. w
 | `sync` | sync |  |  |  |
 | `tags audit` | read |  |  | `synced_store` |
 | `tags audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
+| `tags delete` | write | `web_api` |  | `web_api_key` |
 | `tags get` | read |  |  |  |
 | `tags inventory` | read |  |  | `synced_store` |
 | `tags list` | read |  |  |  |
+| `tags prune` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `tags rename` | write | `web_api` |  | `web_api_key` |
 | `tail` | read |  |  |  |
 | `vault audit` | read |  |  |  |
