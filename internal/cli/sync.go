@@ -766,18 +766,45 @@ func isSchemaSyncResource(resource string) bool {
 
 type dependentSchemaSyncSpec struct {
 	endpoint string
-	get      func(*store.Store, string) (json.RawMessage, error)
+	// member names the string property every element of the endpoint's array
+	// carries: the field or creator type the row exists to list.
+	member string
+	get    func(*store.Store, string) (json.RawMessage, error)
 }
 
 var dependentSchemaSyncResources = map[string]dependentSchemaSyncSpec{
 	"schema-item-type-fields": {
 		endpoint: "/itemTypeFields",
+		member:   "field",
 		get:      (*store.Store).SchemaItemTypeFields,
 	},
 	"schema-item-type-creator-types": {
 		endpoint: "/itemTypeCreatorTypes",
+		member:   "creatorType",
 		get:      (*store.Store).SchemaItemTypeCreatorTypes,
 	},
+}
+
+// validateDependentSchemaPayload checks one per-item-type payload is the array
+// of {member: "..."} objects the endpoint defines. An empty array is valid
+// (note and attachment types list no creator types), but JSON null is not:
+// it decodes into an empty list without error, so a stored null reads as
+// "this item type has no fields" and looks like genuine schema drift.
+func validateDependentSchemaPayload(spec dependentSchemaSyncSpec, data json.RawMessage) error {
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return fmt.Errorf("expected a JSON array: %w", err)
+	}
+	if rows == nil {
+		return errors.New("expected a JSON array, got null")
+	}
+	for i, row := range rows {
+		var name string
+		if json.Unmarshal(row[spec.member], &name) != nil || name == "" {
+			return fmt.Errorf("element %d has no %q string", i, spec.member)
+		}
+	}
+	return nil
 }
 
 // FanoutReportErrors joins FanoutRun's ordered per-source failures into one
@@ -944,13 +971,22 @@ func dependentSchemaPrerequisiteFromContext(ctx context.Context, resource string
 	return prereq, ok
 }
 
+// dependentSchemaCacheComplete reports whether every item type has a cached
+// row that is a valid payload. A row that merely exists is not enough: a
+// payload stored before validation (a null from a transient bad response)
+// must make the cache incomplete so the next ordinary sync refetches it,
+// instead of the current-looking schema version vouching for it forever.
 func dependentSchemaCacheComplete(db *store.Store, spec dependentSchemaSyncSpec, itemTypes []string) (bool, error) {
 	for _, itemType := range itemTypes {
-		if _, err := spec.get(db, itemType); err != nil {
+		row, err := spec.get(db, itemType)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return false, nil
 			}
 			return false, err
+		}
+		if validateDependentSchemaPayload(spec, row) != nil {
+			return false, nil
 		}
 	}
 	return true, nil
@@ -1022,7 +1058,15 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			func(itemType string) string { return itemType },
 			func(fctx context.Context, itemType string) (json.RawMessage, error) {
 				data, _, err := c.GetWithVersionContext(fctx, spec.endpoint, map[string]string{"itemType": itemType})
-				return data, err
+				if err != nil {
+					return nil, err
+				}
+				// Validate before anything is stored or stamped current: a
+				// malformed 200 must fail this item type, not poison its row.
+				if verr := validateDependentSchemaPayload(spec, data); verr != nil {
+					return nil, fmt.Errorf("%s?itemType=%s: %w", spec.endpoint, itemType, verr)
+				}
+				return data, nil
 			})
 		fanoutErrs = append(fanoutErrs, chunkErrs...)
 

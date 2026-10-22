@@ -377,11 +377,16 @@ func fetchSchemaListContext(ctx context.Context, c *client.Client, path string, 
 }
 
 // decodeSchemaList extracts the sorted, de-duplicated string values of `key` from a
-// Zotero schema array response. `path` is used only for error context.
+// Zotero schema array response. `path` is used only for error context. JSON null
+// is refused: it unmarshals into an empty list without error, so a poisoned or
+// swallowed response would read as an authoritative empty schema.
 func decodeSchemaList(data json.RawMessage, path, key string) ([]string, error) {
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(data, &rows); err != nil {
 		return nil, fmt.Errorf("parsing %s response: %w", path, err)
+	}
+	if rows == nil {
+		return nil, fmt.Errorf("parsing %s response: expected a JSON array, got null", path)
 	}
 	seen := make(map[string]struct{}, len(rows))
 	out := make([]string, 0, len(rows))
