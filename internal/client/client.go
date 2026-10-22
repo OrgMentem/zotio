@@ -712,7 +712,9 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	const ttl = 5 * time.Minute
-	if time.Since(info.ModTime()) > ttl {
+	// An entry stamped in the future means the clock moved back since it was
+	// written; it is expired, not fresher than any entry could be.
+	if age := time.Since(info.ModTime()); age < 0 || age > ttl {
 		// Expired is a miss, never a delete: the refetch that follows
 		// replaces the entry atomically, and a reader deleting by name could
 		// remove a fresh response a concurrent GET just published.

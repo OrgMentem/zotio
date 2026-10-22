@@ -39,7 +39,11 @@ func New(dir string, ttl time.Duration) *Store {
 func (s *Store) Get(key string) (json.RawMessage, bool) {
 	path := s.path(key)
 	info, err := os.Stat(path)
-	if err != nil || time.Since(info.ModTime()) > s.TTL {
+	if err != nil {
+		return nil, false
+	}
+	// A future mtime means the clock moved back since the write: expired.
+	if age := time.Since(info.ModTime()); age < 0 || age > s.TTL {
 		return nil, false
 	}
 	data, err := os.ReadFile(path)

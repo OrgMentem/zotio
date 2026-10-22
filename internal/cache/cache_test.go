@@ -45,6 +45,23 @@ func TestStoreGetRespectsTTL(t *testing.T) {
 	}
 }
 
+// A clock that stepped back leaves entries stamped in the future. They must
+// read as expired, not be served until the wall clock catches up.
+func TestStoreGetTreatsFutureStampAsExpired(t *testing.T) {
+	store := New(t.TempDir(), time.Minute)
+	key := "GET /items/K1"
+	if err := store.Set(key, json.RawMessage(`{"key":"K1"}`)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(store.path(key), future, future); err != nil {
+		t.Fatalf("stamp cache file: %v", err)
+	}
+	if got, ok := store.Get(key); ok {
+		t.Fatalf("future-stamped cache entry returned (%s), want miss", got)
+	}
+}
+
 // Get must never delete or replace what is at the path. Writers publish by
 // atomic rename, so a fresh Set can land between any check a reader makes and
 // any removal it issues by name; a read path that removes expired entries can

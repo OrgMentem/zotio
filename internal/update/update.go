@@ -311,5 +311,7 @@ func (cached cacheEntry) info() *Info {
 }
 
 func checkedRecently(then, now time.Time) bool {
-	return !then.IsZero() && now.Sub(then) < checkInterval
+	// A check stamped in the future means the clock moved back; recheck.
+	age := now.Sub(then)
+	return !then.IsZero() && age >= 0 && age < checkInterval
 }

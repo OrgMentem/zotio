@@ -96,6 +96,30 @@ func TestUpdateCheckRateLimitsNetworkRequests(t *testing.T) {
 	}
 }
 
+// A CheckedAt in the future means the clock moved back since the check. It
+// must not suppress refreshes until the wall clock passes it.
+func TestUpdateCheckRefreshesWhenCheckedAtIsInTheFuture(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","html_url":"https://example.test/release/v1.2.3"}`))
+	}))
+	defer server.Close()
+
+	checker := NewWithOptions(Options{DataDir: t.TempDir(), ReleasesURL: server.URL, Client: server.Client(), Now: func() time.Time { return now }})
+	if err := checker.writeCache(cacheEntry{LatestVersion: "1.2.2", URL: "https://example.test/release/v1.2.2", CheckedAt: now.Add(48 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if calls.Load() != 1 || info == nil || info.LatestVersion != "1.2.3" || !info.CheckedAt.Equal(now) {
+		t.Fatalf("info = %#v; calls = %d, want one refresh to 1.2.3 stamped now", info, calls.Load())
+	}
+}
+
 func TestUpdateCheckSoftFailsForRateLimit(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

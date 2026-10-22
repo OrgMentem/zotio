@@ -302,6 +302,27 @@ func TestReadCacheHonorsFreshness(t *testing.T) {
 	}
 }
 
+func TestReadCacheTreatsFutureStampAsExpired(t *testing.T) {
+	c := clientTestNewClient(t, "http://example.test")
+	c.cacheDir = t.TempDir()
+	params := map[string]string{"q": "cache"}
+	gen, err := c.cacheGenerationSnapshot("items")
+	if err != nil {
+		t.Fatalf("cacheGenerationSnapshot: %v", err)
+	}
+	if err := c.writeCacheAtGeneration(gen, "/items", params, nil, []byte(`{"cached":true}`)); err != nil {
+		t.Fatalf("writeCacheAtGeneration: %v", err)
+	}
+	// The clock stepped back after the write, so the entry is stamped ahead.
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(c.cacheFilePath("items", "/items", params, nil), future, future); err != nil {
+		t.Fatalf("stamping cache file: %v", err)
+	}
+	if got, ok := c.readCache(gen, "/items", params, nil); ok {
+		t.Fatalf("readCache hit a future-stamped entry with body %s", got)
+	}
+}
+
 func TestCheckRedirectRequiresSameOrigin(t *testing.T) {
 	initial := &http.Request{URL: &url.URL{Scheme: "https", Host: "example.test"}}
 	tests := []struct {
