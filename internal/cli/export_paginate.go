@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -32,6 +33,10 @@ type exportCheckpoint struct {
 	Done      bool                   `json:"done"`
 	Scope     string                 `json:"scope"`
 	Source    exportCheckpointSource `json:"source"`
+	// LibraryVersion is the Last-Modified-Version every page so far reported.
+	// A resume refuses when the library has since moved, because the saved
+	// offset no longer addresses the same records.
+	LibraryVersion string `json:"library_version,omitempty"`
 }
 
 func exportReadSource(c *client.Client, profile string) exportCheckpointSource {
@@ -155,6 +160,8 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 	scope := exportCheckpointScope(source, path, params, pageSize, limit)
 	snapshotFormat := format
 	start := 0
+	var libraryVersion string
+	versionPinned := false
 	if checkpointFile != "" {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
 			if cp.Path != path || cp.Source != source || cp.Scope != scope || checkpointFormat(cp) != snapshotFormat {
@@ -162,6 +169,10 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 			}
 			start = cp.NextStart
 			fetched = cp.Fetched
+			if start > 0 {
+				versionPinned = true
+				libraryVersion = cp.LibraryVersion
+			}
 		}
 	}
 	for {
@@ -187,14 +198,30 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		params2["start"] = strconv.Itoa(start)
 		params2["limit"] = strconv.Itoa(thisLimit)
 
-		data, err := c.Get(path, params2)
+		data, pageVersion, err := c.GetWithHeaderContext(ctx, path, params2, "Last-Modified-Version")
 		if err != nil {
 			return fetched, fmt.Errorf("fetching %s page at start %d: %w", path, start, classifyAPIError(err, &rootFlags{}))
 		}
 
+		// A null body is a malformed answer, never an empty page: json.Unmarshal
+		// reads it as a nil slice, which would pass for the end of the library
+		// and let a truncated traversal replace the previous snapshot. Only an
+		// actual [] ends a traversal early.
+		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return fetched, apiErr(fmt.Errorf("%s page at start %d returned JSON null instead of an array; refusing to treat it as the end of the library", path, start))
+		}
 		var page []json.RawMessage
 		if err := json.Unmarshal(data, &page); err != nil {
 			return fetched, fmt.Errorf("decoding %s page at start %d: %w", path, start, err)
+		}
+		// Offsets are only stable while the library is. Every page, and a
+		// resumed run, must report the version the traversal started at, or an
+		// edit that reorders the listing duplicates one record and drops another.
+		if !versionPinned {
+			versionPinned = true
+			libraryVersion = pageVersion
+		} else if pageVersion != libraryVersion {
+			return fetched, preconditionErr(fmt.Errorf("the library changed during the export (Last-Modified-Version %s, then %s at start %d); offsets into a changing library skip and repeat records; rerun without --resume to start over", describeLibraryVersion(libraryVersion), describeLibraryVersion(pageVersion), start))
 		}
 		if len(page) > 0 {
 			if err := onPage(page); err != nil {
@@ -206,7 +233,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		start += len(page)
 		done := len(page) < thisLimit || (limit > 0 && fetched >= limit)
 		if checkpointFile != "" {
-			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done}
+			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done, LibraryVersion: libraryVersion}
 			if committedBytes != nil {
 				offset, err := committedBytes()
 				if err != nil {
@@ -224,6 +251,13 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 	}
 
 	return fetched, nil
+}
+
+func describeLibraryVersion(version string) string {
+	if version == "" {
+		return "unreported"
+	}
+	return version
 }
 
 func checkpointFormat(cp exportCheckpoint) string {

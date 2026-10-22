@@ -35,11 +35,19 @@ type exportLockfile struct {
 
 func buildExportLockfile(scope, format string, items []json.RawMessage) (exportLockfile, error) {
 	lockItems := make([]exportLockItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
 	for i, raw := range items {
 		key := exportItemKey(raw)
 		if key == "" {
 			return exportLockfile{}, fmt.Errorf("export lockfile: item %d has no key", i)
 		}
+		// A repeated key means the traversal read a shifting listing, so
+		// another record is missing. Certifying that set would publish a
+		// manifest for data that never matched the library.
+		if _, dup := seen[key]; dup {
+			return exportLockfile{}, fmt.Errorf("export lockfile: item %q appears more than once; the library changed while it was read", key)
+		}
+		seen[key] = struct{}{}
 		contentSHA, err := exportItemContentSHA256(raw)
 		if err != nil {
 			return exportLockfile{}, fmt.Errorf("export lockfile: hashing item %q: %w", key, err)
