@@ -5,12 +5,16 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
@@ -343,4 +347,122 @@ func TestInitAPIKeyStepClearsLegacyHeader(t *testing.T) {
 		t.Fatalf("credentials file still declares auth_header:\n%s", got)
 	}
 	assertAbsentUnderHome(t, home, authTestLegacyCredHeader)
+}
+
+// firstReadSignal closes started on the first Read so a test knows the command
+// is blocked waiting for input rather than still starting up.
+type firstReadSignal struct {
+	r       io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *firstReadSignal) Read(p []byte) (int, error) {
+	s.once.Do(func() { close(s.started) })
+	return s.r.Read(p)
+}
+
+// A stalled token producer must not wedge the installation. The command holds
+// the writer lock while it waits for stdin; cancellation has to end the wait so
+// the lock is released, and a token that arrives afterwards must change
+// nothing.
+func TestAuthSetTokenCancellationStopsWaitingReleasesWriterLockAndSavesNothing(t *testing.T) {
+	isolateAuthHome(t)
+	configBody := "base_url = \"" + authTestBaseURL + "\"\n"
+	configPath := writeAuthTestConfigFile(t, configBody)
+	credentialsPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("CredentialsFilePath: %v", err)
+	}
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	in := &firstReadSignal{r: pr, started: make(chan struct{})}
+
+	root := newRootCmd(&rootFlags{})
+	if root.Annotations == nil {
+		root.Annotations = map[string]string{}
+	}
+	root.Annotations[preflightAnnotationKey] = preflightAnnotationSkip
+	root.SilenceErrors, root.SilenceUsage = true, true
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetIn(in)
+	root.SetArgs([]string{"auth", "set-token", "--stdin"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ExecuteRootInProcess(ctx, root) }()
+
+	select {
+	case <-in.started:
+	case err := <-done:
+		t.Fatalf("auth set-token returned before reading stdin: %v (output %q)", err, out.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("auth set-token never started reading stdin")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("auth set-token error = %v, want context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("auth set-token kept waiting for stdin after cancellation")
+	}
+
+	probe := &cobra.Command{Use: "probe"}
+	if err := withInstallationWriterLock(probe, &rootFlags{}, "probe", func() error { return nil }); err != nil {
+		t.Fatalf("installation writer lock still held after cancelled auth set-token: %v", err)
+	}
+
+	// The producer finally delivers a token and closes: too late.
+	if _, err := io.WriteString(pw, authTestRejectedToken+"\n"); err != nil {
+		t.Fatalf("late token write: %v", err)
+	}
+	_ = pw.Close()
+	if _, statErr := os.Stat(credentialsPath); !os.IsNotExist(statErr) {
+		t.Fatalf("os.Stat(%s) = %v, want no credentials file after a cancelled set-token", credentialsPath, statErr)
+	}
+	if got := readFileString(t, configPath); got != configBody {
+		t.Fatalf("config rewritten after cancelled set-token:\ngot  %q\nwant %q", got, configBody)
+	}
+	if strings.Contains(out.String(), "Token saved") {
+		t.Fatalf("output = %q, want no saved confirmation after cancellation", out.String())
+	}
+}
+
+// A token that is already waiting on stdin when the context is already
+// cancelled must not be persisted: the operator interrupted the command, so a
+// durable credential replacement afterwards is a surprise.
+func TestAuthSetTokenCancelledContextNeverPersistsAvailableToken(t *testing.T) {
+	isolateAuthHome(t)
+	configBody := "base_url = \"" + authTestBaseURL + "\"\n"
+	configPath := writeAuthTestConfigFile(t, configBody)
+	credentialsPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("CredentialsFilePath: %v", err)
+	}
+
+	cmd := newAuthSetTokenCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetIn(strings.NewReader(authTestRejectedToken + "\n"))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--stdin"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := cmd.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation (output %q)", err, out.String())
+	}
+	if _, statErr := os.Stat(credentialsPath); !os.IsNotExist(statErr) {
+		t.Fatalf("os.Stat(%s) = %v, want no credentials file", credentialsPath, statErr)
+	}
+	if got := readFileString(t, configPath); got != configBody {
+		t.Fatalf("config rewritten:\n%s", got)
+	}
 }

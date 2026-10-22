@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -108,8 +109,15 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			if !fromStdin {
 				return usageErr(fmt.Errorf("refusing token on command line; pipe it with --stdin"))
 			}
-			tokenBytes, readErr := io.ReadAll(cmd.InOrStdin())
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			tokenBytes, readErr := readAllContext(ctx, cmd.InOrStdin())
 			if readErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return fmt.Errorf("reading token from stdin: %w", ctxErr)
+				}
 				return authErr(fmt.Errorf("reading token from stdin: %w", readErr))
 			}
 			token := strings.TrimSpace(string(tokenBytes))
@@ -134,6 +142,13 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// AccessToken. Writing the token to AccessToken would persist the
 			// bytes but leave doctor reporting "not configured" — the slot the
 			// header builder consults stays empty.
+			//
+			// A cancellation that landed while the read completed must not
+			// still replace the stored credential: the operator already
+			// interrupted this command.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("saving token: %w", ctxErr)
+			}
 			if err := cfg.SaveCredential(token); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -151,6 +166,31 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "Read the API token from stdin")
 	return cmd
+}
+
+// readAllContext reads r to EOF but returns ctx.Err() as soon as ctx is done.
+// A blocked read on a pipe or terminal cannot be interrupted portably, so the
+// read keeps running in its own goroutine and its result is discarded; the
+// goroutine ends when the input closes or the process exits. What matters to
+// the caller is that it stops waiting, so the writer lock its command holds is
+// released by the surrounding wrapper instead of staying held behind a stalled
+// producer.
+func readAllContext(ctx context.Context, r io.Reader) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(r)
+		done <- result{data, err}
+	}()
+	select {
+	case res := <-done:
+		return res.data, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
