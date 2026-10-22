@@ -10,6 +10,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -61,9 +63,16 @@ type vaultMeta struct {
 	Collections     []string
 	Library         string // API library segment, e.g. "users/99999" or "groups/123".
 	CollectionNames []string
+	Tags            []string // manual and automatic Zotero tags, de-duplicated and sorted.
+	Venue           string   // publicationTitle, else bookTitle, else proceedingsTitle.
+	// Related holds ready-to-render links for dc:relation neighbours (both
+	// directions): a wikilink to the neighbour's note when it is in the same
+	// vault run, a zotero://select link otherwise. Sorted and de-duplicated.
+	Related []string
 }
 
-// fmEntry is one frontmatter key and its rendered line(s).
+// fmEntry is one frontmatter key and its rendered line(s). A managed entry with
+// no lines owns its key without rendering it: merge removes an existing line.
 type fmEntry struct {
 	key   string
 	lines []string
@@ -313,11 +322,26 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 	claimed := make(map[string]bool, len(metas))
 	filenames := make([]string, len(metas))
 	anns := make([][]annotationSummary, len(metas))
-	results := make([]vaultSyncResult, 0, len(metas))
-	writes := 0
+	noteByKey := make(map[string]string, len(metas))
 	for i, meta := range metas {
 		anns[i] = annotationSummariesSorted(annByKey[meta.Key])
 		filenames[i] = resolveNoteFilename(meta, outDir, idx, claimed)
+		noteByKey[meta.Key] = filenames[i]
+	}
+
+	// Related links need every note name in the run, so they are projected only
+	// after all filenames are resolved.
+	relations, err := loadVaultRelations(cmd.Context(), rawDB)
+	if err != nil {
+		return err
+	}
+	for i := range metas {
+		metas[i].Related = vaultRelatedLinks(metas[i].Key, relations[metas[i].Key], noteByKey)
+	}
+
+	results := make([]vaultSyncResult, 0, len(metas))
+	writes := 0
+	for i, meta := range metas {
 		res, werr := syncVaultNote(meta, anns[i], format, outDir, filenames[i], true /* preview: classify only, never write */)
 		if werr != nil {
 			return werr
@@ -814,6 +838,8 @@ func vaultItemMeta(raw json.RawMessage) vaultMeta {
 		URL:         url,
 		Abstract:    strings.TrimSpace(abstract),
 		Collections: stringSliceFromAny(data["collections"]),
+		Tags:        vaultTagNames(data["tags"]),
+		Venue:       vaultVenue(data),
 	}
 }
 
@@ -829,6 +855,112 @@ func stringSliceFromAny(v any) []string {
 		}
 	}
 	return out
+}
+
+// vaultTagNames returns the distinct tag names of an item's tags array (manual
+// and automatic alike), sorted so the rendered key is stable across syncs.
+func vaultTagNames(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]bool, len(arr))
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		var name string
+		switch t := e.(type) {
+		case map[string]any:
+			name, _ = stringValue(t["tag"])
+		case string:
+			name = t
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// vaultVenue is the container title: publicationTitle, else bookTitle, else
+// proceedingsTitle. Publisher-like fields are not a venue.
+func vaultVenue(data map[string]any) string {
+	for _, k := range []string{"publicationTitle", "bookTitle", "proceedingsTitle"} {
+		if v, _ := stringValue(data[k]); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// loadVaultRelations indexes every dc:relation edge in the local mirror by
+// item key, in both directions, in one pass: an edge A -> B relates B to A as
+// well. It reuses the relation URI parsing of `items related` but not its
+// per-item query, which would rescan the mirror once per note.
+func loadVaultRelations(ctx context.Context, db *store.Store) (map[string]map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+	r.id AS source_key,
+	COALESCE(CAST(rel.value AS TEXT), '') AS relation_value,
+	COALESCE(rel.type, '') AS relation_type
+FROM resources r, json_each(r.data, '$.data.relations') AS rel
+WHERE r.resource_type='items' AND rel.key='dc:relation'
+ORDER BY r.id`)
+	if err != nil {
+		return nil, fmt.Errorf("querying item relations: %w", err)
+	}
+	defer rows.Close()
+
+	related := make(map[string]map[string]bool)
+	link := func(from, to string) {
+		if related[from] == nil {
+			related[from] = make(map[string]bool)
+		}
+		related[from][to] = true
+	}
+	for rows.Next() {
+		var sourceKey, value, valueType string
+		if err := rows.Scan(&sourceKey, &value, &valueType); err != nil {
+			return nil, fmt.Errorf("reading item relations: %w", err)
+		}
+		for _, uri := range relationURIsFromSQL(value, valueType) {
+			targetKey := parseZoteroItemURIKey(uri)
+			if targetKey == "" || targetKey == sourceKey {
+				continue
+			}
+			link(sourceKey, targetKey)
+			link(targetKey, sourceKey)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading item relations: %w", err)
+	}
+	return related, nil
+}
+
+// vaultRelatedLinks renders the related keys of one note: a wikilink to the
+// neighbour's note when it is part of this run, a zotero://select link
+// otherwise. A note name that cannot be written inside [[...]] also falls back
+// to the select link. The result is sorted; keys are already unique.
+func vaultRelatedLinks(self string, keys map[string]bool, noteByKey map[string]string) []string {
+	links := make([]string, 0, len(keys))
+	for key := range keys {
+		if key == "" || key == self {
+			continue
+		}
+		if fn, ok := noteByKey[key]; ok {
+			if name := strings.TrimSuffix(fn, ".md"); !strings.ContainsAny(name, "[]|#^") {
+				links = append(links, "[["+name+"]]")
+				continue
+			}
+		}
+		links = append(links, zoteroSelectLink(key))
+	}
+	sort.Strings(links)
+	return links
 }
 
 // isRegularLiteratureItem excludes attachments, annotations, and standalone
@@ -963,6 +1095,9 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 		{"zotero", []string{"zotero: " + yamlScalar(zoteroSelectLink(meta.Key))}},
 		{"collections", obsidianListEntry("collections", meta.Collections)},
 		{"collection_names", obsidianListEntry("collection_names", meta.CollectionNames)},
+		{"zotero_tags", obsidianStrictListEntry("zotero_tags", meta.Tags)},
+		{"venue", obsidianVenueLines(meta.Venue)},
+		{"related", obsidianListEntry("related", meta.Related)},
 	}
 	// zotero_key is the stable identity for re-sync lookup; zotero_library scopes
 	// it and is the write target. Library is omitted when the personal user ID has
@@ -987,6 +1122,9 @@ func managedLogseqProps(meta vaultMeta) []fmEntry {
 		{"zotero-key", []string{"zotero-key:: " + logseqPropScalar(meta.Key)}},
 		{"zotero", []string{"zotero:: " + logseqPropScalar(zoteroSelectLink(meta.Key))}},
 		{"collection-names", []string{"collection-names:: " + logseqPropScalar(strings.Join(meta.CollectionNames, ", "))}},
+		{"zotero-tags", []string{"zotero-tags:: " + logseqPropScalar(strings.Join(meta.Tags, ", "))}},
+		{"venue", logseqVenueLines(meta.Venue)},
+		{"related", []string{"related:: " + logseqPropScalar(strings.Join(meta.Related, ", "))}},
 	}
 	if meta.Library != "" {
 		props = append(props, fmEntry{"zotero-library", []string{"zotero-library:: " + logseqPropScalar(meta.Library)}})
@@ -1097,6 +1235,36 @@ func obsidianListEntry(key string, vals []string) []string {
 	return lines
 }
 
+// obsidianVenueLines is nil for an item with no venue: a managed entry with no
+// lines is dropped from the note on merge (see fmEntry), so a venue removed in
+// Zotero does not linger as a stale value.
+func obsidianVenueLines(venue string) []string {
+	if venue == "" {
+		return nil
+	}
+	return []string{"venue: " + yamlStrictScalar(venue)}
+}
+
+func logseqVenueLines(venue string) []string {
+	if venue == "" {
+		return nil
+	}
+	return []string{"venue:: " + logseqPropScalar(venue)}
+}
+
+// obsidianStrictListEntry renders a YAML list of free-text strings that must
+// round-trip as strings (see yamlStrictScalar).
+func obsidianStrictListEntry(key string, vals []string) []string {
+	if len(vals) == 0 {
+		return []string{key + ": []"}
+	}
+	lines := []string{key + ":"}
+	for _, v := range vals {
+		lines = append(lines, "  - "+yamlStrictScalar(v))
+	}
+	return lines
+}
+
 // yamlScalar renders a YAML plain scalar, double-quoting when the value would
 // otherwise be ambiguous (contains ':', quotes, brackets, leading/trailing
 // space, line breaks, etc.).
@@ -1105,6 +1273,24 @@ func yamlScalar(s string) string {
 		return `""`
 	}
 	if strings.ContainsAny(s, "\r\n:#\"'[]{}|>*&!%@`") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
+		return strconv.Quote(s)
+	}
+	return s
+}
+
+// yamlStrictScalar is yamlScalar for free-text values a YAML parser would
+// otherwise retype: a tag "2020" or "true" must stay a string in frontmatter,
+// not become a number or boolean. It also quotes values that start with a YAML
+// indicator or a digit (dates, hex, exponents) and values with control bytes.
+func yamlStrictScalar(s string) string {
+	if q := yamlScalar(s); q != s {
+		return q
+	}
+	switch strings.ToLower(s) {
+	case "true", "false", "yes", "no", "on", "off", "y", "n", "null":
+		return strconv.Quote(s)
+	}
+	if strings.ContainsRune("-?,.~=0123456789", rune(s[0])) || strings.IndexFunc(s, unicode.IsControl) >= 0 {
 		return strconv.Quote(s)
 	}
 	return s

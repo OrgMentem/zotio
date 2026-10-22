@@ -6,6 +6,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Added
 
+- **`vault sync` projects Zotero tags, venue, and related items into notes.**
+  Obsidian frontmatter gains `zotero_tags` (manual and automatic tags,
+  de-duplicated, sorted, YAML-quoted so `2020` or `true` stay strings),
+  `venue` (`publicationTitle`, else `bookTitle`, else `proceedingsTitle`;
+  omitted, and removed from an existing note, when the item has none), and
+  `related` (`dc:relation` neighbours in both directions, de-duplicated and
+  sorted: a `[[note name]]` wikilink when the neighbour has a note in the same
+  run, a `zotero://select/...` link otherwise). Logseq notes get
+  `zotero-tags::`, `venue::`, and `related::`. The user-facing `tags` key is
+  never touched. The first sync after upgrading updates existing notes once.
 - **`import url` resolves a DOI found in page metadata through CrossRef.**
   When the URL itself has no DOI, `citation_doi`, a DOI-shaped
   `dc.identifier`, `prism.doi`, or the DOI that the page's own JSON-LD
