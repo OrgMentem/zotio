@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"zotio/internal/store"
@@ -57,7 +58,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 							}
 							data = filtered
 						}
-						return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+						return printFulltext(cmd.OutOrStdout(), data, flags)
 					}
 					if flags.dataSource == "local" {
 						return notFoundErr(fmt.Errorf("no local full text for item %s. Run 'zotio sync --fulltext' first", itemKey))
@@ -98,7 +99,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 					return err
 				}
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printFulltext(cmd.OutOrStdout(), data, flags)
 		},
 	}
 	cmd.Flags().StringVar(&flagSearch, "search", "", "Return only full-text lines containing this string")
@@ -106,6 +107,17 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
+}
+
+// printFulltext renders a full-text response. The global compact default that
+// --agent sets is dropped here: compaction blocklists the "content" field of a
+// single object, and content is the result this command exists to return, so
+// an agent would get a successful exit with only indexing counters and could
+// not tell matching text from none. --select still applies as written.
+func printFulltext(w io.Writer, data json.RawMessage, flags *rootFlags) error {
+	rendered := *flags
+	rendered.compact = false
+	return printOutputWithFlags(w, data, &rendered)
 }
 
 // localPDFFulltext resolves an item's PDF full text from the local store.

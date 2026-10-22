@@ -5,6 +5,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -190,5 +192,81 @@ func TestFilterFulltextLines(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --agent turns compaction on, and compaction drops a single object's "content".
+// items fulltext exists to return that text, so an agent got a successful exit
+// carrying only indexing counters and could not tell matching text from none.
+func TestItemsFulltextAgentKeepsRequestedContent(t *testing.T) {
+	const payload = `{"content":"alpha line\nneedle line\nomega line","indexedPages":2,"totalPages":2}`
+
+	// local seeds the mirror and reads it back; live serves the same payload
+	// through the item, its children and the attachment's fulltext endpoint.
+	setup := map[string]func(t *testing.T) []string{
+		"local": func(t *testing.T) []string {
+			helpersTestIsolateConfigEnv(t)
+			db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			if _, err := db.UpsertKeyed("fulltext", []string{"ATTACHAB"}, []json.RawMessage{json.RawMessage(payload)}); err != nil {
+				_ = db.Close()
+				t.Fatalf("seed fulltext: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close store: %v", err)
+			}
+			return []string{"--data-source", "local"}
+		},
+		"live": func(t *testing.T) []string {
+			helpersTestIsolateConfigEnv(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/items/ATTACHAB":
+					_, _ = w.Write([]byte(`{"key":"ATTACHAB","version":1,"data":{"key":"ATTACHAB"}}`))
+				case "/items/ATTACHAB/children":
+					_, _ = w.Write([]byte(`[{"key":"PDFKEYAB","itemType":"attachment","contentType":"application/pdf","parentItem":"ATTACHAB"}]`))
+				case "/items/PDFKEYAB/fulltext":
+					_, _ = w.Write([]byte(payload))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL)
+			return []string{"--refresh"}
+		},
+	}
+
+	cases := []struct {
+		name        string
+		extra       []string
+		wantContent string
+	}{
+		{name: "whole text", wantContent: "alpha line\nneedle line\nomega line"},
+		{name: "search matches", extra: []string{"--search", "needle"}, wantContent: "needle line"},
+		// No match is an explicit empty string, not an absent field.
+		{name: "search matches nothing", extra: []string{"--search", "absent"}, wantContent: ""},
+	}
+	for route, seed := range setup {
+		for _, tc := range cases {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				routeArgs := seed(t)
+				args := append([]string{"--agent", "items", "fulltext", "ATTACHAB"}, routeArgs...)
+				out, err := runRootCommandOffline(t, append(args, tc.extra...)...)
+				if err != nil {
+					t.Fatalf("items fulltext --agent: %v\n%s", err, out)
+				}
+				var got map[string]any
+				if err := json.Unmarshal([]byte(out), &got); err != nil {
+					t.Fatalf("decode %q: %v", out, err)
+				}
+				content, present := got["content"]
+				if !present || content != tc.wantContent {
+					t.Fatalf("content = %#v (present=%v), want %q in %s", content, present, tc.wantContent, out)
+				}
+			})
+		}
 	}
 }
