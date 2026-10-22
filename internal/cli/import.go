@@ -125,6 +125,13 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 					parseFailures = append(parseFailures, importFailure{Line: lineNo, Reason: "invalid JSON: " + err.Error()})
 					continue
 				}
+				// JSON null decodes into a nil map without an error, but it is
+				// not a JSON object and must not become a create op.
+				if body == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "line %d: skipping invalid JSON: not a JSON object\n", lineNo)
+					parseFailures = append(parseFailures, importFailure{Line: lineNo, Reason: "invalid JSON: not a JSON object"})
+					continue
+				}
 				records = append(records, body)
 				recordLines = append(recordLines, lineNo)
 			}

@@ -308,3 +308,33 @@ func TestGenericImportPreviewShowsPlan(t *testing.T) {
 		t.Fatalf("plan lacks endpoint: %s", raw)
 	}
 }
+
+// A JSONL line that is not a JSON object (null decodes to a nil map without an
+// error) is a parse failure, never a create op.
+func TestGenericImportRejectsNonObjectLines(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		wantPosts   int
+		wantFailed  int
+	}{
+		{"null line", "null\n{\"title\":\"A\"}\n", 1, 1},
+		{"only null", "null\n", 0, 1},
+		{"array line", "[1]\n{\"title\":\"A\"}\n", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, requests := recordingImportServer(t)
+			filePath := writeImportGenericFixture(t, tc.input)
+			flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+			env, raw, errOut, _ := runImportGeneric(t, flags, "items", "--input", filePath)
+			if *requests != tc.wantPosts {
+				t.Fatalf("posted %d request(s), want %d (%s)", *requests, tc.wantPosts, raw)
+			}
+			if env.Failed != tc.wantFailed {
+				t.Fatalf("failed = %d, want %d (%s)", env.Failed, tc.wantFailed, raw)
+			}
+			if !strings.Contains(errOut, "skipping invalid JSON") {
+				t.Fatalf("stderr = %q, want a skip warning", errOut)
+			}
+		})
+	}
+}
