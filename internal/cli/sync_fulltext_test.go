@@ -228,3 +228,56 @@ func TestSyncFulltext_PersistenceFailureRetainsCheckpoint(t *testing.T) {
 		t.Fatalf("fulltext checkpoint = %d, %v; want unchanged 4", got, err)
 	}
 }
+
+// A 200 whose body is JSON null is not an empty change index (that is {}).
+// null decodes into a nil map without error, so the pass used to run no
+// fetches, save the response's version, and skip the changed attachment on
+// every later pass.
+func TestSyncFulltextNullIndexRetainsCheckpoint(t *testing.T) {
+	var indexCalls atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		if since := r.URL.Query().Get("since"); since != "4" {
+			t.Errorf("/fulltext since=%q, want 4", since)
+		}
+		w.Header().Set("Last-Modified-Version", "9")
+		if indexCalls.Add(1) == 1 {
+			_, _ = io.WriteString(w, `null`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ATT1":9}`)
+	})
+	mux.HandleFunc("/items/ATT1/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"content":"recovered text","indexedChars":14,"totalChars":14}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := db.SaveLibraryVersionContext(context.Background(), "fulltext", c.BaseURL, 4); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+
+	if err := syncFulltext(context.Background(), c, db, false); err == nil {
+		t.Fatal("syncFulltext accepted a null index, want an error")
+	}
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "fulltext"); v != 4 {
+		t.Fatalf("fulltext checkpoint after a null index = %d, want 4 (unchanged)", v)
+	}
+
+	if err := syncFulltext(context.Background(), c, db, false); err != nil {
+		t.Fatalf("syncFulltext after the plane recovered: %v", err)
+	}
+	if _, ok, err := db.Fulltext("ATT1"); err != nil || !ok {
+		t.Fatalf("Fulltext(ATT1) = ok %v, err %v; want the recovered document stored", ok, err)
+	}
+	if v, _, _ := db.StoredLibraryVersionContext(context.Background(), "fulltext"); v != 9 {
+		t.Errorf("fulltext checkpoint after recovery = %d, want 9", v)
+	}
+}

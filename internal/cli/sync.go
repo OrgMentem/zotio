@@ -672,6 +672,13 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 	if err := json.Unmarshal(body, &changed); err != nil {
 		return fmt.Errorf("parsing fulltext index: %w", err)
 	}
+	// An empty index is the object {}. JSON null also decodes into a nil map
+	// without error, but it is not an answer: treating it as "no change"
+	// would save the response's version below and skip the documents it
+	// failed to list on every later pass.
+	if changed == nil {
+		return fmt.Errorf("parsing fulltext index: expected a JSON object, got null")
+	}
 	if len(changed) > 0 {
 		keys := make([]string, 0, len(changed))
 		for k := range changed {
