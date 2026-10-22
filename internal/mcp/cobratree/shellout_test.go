@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -213,4 +216,66 @@ func TestRunMirroredInProcessRefusesNonStringPositionalArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A stdio MCP server hands os.Stdin to the JSON-RPC decoder. A mirrored command
+// that reads its input must see an empty reader, not that stream: reading the
+// transport would block until the client disconnects (the pipe's writer stays
+// open here, like a live client), pin the mirrored-command slot, and eat
+// protocol bytes.
+func TestRunMirroredInProcessDoesNotReadProcessStdin(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := pw.WriteString(`{"jsonrpc":"2.0","method":"ping"}` + "\n"); err != nil {
+		t.Fatalf("write transport bytes: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		pw.Close()
+		pr.Close()
+	})
+
+	rootFactory := func() *cobra.Command {
+		root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+		root.AddCommand(&cobra.Command{
+			Use: "slurp",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				data, err := io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "read:%d", len(data))
+				return nil
+			},
+		})
+		return root
+	}
+
+	done := make(chan *mcplib.CallToolResult, 1)
+	go func() {
+		done <- runMirroredInProcess(context.Background(), rootFactory, []string{"slurp"}, nil)
+	}()
+	select {
+	case res := <-done:
+		if res == nil || res.IsError {
+			t.Fatalf("result = %+v, want success", res)
+		}
+		if got := toolResultText(t, res); !strings.Contains(got, "read:0") {
+			t.Fatalf("command read %q, want an empty input (read:0)", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mirrored command blocked reading the process stdin")
+	}
+
+	// The slot must be free for the next call.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := acquireMirroredSlot(ctx); err != nil {
+		t.Fatalf("mirrored-command slot still held after the call: %v", err)
+	}
+	releaseMirroredSlot()
 }

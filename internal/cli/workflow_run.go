@@ -1709,8 +1709,15 @@ func workflowRunStepExecutionError(err error, stderr string) string {
 
 func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, args []string, stdin *string) (string, string, error) {
 	root.SetArgs(args)
-	if stdin != nil {
+	switch {
+	case stdin != nil:
 		root.SetIn(strings.NewReader(*stdin))
+	case mcpSurfaceActive():
+		// A step without stdin_from would fall back to os.Stdin, which under a
+		// stdio MCP server is the JSON-RPC transport. This root is built here,
+		// not by the MCP executor that bound the outer command's input, so it
+		// needs the same empty reader.
+		root.SetIn(strings.NewReader(""))
 	}
 	var stdout ceilingBuffer
 	var stderr ceilingBuffer

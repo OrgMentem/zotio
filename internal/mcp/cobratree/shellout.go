@@ -120,6 +120,13 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	}
 	root.SetOut(&buf)
 	root.SetErr(&buf)
+	// Bind input as well as output. Cobra's InOrStdin falls back to os.Stdin,
+	// which under a stdio MCP server IS the JSON-RPC transport: a mirrored
+	// --stdin command would block on an uncancellable read of the protocol
+	// stream, hold the command slot forever, and swallow bytes meant for the
+	// decoder. An empty reader makes such a command fail fast on its own
+	// input validation instead.
+	root.SetIn(strings.NewReader(""))
 	root.SetArgs(finalArgs)
 	// cli.ExecuteRootInProcess, not root.ExecuteContext: mirrored args are
 	// arbitrary and may include the global --deliver, whose spool is opened

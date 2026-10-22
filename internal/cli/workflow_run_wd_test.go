@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -558,5 +559,45 @@ func TestWdV2CheckpointStillResumes(t *testing.T) {
 	}
 	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
 		t.Fatalf("checkpoint after success: %v, want removed", err)
+	}
+}
+
+// Under a stdio MCP server os.Stdin is the JSON-RPC transport. A workflow step
+// without stdin_from must read an empty input there, not those bytes; a step
+// with stdin_from keeps receiving the earlier step's output.
+func TestWdWorkflowStepStdinNeverFallsBackToTransportOnMCPSurface(t *testing.T) {
+	// Not parallel: swaps os.Stdin and the process-wide MCP marker.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := pw.WriteString(`{"jsonrpc":"2.0","method":"ping"}` + "\n"); err != nil {
+		t.Fatalf("write transport bytes: %v", err)
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = pr
+	mcpSurface.Store(true)
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		mcpSurface.Store(false)
+		pr.Close()
+	})
+
+	report, calls, err := wdRunFakeWorkflow(t, "piped-output", workflowRunExecution{},
+		workflowRunStepSpec{Name: "bare", Args: []string{"consumer"}},
+		workflowRunStepSpec{Name: "fed", Args: []string{"consumer"}, StdinFrom: "src"},
+	)
+	if err != nil || !report.OK {
+		t.Fatalf("workflow = %+v, %v; want success", report, err)
+	}
+	var stdin []string
+	for _, call := range calls {
+		stdin = append(stdin, call.Stdin)
+	}
+	if want := []string{"", "piped-output"}; !reflect.DeepEqual(stdin, want) {
+		t.Fatalf("step stdin = %q, want %q", stdin, want)
 	}
 }
