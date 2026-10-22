@@ -1626,13 +1626,16 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 	}
 }
 
-// markedTemporaryParents lists recent items carrying this route's marker for one
+// markedTemporaryParents lists top-level items carrying this route's marker for one
 // target, whatever run wrote them. A non-zero addedBefore keeps only items whose
 // dateAdded is strictly earlier; a missing or unparseable dateAdded then fails
 // closed, because nothing proves such an item is old.
 func markedTemporaryParents(c *client.Client, targetKey string, addedBefore time.Time) ([]string, error) {
 	var keys []string
-	for start := 0; start < 500; start += connectorChildrenPageSize {
+	// Page to exhaustion. A stranded parent is the oldest thing the marker can
+	// name, so a recent-items window would lose it exactly when the library
+	// has grown since the interrupted run.
+	for start := 0; ; start += connectorChildrenPageSize {
 		data, err := c.Get("/items/top", map[string]string{
 			"sort":      "dateAdded",
 			"direction": "desc",

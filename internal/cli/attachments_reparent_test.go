@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2401,6 +2402,59 @@ func TestMarkerIdentifiesCurrentAndLegacyTemporaryParents(t *testing.T) {
 		}
 		if markerIdentifies("document", abstract, "TARGET01", "fedcba9876543210") {
 			t.Errorf("%s marker recognised for a different nonce", name)
+		}
+	}
+}
+
+// A stranded temporary parent is the oldest thing the marker can name. With
+// more than 500 newer top-level items it must still be found, or a delayed
+// retry uploads the bytes again and the reaper never clears the empty parent.
+func TestMarkedTemporaryParentsPagesPastTheNewestFiveHundred(t *testing.T) {
+	const total = 650
+	rows := make([]map[string]any, total)
+	for i := range rows {
+		key := fmt.Sprintf("ITEM%04d", i)
+		rows[i] = map[string]any{"key": key, "data": map[string]any{
+			"key": key, "itemType": "journalArticle", "title": "filler",
+			"dateAdded": "2026-01-02T00:00:00Z",
+		}}
+	}
+	rows[total-1] = map[string]any{"key": "ORPHAN01", "data": map[string]any{
+		"key": "ORPHAN01", "itemType": "document", "title": "Real Paper",
+		"abstractNote": connectorTempParentMarker("deadbeefdeadbeef", "TARGET01"),
+		"dateAdded":    "2020-01-02T00:00:00Z",
+	}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/items/top" {
+			http.NotFound(w, r)
+			return
+		}
+		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		end := min(start+limit, total)
+		page := []map[string]any{}
+		if start < total {
+			page = rows[start:end]
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer srv.Close()
+	c, err := reparentFlags(t, srv).newClient()
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	c.NoCache = true
+
+	for name, before := range map[string]time.Time{
+		"resume": {},
+		"reaper": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		got, err := markedTemporaryParents(c, "TARGET01", before)
+		if err != nil {
+			t.Fatalf("%s: markedTemporaryParents: %v", name, err)
+		}
+		if !slices.Equal(got, []string{"ORPHAN01"}) {
+			t.Errorf("%s: got %v, want the orphan ranked %d by dateAdded", name, got, total)
 		}
 	}
 }
