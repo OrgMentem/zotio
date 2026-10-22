@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-10-22
+
 ### Added
 
 - **`vault sync` projects Zotero tags, venue, and related items into notes.**
@@ -4492,7 +4494,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/OrgMentem/zotio/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/OrgMentem/zotio/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/OrgMentem/zotio/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/OrgMentem/zotio/compare/v0.26.0...v0.27.0
