@@ -1889,28 +1889,36 @@ zotio items create --items '[{"itemType":"journalArticle","title":"A title"}]'
 
 ### `zotio items delete`
 
-Move an item to the trash
+Move one or more items to the trash
 
-Move an item to the trash, where 'zotio items restore' can bring it back.
+Move items to the trash, where 'zotio items restore' can bring them back.
 
 This is a reversible trash operation (the item's "deleted" flag is set), matching
 what 'zotio items trash' lists and 'zotio items restore' reverses.
 
---permanent instead destroys the item and its child attachments outright. That
-cannot be undone by 'items restore' and requires --allow-destructive.
+Pass one or more item keys, or --keys-from (a file or '-' for stdin). Each key is
+its own version-guarded write inside one plan and one journal run, so
+'--max-changes' caps the run and 'zotio journal undo' restores every item at once.
+Positional keys and --keys-from cannot be combined.
+
+The '--permanent' flag instead destroys the items and their child attachments
+outright. That cannot be undone by 'items restore' and requires --allow-destructive.
 
 ```
-zotio items delete <itemKey> [flags]
+zotio items delete <itemKey...> | --keys-from <file|-> [flags]
 ```
 
 Examples:
 
 ```bash
 zotio items delete ABC12345
+  zotio items delete ABC12345 DEF67890 --yes
+  zotio items delete --keys-from dead-imports.txt --yes
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--keys-from` | `string` |  | Read item keys from a file or '-' for stdin (lines or JSON), instead of positional keys |
 | `--permanent` | `bool` | `false` | Destroy the item and its attachments outright instead of trashing it (irreversible; requires --allow-destructive) |
 
 ### `zotio items duplicates`
@@ -2307,11 +2315,24 @@ zotio items related ABCD2345
 
 ### `zotio items restore`
 
-Restore a trashed item
+Restore one or more trashed items
+
+Restore trashed items. Pass one or more item keys, or --keys-from (a file or '-' for stdin). Each key is its own version-guarded write inside one plan and one journal run. Positional keys and --keys-from cannot be combined.
 
 ```
-zotio items restore <itemKey>
+zotio items restore <itemKey...> | --keys-from <file|-> [flags]
 ```
+
+Examples:
+
+```bash
+zotio items restore ABC12345
+  zotio items restore --keys-from keys.txt --yes
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--keys-from` | `string` |  | Read item keys from a file or '-' for stdin (lines or JSON), instead of positional keys |
 
 ### `zotio items retract-check`
 
@@ -2510,6 +2531,40 @@ zotio items trash
 | --- | --- | --- | --- |
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--start` | `int` | `0` | Pagination offset (zero-based) |
+
+#### `zotio items trash empty`
+
+Permanently delete items from the trash
+
+Permanently delete items that are already in the trash. This cannot be undone
+by 'items restore' or 'journal undo', so it is previewed by default and applying
+needs --yes and --allow-destructive.
+
+The command pages the whole live trash and plans one permanent delete per item.
+--older-than keeps only items whose dateModified is older than the age (30d or
+720h); an item with no readable dateModified is never selected by an age filter.
+--keys-from (a file or '-' for stdin) keeps only the listed keys, and a key that
+is not in the trash is a usage error. Without a filter the whole trash is
+selected, so read the count in the preview first.
+
+Each permanent delete leaves a deletion marker in the local mirror, as
+'items delete --permanent' does.
+
+```
+zotio items trash empty [--older-than DUR] [--keys-from <file|->] [flags]
+```
+
+Examples:
+
+```bash
+zotio items trash empty --older-than 30d
+  zotio items trash empty --older-than 30d --yes --allow-destructive
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--keys-from` | `string` |  | Only these keys, read from a file or '-' for stdin (lines or JSON); each must be in the trash |
+| `--older-than` | `string` |  | Only items whose dateModified is older than this age (e.g. 30d, 720h) |
 
 ### `zotio items unfiled`
 

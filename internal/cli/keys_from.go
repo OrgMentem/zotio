@@ -186,3 +186,27 @@ func addJSONKeyEntry(entry json.RawMessage, addKey func(string), allowMissing bo
 	}
 	return resolveKeysError("malformed keys JSON: entries must be strings or objects with a key or item_key field")
 }
+
+// resolveTrashKeys is resolveKeys for commands whose Use string already names
+// the positionals as <itemKey>...: the root Args wrapper (installPositionalArgUsage)
+// has validated their shape before RunE, so they are taken as given and only
+// de-duplicated. --keys-from input, the mix with positionals and the empty list
+// still go through resolveKeys.
+func resolveTrashKeys(args []string, keysFrom string, stdin io.Reader) ([]string, error) {
+	if keysFrom != "" || len(args) == 0 {
+		return resolveKeys(args, keysFrom, stdin)
+	}
+	seen := make(map[string]struct{}, len(args))
+	keys := make([]string, 0, len(args))
+	for _, arg := range args {
+		if _, ok := seen[arg]; ok || arg == "" {
+			continue
+		}
+		seen[arg] = struct{}{}
+		keys = append(keys, arg)
+	}
+	if len(keys) == 0 {
+		return nil, usageErr(resolveKeysError("no item keys provided"))
+	}
+	return keys, nil
+}

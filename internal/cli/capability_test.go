@@ -857,6 +857,7 @@ func TestCapabilityDestructiveSetIsTheUndoBoundary(t *testing.T) {
 		"creators rename",
 		"items delete",
 		"items duplicates resolve",
+		"items trash empty",
 		"vault resolve",
 		"workflow run",
 	}

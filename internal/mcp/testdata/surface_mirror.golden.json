@@ -1949,7 +1949,7 @@
   },
   {
     "name": "items_delete",
-    "description": "Move an item to the trash, where 'zotio items restore' can bring it back.\n\nThis is a reversible trash operation (the item's \"deleted\" flag is set), matching\nwhat 'zotio items trash' lists and 'zotio items restore' reverses.\n\n--permanent instead destroys the item and its child attachments outright. That\ncannot be undone by 'items restore' and requires --allow-destructive.",
+    "description": "Move items to the trash, where 'zotio items restore' can bring them back.\n\nThis is a reversible trash operation (the item's \"deleted\" flag is set), matching\nwhat 'zotio items trash' lists and 'zotio items restore' reverses.\n\nPass one or more item keys, or --keys-from (a file or '-' for stdin). Each key is\nits own version-guarded write inside one plan and one journal run, so\n'--max-changes' caps the run and 'zotio journal undo' restores every item at once.\nPositional keys and --keys-from cannot be combined.\n\nThe '--permanent' flag instead destroys the items and their child attachments\noutright. That cannot be undone by 'items restore' and requires --allow-destructive.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1971,6 +1971,10 @@
         "dry-run": {
           "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file or '-' for stdin (lines or JSON), instead of positional keys",
+          "type": "string"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
@@ -2624,7 +2628,7 @@
   },
   {
     "name": "items_restore",
-    "description": "Restore a trashed item",
+    "description": "Restore trashed items. Pass one or more item keys, or --keys-from (a file or '-' for stdin). Each key is its own version-guarded write inside one plan and one journal run. Positional keys and --keys-from cannot be combined.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -2646,6 +2650,10 @@
         "dry-run": {
           "description": "Preview writes without sending them; read requests still run (default: false)",
           "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file or '-' for stdin (lines or JSON), instead of positional keys",
+          "type": "string"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
@@ -2968,6 +2976,56 @@
         "start": {
           "description": "Pagination offset (zero-based) (default: 0)",
           "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_trash_empty",
+    "description": "Permanently delete items that are already in the trash. This cannot be undone\nby 'items restore' or 'journal undo', so it is previewed by default and applying\nneeds --yes and --allow-destructive.\n\nThe command pages the whole live trash and plans one permanent delete per item.\n--older-than keeps only items whose dateModified is older than the age (30d or\n720h); an item with no readable dateModified is never selected by an age filter.\n--keys-from (a file or '-' for stdin) keeps only the listed keys, and a key that\nis not in the trash is a usage error. Without a filter the whole trash is\nselected, so read the count in the preview first.\n\nEach permanent delete leaves a deletion marker in the local mirror, as\n'items delete --permanent' does.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview writes without sending them; read requests still run (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Only these keys, read from a file or '-' for stdin (lines or JSON); each must be in the trash",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "older-than": {
+          "description": "Only items whose dateModified is older than this age (e.g. 30d, 720h)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
         }
       },
       "required": [],

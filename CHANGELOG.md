@@ -18,7 +18,24 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   removes them through the same path. Neither command calls Zotero's
   `DELETE /tags`, which bypasses versions, the journal, and the mirror.
 
+- **`items trash empty [--older-than DUR] [--keys-from F]` empties the trash
+  by policy.** It pages the whole live trash, keeps entries whose
+  `dateModified` is older than the age (`30d`, `720h`; an entry with no
+  readable date is never selected), and plans one permanent `item_delete` per
+  entry with the version read from the listing. It is destructive: both the
+  preview and the apply need `--allow-destructive`, the apply needs `--yes`,
+  and each delete leaves the ADR-0007 deletion marker. `--keys-from` limits it
+  to listed keys; a key not in the trash is a usage error.
+
 ### Changed
+
+- **`items delete` and `items restore` take many keys.** Both accept
+  `<itemKey>...` or `--keys-from <file|->` (lines or JSON). Each key is its own
+  version-guarded op inside one plan and one journal run, so `--max-changes`
+  caps the run and `journal undo` of a bulk trash restores every item. Positional
+  keys and `--keys-from` cannot be mixed and an empty list is a usage error,
+  replacing the old exactly-one-key rule. `--permanent` is unchanged. Version
+  reads stay one GET per key; `--batch` is not offered.
 
 - **`journal undo` reverses `items delete` (trash) and `items restore`.**
   A trash run is undone by a version-guarded restore, and a restore run by a

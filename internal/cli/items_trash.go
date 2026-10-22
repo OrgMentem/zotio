@@ -113,6 +113,7 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
+	cmd.AddCommand(newItemsTrashEmptyCmd(flags))
 
 	return cmd
 }

@@ -97,6 +97,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items tags remove` | write | `web_api` |  | `web_api_key` |
 | `items top` | read |  |  |  |
 | `items trash` | read |  |  |  |
+| `items trash empty` | write | `web_api` | yes | `web_api_key` |
 | `items unfiled` | read |  |  | `synced_store` |
 | `items update` | write | `web_api` |  | `web_api_key` |
 | `items venues` | read |  |  | `synced_store` |

@@ -11,21 +11,23 @@ import (
 )
 
 func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
+	var keysFrom string
+
 	cmd := &cobra.Command{
-		Use:         "restore <itemKey>",
-		Short:       "Restore a trashed item",
+		Use:         "restore <itemKey...> | --keys-from <file|->",
+		Short:       "Restore one or more trashed items",
+		Long:        "Restore trashed items. Pass one or more item keys, or --keys-from (a file or '-' for stdin). Each key is its own version-guarded write inside one plan and one journal run. Positional keys and --keys-from cannot be combined.",
+		Example:     "  zotio items restore ABC12345\n  zotio items restore --keys-from keys.txt --yes",
 		Annotations: map[string]string{"zotio:method": "PATCH", "zotio:path": "/items/{itemKey}"},
-		// One key per run. Cobra's default for a command with no subcommands is
-		// ArbitraryArgs, so `items restore K1 K2` used to restore K1 and drop
-		// K2 on the floor: the request path, the op id and the whole envelope
-		// are built from args[0] alone, and nothing reported the ignored keys.
-		// A restore that reports one item as the whole result must not silently
-		// do less than it was asked, and a missing key is a usage error, not a
-		// help request that exits 0.
-		Args: cobra.ExactArgs(1),
+		// Positional keys or --keys-from, never both and never none: resolveKeys
+		// refuses the mix and an empty list as usage errors, so a restore cannot
+		// silently do less than it was asked.
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			key := args[0]
-			path := replacePathParam("/items/{itemKey}", "itemKey", key)
+			keys, keysErr := resolveTrashKeys(args, keysFrom, cmd.InOrStdin())
+			if keysErr != nil {
+				return keysErr
+			}
 
 			// Route through the write target so the version GET and the PATCH hit the
 			// same library under hybrid routing: an item just created on the web and
@@ -36,40 +38,42 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			if clientErr != nil {
 				return clientErr
 			}
-			// Zotero requires If-Unmodified-Since-Version for key-based writes
-			// (PATCH returns HTTP 428 without it). Unlike items delete, a 404
-			// here is NOT a no-op: delete's target state ("gone") is already
-			// satisfied when the item is missing, but restore's ("present and
-			// undeleted") can never be reached, so it is a genuine error.
-			_, version, verErr := c.GetWithVersion(path, nil)
-			if verErr != nil {
-				return classifyAPIError(verErr, flags)
-			}
-			if version <= 0 {
-				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", key))
-			}
 
 			var applyErr error
-			ops := []mutation.Op{{
-				ID:              "items.restore:" + key,
-				Key:             key,
-				Kind:            "item_restore",
-				ExpectedVersion: version,
-				// Boolean on purpose: keeps the mirror from replaying the
-				// restore and lets the field stay out of reverse.go's reversibleFields.
-				Changes: []mutation.Change{{Field: "deleted", Remove: true}},
-				Apply: func() (string, any, error) {
-					status, detail, patchErr := patchWithVersionGuard(c, path, map[string]any{"deleted": 0}, version)
-					if patchErr != nil {
-						applyErr = patchErr
-					}
-					return status, detail, patchErr
-				},
-			}}
+			ops := make([]mutation.Op, 0, len(keys))
+			for _, key := range keys {
+				path := replacePathParam("/items/{itemKey}", "itemKey", key)
+				// Zotero requires If-Unmodified-Since-Version for key-based writes
+				// (PATCH returns HTTP 428 without it). Unlike items delete, a 404
+				// here is NOT a no-op: delete's target state ("gone") is already
+				// satisfied when the item is missing, but restore's ("present and
+				// undeleted") can never be reached, so it is a genuine error.
+				_, version, verErr := c.GetWithVersion(path, nil)
+				if verErr != nil {
+					return classifyAPIError(verErr, flags)
+				}
+				if version <= 0 {
+					return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", key))
+				}
+				ops = append(ops, mutation.Op{
+					ID:              "items.restore:" + key,
+					Key:             key,
+					Kind:            "item_restore",
+					ExpectedVersion: version,
+					// Boolean on purpose: keeps the mirror from replaying the
+					// restore and lets the field stay out of reverse.go's reversibleFields.
+					Changes: []mutation.Change{{Field: "deleted", Remove: true}},
+					Apply: func() (string, any, error) {
+						status, detail, patchErr := patchWithVersionGuard(c, path, map[string]any{"deleted": 0}, version)
+						if patchErr != nil {
+							applyErr = patchErr
+						}
+						return status, detail, patchErr
+					},
+				})
+			}
 			// Shared envelope, not a bespoke {action,resource,key,status,success}
-			// shape: .result.items[0] works for every other mutation, and the
-			// journal run_id was previously discarded so a restore could not be
-			// traced even though the journal recorded it.
+			// shape: .result.items[i] works for every other mutation.
 			env, runErr := runMutation(cmd.Context(), flags, "items.restore", ops)
 			if runErr != nil && applyErr != nil {
 				runErr = classifyAPIError(applyErr, flags)
@@ -77,6 +81,7 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
+	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read item keys from a file or '-' for stdin (lines or JSON), instead of positional keys")
 
 	return cmd
 }

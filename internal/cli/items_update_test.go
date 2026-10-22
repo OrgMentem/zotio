@@ -290,9 +290,9 @@ func runItemsUpdateArgGuardCmd(t *testing.T, g *itemsUpdateArgGuardServer, cmd i
 
 // `items update K1 K2` updated K1 and dropped K2 with no mention of it: the
 // request path, the op id and the whole envelope are built from args[0] alone.
-// `items restore K1 K2` had the same silent-partial-action shape. The refusal
-// must come before any network call, under the same guard and convention.
-func TestItemsUpdateAndRestoreRefuseMoreThanOneKey(t *testing.T) {
+// `items restore` and `items delete` were lifted to many keys; their contract is
+// tested in items_multi_key_test.go. The refusal must come before any network call, under the same guard and convention.
+func TestItemsUpdateRefusesMoreThanOneKey(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		new        func(*rootFlags) *cobra.Command
@@ -300,7 +300,6 @@ func TestItemsUpdateAndRestoreRefuseMoreThanOneKey(t *testing.T) {
 		singleArgs []string
 	}{
 		{name: "update", new: newItemsUpdateCmd, refuseArgs: []string{"K1", "K2", "--title", "updated"}, singleArgs: []string{"K1", "--title", "updated"}},
-		{name: "restore", new: newItemsRestoreCmd, refuseArgs: []string{"K1", "K2"}, singleArgs: []string{"K1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			g := newItemsUpdateArgGuardServer(t)

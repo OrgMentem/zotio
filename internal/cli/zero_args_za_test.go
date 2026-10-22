@@ -75,13 +75,11 @@ func TestZaMissingPositionalIsUsageError(t *testing.T) {
 		{args: []string{"items", "children"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "cite"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "collections-of"}, names: []string{"<itemKey>"}},
-		{args: []string{"items", "delete", "--yes"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "file"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "fulltext"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "get"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "note-template"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "open"}, names: []string{"<key>"}},
-		{args: []string{"items", "restore"}, names: []string{"<itemKey>"}},
 		// summarize also takes a cohort, so the refusal names every accepted input.
 		{args: []string{"items", "summarize"}, names: []string{"<itemKey>", "--collection", "--scope"}},
 		{args: []string{"items", "update", "--title", "T"}, names: []string{"<itemKey>"}},
@@ -94,6 +92,10 @@ func TestZaMissingPositionalIsUsageError(t *testing.T) {
 		{args: []string{"vault", "resolve", "--keep-vault"}, names: []string{"<citekey-or-item-key>"}},
 		// Commands that already declared a Cobra arity bound share the same
 		// mechanism, so they refuse with the same code and the same naming.
+		// items delete/restore take keys positionally or by --keys-from, so the
+		// refusal names what resolveKeys found missing.
+		{args: []string{"items", "delete", "--yes"}, names: []string{"no item keys provided"}},
+		{args: []string{"items", "restore"}, names: []string{"no item keys provided"}},
 		{args: []string{"items", "tags", "list"}, names: []string{"<itemKey>"}},
 		{args: []string{"items", "get", "K1", "K2"}, names: []string{"<itemKey>"}},
 	} {
