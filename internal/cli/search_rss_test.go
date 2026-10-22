@@ -46,17 +46,11 @@ func TestRssSearchSavedScopeWithoutMirrorRefuses(t *testing.T) {
 			out, err := fsRunSearch(t, &rootFlags{asJSON: true, dataSource: "local", timeout: time.Second},
 				"calibration", "--fulltext", "--scope", "saved-search:SS1", "--db", dbPath)
 			if tc.available {
-				if err != nil {
-					t.Fatalf("search with reachable desktop: %v; output=%s", err, out)
-				}
-				var got struct {
-					Results []json.RawMessage `json:"results"`
-				}
-				if err := json.Unmarshal([]byte(out), &got); err != nil {
-					t.Fatalf("decode empty search %q: %v", out, err)
-				}
-				if got.Results == nil || len(got.Results) != 0 {
-					t.Fatalf("missing mirror results = %s, want an empty results array", out)
+				// The live cohort resolved, but the full-text search itself
+				// needs the mirror: nothing was searched, so it is the
+				// unsynced-store precondition, not an empty answer.
+				if ExitCode(err) != 9 || out != "" {
+					t.Fatalf("search with reachable desktop and no mirror: exit %d (%v), output=%q; want precondition exit 9 and no empty envelope", ExitCode(err), err, out)
 				}
 			} else {
 				if ExitCode(err) != 9 {

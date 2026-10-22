@@ -239,11 +239,20 @@ func TestFsSearchFulltextScopeGroupAllIsolation(t *testing.T) {
 		}
 	}
 
+	// The third library has no mirror: nothing was searched there, so it fails
+	// with the unsynced-store precondition and the run is partial (exit 13)
+	// instead of reporting that library ok with no hits.
 	out, _, err := runFanoutCmd(t, "search", "calibration", "--fulltext", "--scope", "collection:COLL", "--group", "all", "--json", "--data-source", "local")
-	if err != nil {
-		t.Fatalf("search --fulltext --scope --group all: %v (out=%s)", err, out)
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("search --fulltext --scope --group all: %v (exit %d), want partial exit 13 (out=%s)", err, ExitCode(err), out)
 	}
 	report := decodeFanoutReport(t, out)
+	if report.Meta.LibrariesOK != 2 || report.Meta.LibrariesFail != 1 {
+		t.Fatalf("libraries ok/failed = %d/%d, want 2/1 (out=%s)", report.Meta.LibrariesOK, report.Meta.LibrariesFail, out)
+	}
+	if block := fanoutBlock(t, report, "100"); block.Status != "failed" || block.ExitCode != 9 {
+		t.Errorf("group 100 block = status %q exit %d, want failed with exit 9 (no mirror)", block.Status, block.ExitCode)
+	}
 	got := map[string]string{}
 	for _, raw := range report.Results {
 		var row struct {

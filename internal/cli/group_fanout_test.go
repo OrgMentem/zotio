@@ -602,11 +602,18 @@ func TestGroupFanoutReadsEachLibrarysOwnMirror(t *testing.T) {
 		// --data-source local pins the read to the mirror, which is the input
 		// the memoized path used to leak; the live branch is scoped by
 		// rootFlags.group, which withLibraryScope already drives per library.
+		//
+		// Group 100 has no mirror: nothing was searched there, so it fails with
+		// the unsynced-store precondition (exit 9) and the run is partial
+		// (exit 13) rather than reporting that library ok with no hits.
 		out, _, err := runFanoutCmd(t, "search", "calibration", "--group", "all", "--json", "--data-source", "local")
-		if err != nil {
-			t.Fatalf("search --group all: %v (out=%s)", err, out)
+		if err == nil || ExitCode(err) != 13 {
+			t.Fatalf("search --group all: %v (exit %d), want partial exit 13 (out=%s)", err, ExitCode(err), out)
 		}
 		report := decodeFanoutReport(t, out)
+		if block := fanoutBlock(t, report, "100"); block.Status != "failed" || block.ExitCode != 9 {
+			t.Errorf("group 100 block = status %q exit %d, want failed with exit 9 (no mirror)", block.Status, block.ExitCode)
+		}
 		byKey := decodeFanoutRows(t, report.Results)
 		if len(byKey) != 3 {
 			t.Fatalf("aggregated keys = %v, want P1, P2 and L1", byKey)

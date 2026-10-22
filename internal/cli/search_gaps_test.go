@@ -410,45 +410,82 @@ func TestSearchCommandLocalProvenanceMatchesListCommands(t *testing.T) {
 	}
 }
 
-// A local search against a library that was never synced must not create the
-// mirror it failed to find. `--group all` fans search across every accessible
-// group, so a creating open would leave an empty data-group-<id>.db behind for
-// each of them — a write performed by a read the fan-out allowlist certifies as
-// side-effect-free.
-func TestSearchLocalDoesNotCreateAMissingMirror(t *testing.T) {
+// A local search against a library that was never synced answers nothing, so
+// it is the unsynced-store precondition (exit 9) every other read reports,
+// never an empty exit-0 answer an agent would read as "no match". It must also
+// not create the mirror it failed to find: `--group all` fans search across
+// every accessible group, so a creating open would leave an empty
+// data-group-<id>.db behind for each of them — a write performed by a read the
+// fan-out allowlist certifies as side-effect-free.
+func TestSearchLocalMissingMirrorIsAPreconditionAndCreatesNothing(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "never-synced.db")
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
 	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	cmd.SetArgs([]string{"anything", "--db", dbPath})
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v; a missing mirror is an empty answer, not a failure", err)
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("Execute() error = %v (exit %d), want precondition exit 9 naming 'zotio sync'; stdout %s", err, ExitCode(err), stdout.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no empty result envelope for a search that never ran", stdout.String())
 	}
 	if _, err := os.Stat(dbPath); err == nil {
 		t.Fatalf("search created %s; reading a library must not write one", dbPath)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v", dbPath, err)
 	}
+}
 
-	var got struct {
-		Results []json.RawMessage `json:"results"`
-		Meta    struct {
-			Source string `json:"source"`
-		} `json:"meta"`
+// An unreachable API in auto mode with no mirror to fall back on is the shared
+// offline rule: exit 9 carrying the live error, not an empty local answer.
+func TestSearchAutoUnreachableWithoutMirrorIsAPrecondition(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	baseURL := server.URL
+	server.Close()
+	dbPath := filepath.Join(t.TempDir(), "never-synced.db")
+	t.Setenv("ZOTERO_BASE_URL", baseURL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 50 * time.Millisecond})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{"anything", "--db", dbPath})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "zotio sync") || !strings.Contains(err.Error(), "Original error") {
+		t.Fatalf("Execute() error = %v (exit %d), want exit 9 naming 'zotio sync' and the live error; stdout %s", err, ExitCode(err), stdout.String())
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no empty result envelope", stdout.String())
 	}
-	if len(got.Results) != 0 || got.Meta.Source != "local" {
-		t.Fatalf("output = %s, want an empty local result set", stdout.String())
+}
+
+// A mirror file that exists but never completed an items sync cannot vouch for
+// an empty answer either.
+func TestSearchLocalUnsyncedMirrorEmptyAnswerIsAPrecondition(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "created-not-synced.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	// Silence would be indistinguishable from "nothing matched", which is the
-	// failure mode the near-title work exists to remove.
-	if !strings.Contains(stderr.String(), "zotio sync") {
-		t.Fatalf("stderr = %q, want a notice naming the remedy", stderr.String())
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second})
+	cmd.SetArgs([]string{"anything", "--db", dbPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || ExitCode(err) != 9 {
+		t.Fatalf("Execute() error = %v (exit %d), want precondition exit 9", err, ExitCode(err))
 	}
 }

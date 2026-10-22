@@ -166,6 +166,7 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 					return usageErr(scopeErr)
 				}
 			}
+			var liveErr error
 			// Zotero item full-text search is GET /items
 			// with qmode=everything; /searches returns saved-search definitions.
 			if !fulltextOnly && flags.dataSource != "local" {
@@ -202,6 +203,7 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 					return classifyAPIError(getErr, flags)
 				}
 				// auto mode + network error: fall through to local FTS
+				liveErr = getErr
 				fmt.Fprintf(cmd.ErrOrStderr(), "API unreachable, falling back to local search.\n")
 			}
 
@@ -232,8 +234,10 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			// as a side effect of being read — and `--group all` fans this
 			// command across every accessible group, so one search would leave
 			// an empty data-group-<id>.db behind for each of them. A missing
-			// mirror returns an empty local answer, but a saved-search scope
-			// must still meet its live prerequisite before that early return.
+			// mirror is not an empty corpus: nothing was searched, so it is the
+			// same unsynced-store precondition (exit 9) every other read
+			// reports, never an empty answer an agent would read as "no match".
+			// A saved-search scope must still meet its live prerequisite first.
 			if _, statErr := os.Stat(dbPath); statErr != nil && os.IsNotExist(statErr) {
 				// Only saved-search arms need the live API; other arms of an
 				// intersection would query the absent mirror, so check each
@@ -247,16 +251,16 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 						return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "search", result)
 					}
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "No local mirror for this library. Run 'zotio sync' to populate it.\n")
-				return outputSearchResults(cmd, flags, make([]json.RawMessage, 0), limit,
-					DataProvenance{Source: "local", Reason: reason, ResourceType: provenanceResource, Scoped: true})
+				if liveErr != nil {
+					return preconditionErr(fmt.Errorf("Zotero API unreachable and there is no local mirror for this library to search instead. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", liveErr))
+				}
+				return preconditionErr(fmt.Errorf("there is no local mirror for this library, so nothing was searched. Run 'zotio sync' to populate it"))
 			}
 			db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first to populate the local database.", err)
 			}
 			defer db.Close()
-
 			// The cohort resolves against this library's own mirror, so a
 			// `--group all` run scopes each library by its own keys.
 			fulltextSearch := store.FulltextSearch{Query: query, Limit: limit}
@@ -295,6 +299,18 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)
+			}
+			// An empty answer from a mirror file that never completed an items
+			// sync (created by a write-through, or by syncing another
+			// resource) is as unsearched as an absent one. Rows found prove
+			// the mirror holds data, so only an empty answer is checked.
+			if len(results) == 0 {
+				if hydrateErr := requireLocalResourceHydrated(cmd.Context(), db, "items"); hydrateErr != nil {
+					if liveErr != nil {
+						return preconditionErr(fmt.Errorf("Zotero API unreachable and the local mirror cannot answer (%w). Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", hydrateErr, liveErr))
+					}
+					return preconditionErr(fmt.Errorf("the local mirror cannot answer (%w), so nothing was searched", hydrateErr))
+				}
 			}
 
 			prov := attachFreshness(localProvenance(db, provenanceResource, reason), flags)
