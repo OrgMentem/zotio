@@ -13,11 +13,13 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/cliutil"
 )
 
@@ -296,5 +298,73 @@ func TestEnsureLiveLaunchHonorsCommandDeadline(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("ensureLive blocked %v, want prompt deadline return", elapsed)
+	}
+}
+
+// The readiness deadline must bind the HTTP probes, not only the launcher and
+// the select loop: a desktop that accepts the connection and then stalls past
+// the deadline is a precondition failure, never a late "reachable".
+func TestEnsureLiveReadinessProbeHonorsDeadline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldReadiness := ensureLiveReadiness
+	ensureLiveReadiness = time.Second
+	t.Cleanup(func() { ensureLiveReadiness = oldReadiness })
+	t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
+
+	dir := t.TempDir()
+	marker := dir + "/launched"
+	name, _ := launchCommand(runtime.GOOS, "zotero://select/library")
+	if err := os.WriteFile(dir+"/"+name, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatalf("write fake launcher: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Before the launch the desktop is down (connection dropped); after it, the
+	// desktop accepts the connection and stalls well past the readiness
+	// deadline, then answers.
+	const stall = 5 * time.Second
+	var stalledCanceled atomic.Bool
+	var stalledSince atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(marker); err != nil {
+			if conn, _, hijackErr := w.(http.Hijacker).Hijack(); hijackErr == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		stalledSince.CompareAndSwap(0, time.Now().UnixNano())
+		select {
+		case <-r.Context().Done():
+			stalledCanceled.Store(true)
+		case <-time.After(stall):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	// --timeout is longer than the readiness deadline, so only the deadline can
+	// cut the stalled probe short.
+	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 10 * time.Second}
+	out, err := runEnsureLiveTest(t, srv.URL+"/users/0", flags, true)
+	if stalledSince.Load() == 0 {
+		t.Fatalf("the readiness probe never reached the stalled desktop; err = %v", err)
+	}
+	elapsed := time.Since(time.Unix(0, stalledSince.Load()))
+	if err == nil {
+		t.Fatalf("ensureLive reported success after the readiness deadline; output %q", out)
+	}
+	if !strings.Contains(err.Error(), "did not become reachable") {
+		t.Fatalf("err = %v, want the readiness precondition timeout", err)
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("ensureLive returned %v after the probe stalled; it outlived the %v readiness deadline", elapsed, ensureLiveReadiness)
+	}
+	if !stalledCanceled.Load() {
+		// The handler observes the cancellation asynchronously; give it a moment.
+		time.Sleep(200 * time.Millisecond)
+		if !stalledCanceled.Load() {
+			t.Fatal("the in-flight probe was not cancelled")
+		}
 	}
 }

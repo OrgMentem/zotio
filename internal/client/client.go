@@ -492,7 +492,17 @@ func (c *Client) getWithHeadersContext(ctx context.Context, path string, params 
 // rather than a failure. It bypasses the response cache, since a cached status
 // would defeat the purpose.
 func (c *Client) ProbeGet(path string) (int, error) {
-	_, status, err := c.do(c.baseCtx(), "GET", path, nil, nil, nil)
+	return c.ProbeGetContext(c.baseCtx(), path)
+}
+
+// ProbeGetContext is ProbeGet bound to ctx, so a caller with a shorter
+// deadline than the client's base context aborts the in-flight request. A nil
+// ctx falls back to the client base context.
+func (c *Client) ProbeGetContext(ctx context.Context, path string) (int, error) {
+	if ctx == nil {
+		ctx = c.baseCtx()
+	}
+	_, status, err := c.do(ctx, "GET", path, nil, nil, nil)
 	return status, err
 }
 

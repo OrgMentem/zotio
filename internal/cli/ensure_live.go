@@ -69,7 +69,17 @@ func launchURI(ctx context.Context, uri string) error {
 // doctor --ensure-live and init never offer the --launch remediation and the
 // live_local_api precondition passes for a plane nothing can reach.
 func localAPIReachable(c *client.Client) bool {
-	_, err := c.ProbeGet("/")
+	return localAPIReachableContext(c.Context(), c)
+}
+
+// localAPIReachableContext is localAPIReachable bound to ctx, so a probe that
+// outlives the caller's deadline is cancelled in flight and reads as
+// unreachable instead of answering late.
+func localAPIReachableContext(ctx context.Context, c *client.Client) bool {
+	_, err := c.ProbeGetContext(ctx, "/")
+	if ctx.Err() != nil {
+		return false
+	}
 	if err == nil {
 		return true
 	}
@@ -92,6 +102,10 @@ func printEnsureLiveReachable(cmd *cobra.Command, flags *rootFlags) error {
 }
 
 // implement the doctor --ensure-live precondition remediation primitive.
+// ensureLiveReadiness bounds the launch plus the readiness polling. It is a
+// variable so a test can shrink it.
+var ensureLiveReadiness = 15 * time.Second
+
 func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 	c, err := flags.newClient()
 	if err != nil {
@@ -109,7 +123,7 @@ func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 	// Start the 15s overall deadline before invoking the OS launcher so a
 	// stalled open/xdg-open cannot hang forever: the launch child inherits
 	// this context and is killed on cancellation or deadline.
-	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), ensureLiveReadiness)
 	defer cancel()
 	if err := launchURI(ctx, "zotero://select/library"); err != nil {
 		if ctx.Err() != nil {
@@ -130,7 +144,7 @@ func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 			}
 			return ctx.Err()
 		case <-ticker.C:
-			if localAPIReachable(c) {
+			if localAPIReachableContext(ctx, c) {
 				return printEnsureLiveReachable(cmd, flags)
 			}
 		}
