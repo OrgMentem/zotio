@@ -788,6 +788,71 @@ func TestImportApplyLinkedFileWebCreateReportsFailedAttachment(t *testing.T) {
 	}
 }
 
+// A linked-file POST can commit and lose its response; reconciliation then
+// finds the child this run just created. That is an applied write, not a
+// pre-existing attachment, and the journal must record it.
+func TestImportApplyLinkedFileAttachRecoveredAfterLostResponseIsApplied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	var child map[string]any
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && path == "/items/MATCH1/children":
+			if child == nil {
+				_, _ = fmt.Fprint(w, `[]`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"key": "ATT9", "data": child}})
+		case r.Method == http.MethodPost && path == "/items":
+			var items []map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&items); err != nil || len(items) != 1 {
+				http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+				return
+			}
+			posts++
+			child = items[0] // committed, but the answer says the token was already used
+			http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+		default:
+			http.Error(w, fmt.Sprintf(`{"error":"unexpected %s %s"}`, r.Method, r.URL.Path), http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pdf := writeUploadFixture(t, "recovered.pdf", []byte("%PDF-1.4\nrecovered\n%%EOF"))
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "attach", Status: "resolved", MatchedKey: "MATCH1", Title: "Recovered",
+		}},
+	})
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "web", maxChanges: -1,
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "linked-file", manifestPath})
+	if err != nil {
+		t.Fatalf("linked-file attach apply: %v; result=%+v; stderr=%s", err, env.Result, stderr)
+	}
+	if posts != 1 {
+		t.Fatalf("attachment POSTs = %d, want 1", posts)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Summary.NoOp != 0 || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "applied" {
+		t.Fatalf("result = %+v, want the recovered child reported applied, not no_op", env.Result)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["attachment_key"] != "ATT9" {
+		t.Fatalf("reason = %#v, want the recovered attachment key", env.Result.Items[0].Reason)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(entries) != 1 || len(entries[0].Ops) != 1 || entries[0].Ops[0].Status != "applied" {
+		t.Fatalf("journal entries = %+v, err=%v; want the recovered write recorded as applied", entries, listErr)
+	}
+}
+
 // TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure
 // covers zotio-orphan-evidence: routeCreateItem's SaveItems call commits the
 // parent in Zotero desktop before SaveAttachment ever runs, and the two calls

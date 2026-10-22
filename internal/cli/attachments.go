@@ -284,6 +284,10 @@ func applyLinkedAttachment(c *client.Client, req storedUploadRequest, flags *roo
 	return "applied", detail, nil
 }
 
+// ensureLinkedAttachment returns the linked_file child for req and whether this
+// run created it. A child found before any POST is pre-existing (false); a child
+// found only by reconciling after this run's ambiguous or 412 POST is this run's
+// own write (true), even though the response never said so.
 func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *rootFlags) (string, bool, error) {
 	if key, err := findLinkedAttachment(c, req.ParentKey, req.Path); err != nil {
 		return "", false, err
@@ -307,7 +311,9 @@ func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *ro
 		if client.IsAmbiguousWriteError(err) || (errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed) {
 			key, reconcileErr := findLinkedAttachment(c, req.ParentKey, req.Path)
 			if reconcileErr == nil && key != "" {
-				return key, false, nil
+				// The lookup before dispatch found no child, so this one is the
+				// create whose response was lost: created, not pre-existing.
+				return key, true, nil
 			}
 			// A used token with no live attachment left means the earlier one
 			// was deleted: a deliberate re-add takes the next token.
