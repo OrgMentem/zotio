@@ -364,3 +364,70 @@ func TestGuardedDeleteReconcilesLostCommittedResponse(t *testing.T) {
 		})
 	}
 }
+
+// A gateway can answer 502 after Zotero committed a version-guarded write. The
+// conditional request is not replayed, so the 5xx is the only evidence the
+// client has and the guard must still read the object back instead of
+// reporting a committed write as failed.
+func TestGuardedWritesReconcileCommittedWrite5xx(t *testing.T) {
+	const path = "/items/ITEM0001"
+	for _, tc := range []struct {
+		name   string
+		method string
+		call   func(c *client.Client) (string, error)
+		get    func(w http.ResponseWriter)
+		want   string
+	}{
+		{
+			name:   "patch landed",
+			method: http.MethodPatch,
+			call: func(c *client.Client) (string, error) {
+				status, _, err := patchWithVersionGuard(c, path, map[string]any{"title": "Requested"}, 7)
+				return status, err
+			},
+			get:  func(w http.ResponseWriter) { writeGuardObject(w, "ITEM0001", 8, map[string]any{"title": "Requested"}) },
+			want: "applied",
+		},
+		{
+			name:   "delete landed",
+			method: http.MethodDelete,
+			call: func(c *client.Client) (string, error) {
+				_, _, status, _, err := deleteWithVersionGuard(c, path, 7)
+				return status, err
+			},
+			get:  func(w http.ResponseWriter) { http.Error(w, "Not found", http.StatusNotFound) },
+			want: "applied",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fastRetryBackoff(t)
+			var writes, reads atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					reads.Add(1)
+					tc.get(w)
+				case tc.method:
+					writes.Add(1)
+					http.Error(w, "bad gateway", http.StatusBadGateway)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+			c.NoCache = true
+
+			status, err := tc.call(c)
+			if status != tc.want || err != nil {
+				t.Fatalf("status=%q err=%v, want %q with no error", status, err, tc.want)
+			}
+			if got := writes.Load(); got != 1 {
+				t.Errorf("write dispatched %d times, want 1", got)
+			}
+			if got := reads.Load(); got != 1 {
+				t.Errorf("reconciliation reads = %d, want 1", got)
+			}
+		})
+	}
+}

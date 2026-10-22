@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -119,4 +120,44 @@ type errorReader struct {
 
 func (r errorReader) Read([]byte) (int, error) {
 	return 0, r.err
+}
+
+func TestConditionalWrite5xxIsAmbiguousButClientErrorIsNot(t *testing.T) {
+	for _, tc := range []struct {
+		status        int
+		wantAmbiguous bool
+	}{
+		{http.StatusBadGateway, true},
+		{http.StatusInternalServerError, true},
+		{http.StatusNotImplemented, false},
+		{http.StatusPreconditionFailed, false},
+		{http.StatusBadRequest, false},
+	} {
+		var calls int32
+		transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			atomic.AddInt32(&calls, 1)
+			return &http.Response{
+				StatusCode: tc.status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("rejected")),
+				Request:    req,
+			}, nil
+		})
+		c := clientTestNewClient(t, "https://example.test")
+		c.NoCache = true
+		c.HTTPClient = &http.Client{Transport: transport}
+
+		_, status, err := c.PatchWithHeaders("/items/ABCD", map[string]any{"title": "x"},
+			map[string]string{"If-Unmodified-Since-Version": "7"})
+		if got := IsAmbiguousWriteError(err); got != tc.wantAmbiguous {
+			t.Errorf("HTTP %d: ambiguous = %v, want %v (err %v)", tc.status, got, tc.wantAmbiguous, err)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != tc.status || status != tc.status {
+			t.Errorf("HTTP %d: err %v status %d does not carry the server's status", tc.status, err, status)
+		}
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Errorf("HTTP %d: transport calls = %d, want 1 (a conditional write is never replayed)", tc.status, got)
+		}
+	}
 }

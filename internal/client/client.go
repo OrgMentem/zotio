@@ -1467,6 +1467,18 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, resp.StatusCode, resp.Header, fmt.Errorf("could not resolve Zotero Web API write route: %w: %w", routeErr, apiErr)
 			}
 		}
+		// A 5xx on a write may follow a commit (a gateway timing out after
+		// Zotero applied it), and a request that is not safe to replay never
+		// reaches the retry branch above that records one. Classify it here so
+		// the version-guard helpers reconcile against the write plane instead of
+		// reporting a possibly committed write as definitely failed. 501 is
+		// Zotero's definite "not implemented" rejection of a local-API write.
+		if isMutatingMethod(method) && len(ambiguousFailures) == 0 &&
+			resp.StatusCode >= 500 && resp.StatusCode != 501 {
+			return nil, resp.StatusCode, resp.Header, &AmbiguousWriteError{
+				Method: method, Path: path, Attempts: attempt + 1, Err: apiErr,
+			}
+		}
 		// wrapAmbiguous returns apiErr unchanged when this request has no
 		// ambiguous prior attempt, so one return covers both cases. Comparing
 		// the two values instead would be an error identity test.
