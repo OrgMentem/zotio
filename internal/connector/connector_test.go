@@ -976,6 +976,16 @@ func TestImportClassifiesWhetherTheWriteMayHaveCommitted(t *testing.T) {
 		{"5xx can follow a committed write", func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		}, false, true},
+		{"5xx whose body cannot be read", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("short"))
+		}, false, true},
+		{"4xx whose body cannot be read", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("short"))
+		}, false, false},
 		{"4xx rejected before any write", func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no translator", http.StatusBadRequest)
 		}, false, false},

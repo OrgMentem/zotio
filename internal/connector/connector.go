@@ -579,7 +579,13 @@ func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]b
 	} else {
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
-			return nil, fmt.Errorf("connector %s: HTTP %d: reading response body: %w", endpoint, resp.StatusCode, err)
+			readErr := fmt.Errorf("connector %s: HTTP %d: reading response body: %w", endpoint, resp.StatusCode, err)
+			// A 5xx can follow a committed write, so an unreadable 5xx body
+			// leaves the outcome as unknown as the intact one does.
+			if resp.StatusCode >= 500 {
+				return nil, outcomeUnknown(readErr)
+			}
+			return nil, readErr
 		}
 	}
 	if resp.StatusCode != want {
