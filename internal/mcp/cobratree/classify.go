@@ -42,13 +42,20 @@ const (
 // nested command that merely shares a leaf name with a framework command
 // (`annotations search` vs. the top-level `search`) exposed. Two cases qualify:
 //
-//  1. A typed MCP tool already covers the same capability (the typed tool's
-//     schema is strictly better than a shell-out). Examples: `sql`, `search`,
-//     `context`/`about`/`agent-context`, `api` (endpoint mirror tools cover it).
+//  1. A framework tool already covers the same capability (its schema is
+//     strictly better than a shell-out). Examples: `sql`, `search`,
+//     `context`/`about`/`agent-context`.
 //  2. The command is non-functional via MCP (interactive setup, shell-only
 //     ergonomics, trivial introspection, local-only feedback). Examples:
 //     `auth`, `completion`, `doctor`, `version`, `feedback`, `profile`,
 //     `which`, `help`.
+//
+// `api` is listed for neither reason: no such command exists in the tree now
+// that ADR-0003 retired the typed endpoint tools. The entry stays as a guard so
+// a raw endpoint passthrough, if one is ever added, is not mirrored: it would
+// run arbitrary requests outside the per-command safe-flag allowlist and the
+// write gates. Endpoint-shaped work goes through the CLI commands that wrap the
+// endpoint, via command_search/command_run.
 //
 // Commands that DO have agent value — `sync` (populates the store that `sql`
 // and `search` query), `stale`/`orphans`/`reconcile`/`load` (store

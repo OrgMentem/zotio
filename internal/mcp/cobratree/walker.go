@@ -238,7 +238,7 @@ func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []strin
 func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct{}) error {
 	for name := range unsafeMCPMirrorFlags {
 		if _, ok := args[name]; ok {
-			return fmt.Errorf("MCP command mirror does not expose --%s; use typed MCP tools or server configuration instead", name)
+			return fmt.Errorf("MCP command mirror does not expose --%s; configure it on the MCP server instead", name)
 		}
 	}
 	for name := range args {
