@@ -28,11 +28,15 @@ import (
 // named here is an arm parseScopeSpec accepts.
 //
 // Runtime preconditions are deliberately absent from this string.
-// saved-search:KEY has no local mirror, so resolveScopeLive executes it
-// through the Zotero desktop local API; when that API is not the configured
-// base or is not reachable, each adopter refuses with exit 9 plus a
-// remediation envelope — louder and more precise than a caveat in a flag
-// description.
+// saved-search:KEY resolves live first: resolveScopeLive asks the Zotero
+// desktop local API, which evaluates every condition type. When that API is
+// not the configured base, does not answer, or refuses with HTTP 403, it falls
+// back to evaluating the synced definition against the mirror
+// (savedSearchLocalFallback), so an adopter needs no desktop gate of its own.
+// Only a live-only run (--data-source live) or a definition the evaluator
+// cannot reproduce whole leaves the precondition set; each adopter then
+// refuses with exit 9 plus a remediation envelope — louder and more precise
+// than a caveat in a flag description.
 //
 // Arms intersect: `collection:KEY AND tag:NAME` is the items in both. The token
 // is a space, uppercase AND, and a space, and it splits only where the text
