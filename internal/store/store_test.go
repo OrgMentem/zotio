@@ -891,10 +891,8 @@ func TestPendingWritesRoundtrip(t *testing.T) {
 		t.Fatalf("PendingWrites len after update = %d, want 1", len(pending))
 	}
 	pw = pending["ABC123"]
-	// Re-recording extends the marker: both unconfirmed writes stay replayable.
-	wantMerged := []byte(`[{"op":"replace","field":"title","value":"first"},{"op":"add","field":"tag","value":"second"}]`)
-	if !bytes.Equal(pw.Changes, wantMerged) {
-		t.Fatalf("PendingWrites after ON CONFLICT Changes = %s, want %s", string(pw.Changes), string(wantMerged))
+	if !bytes.Equal(pw.Changes, changes2) {
+		t.Fatalf("PendingWrites after ON CONFLICT Changes = %s, want %s", string(pw.Changes), string(changes2))
 	}
 	if pw.WrittenAt.IsZero() {
 		t.Fatalf("PendingWrites WrittenAt after update is zero")

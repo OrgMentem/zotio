@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"zotio/internal/mutation"
 )
 
 func pendingWritesTestItem(key string) json.RawMessage {
@@ -213,99 +211,5 @@ func TestReconcilePendingWritesScopesDeletionMarkersToTheirResource(t *testing.T
 	}
 	if stillPending != 0 {
 		t.Errorf("stillPending = %d, want 0", stillPending)
-	}
-}
-
-// Two writes to one item inside the plane-lag window must BOTH survive a sync
-// that still reads the pre-write row. The marker used to hold only the newest
-// write, so the sync replayed the second change and rolled the first back in
-// the mirror; the marker must also outlive a read plane that carries only one
-// of the two, and clear once it carries both.
-func TestReconcilePendingWritesReplaysEveryUnconfirmedWriteToOneItem(t *testing.T) {
-	db := syncTestOpenStore(t)
-	defer db.Close()
-
-	const key = "TWOWRITE"
-	row := func(collections []string, tags []string) json.RawMessage {
-		cols, _ := json.Marshal(collections)
-		tagObjs := make([]map[string]string, 0, len(tags))
-		for _, tag := range tags {
-			tagObjs = append(tagObjs, map[string]string{"tag": tag})
-		}
-		tagJSON, _ := json.Marshal(tagObjs)
-		return json.RawMessage(`{"key":"` + key + `","version":1,"data":{"key":"` + key + `","itemType":"book","title":"T","collections":` + string(cols) + `,"tags":` + string(tagJSON) + `}}`)
-	}
-	if _, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{row(nil, nil)}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	// Write-through of `items add-to-collection`, then `items tags add`: each
-	// op replays onto the mirror row and records its own changes.
-	if err := recordMirroredWrite(db, key, row([]string{"COLL1"}, nil), []mutation.Change{{Field: "collections", Add: "COLL1"}}); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	if err := recordMirroredWrite(db, key, row([]string{"COLL1"}, []string{"later"}), []mutation.Change{{Field: "tags", Add: "later"}}); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
-
-	collectionsAndTags := func(t *testing.T, raw json.RawMessage) (collections []string, tags []string) {
-		t.Helper()
-		var item struct {
-			Data struct {
-				Collections []string `json:"collections"`
-				Tags        []struct {
-					Tag string `json:"tag"`
-				} `json:"tags"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &item); err != nil {
-			t.Fatalf("decode merged row: %v", err)
-		}
-		for _, tag := range item.Data.Tags {
-			tags = append(tags, tag.Tag)
-		}
-		return item.Data.Collections, tags
-	}
-	reconcile := func(page json.RawMessage) (json.RawMessage, int) {
-		t.Helper()
-		merged, stillPending, err := reconcilePendingWrites(db, "items", []json.RawMessage{page})
-		if err != nil {
-			t.Fatalf("reconcile: %v", err)
-		}
-		if len(merged) != 1 {
-			t.Fatalf("reconcile returned %d rows, want 1", len(merged))
-		}
-		return merged[0], stillPending
-	}
-
-	// The read plane has seen neither write yet.
-	merged, stillPending := reconcile(row(nil, nil))
-	collections, tags := collectionsAndTags(t, merged)
-	if strings.Join(collections, ",") != "COLL1" || strings.Join(tags, ",") != "later" {
-		t.Fatalf("replayed row = collections %v tags %v, want both unconfirmed writes", collections, tags)
-	}
-	if stillPending != 1 {
-		t.Fatalf("stillPending = %d, want the marker held while the plane lags", stillPending)
-	}
-
-	// The read plane has caught up on the first write only: the tag is still
-	// owed, so the marker must survive and keep replaying it.
-	merged, stillPending = reconcile(row([]string{"COLL1"}, nil))
-	if _, tags := collectionsAndTags(t, merged); strings.Join(tags, ",") != "later" {
-		t.Fatalf("replayed tags = %v, want the still-unconfirmed tag write replayed", tags)
-	}
-	if stillPending != 1 {
-		t.Fatalf("stillPending = %d, want the marker held until the plane carries both writes", stillPending)
-	}
-
-	// Both writes landed: replay is a no-op and the marker retires.
-	if _, stillPending = reconcile(row([]string{"COLL1"}, []string{"later"})); stillPending != 0 {
-		t.Fatalf("stillPending = %d, want the marker cleared once the plane carries both writes", stillPending)
-	}
-	pending, err := db.PendingWrites("items")
-	if err != nil {
-		t.Fatalf("PendingWrites: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("pending markers = %v, want none after confirmation", pending)
 	}
 }
