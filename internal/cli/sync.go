@@ -1087,15 +1087,45 @@ type syncCursorProvenance struct {
 	Plane string `json:"plane"`
 	Mode  string `json:"mode"`
 	Since int    `json:"since"`
+	// Watermark is the library version the pass's FIRST response reported
+	// (0 when the plane reports none). It travels with the resume cursor
+	// because the pass's final checkpoint is that version: the skipped prefix
+	// was read at it, and a resumed suffix read at a newer version must not
+	// stand in for it. nil marks a cursor written before the watermark was
+	// persisted, whose pass version is unknown.
+	Watermark *int `json:"watermark,omitempty"`
 }
 
-func syncCursorScope(plane string, full bool, since int) string {
+// syncCursorScope is the provenance saved next to a resume cursor: the exact
+// request (plane, mode, since) the cursor's offsets belong to, plus the
+// library version of the pass that produced them.
+func syncCursorScope(plane string, full bool, since, watermark int) string {
 	mode := "incremental"
 	if full {
 		mode = "full"
 	}
-	data, _ := json.Marshal(syncCursorProvenance{Plane: plane, Mode: mode, Since: since})
+	data, _ := json.Marshal(syncCursorProvenance{Plane: plane, Mode: mode, Since: since, Watermark: &watermark})
 	return string(data)
+}
+
+// resumableSyncWatermark decodes a saved cursor scope. ok is true only when
+// the cursor was written for exactly this request and carries its pass's
+// watermark; anything else must restart from the committed checkpoint,
+// because resuming it would checkpoint a version the skipped prefix was
+// never read at.
+func resumableSyncWatermark(saved, plane string, full bool, since int) (watermark int, ok bool) {
+	var got syncCursorProvenance
+	if json.Unmarshal([]byte(saved), &got) != nil || got.Watermark == nil {
+		return 0, false
+	}
+	var want syncCursorProvenance
+	if json.Unmarshal([]byte(syncCursorScope(plane, full, since, 0)), &want) != nil {
+		return 0, false
+	}
+	if got.Plane != want.Plane || got.Mode != want.Mode || got.Since != want.Since {
+		return 0, false
+	}
+	return *got.Watermark, true
 }
 
 // syncRequestObservesEveryObject reports whether one page request could witness
@@ -1196,21 +1226,25 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			return syncResult{Resource: resource, Err: fmt.Errorf("clearing stale-plane versions for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
-	cursorScope := syncCursorScope(c.Plane(), full, effectiveSince)
+	// versionFixed pins libraryVersion to a resumed pass's original
+	// watermark: no response of the resumed suffix may replace it.
+	libraryVersion := 0
+	versionFixed := false
 	if !full {
 		savedCursor, savedScope, _, _, stateErr := db.GetSyncResumeState(resource)
 		if stateErr != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("reading sync cursor for %s: %w", resource, stateErr), Duration: time.Since(started)}
 		}
-		if savedCursor != "" && savedScope == cursorScope {
+		if watermark, ok := resumableSyncWatermark(savedScope, c.Plane(), full, effectiveSince); savedCursor != "" && ok {
 			existingCursor = savedCursor
+			libraryVersion = watermark
+			versionFixed = true
 		} else if savedCursor != "" {
 			if clearErr := db.ClearSyncCursorContext(ctx, resource); clearErr != nil {
 				return syncResult{Resource: resource, Err: fmt.Errorf("discarding mismatched sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
 			}
 		}
 	}
-	libraryVersion := 0
 	zoteroSchemaVersion := ""
 
 	cursor := existingCursor
@@ -1330,7 +1364,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		}
 		// Capture the library version from the first response that reports one;
 		// using the earliest avoids missing objects changed mid-sync.
-		if libraryVersion == 0 && respVersion > 0 {
+		if !versionFixed && libraryVersion == 0 && respVersion > 0 {
 			libraryVersion = respVersion
 		}
 		if err != nil {
@@ -1383,7 +1417,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: err, Duration: time.Since(started)}
 		}
-		if isPage && libraryVersion == 0 && respVersion == 0 {
+		if !versionFixed && isPage && libraryVersion == 0 && respVersion == 0 {
 			// The local desktop API omits Last-Modified-Version on list
 			// responses. This body value is a real Zotero library version
 			// from the same plane, so it remains comparable with the stored
@@ -1594,7 +1628,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// Full passes never persist partial cursors: the seen-key sweep also
 		// requires every prior page, so another process cannot resume it safely.
 		if !full {
-			if err := db.SaveSyncResumeStateContext(ctx, resource, nextCursor, cursorScope, totalCount); err != nil {
+			if err := db.SaveSyncResumeStateContext(ctx, resource, nextCursor, syncCursorScope(c.Plane(), full, effectiveSince, libraryVersion), totalCount); err != nil {
 				fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 			}
 		}
