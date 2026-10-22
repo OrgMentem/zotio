@@ -60,7 +60,6 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	if err != nil {
 		return err
 	}
-
 	// Both memberships decide what the apply removes, so a cached page (up to
 	// 5 minutes old) would plan a removal against a cohort that has since
 	// changed in Zotero desktop, which no zotio mutation invalidates. Set
@@ -223,7 +222,17 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 // searchesMaterializeItems reads every page and refuses a cross-page repeat.
 // A duplicate within one page is harmless and produces only one item.
 func searchesMaterializeItems(c *client.Client, path, label string) ([]searchMaterializeItem, error) {
+	items, _, err := searchesFetchAllItems(c, path, label)
+	return items, err
+}
+
+// searchesFetchAllItems walks every page of an item listing, returning the
+// parsed rows together with each row's raw payload, in server order. The
+// default page is 25 rows, so a single unpaginated read silently truncates a
+// large result.
+func searchesFetchAllItems(c *client.Client, path, label string) ([]searchMaterializeItem, []json.RawMessage, error) {
 	var allItems []searchMaterializeItem
+	raws := []json.RawMessage{}
 	seen := make(map[string]bool, zoteroPageMax)
 	for start := 0; ; start += zoteroPageMax {
 		data, err := c.Get(path, map[string]string{
@@ -231,20 +240,25 @@ func searchesMaterializeItems(c *client.Client, path, label string) ([]searchMat
 			"start": strconv.Itoa(start),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("fetching %s items at start %d: %w", label, start, err)
+			return nil, nil, fmt.Errorf("fetching %s items at start %d: %w", label, start, err)
 		}
 		items, err := searchMaterializeItems(data)
 		if err != nil {
-			return nil, fmt.Errorf("parsing %s items at start %d: %w", label, start, err)
+			return nil, nil, fmt.Errorf("parsing %s items at start %d: %w", label, start, err)
+		}
+		var pageRaw []json.RawMessage
+		if err := json.Unmarshal(data, &pageRaw); err != nil || len(pageRaw) != len(items) {
+			return nil, nil, fmt.Errorf("parsing %s items at start %d: payload does not match its rows", label, start)
 		}
 		pageSeen := make(map[string]bool, len(items))
-		for _, item := range items {
+		for i, item := range items {
 			if seen[item.Key] {
-				return nil, fmt.Errorf("pagination for %s ignored start %d (duplicate key %s)", label, start, item.Key)
+				return nil, nil, fmt.Errorf("pagination for %s ignored start %d (duplicate key %s)", label, start, item.Key)
 			}
 			if !pageSeen[item.Key] {
 				pageSeen[item.Key] = true
 				allItems = append(allItems, item)
+				raws = append(raws, pageRaw[i])
 			}
 		}
 		for key := range pageSeen {
@@ -254,7 +268,7 @@ func searchesMaterializeItems(c *client.Client, path, label string) ([]searchMat
 			break
 		}
 	}
-	return allItems, nil
+	return allItems, raws, nil
 }
 
 type searchMaterializeItem struct {

@@ -86,7 +86,9 @@ Zotero's search does.`,
 				return refuseSavedSearchResults(cmd, flags, rawSearchKey, searchData,
 					"--data-source local could not evaluate this search against the mirror: "+detail)
 			}
-			results, resultErr := c.Get(searchPath+"/items", nil)
+			// Every page: the endpoint serves 25 rows by default, and the
+			// first page alone would print as the authoritative result.
+			_, resultItems, resultErr := searchesFetchAllItems(c, searchPath+"/items", "saved search "+rawSearchKey)
 			if resultErr != nil {
 				// An empty page from a working endpoint is a legitimate answer
 				// (the search currently matches nothing) and prints as []. Only
@@ -106,7 +108,11 @@ Zotero's search does.`,
 				}
 				return classifyAPIError(resultErr, flags)
 			}
-			printProvenance(cmd, countResultItems(results), prov)
+			results, err := json.Marshal(resultItems)
+			if err != nil {
+				return fmt.Errorf("encoding saved-search items: %w", err)
+			}
+			printProvenance(cmd, len(resultItems), prov)
 			return printSavedSearchItems(cmd, flags, results, prov)
 		},
 	}

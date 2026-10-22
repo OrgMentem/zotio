@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -527,5 +528,46 @@ func TestSearchesRunLocalDataSourceAddsTheChildrenOfMatches(t *testing.T) {
 	}
 	if got, want := searchesRunOutputKeys(t, out), []string{"AAAA1111", "ANN00001", "NOTE0001", "PDF00001"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
+
+// The saved-search results endpoint serves 25 rows by default, so a run that
+// reads one unpaginated response prints a truncated cohort as the full answer.
+func TestSearchesRunReadsEveryPageOfResults(t *testing.T) {
+	total := zoteroPageMax + 7
+	var starts []string
+	srv := newSearchesRunTestServer(t, http.StatusOK, nil)
+	srv.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/0/searches/SK":
+			_, _ = fmt.Fprint(w, `{"key":"SK","version":42,"data":{"name":"big search"}}`)
+		case "/users/0/searches/SK/items":
+			q := r.URL.Query()
+			starts = append(starts, q.Get("start"))
+			start, _ := strconv.Atoi(q.Get("start"))
+			end := start + zoteroPageMax
+			if end > total {
+				end = total
+			}
+			rows := make([]string, 0, zoteroPageMax)
+			for i := start; i < end; i++ {
+				rows = append(rows, fmt.Sprintf(`{"key":"K%07d","version":1,"data":{"title":"t%d"}}`, i, i))
+			}
+			_, _ = fmt.Fprint(w, "["+strings.Join(rows, ",")+"]")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	out, _, err := runSearchesRunTestCmd(t, srv, "SK")
+	if err != nil {
+		t.Fatalf("searches run: %v", err)
+	}
+	keys := searchesRunOutputKeys(t, out)
+	if len(keys) != total {
+		t.Fatalf("searches run returned %d items, want all %d (starts requested: %v)", len(keys), total, starts)
+	}
+	if !strings.Contains(out, `"title": "t106"`) && !strings.Contains(out, `"title":"t106"`) {
+		t.Errorf("full item payloads must be kept from the second page: %q", out)
 	}
 }
