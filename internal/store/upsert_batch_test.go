@@ -427,6 +427,68 @@ func TestUpsertBatch_ItemLifecycleReconciliation(t *testing.T) {
 	assertCanonicalItemState(t, s, id, "items", "items-trash")
 }
 
+// A payload the version-monotonic guard rejects must not drive lifecycle
+// arbitration. The mirror can hold items/K at v10 beside a leftover
+// items-trash/K at v7; a stale v5 re-send of items/K is discarded, and the
+// arbitration must then run on the retained v10 row, which beats the trash row
+// and removes it. Comparing the rejected v5 against v7 deleted the newer live
+// row instead.
+func TestUpsert_RejectedStaleItemPayloadDoesNotDeleteNewerStoredRow(t *testing.T) {
+	const id = "STALE-OFFER"
+	live := func(version int, title string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"key":%q,"version":%d,"data":{"key":%q,"version":%d,"title":%q}}`, id, version, id, version, title))
+	}
+	seed := func(t *testing.T) *Store {
+		t.Helper()
+		s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		// UpsertKeyed performs no lifecycle arbitration, so both canonical rows
+		// coexist, as after a write-through window.
+		if _, err := s.UpsertKeyed("items", []string{id}, []json.RawMessage{live(10, "newer live token")}); err != nil {
+			t.Fatalf("seed live: %v", err)
+		}
+		if _, err := s.UpsertKeyed("items-trash", []string{id}, []json.RawMessage{live(7, "older trash token")}); err != nil {
+			t.Fatalf("seed trash: %v", err)
+		}
+		return s
+	}
+	assertRetainedLive := func(t *testing.T, s *Store) {
+		t.Helper()
+		assertCanonicalItemState(t, s, id, "items", "items-trash")
+		var title string
+		if err := s.DB().QueryRow(
+			`SELECT json_extract(data, '$.data.title') FROM resources WHERE resource_type = 'items' AND id = ?`, id,
+		).Scan(&title); err != nil {
+			t.Fatalf("read retained live row: %v", err)
+		}
+		if title != "newer live token" {
+			t.Fatalf("retained live title = %q, want the v10 row to survive untouched", title)
+		}
+	}
+
+	t.Run("Upsert", func(t *testing.T) {
+		s := seed(t)
+		if err := s.Upsert("items", id, live(5, "stale live token")); err != nil {
+			t.Fatalf("Upsert stale live: %v", err)
+		}
+		assertRetainedLive(t, s)
+	})
+	t.Run("UpsertBatch", func(t *testing.T) {
+		s := seed(t)
+		stored, failures, err := s.UpsertBatch("items", []json.RawMessage{live(5, "stale live token")})
+		if err != nil {
+			t.Fatalf("UpsertBatch stale live: %v", err)
+		}
+		if stored != 0 || failures != 0 {
+			t.Fatalf("UpsertBatch = (%d stored, %d failures), want (0, 0): the guard rejects the stale offer", stored, failures)
+		}
+		assertRetainedLive(t, s)
+	})
+}
+
 func assertCanonicalItemState(t *testing.T, s *Store, id, winnerType, loserType string) {
 	t.Helper()
 	var total, winners, losers int

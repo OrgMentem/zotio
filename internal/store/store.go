@@ -1393,9 +1393,32 @@ func (s *Store) upsertGenericResourceTx(ctx context.Context, tx *sql.Tx, resourc
 // the top-level field taking precedence over the nested data.version fallback;
 // absent and non-numeric versions compare as zero. Trash wins equal versions so
 // a late live page cannot resurrect a deletion.
-func reconcileItemLifecycleTx(ctx context.Context, tx *sql.Tx, resourceType, id string, incoming map[string]any) error {
+//
+// written is upsertGenericResourceTx's result. When the version-monotonic guard
+// rejected the offered payload, the stored row is the one that must be
+// arbitrated: comparing the rejected, older payload against the opposite state
+// would pick the NEWER stored row as the loser and delete it. The persisted
+// row is read back inside the transaction and stands in for the offer.
+func reconcileItemLifecycleTx(ctx context.Context, tx *sql.Tx, resourceType, id string, written bool, incoming map[string]any) error {
 	if resourceType != "items" && resourceType != "items-trash" {
 		return nil
+	}
+	if !written {
+		var storedData string
+		err := tx.QueryRowContext(ctx,
+			`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+			resourceType, id,
+		).Scan(&storedData)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading retained item state %s/%s: %w", resourceType, id, err)
+		}
+		incoming = nil
+		if err := json.Unmarshal([]byte(storedData), &incoming); err != nil {
+			return fmt.Errorf("reconcile lifecycle: unmarshal retained item state %s/%s: %w", resourceType, id, err)
+		}
 	}
 	oppositeType := "items"
 	if resourceType == "items" {
@@ -1568,10 +1591,11 @@ func (s *Store) UpsertContext(ctx context.Context, resourceType, id string, data
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := s.upsertGenericResourceTx(ctx, tx, resourceType, id, data, obj); err != nil {
+	written, err := s.upsertGenericResourceTx(ctx, tx, resourceType, id, data, obj)
+	if err != nil {
 		return err
 	}
-	if err := reconcileItemLifecycleTx(ctx, tx, resourceType, id, obj); err != nil {
+	if err := reconcileItemLifecycleTx(ctx, tx, resourceType, id, written, obj); err != nil {
 		return err
 	}
 
@@ -2125,7 +2149,7 @@ func (s *Store) UpsertBatchContext(ctx context.Context, resourceType string, ite
 		if err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
 		}
-		if err := reconcileItemLifecycleTx(ctx, tx, resourceType, item.id, item.obj); err != nil {
+		if err := reconcileItemLifecycleTx(ctx, tx, resourceType, item.id, written, item.obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("reconciling %s/%s: %w", resourceType, item.id, err)
 		}
 		if written {
