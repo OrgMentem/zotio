@@ -1688,3 +1688,112 @@ func TestItemsCreateRejectsConflictingClaim(t *testing.T) {
 		t.Fatalf("result = %s, want no applied item for a conflicting claim", out.String())
 	}
 }
+
+// stubItemPoster answers every create POST with one canned batch envelope and
+// runs onPost first, so a test can cancel the run while the shared request is
+// in flight.
+type stubItemPoster struct {
+	response json.RawMessage
+	onPost   func()
+	posts    int
+}
+
+func (p *stubItemPoster) Post(path string, body any) (json.RawMessage, int, error) {
+	return p.PostWithHeaders(path, body, nil)
+}
+
+func (p *stubItemPoster) PostWithHeaders(string, any, map[string]string) (json.RawMessage, int, error) {
+	p.posts++
+	if p.onPost != nil {
+		p.onPost()
+	}
+	return p.response, http.StatusOK, nil
+}
+
+// TestItemsCreateWebBatchReportsDispatchedMembersAfterStop proves a stop the
+// engine applies after the one shared POST has left (failure cap, cancellation)
+// does not turn the batch-mates that request already created into
+// not_attempted: each member reports the outcome the response carried, with its
+// real key. A stop before the POST keeps the plain not_attempted verdict.
+func TestItemsCreateWebBatchReportsDispatchedMembersAfterStop(t *testing.T) {
+	const response = `{"success":{"1":"REALKEY2"},"successful":{},"unchanged":{},"failed":{"0":{"key":"","code":400,"message":"itemType is required"}}}`
+	body := []any{map[string]any{"title": "a"}, map[string]any{"itemType": "book", "title": "b"}}
+
+	statuses := func(env mutation.Envelope) []string {
+		var out []string
+		for _, item := range env.Result.Items {
+			out = append(out, item.Status+":"+item.Key)
+		}
+		return out
+	}
+
+	t.Run("failure cap after dispatch", func(t *testing.T) {
+		ops := itemsCreatePreflightOps(body)
+		var batch itemsCreateBatch
+		poster := &stubItemPoster{response: json.RawMessage(response)}
+		batch.attachWeb(&rootFlags{}, poster, "/items", body, ops)
+		env, _ := mutation.Run(mutation.Options{Yes: true, ContinueOnError: true, MaxFailures: 1, MaxChanges: -1}, "items.create", ops)
+		if got, want := strings.Join(statuses(env), ","), "failed:,applied:REALKEY2"; got != want {
+			t.Fatalf("outcomes = %q, want %q", got, want)
+		}
+		if env.Result.Summary.NotAttempted != 0 || poster.posts != 1 {
+			t.Fatalf("summary = %+v posts = %d, want no not_attempted and one POST", env.Result.Summary, poster.posts)
+		}
+	})
+
+	t.Run("cancellation while the request runs", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ops := itemsCreatePreflightOps(body)
+		var batch itemsCreateBatch
+		poster := &stubItemPoster{response: json.RawMessage(response), onPost: cancel}
+		batch.attachWeb(&rootFlags{}, poster, "/items", body, ops)
+		env, _ := mutation.Run(mutation.Options{Yes: true, ContinueOnError: true, MaxChanges: -1, Context: ctx}, "items.create", ops)
+		if got, want := strings.Join(statuses(env), ","), "failed:,applied:REALKEY2"; got != want {
+			t.Fatalf("outcomes = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("cancellation before dispatch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ops := itemsCreatePreflightOps(body)
+		var batch itemsCreateBatch
+		poster := &stubItemPoster{response: json.RawMessage(response)}
+		batch.attachWeb(&rootFlags{}, poster, "/items", body, ops)
+		env, _ := mutation.Run(mutation.Options{Yes: true, ContinueOnError: true, MaxChanges: -1, Context: ctx}, "items.create", ops)
+		if got, want := strings.Join(statuses(env), ","), "not_attempted:a,not_attempted:b"; got != want {
+			t.Fatalf("outcomes = %q, want %q", got, want)
+		}
+		if poster.posts != 0 {
+			t.Fatalf("posts = %d, want 0 after pre-dispatch cancellation", poster.posts)
+		}
+	})
+}
+
+// TestItemsCreateConnectorMaxFailuresStillReportsDispatchedMember covers the
+// connector route: one SaveItems call carries the whole batch, so when the
+// first item's unconfirmed outcome reaches --max-failures the second item,
+// already committed and recovered, reports applied with its key.
+func TestItemsCreateConnectorMaxFailuresStillReportsDispatchedMember(t *testing.T) {
+	isolateItemsCreateConnectorEnv(t)
+	newItemsCreateConnectorFixture(t, []itemsCreateFixtureItem{{key: "SAVEIT02", title: "Second"}}, 0).saveStatus = http.StatusInternalServerError
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", continueOnError: true, maxFailures: 1,
+		timeout: 5 * time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	stdout, _ := runItemsCreate(t, flags, "--items",
+		`[{"itemType":"journalArticle","title":"First"},{"itemType":"journalArticle","title":"Second"}]`)
+	var env mutation.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, stdout)
+	}
+	if env.Result == nil || len(env.Result.Items) != 2 {
+		t.Fatalf("result = %+v, want two items", env.Result)
+	}
+	first, second := env.Result.Items[0], env.Result.Items[1]
+	if first.Status != "conflict" || second.Status != "applied" || second.Key != "SAVEIT02" {
+		t.Fatalf("items = %+v, want first conflict and second applied under SAVEIT02, not not_attempted", env.Result.Items)
+	}
+}

@@ -248,6 +248,11 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 	}
 	for i := range ops {
 		index := i
+		// The whole body left in the one request, so every member is dispatched
+		// once post has run -- even after a failure limit or cancellation stops
+		// the engine, which must then still read each member's real outcome
+		// instead of calling it not_attempted.
+		ops[i].Dispatched = func() bool { return executed }
 		ops[i].Apply = func() (string, any, error) {
 			post()
 			if transport != nil {
@@ -280,6 +285,7 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 	target := strings.TrimSpace(flags.connectorTarget)
 	var (
 		executed  bool
+		sent      bool // SaveItems was called: from here the items may exist whatever it answers
 		saveErr   error
 		saveCause error // SaveItems reported an error of unknown outcome; per-item reconciliation below decides
 		filingErr error
@@ -323,6 +329,7 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 			payload[i] = copied
 		}
 		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
+		sent = true
 		if err := conn.SaveItems(ctx, sessionID, "", payload); err != nil {
 			// Zotero's connector can return an error AFTER having already
 			// created the items (observed: HTTP 500 with the item present at
@@ -369,6 +376,11 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 	}
 	for i := range ops {
 		index := i
+		// Once SaveItems has been called the whole batch may exist, so every
+		// member reports its real outcome even when a failure limit or
+		// cancellation stops the engine; a failure before the call sent
+		// nothing and stays not_attempted.
+		ops[i].Dispatched = func() bool { return sent }
 		ops[i].Apply = func() (string, any, error) {
 			save()
 			if saveErr != nil {
