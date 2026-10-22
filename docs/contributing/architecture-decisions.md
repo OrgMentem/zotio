@@ -6,7 +6,7 @@ zotio records its non-trivial design decisions as **ADRs** (Architecture Decisio
 
 The MCP server does **not** expose one tool per Zotero endpoint. Instead it presents a small **command-orchestration facade** — `command_search` and `command_run` — so an agent discovers and drives the CLI the same way a person would: find the right command, then run it. This keeps the tool list small, keeps the trust model identical to the CLI, and means new CLI commands are available over MCP with no extra wiring. The one hand-written exception is `workflow_submit`, which accepts an inline multi-step [workflow](../guide/workflows.md) validated against the same per-command allowlist as `command_run`.
 
-**What this means for you:** the default MCP surface is the facade. If you want the full one-tool-per-endpoint mirror instead, set `ZOTIO_MCP_SURFACE` (see the [MCP server guide](../guide/mcp-server.md) and the [MCP tools reference](../reference/mcp-tools.md)).
+**What this means for you:** the default MCP surface is the facade. If you want the one-tool-per-command mirror instead (one tool for each MCP-eligible CLI command, not for each API endpoint), set `ZOTIO_MCP_SURFACE=mirror` (see the [MCP server guide](../guide/mcp-server.md) and the [MCP tools reference](../reference/mcp-tools.md)).
 
 Full record: [ADR 0001 — MCP command surface](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0001-mcp-command-surface.md).
 
@@ -22,7 +22,7 @@ Full record: [ADR 0003 — Retire typed MCP endpoint tools](https://github.com/O
 
 Offline reads from the synced SQLite mirror are a **deliberate, per-resource subsystem** — not a generic query planner. Support for `--data-source local` filters is added intentionally, one resource at a time, only where people actually filter, so local behavior stays faithful to the live API rather than degrading to a lowest-common-denominator abstraction.
 
-**What this means for you:** `--data-source local` works for the scopes that have been built out; where a local path doesn't exist yet, `auto` falls back to the live API rather than returning partial results. See [Local read parity](../concepts/local-read-parity.md).
+**What this means for you:** `--data-source local` works for the scopes that have been built out. Under `auto`, the generic read resolver goes **live first** and uses the mirror only when the live call fails with a network error or the desktop API lacks the endpoint. Local reads come in three kinds: a supported local planner (the result is scoped like the live one), an explicit unsupported-scope error (for example top-level collections), and the generic fallback, which warns on stderr and can return **unfiltered** mirror rows when the request carries filters it cannot reproduce (for example the `since` version filter on item lists). Treat a warning as a signal that the scope was not honored. See [Local read parity](../concepts/local-read-parity.md).
 
 Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0002-local-read-parity-subsystem.md).
 
@@ -30,6 +30,6 @@ Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMe
 
 zotio is **multi-reader, single-writer**. Any number of reads, `--dry-run` previews, and unapplied `--agent` invocations run concurrently, but only one process at a time may apply writes to an installation — or to one independent output artifact, such as an export snapshot, collection bundle, or vault directory. Writers **fail fast rather than wait**: a second writer exits 9 immediately with retry guidance, because a queued writer would silently apply against state it read before the wait. Atomic file replacement, which the code previously relied on, prevents a torn file but is not concurrency control; a writer now holds its lock across the whole load-mutate-publish transaction.
 
-**What this means for you:** serialize applies and parallelize reads. Scheduled jobs and agent hosts that fire overlapping writes should treat exit 9 as "retry shortly", not as a failure. Selecting a different config file or data directory (`--config`, `ZOTERO_CONFIG`, `ZOTIO_DATA_DIR`) does **not** buy you a second writer, because the profile store remains shared per user home.
+**What this means for you:** serialize applies and parallelize reads. Scheduled jobs and agent hosts that fire overlapping writes should treat exit 9 as "retry shortly", not as a failure. Selecting a different config file or data directory (`--config`, `ZOTERO_CONFIG`, `ZOTERO_DATA_DIR`) does **not** buy you a second writer, because the profile store remains shared per user home.
 
 Full record: [ADR 0005 — Single-writer concurrency contract](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0005-single-writer-concurrency-contract.md).

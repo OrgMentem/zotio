@@ -6,11 +6,11 @@
 
 Every read command takes `--data-source`:
 
-- `auto` (default) — live API with local fallback
+- `auto` (default) — live API with local fallback (annotation search is the exception: it is local-first, see [Freshness](#freshness))
 - `live` — API only
 - `local` — synced mirror only
 
-Populate and refresh the mirror with `sync`, `watch`, and `tail`:
+Populate and refresh the mirror with `sync` and `watch`. `tail` is a change-event feed: it streams changes and keeps its own cursor, but it does not update the mirrored rows, so run `sync` or `watch` to refresh offline data:
 
 ```bash
 zotio sync                                   # full sync to local SQLite
@@ -26,4 +26,4 @@ The reasoning, boundaries, and the rule for adding a new `--data-source local` s
 
 ## Freshness
 
-`zotio doctor` reports cache freshness, and the MCP server exposes `zotero://freshness`. `auto` tries live first and falls back to the local mirror only on network errors, with no freshness threshold, so the fallback can serve arbitrarily old rows. Inspect provenance, or pass `--require-fresh` where supported, when a decision needs current data.
+`zotio doctor` reports cache freshness, and the MCP server exposes `zotero://freshness`. The generic `auto` resolver tries live first and falls back to the local mirror when the live call fails with a network error or when the desktop API lacks the endpoint ("No endpoint found"). Other HTTP errors propagate. There is no freshness threshold, so the fallback can serve arbitrarily old rows. `annotations search` is a deliberate exception: under `auto` it searches the local index first, because its stemming, Boolean operators, and ranking have no live equivalent, and it goes live only when there is no synced mirror. Pass `--refresh` or `--data-source live` to make `annotations search` read live. Inspect provenance, or pass `--require-fresh` where supported, when a decision needs current data.
