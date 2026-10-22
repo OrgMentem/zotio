@@ -64,6 +64,13 @@ whose key carries one.**
    canonical resources get a marker because both listings keep reporting the key:
    `/items` during the lag, and `/items/trash` when the item was trashed before
    it was purged.
+   The reap follows the server's erase cascade: every mirrored descendant of the
+   key (child notes and attachments, and the annotations of those attachments),
+   in `items` and `items-trash` alike, is reaped and marked in the same
+   transaction (`mirroredItemDescendantsLocked`). The read plane keeps listing
+   the destroyed children exactly as it keeps listing the parent, and no
+   incremental sync reaps items, so without the cascade they stayed live in
+   offline reads, search and counts until `sync --full`.
    That transaction commits on a connection set to `synchronous=FULL`
    (`withDurableTx`), so an acknowledged reap survives a power loss; the rest
    of the store keeps `synchronous=NORMAL`. Under NORMAL, a WAL commit not yet
@@ -72,7 +79,12 @@ whose key carries one.**
 
 3. **A deletion outranks a field change for the same key.** One envelope can
    carry both, and the order inside it is not the store's to choose, so
-   `RecordPendingWrite`'s upsert skips a row with `deleted = 1`.
+   `RecordPendingWrite`'s upsert skips a row with `deleted = 1`. For field
+   changes the marker accumulates instead of being replaced: a second write to
+   an item whose first write is still unconfirmed appends its changes to the
+   marker's list (`recordPendingWriteTx`), so a sync inside the lag window
+   replays both onto the stale read-plane row, and the marker clears only once
+   replaying the whole list is a no-op.
 
 4. **`reconcilePendingWrites` drops the row.** A listed key with a live deletion
    marker is removed from the page before it is stored, per key — every other row
@@ -125,8 +137,9 @@ whose key carries one.**
    So a skipped sweep prints a warning naming the resource, why it was skipped,
    and the command that does reap (`zotio sync --full` without `--since-version`).
 
-8. **A deletion marker retires on confirmation and on nothing else. There is no
-   TTL backstop.** The marker is written only after `deleteWithVersionGuard`
+8. **A deletion marker retires on confirmation, or on a confirmed create of the
+   same key, and on nothing else. There is no TTL backstop.** The marker is
+   written only after `deleteWithVersionGuard`
    reports the delete applied, so the key is gone on the authoritative plane.
    Retiring the marker on a clock would let elapsed time overrule that confirmed
    fact, and it would do so in precisely the situation the marker exists for: a
@@ -134,6 +147,17 @@ whose key carries one.**
    says is gone. Restoring the row there puts a ghost into offline reads and
    `search`, and a warning does not undo a ghost. So the marker stays until a
    total-observation pass stops listing the key.
+
+   The one other retirement is newer evidence, not a clock: when write-through
+   mirrors a create the write plane confirmed (`CreateMirroredItem`, reached from
+   `mirrorCreatedItem`), it clears the key's markers for both canonical resources
+   in the same transaction that publishes the row. Left in place, the marker
+   would make `reconcilePendingWrites` drop an object that now exists. Zotero
+   mints item keys and does not reuse them, so no ordinary create reaches this
+   path; it is defensive, deliberately kept, and pinned by
+   `TestCreateMirroredItemRetiresDeletionMarkerAtomically` and
+   `TestMirrorCreatedItemRetiresADeletionMarkerForTheSameKey`. It does not make
+   `SweepMissing` any less the only thing that *confirms* a delete (decision 5).
 
    The TTL survives as a **diagnostic only**. Past `pendingWriteTTL`,
    `checkPendingWriteAges` warns that a confirmed delete has not propagated,

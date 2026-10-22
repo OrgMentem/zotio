@@ -3166,15 +3166,23 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 // incremental key listing complete by construction, see sync_reap.go) is the
 // only way zotio can learn that an object it mirrors is gone.
 //
-// That same property makes this the ONLY thing that retires a deletion marker.
+// That same property makes this the ONLY thing that CONFIRMS a deletion marker.
 // A marker suppresses re-insertion of a purged key while the read plane still
 // lists it; once a pass that could have observed every object stops listing the
 // key, Zotero has synced the delete down and the marker has nothing left to
-// suppress. Nothing else removes one — in particular no clock does, because the
+// suppress. Nothing else confirms one, and no clock retires one, because the
 // marker records a delete the write plane already confirmed, so letting elapsed
 // time retire it would resurrect a purged item exactly when the desktop is not
-// syncing (ADR-0007). An incremental pass cannot retire one either: absence
+// syncing (ADR-0007). An incremental pass cannot confirm one either: absence
 // there means unchanged, not gone.
+//
+// The one other thing that drops a deletion marker is not a confirmation of the
+// delete but newer evidence against it: a create the write plane confirmed under
+// the same key (CreateMirroredItem) clears both lifecycle markers in the commit
+// that publishes the row, since the marker would otherwise suppress an object
+// that now exists. That path is defensive (Zotero mints item keys and does not
+// reuse them) and deliberately kept; it is not a TTL and does not weaken the
+// no-clock rule.
 func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
 	return s.SweepMissingContext(context.Background(), resourceType, seen)
 }
