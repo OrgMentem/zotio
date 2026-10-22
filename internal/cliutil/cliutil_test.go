@@ -330,14 +330,39 @@ func TestAdaptiveLimiter_NilSafeMethods(t *testing.T) {
 	}
 }
 
-func TestAdaptiveLimiter_RampsUpAfterSuccesses(t *testing.T) {
+func TestAdaptiveLimiter_NeverRampsAboveConfiguredRate(t *testing.T) {
 	l := NewAdaptiveLimiter(2.0)
-	startRate := l.Rate()
-	for i := 0; i < l.rampAfter; i++ {
+	for range 1000 {
 		l.OnSuccess()
 	}
-	if got := l.Rate(); got <= startRate {
-		t.Errorf("Rate() after rampAfter successes = %v, want > %v", got, startRate)
+	if got := l.Rate(); got > 2.0 {
+		t.Errorf("Rate() after 1000 successes = %v, want <= the configured 2", got)
+	}
+}
+
+func TestAdaptiveLimiter_RampsBackUpAfter429ButNotPastConfiguredRate(t *testing.T) {
+	l := NewAdaptiveLimiter(8.0)
+	l.OnRateLimit()
+	cut := l.Rate()
+	for range l.rampAfter {
+		l.OnSuccess()
+	}
+	if got := l.Rate(); got <= cut {
+		t.Errorf("Rate() after rampAfter successes following a 429 = %v, want > %v", got, cut)
+	}
+	for range 1000 {
+		l.OnSuccess()
+	}
+	if got := l.Rate(); got > 8.0 {
+		t.Errorf("Rate() after recovery = %v, want <= the configured 8", got)
+	}
+}
+
+func TestAdaptiveLimiter_RateLimitFloorDoesNotExceedConfiguredRate(t *testing.T) {
+	l := NewAdaptiveLimiter(0.2)
+	l.OnRateLimit()
+	if got := l.Rate(); got > 0.2 {
+		t.Errorf("Rate() after a 429 = %v, want <= the configured 0.2", got)
 	}
 }
 

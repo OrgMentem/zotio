@@ -11,19 +11,20 @@ import (
 	"time"
 )
 
-// AdaptiveLimiter paces outbound requests with adaptive ceiling discovery.
-// Starts at a floor rate, ramps up after consecutive successes, halves on 429
-// and records a ceiling. Per-session only — not persisted. Methods are safe
-// to call on a nil receiver.
 type adaptiveLimiterWaiter struct {
 	at   time.Time
 	wake chan struct{}
 }
 
+// AdaptiveLimiter paces outbound requests. The configured rate is a hard
+// maximum: it never ramps above it. After a 429 it halves and records a
+// ceiling, then ramps back up toward min(max, 0.9*ceiling) after consecutive
+// successes. Per-session only — not persisted. Methods are safe to call on a
+// nil receiver.
 type AdaptiveLimiter struct {
 	mu          sync.Mutex
 	rate        float64
-	floor       float64
+	max         float64
 	ceiling     float64
 	successes   int
 	rampAfter   int
@@ -39,7 +40,7 @@ func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
 	}
 	return &AdaptiveLimiter{
 		rate:      ratePerSec,
-		floor:     ratePerSec,
+		max:       ratePerSec,
 		rampAfter: 10,
 	}
 }
@@ -160,6 +161,10 @@ func (l *AdaptiveLimiter) OnSuccess() {
 		if l.ceiling > 0 && newRate > l.ceiling*0.9 {
 			newRate = l.ceiling * 0.9
 		}
+		// The configured rate is a maximum, not a starting point.
+		if newRate > l.max {
+			newRate = l.max
+		}
 		l.rate = newRate
 		l.successes = 0
 	}
@@ -175,6 +180,9 @@ func (l *AdaptiveLimiter) OnRateLimit() {
 	l.rate = l.rate / 2
 	if l.rate < 0.5 {
 		l.rate = 0.5
+	}
+	if l.rate > l.max {
+		l.rate = l.max
 	}
 	l.successes = 0
 }
