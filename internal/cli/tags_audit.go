@@ -410,18 +410,7 @@ func buildTagAuditFixOps(db localQueryStore, plans []tagAuditPlan, apply func(ta
 			for _, update := range updates {
 				update := update
 				alias := alias
-				op := mutation.Op{
-					ID:              "tags.audit.fix:" + alias + ":" + update.key,
-					Key:             update.key,
-					Kind:            "tag_rename",
-					ExpectedVersion: mutationExpectedVersion(update.version),
-					Changes:         []mutation.Change{{Field: "tags", Remove: alias, Add: canonical, TagType: update.tagType}},
-					Destructive:     false,
-					Apply: func() (string, any, error) {
-						return apply(update)
-					},
-				}
-				ops = append(ops, op)
+				ops = append(ops, tagRenameOp("tags.audit.fix:"+alias+":"+update.key, update, alias, canonical, apply))
 			}
 		}
 	}

@@ -1,9 +1,12 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // journal undo. Reversibility is decided per change
-// field: tag/collection membership inverts cleanly (Add<->Remove); field
-// overwrites (DOI, abstract), renames, merges, and deletions are refused because
-// the prior value was not (or cannot be) captured, unless the op recorded its
-// own inverse at write time (JournalOp.Revert), which is then replayed as is.
+// field: tag/collection membership inverts cleanly (Add<->Remove) when a change
+// adds or removes one value; field overwrites (DOI, abstract), merges, and
+// deletions are refused because the prior value was not (or cannot be)
+// captured, and so is a change that replaces one membership value with another
+// (a rename), because inverting it would remove a value the item may have
+// held before the run. An op may instead record its own inverse at write time
+// (JournalOp.Revert), which is then replayed as is.
 // An item create (item_create, import_create) is reversed by moving the
 // recorded created key to the trash; a resolver attachment_create on that same
 // key rides along, because trashing a parent trashes its child attachments.
@@ -21,14 +24,23 @@ var reversibleFields = map[string]bool{"tags": true, "collections": true}
 // toggles invert: a non-string Add/Remove (e.g. a []string bulk add recorded by
 // a duplicate-merge) is NOT a simple per-item toggle and must not be inverted —
 // inverting it would target the wrong item, so such ops are refused by InverseOps.
+// A change that sets both Add and Remove replaces one value with another and
+// does not invert either: the Add side may already have been a member before
+// the write, and the inverse's Remove would then delete it.
 func InvertChange(c Change) (Change, bool) {
-	if !reversibleFields[c.Field] {
+	if !reversibleFields[c.Field] || isReplacePair(c) {
 		return Change{}, false
 	}
 	if !isScalarMembershipValue(c.Add) || !isScalarMembershipValue(c.Remove) {
 		return Change{}, false
 	}
 	return Change{Field: c.Field, Add: c.Remove, Remove: c.Add, TagType: c.TagType}, true
+}
+
+// isReplacePair reports whether a change adds one value and removes another in
+// the same step.
+func isReplacePair(c Change) bool {
+	return c.Add != nil && c.Remove != nil
 }
 
 // isScalarMembershipValue reports whether a change value is a single membership
@@ -115,6 +127,9 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 			ic, ok := InvertChange(ch)
 			if !ok {
 				reason = fmt.Sprintf("change on field %q is not reversible", ch.Field)
+				if reversibleFields[ch.Field] && isReplacePair(ch) {
+					reason = fmt.Sprintf("change on field %q replaces %v with %v and recorded no inverse; undo cannot tell whether %v was already there before the run", ch.Field, ch.Remove, ch.Add, ch.Add)
+				}
 				break
 			}
 			inv = append(inv, ic)

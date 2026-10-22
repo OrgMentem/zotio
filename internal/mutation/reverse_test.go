@@ -168,6 +168,40 @@ func TestInverseOpsTrashesImportedItems(t *testing.T) {
 	}
 }
 
+// A rename (Remove=A, Add=B) recorded no inverse, and inverting it would remove
+// a B the item may have held before the run. It is refused unless the op
+// recorded its own revert, which is replayed verbatim.
+func TestInverseOpsReplacePairNeedsRecordedRevert(t *testing.T) {
+	if _, ok := InvertChange(Change{Field: "tags", Remove: "ml", Add: "machine-learning"}); ok {
+		t.Fatal("InvertChange accepted a replace pair; its inverse would delete a target tag the item already had")
+	}
+	if _, ok := InvertChange(Change{Field: "collections", Remove: "C1", Add: "C2"}); ok {
+		t.Fatal("InvertChange accepted a collection replace pair")
+	}
+
+	rename := JournalOp{
+		ID: "rename", Key: "K1", Kind: "tag_rename", Status: "applied",
+		Changes: []Change{{Field: "tags", Remove: "ml", Add: "machine-learning"}},
+	}
+	inverse, refused := InverseOps(JournalEntry{Ops: []JournalOp{rename}})
+	if len(inverse) != 0 || len(refused) != 1 {
+		t.Fatalf("legacy rename: inverse=%+v refused=%+v, want one refusal", inverse, refused)
+	}
+	if !strings.Contains(refused[0].Reason, "recorded no inverse") {
+		t.Fatalf("refusal = %q, want it to say no inverse was recorded", refused[0].Reason)
+	}
+
+	revert := []Change{{Field: "tags", Add: "ml"}}
+	rename.Revert = revert
+	inverse, refused = InverseOps(JournalEntry{Ops: []JournalOp{rename}})
+	if len(refused) != 0 || len(inverse) != 1 {
+		t.Fatalf("recorded rename: inverse=%+v refused=%+v, want one inverse", inverse, refused)
+	}
+	if len(inverse[0].Changes) != 1 || inverse[0].Changes[0] != revert[0] {
+		t.Fatalf("inverse changes = %+v, want the recorded revert verbatim", inverse[0].Changes)
+	}
+}
+
 // An op that recorded its own inverse is reversed from that record, even though
 // its planned field change (a DOI overwrite) is not invertible on its own.
 func TestInverseOpsReplaysRecordedRevert(t *testing.T) {

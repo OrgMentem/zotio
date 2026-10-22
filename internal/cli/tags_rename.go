@@ -29,6 +29,51 @@ type tagRenameUpdate struct {
 	// this specific item, captured so the replayed mutation.Change neither
 	// fabricates nor drops that distinction in the local mirror.
 	tagType int
+	// landing is filled in by applyTagRenameUpdate with what the write plane's
+	// copy of the item held when the rename ran. It is a pointer because the
+	// update travels by value into the apply closure while the op's Revert
+	// reads the result afterwards. Nil when the update was built without one.
+	landing *tagRenameLanding
+}
+
+// tagRenameLanding is what one rename learned from the write plane. The
+// plan-time read cannot supply it, and the undo needs it: renaming A to B on an
+// item that already carried B leaves one B, so reversing the rename must not
+// remove the B the user had before.
+type tagRenameLanding struct {
+	targetPresent bool
+}
+
+// revert returns the changes that undo this rename once it was applied, or nil
+// when the apply never recorded what it found on the write plane. Nil leaves
+// the op to journal undo's own inversion, which refuses a replace pair.
+func (u tagRenameUpdate) revert(oldName, newName string) []mutation.Change {
+	if u.landing == nil {
+		return nil
+	}
+	restore := mutation.Change{Field: "tags", Add: oldName, TagType: u.tagType}
+	if !u.landing.targetPresent {
+		// The rename created the target tag, so undo takes it away again.
+		restore.Remove = newName
+	}
+	return []mutation.Change{restore}
+}
+
+// tagRenameOp is the one-item rename shared by `tags rename` and
+// `tags audit fix`.
+func tagRenameOp(id string, update tagRenameUpdate, oldName, newName string, apply func(tagRenameUpdate) (string, any, error)) mutation.Op {
+	return mutation.Op{
+		ID:              id,
+		Key:             update.key,
+		Kind:            "tag_rename",
+		ExpectedVersion: mutationExpectedVersion(update.version),
+		Changes:         []mutation.Change{{Field: "tags", Remove: oldName, Add: newName, TagType: update.tagType}},
+		Destructive:     false,
+		Revert:          func() []mutation.Change { return update.revert(oldName, newName) },
+		Apply: func() (string, any, error) {
+			return apply(update)
+		},
+	}
 }
 
 func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
@@ -163,17 +208,7 @@ func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply
 	ops := make([]mutation.Op, 0, len(updates))
 	for _, update := range updates {
 		update := update
-		ops = append(ops, mutation.Op{
-			ID:              "tags.rename:" + update.key,
-			Key:             update.key,
-			Kind:            "tag_rename",
-			ExpectedVersion: mutationExpectedVersion(update.version),
-			Changes:         []mutation.Change{{Field: "tags", Remove: oldName, Add: newName, TagType: update.tagType}},
-			Destructive:     false,
-			Apply: func() (string, any, error) {
-				return apply(update)
-			},
-		})
+		ops = append(ops, tagRenameOp("tags.rename:"+update.key, update, oldName, newName, apply))
 	}
 	return ops
 }
@@ -199,10 +234,13 @@ func applyTagRenameUpdate(c *client.Client, update tagRenameUpdate) (string, any
 		wrapped := fmt.Errorf("parsing item %s from the write plane: %w", update.key, err)
 		return "failed", wrapped.Error(), wrapped
 	}
-	tags, changed, _, err := renamedItemTags(current, update.oldTag, update.newTag)
+	tags, changed, _, targetPresent, err := renamedItemTags(current, update.oldTag, update.newTag)
 	if err != nil {
 		wrapped := fmt.Errorf("item %s: %w", update.key, err)
 		return "failed", wrapped.Error(), wrapped
+	}
+	if update.landing != nil {
+		update.landing.targetPresent = targetPresent
 	}
 	if !changed {
 		return "no_op", map[string]any{
@@ -296,7 +334,7 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 		// The renamed tag list is recomputed from the write plane at apply time;
 		// only the fact that this item matches, and the alias tag's type, matter
 		// to the plan.
-		_, changed, tagType, err := renamedItemTags(item, oldTag, newTag)
+		_, changed, tagType, _, err := renamedItemTags(item, oldTag, newTag)
 		if err != nil {
 			return nil, fmt.Errorf("item %s: %w", key, err)
 		}
@@ -309,25 +347,28 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 			newTag:  newTag,
 			version: version,
 			tagType: tagType,
+			landing: &tagRenameLanding{},
 		})
 	}
 	return updates, nil
 }
 
-func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, int, error) {
+// renamedItemTags returns the item's tag list with oldTag renamed to newTag, and
+// whether that changed anything. targetPresent reports that the item already
+// carried newTag before the rename, so the rename merged into it instead of
+// creating it.
+func renamedItemTags(item map[string]any, oldTag, newTag string) (renamed []any, changed bool, tagType int, targetPresent bool, err error) {
 	dataObj, ok := item["data"].(map[string]any)
 	if !ok {
-		return nil, false, 0, fmt.Errorf("missing data object")
+		return nil, false, 0, false, fmt.Errorf("missing data object")
 	}
 	rawTags, ok := dataObj["tags"].([]any)
 	if !ok {
-		return []any{}, false, 0, nil
+		return []any{}, false, 0, false, nil
 	}
 
-	renamed := make([]any, 0, len(rawTags))
+	renamed = make([]any, 0, len(rawTags))
 	seen := make(map[string]struct{}, len(rawTags))
-	changed := false
-	tagType := 0
 	for _, rawTag := range rawTags {
 		tagObj, ok := rawTag.(map[string]any)
 		if !ok {
@@ -347,6 +388,8 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, i
 			copied["tag"] = newTag
 			tagName = newTag
 			changed = true
+		} else if ok && tagName == newTag {
+			targetPresent = true
 		}
 		if ok {
 			if _, exists := seen[tagName]; exists {
@@ -356,5 +399,5 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, i
 		}
 		renamed = append(renamed, copied)
 	}
-	return renamed, changed, tagType, nil
+	return renamed, changed, tagType, targetPresent, nil
 }

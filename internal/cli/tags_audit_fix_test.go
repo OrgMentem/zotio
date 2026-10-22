@@ -297,14 +297,13 @@ func TestTagsAuditFixNoAliasesIsEmptyPlan(t *testing.T) {
 	}
 }
 
-// TestBuildTagAuditFixOpsEmitsInvertibleTagsChange guards the same
-// mirror-corruption / undo-refusal regression as the `tags rename` producer:
-// buildTagAuditFixOps used to emit the singular field name "tag", which
-// bypassed applyChangeToItemData's tags-membership branch and was refused by
-// mutation.InvertChange. It must emit plural "tags" with the alias in Remove
+// TestBuildTagAuditFixOpsEmitsTagsChange guards the same mirror-corruption
+// regression as the `tags rename` producer: buildTagAuditFixOps used to emit
+// the singular field name "tag", which bypassed applyChangeToItemData's
+// tags-membership branch. It must emit plural "tags" with the alias in Remove
 // and the canonical name in Add, preserving the alias's manual/automatic
 // type so a fix-up rename never flips it.
-func TestBuildTagAuditFixOpsEmitsInvertibleTagsChange(t *testing.T) {
+func TestBuildTagAuditFixOpsEmitsTagsChange(t *testing.T) {
 	seedTagsAuditFixStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","tags":[{"tag":"ml","type":1}]}}`),
 	})
@@ -328,14 +327,6 @@ func TestBuildTagAuditFixOpsEmitsInvertibleTagsChange(t *testing.T) {
 	change := ops[0].Changes[0]
 	if change.Field != "tags" || change.Remove != "ml" || change.Add != "Machine Learning" || change.TagType != 1 {
 		t.Fatalf("change = %+v, want tags rename ml->Machine Learning preserving automatic type", change)
-	}
-
-	inv, ok := mutation.InvertChange(change)
-	if !ok {
-		t.Fatalf("change %+v not reversible, want journal undo to reverse tag audit fixes", change)
-	}
-	if inv.Field != "tags" || inv.Remove != "Machine Learning" || inv.Add != "ml" || inv.TagType != 1 {
-		t.Errorf("inverse = %+v, want reverse rename Machine Learning->ml preserving automatic type", inv)
 	}
 }
 

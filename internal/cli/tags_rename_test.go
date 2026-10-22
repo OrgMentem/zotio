@@ -310,7 +310,7 @@ func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
 			}
 			item := map[string]any{"data": map[string]any{"tags": tags}}
 
-			got, _, _, err := renamedItemTags(item, tc.oldTag, tc.newTag)
+			got, _, _, _, err := renamedItemTags(item, tc.oldTag, tc.newTag)
 			if err != nil {
 				t.Fatalf("renamedItemTags: %v", err)
 			}
@@ -333,15 +333,13 @@ func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
 	}
 }
 
-// TestBuildTagRenameOpsEmitsInvertibleTagsChange guards the mirror-corruption
-// and undo-refusal regression: buildTagRenameOps used to emit the singular
-// field name "tag", which bypassed applyChangeToItemData's tags-membership
-// branch (corrupting the local mirror with a bogus "tag" key) and was refused
-// by mutation.InvertChange (breaking the documented `journal undo` promise
-// for tag renames). It must emit plural "tags" with the alias in Remove and
-// the canonical name in Add, carrying the per-item tag type through so a
+// TestBuildTagRenameOpsEmitsTagsChange guards the mirror-corruption regression:
+// buildTagRenameOps used to emit the singular field name "tag", which bypassed
+// applyChangeToItemData's tags-membership branch and corrupted the local mirror
+// with a bogus "tag" key. It must emit plural "tags" with the alias in Remove
+// and the canonical name in Add, carrying the per-item tag type through so a
 // rename never flips manual <-> automatic.
-func TestBuildTagRenameOpsEmitsInvertibleTagsChange(t *testing.T) {
+func TestBuildTagRenameOpsEmitsTagsChange(t *testing.T) {
 	updates := []tagRenameUpdate{
 		{key: "K1", version: 5, tagType: 0},
 		{key: "K2", version: 7, tagType: 1},
@@ -365,14 +363,6 @@ func TestBuildTagRenameOpsEmitsInvertibleTagsChange(t *testing.T) {
 		}
 		if change.TagType != updates[i].tagType {
 			t.Errorf("op %d TagType = %d, want %d", i, change.TagType, updates[i].tagType)
-		}
-
-		inv, ok := mutation.InvertChange(change)
-		if !ok {
-			t.Fatalf("op %d change %+v not reversible, want journal undo to reverse tag renames", i, change)
-		}
-		if inv.Field != "tags" || inv.Remove != "bar" || inv.Add != "foo" || inv.TagType != change.TagType {
-			t.Errorf("op %d inverse = %+v, want reverse rename Remove=bar Add=foo", i, inv)
 		}
 	}
 }
