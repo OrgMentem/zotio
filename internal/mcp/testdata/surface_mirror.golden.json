@@ -3226,7 +3226,7 @@
   },
   {
     "name": "library_prisma",
-    "description": "Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.\n\nThe report counts records identified (including their source databases), duplicate\nrecords removed, and the records-after-deduplication input to screening. Screening\nitself is deliberately out of scope: use Rayyan, ASReview, or another screening tool\nfor that stage. Run 'zotio items duplicates resolve' to actually remove duplicates\nbefore exporting the certified corpus.",
+    "description": "Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.\n\nThe report counts records identified (including their source databases), the duplicate\nrecords that resolving the current duplicate clusters would remove, and the\nprojected records-after-deduplication input to screening. The removal figures\nare a projection over the corpus as it is now, not a record of past\ndeduplication. Screening\nitself is deliberately out of scope: use Rayyan, ASReview, or another screening tool\nfor that stage. Run 'zotio items duplicates resolve' to actually remove duplicates\nfirst; the projected removals fall to zero once the clusters are resolved.",
     "inputSchema": {
       "properties": {
         "by": {
@@ -3703,7 +3703,7 @@
           "type": "number"
         },
         "max-pages": {
-          "description": "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) (default: 100)",
+          "description": "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event, saves the resume cursor, and exits 13) (default: 100)",
           "type": "number"
         },
         "resources": {
@@ -4156,7 +4156,7 @@
   },
   {
     "name": "workflow_archive",
-    "description": "Archive runs 'zotio sync --strict' over the default sync resources. It\nuses the same code, JSON events, and exit codes as sync, so any resource that\nfails to sync makes it exit non-zero. --full and --db mean what they mean for\nsync. Run 'zotio sync' directly to choose resources, --since, or concurrency.",
+    "description": "Archive runs 'zotio sync --strict' over the default sync resources. It\nuses the same code, JSON events, and exit codes as sync, so any resource that\nfails to sync makes it exit non-zero. --full and --db mean what they mean for\nsync. Run 'zotio sync' directly to choose resources, --since-version, or concurrency.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
