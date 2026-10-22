@@ -195,12 +195,39 @@ func applyStoredUpload(ctx context.Context, c *client.Client, req storedUploadRe
 		return "conflict", conflict.Error(), nil
 	}
 	if err != nil {
+		if outcome.Key != "" {
+			return failedStoredUploadWithChild(req, outcome, err)
+		}
 		return "failed", nil, err
 	}
 	if outcome.Status == storedUploadReused {
 		return "no_op", map[string]any{"item_key": outcome.Key, "note": "identical stored attachment already present"}, nil
 	}
 	return "applied", map[string]any{"item_key": outcome.Key, "upload": outcome.Status}, nil
+}
+
+// failedStoredUploadWithChild reports an upload that failed after its child
+// item existed on the server. A child this run created is a committed write, as
+// is a registration that may have landed, so the detail carries "committed":
+// that is what keeps the run in the mutation journal when nothing was applied.
+// A child an earlier run created and this run only failed to finish added
+// nothing, so it is reported without the marker.
+func failedStoredUploadWithChild(req storedUploadRequest, outcome storedUploadOutcome, err error) (string, any, error) {
+	detail := map[string]any{
+		"item_key":   outcome.Key,
+		"parent_key": req.ParentKey,
+		"upload":     outcome.Status,
+		"registered": false,
+		"message":    err.Error(),
+	}
+	if outcome.Status == storedUploadUploaded || outcome.Uncertain {
+		detail["committed"] = true
+	}
+	if outcome.Uncertain {
+		detail["registered"] = "unknown"
+		return "conflict", detail, err
+	}
+	return "failed", detail, err
 }
 
 func applyLinkedAttachment(c *client.Client, req storedUploadRequest, flags *rootFlags) (string, any, error) {
@@ -324,10 +351,24 @@ const (
 )
 
 // storedUploadOutcome reports which path the protocol took.
+//
+// Key is set whenever a child item exists on the server, including when the
+// upload failed after it was created: the caller needs it to leave durable
+// evidence of that write. Uncertain marks a registration whose response never
+// arrived, so the file may or may not be registered.
 type storedUploadOutcome struct {
-	Key    string
-	Status string
+	Key       string
+	Status    string
+	Uncertain bool
 }
+
+// registrationUncertainError is the final registration request's lost
+// response. The file may already be registered, so it is not a definitive
+// failure and must not be reported as one.
+type registrationUncertainError struct{ err error }
+
+func (e *registrationUncertainError) Error() string { return e.err.Error() }
+func (e *registrationUncertainError) Unwrap() error { return e.err }
 
 // storedConflictError marks outcomes that need human review; callers report
 // them as mutation status "conflict" rather than a hard failure.
@@ -479,7 +520,17 @@ func uploadStoredAttachment(ctx context.Context, c *client.Client, req storedUpl
 		}
 	}
 	if err := registerStoredFile(ctx, c, key, req, flags); err != nil {
-		return storedUploadOutcome{}, fmt.Errorf("attachment item %s created but its file is not registered (a retry resumes it): %w", key, err)
+		var uncertain *registrationUncertainError
+		if errors.As(err, &uncertain) {
+			// The registration may have committed with its response lost. Ask
+			// the write plane before claiming either outcome.
+			if sibling, readErr := findStoredSibling(c, req.ParentKey, req.Filename, req.MD5); readErr == nil && sibling.ExistingKey == key {
+				return storedUploadOutcome{Key: key, Status: status}, nil
+			}
+			return storedUploadOutcome{Key: key, Status: status, Uncertain: true}, fmt.Errorf(
+				"attachment item %s was created and registering its file may have succeeded, but no response arrived (a retry reconciles it): %w", key, err)
+		}
+		return storedUploadOutcome{Key: key, Status: status}, fmt.Errorf("attachment item %s created but its file is not registered (a retry resumes it): %w", key, err)
 	}
 	return storedUploadOutcome{Key: key, Status: status}, nil
 }
@@ -602,6 +653,9 @@ func registerStoredFile(ctx context.Context, c *client.Client, key string, req s
 	reg := url.Values{}
 	reg.Set("upload", auth.UploadKey)
 	if _, _, err := c.PostFormWithHeaders("/items/"+key+"/file", reg, map[string]string{"If-None-Match": "*"}); err != nil {
+		if client.IsAmbiguousWriteError(err) {
+			return &registrationUncertainError{err: classifyStoredUploadError("registering upload", err, flags)}
+		}
 		return classifyStoredUploadError("registering upload", err, flags)
 	}
 	return nil

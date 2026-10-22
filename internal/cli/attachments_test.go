@@ -52,6 +52,7 @@ type fakeZoteroUpload struct {
 	replayCreate                   bool // 412 on POST /items (write token already submitted)
 	existsOnAuth                   bool // respond {exists:1} instead of an upload target
 	storageReplyAfterContentLength bool
+	dropRegisterResponse           string // "commit" or "lose": hang up on the registration request, committing it or not
 
 	// observed traffic
 	creates       int
@@ -181,6 +182,21 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			pending, ok := f.authorizedMD5[key]
 			if !ok || upload != "UK-"+key {
 				http.Error(w, `{"error":"unknown upload key"}`, http.StatusBadRequest)
+				return
+			}
+			if f.dropRegisterResponse != "" {
+				if f.dropRegisterResponse == "commit" {
+					child.MD5 = pending
+					delete(f.authorizedMD5, key)
+					f.registers++
+				}
+				f.dropRegisterResponse = ""
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					f.t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
 				return
 			}
 			child.MD5 = pending
@@ -1190,5 +1206,117 @@ func TestPostUploadPayloadRejectsChangedRedirectReplay(t *testing.T) {
 	defer mu.Unlock()
 	if replayStored {
 		t.Error("redirect replay sent the changed file as a complete payload")
+	}
+}
+
+func journaledOps(t *testing.T) []mutation.JournalOp {
+	t.Helper()
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
+	if err != nil {
+		t.Fatalf("list journal entries: %v", err)
+	}
+	var ops []mutation.JournalOp
+	for _, entry := range entries {
+		ops = append(ops, entry.Ops...)
+	}
+	return ops
+}
+
+// A registration whose response is lost may or may not have committed. When the
+// write plane shows the file registered, the upload succeeded and reads as such.
+func TestAttachmentsAddLostRegistrationResponseReconcilesCommittedFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	f.dropRegisterResponse = "commit"
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
+	if err != nil {
+		t.Fatalf("lost registration response that had committed: %v; stderr=%s", err, stderr)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("env = %+v, want applied: the write plane shows the file registered", env)
+	}
+	ops := journaledOps(t)
+	if len(ops) != 1 || ops[0].Status != "applied" {
+		t.Fatalf("journal ops = %+v, want the committed upload recorded as applied", ops)
+	}
+
+	env, stderr, err = runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
+	if err != nil || env.Result == nil || env.Result.Items[0].Status != "no_op" {
+		t.Fatalf("retry = %+v, err=%v, stderr=%s; want no_op", env, err, stderr)
+	}
+	if creates, uploads, _ := f.snapshot(); creates != 1 || uploads != 1 {
+		t.Fatalf("retry wrote again: creates=%d uploads=%d, want 1/1", creates, uploads)
+	}
+}
+
+// When the write plane cannot confirm the registration, the run must neither
+// claim the file is unregistered nor vanish from the journal: the child it
+// created is a committed write.
+func TestAttachmentsAddUnconfirmedRegistrationKeepsCommittedChildInJournal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	f.dropRegisterResponse = "lose"
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+
+	env, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
+	if err == nil {
+		t.Fatalf("want an error for an unconfirmed registration, got %+v", env)
+	}
+	if strings.Contains(err.Error(), "is not registered") {
+		t.Fatalf("error %q states a definite unregistered state the lost response does not establish", err)
+	}
+	item := env.Result.Items[0]
+	reason, _ := item.Reason.(map[string]any)
+	if item.Status != "conflict" || reason["item_key"] != "ATT1" || reason["committed"] != true {
+		t.Fatalf("result item = %+v, want a committed conflict naming child ATT1", item)
+	}
+	ops := journaledOps(t)
+	if len(ops) != 1 {
+		t.Fatalf("journal ops = %+v, want the run recorded once", ops)
+	}
+	journalReason, _ := ops[0].Reason.(map[string]any)
+	if journalReason["item_key"] != "ATT1" || journalReason["parent_key"] != "PARENTAB" {
+		t.Fatalf("journaled reason = %+v, want parent PARENTAB and child ATT1", ops[0].Reason)
+	}
+
+	// The retry resumes the pending child rather than creating a second one.
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path})
+	if err != nil || env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("retry = %+v, err=%v, stderr=%s; want applied", env, err, stderr)
+	}
+	if creates, _, _ := f.snapshot(); creates != 1 {
+		t.Fatalf("retry created a second child: creates=%d", creates)
+	}
+}
+
+// A quota refusal after the child was created leaves that child on the server.
+// It is a committed write and must stay in the journal.
+func TestAttachmentsAddQuotaFailureKeepsCreatedChildInJournal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	f.quotaOnAuth = true
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+
+	if _, _, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENTAB", path}); err == nil {
+		t.Fatal("want quota failure")
+	}
+	ops := journaledOps(t)
+	if len(ops) != 1 || ops[0].Status != "failed" {
+		t.Fatalf("journal ops = %+v, want one failed op recorded for the created child", ops)
+	}
+	reason, _ := ops[0].Reason.(map[string]any)
+	if reason["item_key"] != "ATT1" || reason["committed"] != true {
+		t.Fatalf("journaled reason = %+v, want the created child ATT1 as committed evidence", ops[0].Reason)
 	}
 }
