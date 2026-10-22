@@ -32,9 +32,9 @@ zotio vault sync --dry-run    # preview would_create / would_update / unchanged
 zotio vault sync --yes        # write notes (uses [vault] config)
 ```
 
-- **Identity from the citekey.** Filenames key off `data.citationKey` (native in Zotero 7+), falling back to the item key — lining up with your `[@citekey]` cites.
+- **Identity from the citekey.** Filenames key off `data.citationKey` (native in Zotero 7+), falling back to a non-blank `Citation Key:` line in the item's Extra field, then to the item key (the result is sanitized for use as a filename) — lining up with your `[@citekey]` cites.
 - **Backlinks baked in.** Frontmatter carries `zotero://select/...`; each annotation links to `zotero://open-pdf/...?annotation=<key>`.
-- **Idempotent, non-clobbering.** Re-runs update only the managed frontmatter keys and a fenced annotations block. Your prose and extra frontmatter are preserved verbatim.
+- **Idempotent, non-clobbering.** Re-runs update only the managed frontmatter keys and the fenced title, abstract, and annotations blocks. Prose outside those fences, your `## Notes` region, and extra frontmatter are preserved verbatim; edits inside a fenced block are overwritten at the next sync.
 - **Scoped.** `--collection`, `--tag`, `--item-type`, `--limit` reuse the local query planner. `--scope` selects a cohort with the shared grammar (`collection:KEY`, `tag:NAME`, `item:KEY`, `query:TEXT`, `saved-search:KEY`), and arms joined with ` AND ` select only the items in every arm, for example `--scope 'collection:ABCD1234 AND tag:include'`. `--scope` cannot be combined with `--item-type`, and it is refused with `--collection` or `--tag` when they select a different cohort than `--scope`; a `--collection` or `--tag` that names one of the AND arms agrees with the scope.
 
 ## `vault push` / `vault pull` — note write-back
@@ -47,9 +47,9 @@ zotio vault push --yes        # publish notes to a managed Zotero child note
 zotio vault pull --yes        # fold edits made in the Zotero app back in
 ```
 
-- **Reads local, writes cloud.** `push` auto-routes to `api.zotero.org` (needs a key — see [Authentication](authentication.md)). Personal library by default; `--group` prints a one-time visibility warning.
+- **Vault reads local, note reads and writes cloud.** Vault files and ordinary library reads are local. `push` resolves the Web write target (`api.zotero.org`, needs a key — see [Authentication](authentication.md)) and reads the managed note's version and content from it in both preview and apply, so a preview also needs the key and network. Personal library by default; `--group` prints a one-time visibility warning.
 - **One managed child note per item.** First push creates it (with a deterministic write token so a retry can't duplicate it); later pushes PATCH the same note. Its first line is `Obsidian notes — <citekey>` so its origin is obvious in Zotero.
-- **Verbatim renderer.** Markdown is reproduced with everything HTML-escaped and nothing interpreted — wikilinks, tables, callouts, and code survive exactly.
+- **Verbatim renderer.** Markdown is reproduced as uninterpreted text with everything HTML-escaped — wikilinks, tables, callouts, and code are not rendered or rewritten. Blocks are split on blank lines, so runs of empty or whitespace-only lines collapse to a single paragraph break, including inside fenced code.
 
 !!! warning "Conflicts are never auto-merged"
     A note is pushed only when its `## Notes` region changed *and* the remote note hasn't diverged. If both sides changed, nothing is overwritten — a conflict file lands under `_vault-zotero-conflicts/` and is reported. A preview reports it as `would_conflict`; conflicts count as issues and exit 1 in preview and apply alike.
@@ -72,7 +72,7 @@ zotio vault resolve <citekey> --recreate --yes    # re-create a note deleted in 
 - **Stable identity.** `zotero_key` / `zotero_library` in frontmatter mean renaming a file or changing a citekey never duplicates or orphans a note.
 - **Managed vs user regions.** The tool owns the frontmatter keys and the title/abstract/annotations fences. You own the region between `<!-- zotio:notes-begin -->` and `<!-- zotio:notes-end -->` under `## Notes` — that, and only that, is what `push` sends.
 - **Hidden sync state.** Push records its baseline in a single `<!-- zotio:state {...} -->` comment, keeping Obsidian Properties clean.
-- **Safe writes.** Vault files are written atomically and only when the on-disk bytes still match what was read — a concurrent Obsidian/iCloud edit is reported (`file_busy`), never clobbered.
+- **Safe writes.** Vault files are written atomically and only when the on-disk bytes still match what was read — a concurrent Obsidian/iCloud edit detected at that check is reported (`file_busy`) instead of overwritten. Publication is an atomic rename, but the filesystem has no portable compare-and-swap, so an edit that lands between the final check and the rename can still be replaced. If you need strict preservation, avoid editing the vault while a write runs.
 
 ## Round-trip in practice
 
