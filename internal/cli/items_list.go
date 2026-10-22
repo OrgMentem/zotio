@@ -106,6 +106,9 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				if flags.quiet {
+					return nil
+				}
 				filtered, err := applyFieldFlags(data, flags)
 				if err != nil {
 					return err

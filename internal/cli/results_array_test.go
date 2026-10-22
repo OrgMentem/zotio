@@ -118,6 +118,37 @@ func TestItemsListResultsIsArray(t *testing.T) {
 	}
 }
 
+// --quiet means the exit code is the whole answer. A buffer is not a terminal,
+// so this reaches the JSON-envelope branch, which printed the full result set
+// anyway, unlike items get and items find.
+func TestItemsListQuietPrintsNothingWhenStdoutIsNotATerminal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"key":"A"},{"key":"B"}]`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	for name, flags := range map[string]*rootFlags{
+		"piped":     {quiet: true, dataSource: "live", noCache: true},
+		"json flag": {quiet: true, asJSON: true, dataSource: "live", noCache: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newItemsListCmd(flags)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("items list --quiet: %v", err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("--quiet stdout = %q, want nothing", out.String())
+			}
+		})
+	}
+}
+
 // TestItemsFindGainsResultsWrapper covers report #2 finding 8: `items find`
 // used to print a bare top-level array with no meta/results wrapper at all
 // (jq '.results[]' failed outright; only jq '.[]' worked). It must now emit
