@@ -1384,7 +1384,7 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 // tag with no provenance.
 func applyEnrichSubjectTags(ctx context.Context, c *client.Client, p *enrichProposal, flags *rootFlags) (string, any, error) {
 	path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
-	currentData, _, err := c.GetFromWriteBaseWithVersionContext(ctx, path, nil)
+	currentData, version, err := c.GetFromWriteBaseWithVersionContext(ctx, path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
 	}
@@ -1427,7 +1427,19 @@ func applyEnrichSubjectTags(ctx context.Context, c *client.Client, p *enrichProp
 		revert = append(revert, mutation.Change{Field: "tags", Remove: tag, TagType: 1})
 	}
 	p.revert = withExtraLineRevert(revert, line)
-	return patchWithWritePlaneVersion(ctx, c, path, body)
+	// The tags and Extra above were derived from currentData, so the write must
+	// be guarded by the version that read returned. Resolving a fresh version
+	// here would let a tag or Extra edit made since the read pass the
+	// precondition and be overwritten by this stale payload.
+	snapshot := &enrichWriteSnapshotMutator{
+		apiMutator: c,
+		reader:     c,
+		path:       path,
+		data:       currentData,
+		version:    version,
+		pending:    true,
+	}
+	return patchWithWritePlaneVersion(ctx, snapshot, path, body)
 }
 
 // enrichPDFHasMagic validates a retained PDF before it is reused on retry,

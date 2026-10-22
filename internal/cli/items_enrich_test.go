@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2260,6 +2261,58 @@ func TestApplyEnrichSubjectTagsReadsFromTheWritePlane(t *testing.T) {
 	// not the mirror's copy.
 	if extra := fmt.Sprint(body["extra"]); !strings.Contains(extra, "Citation Key: web2020") || strings.Contains(extra, "stale mirror extra") {
 		t.Errorf("extra = %q, want the write plane's Extra preserved and the mirror's discarded", extra)
+	}
+}
+
+// The tags and Extra in the PATCH are derived from one write-plane read, so the
+// precondition must be that read's version. If another Zotero client adds a tag
+// or edits Extra after the read, the write has to conflict: pairing the newer
+// version with the older payload would pass the guard and delete both edits.
+func TestApplyEnrichSubjectTagsConflictsOnEditAfterRead(t *testing.T) {
+	version := 10
+	tags := `[{"tag":"A"}]`
+	extra := "Citation Key: web2020"
+	var gets, patches int
+	var stored map[string]any
+	writePlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			gets++
+			w.Header().Set("Last-Modified-Version", strconv.Itoa(version))
+			fmt.Fprintf(w, `{"key":"K1","version":%d,"data":{"key":"K1","extra":%q,"tags":%s}}`, version, extra, tags)
+			// Another client adds tag B and edits Extra right after this read.
+			version++
+			tags = `[{"tag":"A"},{"tag":"B"}]`
+			extra += "\nNote from desktop"
+		case http.MethodPatch:
+			patches++
+			if r.Header.Get("If-Unmodified-Since-Version") != strconv.Itoa(version) {
+				http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+				return
+			}
+			_ = json.NewDecoder(r.Body).Decode(&stored)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(writePlane.Close)
+
+	c := client.New(&config.Config{BaseURL: writePlane.URL}, time.Second, 0)
+	c.NoCache = true
+	c.WriteBaseURL = writePlane.URL
+
+	p := enrichProposal{
+		Key: "K1", Category: "missing_subjects", Action: enrichActionTag,
+		Source: "OpenAlex", Tags: []string{"concept/Computer science"},
+	}
+	status, detail, err := applyEnrichSubjectTags(context.Background(), c, &p, &rootFlags{})
+	if status != "conflict" || err == nil {
+		t.Fatalf("status=%q detail=%v err=%v, want conflict", status, detail, err)
+	}
+	if gets != 1 || patches != 1 {
+		t.Errorf("write plane saw %d GET and %d PATCH, want 1 and 1: the guard must be the version the payload was read at", gets, patches)
+	}
+	if stored != nil {
+		t.Errorf("write plane stored %v, want the stale payload rejected", stored)
 	}
 }
 
