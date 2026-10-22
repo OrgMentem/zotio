@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +28,9 @@ type preprintCheckFixSkip struct {
 const preprintFixLookupFailed = "lookup_failed"
 
 // preprintCheckFixProposal carries a single schema-aware item update into the mutation engine.
+// Fields and version come from the read plane and exist for the preview only:
+// apply re-derives the write from the write plane's current copy of the item,
+// using match, so a stale read cannot decide what is overwritten.
 type preprintCheckFixProposal struct {
 	Key     string         `json:"key"`
 	Title   string         `json:"title"`
@@ -34,7 +38,12 @@ type preprintCheckFixProposal struct {
 	Venue   string         `json:"venue,omitempty"`
 	Year    int            `json:"year,omitempty"`
 	Fields  map[string]any `json:"fields"`
+	match   crossrefMatch
 	version any
+	// landed is what apply actually wrote, derived from the live item. The
+	// mirror replays it instead of the planned Fields, whose Extra came from
+	// the possibly older read plane.
+	landed []mutation.Change
 }
 
 // newItemsPreprintCheckFixCmd adds the write-capable child while preserving preview-by-default mutation semantics.
@@ -132,18 +141,10 @@ func buildPreprintCheckFixOps(cmd *cobra.Command, flags *rootFlags, readClient z
 func preprintCheckFixProposalForItem(item map[string]any, match crossrefMatch) (preprintCheckFixProposal, preprintCheckFixSkip, bool) {
 	key := zoteroString(item, "key")
 	title := zoteroString(item, "title")
-	data := zoteroData(item)
-	_, supportsDOI := data["DOI"]
-	fields := map[string]any{}
-	if supportsDOI {
-		currentDOI := normalizeDOI(stringFromMap(data, "DOI"))
-		if currentDOI == "" || isArxivSelfDOI(currentDOI) {
-			fields["DOI"] = match.DOI
-		} else {
-			return preprintCheckFixProposal{}, preprintCheckFixSkip{Key: key, Title: title, Category: "preprint_check_fix", Reason: "doi_conflict"}, false
-		}
+	fields, ok := preprintCheckFixFields(zoteroData(item), zoteroString(item, "extra"), match)
+	if !ok {
+		return preprintCheckFixProposal{}, preprintCheckFixSkip{Key: key, Title: title, Category: "preprint_check_fix", Reason: "doi_conflict"}, false
 	}
-	fields["extra"] = appendPreprintCheckFixProvenance(zoteroString(item, "extra"), match)
 	return preprintCheckFixProposal{
 		Key:     key,
 		Title:   title,
@@ -151,8 +152,27 @@ func preprintCheckFixProposalForItem(item map[string]any, match crossrefMatch) (
 		Venue:   match.Venue,
 		Year:    match.Year,
 		Fields:  fields,
+		match:   match,
 		version: preprintCheckItemVersion(item),
 	}, preprintCheckFixSkip{}, true
+}
+
+// preprintCheckFixFields derives the DOI and Extra values to write from one
+// snapshot of an item. ok is false when the item already carries a DOI that is
+// neither empty nor an arXiv self DOI: that value is a published DOI (or the
+// operator's own) and is never replaced. Extra is a wholesale replace, so
+// extra must be the value the write will race against.
+func preprintCheckFixFields(data map[string]any, extra string, match crossrefMatch) (fields map[string]any, ok bool) {
+	fields = map[string]any{}
+	if _, supportsDOI := data["DOI"]; supportsDOI {
+		currentDOI := normalizeDOI(stringFromMap(data, "DOI"))
+		if currentDOI != "" && !isArxivSelfDOI(currentDOI) {
+			return nil, false
+		}
+		fields["DOI"] = match.DOI
+	}
+	fields["extra"] = appendPreprintCheckFixProvenance(extra, match)
+	return fields, true
 }
 
 // appendPreprintCheckFixProvenance preserves existing Extra content while adding a dated publication provenance line.
@@ -203,8 +223,11 @@ func preprintCheckFixPlannedOps(ctx context.Context, proposals []preprintCheckFi
 			ExpectedVersion: mutationExpectedVersion(proposal.version),
 			Changes:         preprintCheckFixChanges(proposal),
 			Apply: func() (string, any, error) {
-				return applyPreprintCheckFixProposal(ctx, writeClient(), proposal)
+				return applyPreprintCheckFixProposal(ctx, writeClient(), &proposal)
 			},
+			// The planned Extra came from the read plane; the mirror must
+			// replay the value apply derived from the live item instead.
+			Effective: func() []mutation.Change { return proposal.landed },
 		})
 	}
 	return ops
@@ -212,34 +235,81 @@ func preprintCheckFixPlannedOps(ctx context.Context, proposals []preprintCheckFi
 
 // preprintCheckFixChanges exposes field-level DOI/Extra changes in preview output.
 func preprintCheckFixChanges(proposal preprintCheckFixProposal) []mutation.Change {
-	changes := make([]mutation.Change, 0, len(proposal.Fields))
-	if doi, ok := proposal.Fields["DOI"]; ok {
+	return preprintCheckFixFieldChanges(proposal.Fields)
+}
+
+// preprintCheckFixFieldChanges lists the DOI and Extra values of one field set as changes.
+func preprintCheckFixFieldChanges(fields map[string]any) []mutation.Change {
+	changes := make([]mutation.Change, 0, len(fields))
+	if doi, ok := fields["DOI"]; ok {
 		changes = append(changes, mutation.Change{Field: "DOI", Add: doi})
 	}
-	if extra, ok := proposal.Fields["extra"]; ok {
+	if extra, ok := fields["extra"]; ok {
 		changes = append(changes, mutation.Change{Field: "extra", Add: extra})
 	}
 	return changes
 }
 
-// applyPreprintCheckFixProposal applies the item PATCH using enrich's typed API-error statuses.
-// It resolves the If-Unmodified-Since-Version precondition from the write plane
-// rather than reusing the local-plane version carried on the proposal. The local
-// and Web APIs maintain independent version spaces, so the local version either
-// spuriously conflicts or silently overwrites a concurrent Web edit; the write
-// plane version must be read at apply time. The patch body carries only the
-// field changes, with the version sent as a header via patchWithWritePlaneVersion.
-func applyPreprintCheckFixProposal(ctx context.Context, c apiMutator, proposal preprintCheckFixProposal) (string, any, error) {
+// applyPreprintCheckFixProposal PATCHes the item using enrich's typed API-error statuses.
+//
+// The write is derived here, from the write plane's current copy of the item,
+// not taken from proposal.Fields. Planning read the item through the read plane
+// (the local desktop API under hybrid routing), which lags the Web API: its
+// Extra can miss a citation-key line or note written since the last sync, and
+// its DOI can miss a published DOI added on the Web. Extra is replaced
+// wholesale, so patching with the planned value would delete that content, and
+// a fresh version alone would only authorize the overwrite. The DOI rule is
+// therefore re-evaluated against the live item, and the PATCH is guarded by the
+// version that same read returned: a later edit conflicts instead of being
+// overwritten. The two planes version objects independently, so the proposal's
+// read-plane version is never used as the precondition.
+func applyPreprintCheckFixProposal(ctx context.Context, c apiMutator, proposal *preprintCheckFixProposal) (string, any, error) {
 	if c == nil {
 		err := errors.New("write client not initialized")
 		return "failed", err.Error(), err
 	}
-	body := make(map[string]any, len(proposal.Fields))
-	for key, value := range proposal.Fields {
-		body[key] = value
-	}
 	path := replacePathParam("/items/{itemKey}", "itemKey", proposal.Key)
-	return patchWithWritePlaneVersion(ctx, c, path, body)
+	reader, ok := c.(writePlaneReader)
+	if !ok {
+		err := fmt.Errorf("client for %s cannot read the write plane; refusing to write without an If-Unmodified-Since-Version precondition", path)
+		return "failed", err.Error(), err
+	}
+	currentData, version, err := reader.GetFromWriteBaseWithVersionContext(ctx, path, nil)
+	if err != nil {
+		return classifyWriteError(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		err = fmt.Errorf("decoding write-plane item %s: %w", path, err)
+		return "failed", err.Error(), err
+	}
+	liveData, ok := current["data"].(map[string]any)
+	if !ok {
+		// Without the live data the Extra to append to is unknown, and a
+		// wholesale replace would erase it.
+		err := fmt.Errorf("write-plane item %s has no data object; refusing to rewrite Extra without it", path)
+		return "failed", err.Error(), err
+	}
+	fields, ok := preprintCheckFixFields(liveData, stringFromMap(liveData, "extra"), proposal.match)
+	if !ok {
+		return "skipped", map[string]any{
+			"reason":  "doi_conflict",
+			"message": fmt.Sprintf("item already has DOI %s on the write plane; left unchanged", stringFromMap(liveData, "DOI")),
+		}, nil
+	}
+	snapshot := &enrichWriteSnapshotMutator{
+		apiMutator: c,
+		reader:     reader,
+		path:       path,
+		data:       currentData,
+		version:    version,
+		pending:    true,
+	}
+	status, detail, err := patchWithWritePlaneVersion(ctx, snapshot, path, fields)
+	if status == "applied" {
+		proposal.landed = preprintCheckFixFieldChanges(fields)
+	}
+	return status, detail, err
 }
 
 // renderPreprintCheckFixMutation keeps skips visible in JSON/non-TTY envelopes and human terminal output.

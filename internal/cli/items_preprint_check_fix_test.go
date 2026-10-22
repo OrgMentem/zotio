@@ -10,10 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/mutation"
 )
 
@@ -139,12 +143,16 @@ func TestPreprintCheckFixPlannedOpUsesWritePlaneVersionHeader(t *testing.T) {
 		Title:   "Paper",
 		DOI:     "10.1234/published",
 		Fields:  map[string]any{"DOI": "10.1234/published", "extra": "published provenance"},
+		match:   crossrefMatch{DOI: "10.1234/published"},
 		version: float64(17),
 	}
 	// The proposal's local-plane version (17) is kept only for plan display
 	// (ExpectedVersion). The write precondition must come from the write plane,
 	// sent as If-Unmodified-Since-Version, not as a body "version" key.
-	mutator := &fakeMutator{writeVersion: 42}
+	mutator := &fakeMutator{
+		writeVersion: 42,
+		writeData:    json.RawMessage(`{"key":"K1","version":42,"data":{"key":"K1","DOI":"","extra":"Citation Key: web2024"}}`),
+	}
 	ops := preprintCheckFixPlannedOps(context.Background(), []preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
 	if len(ops) != 1 {
 		t.Fatalf("planned ops = %d, want 1", len(ops))
@@ -169,8 +177,10 @@ func TestPreprintCheckFixPlannedOpUsesWritePlaneVersionHeader(t *testing.T) {
 	if got := mutator.patchHeaders["If-Unmodified-Since-Version"]; got != "42" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want %q (write-plane version)", got, "42")
 	}
-	if len(mutator.writeVerPaths) == 0 || mutator.writeVerPaths[0] != "/items/K1" {
-		t.Fatalf("write-plane version lookup path = %v, want [/items/K1]", mutator.writeVerPaths)
+	// The payload and its precondition must come from ONE write-plane read: a
+	// second read would pair a newer version with the older payload.
+	if len(mutator.writeVerPaths) != 1 || mutator.writeVerPaths[0] != "/items/K1" {
+		t.Fatalf("write-plane reads = %v, want exactly one for /items/K1", mutator.writeVerPaths)
 	}
 }
 
@@ -180,10 +190,14 @@ func TestPreprintCheckFixPlannedOpFailsClosedOnMissingWritePlaneVersion(t *testi
 		Title:  "Paper",
 		DOI:    "10.1234/published",
 		Fields: map[string]any{"DOI": "10.1234/published"},
+		match:  crossrefMatch{DOI: "10.1234/published"},
 		// Local version present but write-plane version is absent (0) — must fail closed.
 		version: float64(17),
 	}
-	mutator := &fakeMutator{writeVersion: 0}
+	mutator := &fakeMutator{
+		writeVersion: 0,
+		writeData:    json.RawMessage(`{"key":"K1","data":{"key":"K1","DOI":"","extra":""}}`),
+	}
 	ops := preprintCheckFixPlannedOps(context.Background(), []preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
 	if len(ops) != 1 {
 		t.Fatalf("planned ops = %d, want 1", len(ops))
@@ -200,6 +214,167 @@ func TestPreprintCheckFixPlannedOpFailsClosedOnMissingWritePlaneVersion(t *testi
 	}
 	if mutator.patchPath != "" {
 		t.Fatalf("patch path = %q, want no PATCH dispatched when version is 0", mutator.patchPath)
+	}
+}
+
+// Planning reads the item through the read plane, which lags the Web API. The
+// write must be derived from the write plane's current item: Extra is replaced
+// wholesale, so a planned value built from a stale read deletes whatever was
+// written since, and a DOI added on the Web since must still block the fix.
+func TestPreprintCheckFixApplyRederivesFromWritePlane(t *testing.T) {
+	const staleExtra = "ArXiv: 2401.00001"
+	match := crossrefMatch{DOI: "10.1234/published", Venue: "Journal of Done", Year: 2026}
+	cases := []struct {
+		name       string
+		liveItem   string
+		wantStatus string
+		wantPatch  bool
+		wantDOI    string
+		wantExtra  []string
+	}{
+		{
+			name:       "web only extra line survives",
+			liveItem:   `{"key":"K1","version":42,"data":{"key":"K1","DOI":"","extra":"ArXiv: 2401.00001\nCitation Key: web2024\nPinned: keep me"}}`,
+			wantStatus: "applied",
+			wantPatch:  true,
+			wantDOI:    "10.1234/published",
+			wantExtra:  []string{"ArXiv: 2401.00001\nCitation Key: web2024\nPinned: keep me\nzotio preprint-check: published as doi:10.1234/published"},
+		},
+		{
+			name:       "arxiv self doi on the web is replaced",
+			liveItem:   `{"key":"K1","version":42,"data":{"key":"K1","DOI":"10.48550/arXiv.2401.00001","extra":"ArXiv: 2401.00001"}}`,
+			wantStatus: "applied",
+			wantPatch:  true,
+			wantDOI:    "10.1234/published",
+			wantExtra:  []string{"ArXiv: 2401.00001\nzotio preprint-check: published as doi:10.1234/published"},
+		},
+		{
+			name:       "published doi added on the web blocks the fix",
+			liveItem:   `{"key":"K1","version":42,"data":{"key":"K1","DOI":"10.9999/other-journal","extra":"ArXiv: 2401.00001"}}`,
+			wantStatus: "skipped",
+			wantPatch:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The read plane still shows a blank DOI and the old Extra.
+			readPlaneItem := map[string]any{
+				"key": "K1", "version": float64(7),
+				"data": map[string]any{"key": "K1", "title": "Paper", "DOI": "", "extra": staleExtra},
+			}
+			proposal, skip, ok := preprintCheckFixProposalForItem(readPlaneItem, match)
+			if !ok {
+				t.Fatalf("read-plane proposal skipped: %+v", skip)
+			}
+			mutator := &fakeMutator{writeVersion: 42, writeData: json.RawMessage(tc.liveItem)}
+			ops := preprintCheckFixPlannedOps(context.Background(), []preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
+
+			status, reason, err := ops[0].Apply()
+			if status != tc.wantStatus || err != nil {
+				t.Fatalf("apply = status %q reason %v err %v, want %q", status, reason, err, tc.wantStatus)
+			}
+			if !tc.wantPatch {
+				if mutator.patchPath != "" {
+					t.Fatalf("PATCH dispatched to %q, want none when the live DOI conflicts", mutator.patchPath)
+				}
+				if detail, _ := reason.(map[string]any); detail["reason"] != "doi_conflict" {
+					t.Fatalf("reason = %v, want doi_conflict", reason)
+				}
+				if ops[0].Effective() != nil {
+					t.Fatalf("Effective = %v, want nothing replayed for a skipped op", ops[0].Effective())
+				}
+				return
+			}
+			if mutator.patchBody["DOI"] != tc.wantDOI {
+				t.Fatalf("patch DOI = %v, want %q", mutator.patchBody["DOI"], tc.wantDOI)
+			}
+			extra, _ := mutator.patchBody["extra"].(string)
+			for _, want := range tc.wantExtra {
+				if !strings.HasPrefix(extra, want) {
+					t.Fatalf("patch extra = %q, want live Extra preserved then provenance: prefix %q", extra, want)
+				}
+			}
+			// What the mirror replays is what was written, not the plan's
+			// read-plane Extra.
+			landed := ops[0].Effective()
+			if len(landed) != 2 || landed[1].Field != "extra" || landed[1].Add != extra {
+				t.Fatalf("Effective = %+v, want the DOI and the live-derived extra that was patched", landed)
+			}
+		})
+	}
+}
+
+// A write-plane read that carries no data object cannot say what Extra holds.
+// Patching anyway would replace Extra with the provenance line alone.
+func TestPreprintCheckFixApplyRefusesUnusableWritePlaneItem(t *testing.T) {
+	for name, body := range map[string]string{
+		"null":           `null`,
+		"empty object":   `{}`,
+		"data not a map": `{"key":"K1","data":"oops"}`,
+		"not json":       `<html>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			proposal := preprintCheckFixProposal{Key: "K1", match: crossrefMatch{DOI: "10.1234/published"}}
+			mutator := &fakeMutator{writeVersion: 42, writeData: json.RawMessage(body)}
+			status, reason, err := applyPreprintCheckFixProposal(context.Background(), mutator, &proposal)
+			if status != "failed" || err == nil {
+				t.Fatalf("apply = status %q reason %v err %v, want failed with an error", status, reason, err)
+			}
+			if mutator.patchPath != "" {
+				t.Fatalf("PATCH dispatched to %q, want none without live item data", mutator.patchPath)
+			}
+		})
+	}
+}
+
+// A Web edit that lands after the apply-time read must lose to the version
+// guard. Resolving a second version before the PATCH would carry the newer
+// version with the older payload and pass.
+func TestPreprintCheckFixApplyConflictsOnWebEditAfterRead(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		version = 10
+		extra   = "Citation Key: web2024"
+		gets    int
+		patches int
+	)
+	writePlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			gets++
+			w.Header().Set("Last-Modified-Version", strconv.Itoa(version))
+			fmt.Fprintf(w, `{"key":"K1","version":%d,"data":{"key":"K1","DOI":"","extra":%q}}`, version, extra)
+			// Another client edits Extra right after this read.
+			version++
+			extra += "\nAdded elsewhere"
+		case http.MethodPatch:
+			patches++
+			if r.Header.Get("If-Unmodified-Since-Version") != strconv.Itoa(version) {
+				http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(writePlane.Close)
+	c := client.New(&config.Config{BaseURL: writePlane.URL}, time.Second, 0)
+	c.NoCache = true
+	c.WriteBaseURL = writePlane.URL
+
+	proposal := preprintCheckFixProposal{Key: "K1", match: crossrefMatch{DOI: "10.1234/published"}}
+	status, detail, err := applyPreprintCheckFixProposal(context.Background(), c, &proposal)
+	if status != "conflict" || err == nil {
+		t.Fatalf("apply = status %q detail %v err %v, want conflict", status, detail, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gets != 1 || patches != 1 {
+		t.Fatalf("write plane saw %d GET and %d PATCH, want 1 and 1 (the guard is the version the payload was read at)", gets, patches)
+	}
+	if proposal.landed != nil {
+		t.Fatalf("landed = %+v, want nothing recorded for a conflicted write", proposal.landed)
 	}
 }
 
