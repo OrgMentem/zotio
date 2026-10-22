@@ -30,6 +30,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -678,6 +680,19 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		}
 		return fmt.Errorf("refusing file upload to untrusted storage host %s", host)
 	}
+	// The body transfer scales with the file, so it must not inherit the API
+	// client's whole-request timeout (--timeout, 30s by default): a file that
+	// needs longer than that on the operator's uplink could never be uploaded,
+	// and every retry would re-send it under the same budget and fail the same
+	// way. The timeout bounds a stall instead: the transfer is abandoned when no
+	// byte moves for that long. Cancellation still applies through ctx.
+	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
+	idle := httpClient.Timeout
+	httpClient.Timeout = 0
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	dog := newUploadWatchdog(idle, cancel)
+	defer dog.stop()
 	envelope := func() (io.ReadCloser, error) {
 		source, err := openVerifiedAttachmentSource(req)
 		if err != nil {
@@ -686,7 +701,7 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 			return nil, &uploadSourceError{err: err}
 		}
 		return readerWithCloser{
-			Reader: uploadSourceReader{io.MultiReader(strings.NewReader(prefix), source, strings.NewReader(suffix))},
+			Reader: dog.watch(uploadSourceReader{io.MultiReader(strings.NewReader(prefix), source, strings.NewReader(suffix))}),
 			closer: source,
 		}, nil
 	}
@@ -707,9 +722,8 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
-	// Re-resolve and vet the storage host at dial time so a signed HTTPS URL
-	// cannot reach a private address through DNS rebinding.
-	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
+	// httpClient re-resolves and vets the storage host at dial time so a signed
+	// HTTPS URL cannot reach a private address through DNS rebinding.
 	// The generic redirect gate accepts public http:// targets, and GetBody
 	// lets a 307/308 replay the whole envelope, so an HTTPS upload must not
 	// follow a redirect down to plaintext. The message names no URL: the
@@ -730,6 +744,9 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		if errors.As(err, &sourceErr) {
 			return fmt.Errorf("uploading file payload: %w", sourceErr)
 		}
+		if dog.fired() {
+			return fmt.Errorf("uploading file payload: no data moved for %s, so the transfer was abandoned; raise --timeout to allow a slower connection", idle)
+		}
 		// Anything else came from the transport. *url.Error prints the request
 		// URL, and its cause can quote a redirect Location; both carry the
 		// signed query that grants upload access. Report only the origin and a
@@ -737,10 +754,69 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		return outboundRequestError("uploading file payload", uploadURL, err)
 	}
 	defer resp.Body.Close()
+	dog.stop()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("file payload upload returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// uploadResponseWait is how long the storage host may take to answer once the
+// whole body has been handed to the transport. The kernel and the host can
+// still be draining what was written, so the idle bound alone would cut off a
+// slow but healthy transfer here.
+const uploadResponseWait = 2 * time.Minute
+
+// uploadWatchdog cancels an upload that stops moving. Every body read that
+// returns bytes re-arms it. A zero idle disables it (--timeout 0).
+type uploadWatchdog struct {
+	idle  time.Duration
+	timer *time.Timer
+	trip  atomic.Bool
+}
+
+func newUploadWatchdog(idle time.Duration, cancel context.CancelFunc) *uploadWatchdog {
+	d := &uploadWatchdog{idle: idle}
+	if idle > 0 {
+		d.timer = time.AfterFunc(idle, func() {
+			d.trip.Store(true)
+			cancel()
+		})
+	}
+	return d
+}
+
+func (d *uploadWatchdog) stop() {
+	if d.timer != nil {
+		d.timer.Stop()
+	}
+}
+
+func (d *uploadWatchdog) fired() bool { return d.trip.Load() }
+
+// watch re-arms the watchdog as r makes progress and, at the end of the body,
+// switches it to the response wait.
+func (d *uploadWatchdog) watch(r io.Reader) io.Reader {
+	if d.timer == nil {
+		return r
+	}
+	return uploadProgressReader{r: r, dog: d}
+}
+
+type uploadProgressReader struct {
+	r   io.Reader
+	dog *uploadWatchdog
+}
+
+func (p uploadProgressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	switch {
+	case err == io.EOF:
+		p.dog.timer.Reset(max(p.dog.idle, uploadResponseWait))
+	case n > 0:
+		p.dog.timer.Reset(p.dog.idle)
+	}
+	return n, err
 }
 
 // openVerifiedAttachmentSource opens one constant-memory source whose final

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
@@ -52,7 +53,9 @@ type fakeZoteroUpload struct {
 	replayCreate                   bool // 412 on POST /items (write token already submitted)
 	existsOnAuth                   bool // respond {exists:1} instead of an upload target
 	storageReplyAfterContentLength bool
-	dropRegisterResponse           string // "commit" or "lose": hang up on the registration request, committing it or not
+	storageChunkDelay              time.Duration // read the upload body slowly: 8 KiB, then this pause
+	storageStall                   time.Duration // read nothing for this long, then answer
+	dropRegisterResponse           string        // "commit" or "lose": hang up on the registration request, committing it or not
 
 	// observed traffic
 	creates       int
@@ -244,6 +247,25 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 		key := strings.TrimPrefix(r.URL.Path, "/storage/")
 		if _, ok := f.authorizedMD5[key]; !ok {
 			http.Error(w, "upload not authorized", http.StatusForbidden)
+			return
+		}
+		if f.storageStall > 0 {
+			time.Sleep(f.storageStall)
+			f.uploads++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if f.storageChunkDelay > 0 {
+			chunk := make([]byte, 8<<10)
+			for {
+				_, err := r.Body.Read(chunk)
+				if err != nil {
+					break
+				}
+				time.Sleep(f.storageChunkDelay)
+			}
+			f.uploads++
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if f.storageReplyAfterContentLength {
@@ -1318,5 +1340,52 @@ func TestAttachmentsAddQuotaFailureKeepsCreatedChildInJournal(t *testing.T) {
 	reason, _ := ops[0].Reason.(map[string]any)
 	if reason["item_key"] != "ATT1" || reason["committed"] != true {
 		t.Fatalf("journaled reason = %+v, want the created child ATT1 as committed evidence", ops[0].Reason)
+	}
+}
+
+// The upload body is a bulk transfer whose duration scales with the file, so it
+// must not be held to --timeout as a whole. A slow but moving transfer
+// completes; only a stalled one is abandoned, and the error names --timeout.
+func TestAttachmentsAddSlowUploadOutlivesRequestTimeout(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	f.storageChunkDelay = 12 * time.Millisecond
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "big.bin", bytes.Repeat([]byte("zotio-upload-"), 2<<20/13))
+
+	flags := applyFlags()
+	flags.timeout = time.Second
+	start := time.Now()
+	env, stderr, err := runAttachmentsAdd(t, flags, []string{"add", "PARENTAB", path})
+	if err != nil {
+		t.Fatalf("slow upload under --timeout 1s: %v; stderr=%s", err, stderr)
+	}
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Fatalf("upload took %s; the stub must outlast --timeout for this test to prove anything", elapsed)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("env = %+v, want applied", env)
+	}
+}
+
+func TestAttachmentsAddStalledUploadIsAbandonedAtTheIdleBound(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	f.storageStall = 4 * time.Second
+	setUploadTestEnv(t, f)
+	// Larger than the socket buffers, so the client blocks mid-body.
+	path := writeUploadFixture(t, "big.bin", bytes.Repeat([]byte("x"), 64<<20))
+
+	flags := applyFlags()
+	flags.timeout = time.Second
+	start := time.Now()
+	env, _, err := runAttachmentsAdd(t, flags, []string{"add", "PARENTAB", path})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("stalled upload succeeded")
+	}
+	if got := fmt.Sprint(env.Result.Items[0].Reason); !strings.Contains(got, "--timeout") {
+		t.Fatalf("failure reason %q does not point at --timeout", got)
+	}
+	if elapsed > 3500*time.Millisecond {
+		t.Fatalf("stalled upload took %s to fail, want about the 1s idle bound", elapsed)
 	}
 }
