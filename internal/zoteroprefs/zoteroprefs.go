@@ -170,6 +170,14 @@ type hazardSet struct {
 	personalSyncOff     []string
 	groupSyncOff        []string
 	personalModeUnknown []string
+	// personalSyncMalformed and groupSyncMalformed list the profiles whose
+	// sync.storage.enabled / sync.storage.groups.enabled is PRESENT but not a
+	// boolean. That is a different cause from personalModeUnknown (an
+	// unrecognised protocol): such a profile can name a protocol this package
+	// models perfectly well, so folding the two together made a refusal
+	// blame a protocol the profile never got wrong.
+	personalSyncMalformed []string
+	groupSyncMalformed    []string
 }
 
 func (h hazardSet) or(other hazardSet) hazardSet {
@@ -178,6 +186,9 @@ func (h hazardSet) or(other hazardSet) hazardSet {
 		personalSyncOff:     mergeSources(h.personalSyncOff, other.personalSyncOff),
 		groupSyncOff:        mergeSources(h.groupSyncOff, other.groupSyncOff),
 		personalModeUnknown: mergeSources(h.personalModeUnknown, other.personalModeUnknown),
+
+		personalSyncMalformed: mergeSources(h.personalSyncMalformed, other.personalSyncMalformed),
+		groupSyncMalformed:    mergeSources(h.groupSyncMalformed, other.groupSyncMalformed),
 	}
 }
 
@@ -208,6 +219,17 @@ func (f FileStorage) AnyGroupSyncDisabled() bool { return len(f.hazards.groupSyn
 // protocol could not be decoded to a mode this package models.
 func (f FileStorage) AnyPersonalModeUnknown() bool { return len(f.hazards.personalModeUnknown) > 0 }
 
+// AnyPersonalSyncMalformed reports whether any readable profile has a
+// sync.storage.enabled preference that is present but not a boolean, so
+// whether personal-library file syncing is on cannot be established.
+func (f FileStorage) AnyPersonalSyncMalformed() bool {
+	return len(f.hazards.personalSyncMalformed) > 0
+}
+
+// AnyGroupSyncMalformed reports whether any readable profile has a
+// sync.storage.groups.enabled preference that is present but not a boolean.
+func (f FileStorage) AnyGroupSyncMalformed() bool { return len(f.hazards.groupSyncMalformed) > 0 }
+
 // PersonalWebDAVProfiles lists the profile directories that positively said
 // personal-library files live on WebDAV.
 func (f FileStorage) PersonalWebDAVProfiles() []string { return slices.Clone(f.hazards.personalWebDAV) }
@@ -228,6 +250,18 @@ func (f FileStorage) GroupSyncDisabledProfiles() []string {
 // protocol could not be decoded.
 func (f FileStorage) PersonalModeUnknownProfiles() []string {
 	return slices.Clone(f.hazards.personalModeUnknown)
+}
+
+// PersonalSyncMalformedProfiles lists the profile directories whose
+// sync.storage.enabled is present but not a boolean.
+func (f FileStorage) PersonalSyncMalformedProfiles() []string {
+	return slices.Clone(f.hazards.personalSyncMalformed)
+}
+
+// GroupSyncMalformedProfiles lists the profile directories whose
+// sync.storage.groups.enabled is present but not a boolean.
+func (f FileStorage) GroupSyncMalformedProfiles() []string {
+	return slices.Clone(f.hazards.groupSyncMalformed)
 }
 
 // AnyUnreadableProfile reports whether at least one discovered profile could
@@ -590,8 +624,9 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 	// the real configuration is unknown. Both booleans keep their shipped
 	// default in that case — never collapsing an undecodable value to false,
 	// which would manufacture a "syncing is off" refusal from no evidence —
-	// while the malformed flags feed AnyPersonalModeUnknown so the caller
-	// knows the reading is not a confident one.
+	// while the malformed flags feed their own hazards (not the unknown-protocol
+	// one: the protocol may be perfectly recognised) so the caller knows the
+	// reading is not a confident one and which preference is the cause.
 	var enabledMalformed, groupsEnabledMalformed bool
 	if v, ok := values[prefStorageProtocol]; ok {
 		fs.Protocol = strings.ToLower(strings.TrimSpace(v.str))
@@ -637,8 +672,14 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 	if !fs.GroupsEnabled {
 		fs.hazards.groupSyncOff = self
 	}
-	if fs.mode() == StorageUnknown || enabledMalformed || groupsEnabledMalformed {
+	if fs.mode() == StorageUnknown {
 		fs.hazards.personalModeUnknown = self
+	}
+	if enabledMalformed {
+		fs.hazards.personalSyncMalformed = self
+	}
+	if groupsEnabledMalformed {
+		fs.hazards.groupSyncMalformed = self
 	}
 	return fs, nil
 }

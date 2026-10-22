@@ -337,8 +337,65 @@ func TestStringValueForABooleanKeyIsUndecodableNotFalse(t *testing.T) {
 	if fs.AnyPersonalSyncDisabled() {
 		t.Fatal("AnyPersonalSyncDisabled() = true, want a type mismatch to never become a positive hazard")
 	}
-	if !fs.AnyPersonalModeUnknown() {
-		t.Fatal("AnyPersonalModeUnknown() = false, want the malformed known key recorded as indeterminate")
+	if !fs.AnyPersonalSyncMalformed() {
+		t.Fatal("AnyPersonalSyncMalformed() = false, want the malformed known key recorded as indeterminate")
+	}
+	if fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = true, want a malformed boolean next to a recognised protocol not to read as an unknown protocol")
+	}
+	if fs.AnyGroupSyncMalformed() {
+		t.Fatal("AnyGroupSyncMalformed() = true, want only the personal preference flagged")
+	}
+}
+
+// The group boolean has its own hazard: it must not be filed under the
+// personal one, nor under the protocol one.
+func TestMalformedGroupSyncBooleanIsItsOwnHazard(t *testing.T) {
+	dir := writeProfile(t, `user_pref("extensions.zotero.sync.storage.groups.enabled", "garbage");`)
+	fs, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if !fs.GroupsEnabled || fs.AnyGroupSyncDisabled() {
+		t.Fatal("a type mismatch must keep the shipped default and never become a decoded false")
+	}
+	if got := fs.GroupSyncMalformedProfiles(); len(got) != 1 || got[0] != dir {
+		t.Fatalf("GroupSyncMalformedProfiles() = %v, want [%s]", got, dir)
+	}
+	if fs.AnyPersonalSyncMalformed() || fs.AnyPersonalModeUnknown() {
+		t.Fatal("a malformed group boolean must not be reported as a personal-sync or protocol hazard")
+	}
+}
+
+// Each cause is attributed only to the profiles that contain it: a profile
+// with a malformed boolean and a recognised protocol is not evidence of an
+// unknown protocol, and vice versa.
+func TestMixedProfilesAttributeMalformedBooleanAndUnknownProtocolSeparately(t *testing.T) {
+	mk := func(name, prefs string) string {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "prefs.js"), []byte(prefs), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a := mk("a", `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", "garbage");
+`)
+	b := mk("b", `user_pref("extensions.zotero.sync.storage.protocol", "s3");`)
+
+	fs, err := loadAcross([]string{a, b}, a)
+	if err != nil {
+		t.Fatalf("loadAcross: %v", err)
+	}
+	if got := fs.PersonalSyncMalformedProfiles(); len(got) != 1 || got[0] != a {
+		t.Fatalf("PersonalSyncMalformedProfiles() = %v, want only [%s]", got, a)
+	}
+	if got := fs.PersonalModeUnknownProfiles(); len(got) != 1 || got[0] != b {
+		t.Fatalf("PersonalModeUnknownProfiles() = %v, want only [%s]", got, b)
 	}
 }
 

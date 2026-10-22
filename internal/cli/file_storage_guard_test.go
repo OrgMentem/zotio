@@ -1437,3 +1437,144 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 		}
 	}
 }
+
+// A malformed sync boolean next to a recognised protocol must not be refused
+// as an unrecognised protocol: the refusal has to name the preference that is
+// actually broken, and only the profiles that contain it. Runs the real prefs
+// reader, since the misattribution lived in how the reader classified the key.
+func TestMalformedSyncBooleanIsRefusedAsItselfNotAsAnUnknownProtocol(t *testing.T) {
+	root := t.TempDir()
+	malformed := filepath.Join(root, "malformed.default")
+	writeTestPrefs(t, malformed, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", "garbage");
+user_pref("extensions.zotero.sync.storage.groups.enabled", "garbage");
+`)
+	fs, err := zoteroprefs.LoadAcrossForTest([]string{malformed}, malformed)
+	if err != nil {
+		t.Fatalf("LoadAcrossForTest: %v", err)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
+
+	personal := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if personal.reason != storedUploadReasonPersonalSyncMalformed {
+		t.Fatalf("personal reason = %v, want PersonalSyncMalformed; detail=%q", personal.reason, personal.detail)
+	}
+	if !strings.Contains(personal.detail, "sync.storage.enabled") || strings.Contains(personal.detail, "recognise") {
+		t.Fatalf("personal detail = %q, want the malformed preference named and no protocol claim", personal.detail)
+	}
+	if !slices.Equal(personal.profiles, []string{malformed}) {
+		t.Fatalf("personal profiles = %v, want [%s]", personal.profiles, malformed)
+	}
+	if steps := strings.Join(storedUploadRefusalSteps(personal), " "); !strings.Contains(steps, malformed) || !strings.Contains(steps, zoteroprefs.ProfileDirEnv) {
+		t.Fatalf("remediation = %q, want the profile and the pinning override", steps)
+	}
+
+	group := storedUploadDecision(t.Context(), &rootFlags{group: "12345"}, storedUploadToExistingItem)
+	if group.reason != storedUploadReasonGroupSyncMalformed {
+		t.Fatalf("group reason = %v, want GroupSyncMalformed; detail=%q", group.reason, group.detail)
+	}
+	if !strings.Contains(group.detail, "sync.storage.groups.enabled") {
+		t.Fatalf("group detail = %q, want the group preference named", group.detail)
+	}
+}
+
+// Each preference gates only its own library kind: a malformed group boolean
+// says nothing about where a personal upload goes, and the reverse.
+func TestMalformedSyncBooleanOnlyRefusesItsOwnLibraryKind(t *testing.T) {
+	root := t.TempDir()
+	groupOnly := filepath.Join(root, "g.default")
+	writeTestPrefs(t, groupOnly, `user_pref("extensions.zotero.sync.storage.groups.enabled", "garbage");`)
+	fs, err := zoteroprefs.LoadAcrossForTest([]string{groupOnly}, groupOnly)
+	if err != nil {
+		t.Fatalf("LoadAcrossForTest: %v", err)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
+	if got := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem); got != "" {
+		t.Fatalf("personal upload refused for a malformed group boolean: %q", got)
+	}
+	if got := storedUploadRefusal(t.Context(), &rootFlags{group: "12345"}, storedUploadToExistingItem); got == "" {
+		t.Fatal("group upload allowed despite an indeterminate sync.storage.groups.enabled")
+	}
+
+	personalOnly := filepath.Join(root, "p.default")
+	writeTestPrefs(t, personalOnly, `user_pref("extensions.zotero.sync.storage.enabled", "garbage");`)
+	fs, err = zoteroprefs.LoadAcrossForTest([]string{personalOnly}, personalOnly)
+	if err != nil {
+		t.Fatalf("LoadAcrossForTest: %v", err)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
+	if got := storedUploadRefusal(t.Context(), &rootFlags{group: "12345"}, storedUploadToExistingItem); got != "" {
+		t.Fatalf("group upload refused for a malformed personal boolean: %q", got)
+	}
+}
+
+// Mixed profiles: each cause is attributed to the profiles that contain it,
+// and union semantics still refuse when only one kind is present.
+func TestMixedMalformedBooleanAndUnknownProtocolProfilesAttributeTruthfully(t *testing.T) {
+	root := t.TempDir()
+	badBool := filepath.Join(root, "boolean.default")
+	writeTestPrefs(t, badBool, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", "garbage");
+`)
+	badBool2 := filepath.Join(root, "boolean2.other")
+	writeTestPrefs(t, badBool2, `user_pref("extensions.zotero.sync.storage.enabled", "yes");`)
+	badProto := filepath.Join(root, "protocol.other")
+	writeTestPrefs(t, badProto, `user_pref("extensions.zotero.sync.storage.protocol", "s3");`)
+
+	load := func(dirs ...string) storedUploadVerdict {
+		t.Helper()
+		fs, err := zoteroprefs.LoadAcrossForTest(dirs, dirs[0])
+		if err != nil {
+			t.Fatalf("LoadAcrossForTest: %v", err)
+		}
+		stubLoadedZoteroFileStorage(t, fs)
+		return storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	}
+
+	// Several malformed profiles: every one is named.
+	v := load(badBool, badBool2)
+	if v.reason != storedUploadReasonPersonalSyncMalformed || !slices.Equal(v.profiles, []string{badBool, badBool2}) {
+		t.Fatalf("two malformed profiles: reason=%v profiles=%v, want PersonalSyncMalformed naming both", v.reason, v.profiles)
+	}
+
+	// A genuinely unknown protocol is reported as such and names only the
+	// profile that has it, never the malformed-boolean one.
+	v = load(badBool, badProto)
+	if v.reason != storedUploadReasonUnevaluable {
+		t.Fatalf("mixed: reason=%v, want Unevaluable; detail=%q", v.reason, v.detail)
+	}
+	if !slices.Equal(v.profiles, []string{badProto}) {
+		t.Fatalf("mixed: profiles=%v, want only the unknown-protocol profile [%s]", v.profiles, badProto)
+	}
+}
+
+// doctor shows the malformed-preference refusal, names the preference and the
+// profile that evidenced it.
+func TestDoctorReportsMalformedSyncBooleanWithItsPreferenceAndProfile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "malformed.default")
+	writeTestPrefs(t, dir, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", "garbage");
+`)
+	fs, err := zoteroprefs.LoadAcrossForTest([]string{dir}, dir)
+	if err != nil {
+		t.Fatalf("LoadAcrossForTest: %v", err)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
+
+	report := map[string]any{}
+	addDoctorFileStorageReport(t.Context(), report, &rootFlags{})
+
+	got, _ := report["file_storage"].(string)
+	if !strings.Contains(got, "refused") || !strings.Contains(got, "sync.storage.enabled") {
+		t.Fatalf("file_storage = %q, want the refusal naming sync.storage.enabled", got)
+	}
+	if strings.Contains(got, "not recognised") {
+		t.Fatalf("file_storage = %q, must not blame the protocol", got)
+	}
+	if ev, _ := report["file_storage_evidence_profiles"].(string); !strings.Contains(ev, dir) {
+		t.Fatalf("file_storage_evidence_profiles = %q, want %q", ev, dir)
+	}
+}

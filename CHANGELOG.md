@@ -828,6 +828,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `items create`, `workflow run` and `library prisma` help, and the `which`
   highlights, no longer overstate what those commands do.
 
+- **A malformed sync preference is refused as itself, not as an unknown
+  protocol.** When `sync.storage.enabled` (or `sync.storage.groups.enabled`)
+  in `prefs.js` is present but not a boolean, the stored-upload refusal and
+  `doctor`'s `file_storage:` line now name that preference and the profile(s)
+  that contain it, instead of claiming the storage protocol is unrecognised.
+  The upload is still refused. Each preference gates only its own library
+  kind, so a malformed group boolean no longer refuses a personal-library
+  upload, and now refuses a group-library one.
+
 ## [0.29.0] — 2026-10-12
 
 ### Changed — breaking

@@ -275,6 +275,14 @@ const (
 	// names a storage protocol this version of zotio does not model, so the
 	// destination cannot be established.
 	storedUploadReasonUnevaluable
+	// storedUploadReasonPersonalSyncMalformed: sync.storage.enabled is present
+	// but not a boolean. The protocol may be perfectly recognised; what cannot
+	// be established is whether personal file syncing is on. Kept apart from
+	// Unevaluable so the refusal names the preference that is actually broken.
+	storedUploadReasonPersonalSyncMalformed
+	// storedUploadReasonGroupSyncMalformed: the same for
+	// sync.storage.groups.enabled, which gates group-library uploads.
+	storedUploadReasonGroupSyncMalformed
 	// storedUploadReasonUnreadable: the configuration could not be read at
 	// all. Kept distinct from Unevaluable because the remediation and the
 	// wording differ: these profiles evidenced only the INABILITY to evaluate,
@@ -361,6 +369,15 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 				profiles: fs.GroupSyncDisabledProfiles(),
 			}
 		}
+		// Present but not a boolean: whether group syncing is on is unknown,
+		// which is the same footing as a decoded "off" for this decision.
+		if fs.AnyGroupSyncMalformed() {
+			return storedUploadVerdict{
+				reason:   storedUploadReasonGroupSyncMalformed,
+				detail:   "Zotero desktop's sync.storage.groups.enabled preference is present but is not a boolean, so whether group-library file syncing is on cannot be established and this upload's destination is unproven",
+				profiles: fs.GroupSyncMalformedProfiles(),
+			}
+		}
 		return storedUploadVerdict{}
 	}
 
@@ -393,6 +410,15 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 			reason:   storedUploadReasonUnevaluable,
 			detail:   "Zotero desktop is configured with a file-storage protocol this version of zotio does not recognise, so this upload's destination cannot be established",
 			profiles: fs.PersonalModeUnknownProfiles(),
+		}
+	case fs.AnyPersonalSyncMalformed():
+		// The protocol may be recognised; only the boolean is unreadable.
+		// Saying the protocol is unrecognised would blame a setting the
+		// profile got right.
+		return storedUploadVerdict{
+			reason:   storedUploadReasonPersonalSyncMalformed,
+			detail:   "Zotero desktop's sync.storage.enabled preference is present but is not a boolean, so whether personal-library file syncing is on cannot be established and this upload's destination is unproven",
+			profiles: fs.PersonalSyncMalformedProfiles(),
 		}
 	default:
 		return storedUploadVerdict{}
@@ -532,6 +558,20 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 			// contributing profiles must be named here too: omitting them
 			// leaves doctor showing the risk-ranked representative, which for
 			// a group refusal is routinely a profile that evidenced nothing.
+			pin,
+			linkedFile,
+			override,
+		}
+	case storedUploadReasonPersonalSyncMalformed:
+		return []string{
+			"Re-save the preference in Zotero (toggle Settings -> Sync -> File Syncing -> 'Sync attachment files in My Library'), or remove the malformed sync.storage.enabled line from that profile's prefs.js while Zotero is closed.",
+			pin,
+			linkedFile,
+			override,
+		}
+	case storedUploadReasonGroupSyncMalformed:
+		return []string{
+			"Re-save the preference in Zotero (toggle Settings -> Sync -> File Syncing -> 'Sync attachment files in group libraries'), or remove the malformed sync.storage.groups.enabled line from that profile's prefs.js while Zotero is closed.",
 			pin,
 			linkedFile,
 			override,
@@ -695,7 +735,11 @@ func refusalSummary(reason storedUploadReason) string {
 	case storedUploadReasonGroupSyncOff:
 		return "group-library file syncing is off, so Zotero would never download them"
 	case storedUploadReasonUnevaluable:
-		return "the destination could not be established"
+		return "the file-storage protocol is not recognised, so the destination could not be established"
+	case storedUploadReasonPersonalSyncMalformed:
+		return "sync.storage.enabled is not a boolean, so whether personal-library file syncing is on could not be established"
+	case storedUploadReasonGroupSyncMalformed:
+		return "sync.storage.groups.enabled is not a boolean, so whether group-library file syncing is on could not be established"
 	case storedUploadReasonUnreadable:
 		return "Zotero's configuration could not be read, so the destination could not be established"
 	default:
