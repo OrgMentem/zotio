@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -262,6 +264,101 @@ func TestFetchAccessibleGroups_UsesThePersonalLibraryPrefix(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != "/users/0/groups" {
 		t.Fatalf("requests = %v, want one /users/0/groups", paths)
+	}
+}
+
+// serveGroupPages answers /users/1/groups from a fixed group list, honouring
+// limit/start and sending Total-Results, so a listing that stops at the first
+// page is visible. headerTotal overrides the advertised total when >= 0.
+func serveGroupPages(t *testing.T, groups []string, headerTotal int, pageCap int, requests *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/groups") {
+			http.NotFound(w, r)
+			return
+		}
+		*requests = append(*requests, r.URL.RawQuery)
+		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		limit := pageCap
+		if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l < limit {
+			limit = l
+		}
+		if start > len(groups) {
+			start = len(groups)
+		}
+		end := start + limit
+		if end > len(groups) {
+			end = len(groups)
+		}
+		total := len(groups)
+		if headerTotal >= 0 {
+			total = headerTotal
+		}
+		w.Header().Set("Total-Results", strconv.Itoa(total))
+		_, _ = io.WriteString(w, "["+strings.Join(groups[start:end], ",")+"]")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func manyGroups(n int) []string {
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, fmt.Sprintf(`{"id":%d,"data":{"name":"G%d","type":"Private"},"meta":{"numItems":1}}`, 1000+i, i))
+	}
+	return out
+}
+
+// A Web API account in more than one page of groups must be enumerated to
+// completion: --group all and groups list drop every group past the first page
+// otherwise, and report no failure.
+func TestFetchAccessibleGroups_WalksEveryPage(t *testing.T) {
+	var requests []string
+	srv := serveGroupPages(t, manyGroups(130), -1, 100, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/1")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	libs, err := resolveFanoutLibraries(&rootFlags{})
+	if err != nil {
+		t.Fatalf("resolveFanoutLibraries: %v", err)
+	}
+	if len(libs) != 131 {
+		t.Fatalf("libraries = %d, want 131 (personal + 130 groups); requests=%v", len(libs), requests)
+	}
+	if last := libs[len(libs)-1]; last.ID != "1130" {
+		t.Errorf("last library = %+v, want group 1130", last)
+	}
+}
+
+// A page that falls short of the advertised Total-Results must fail the run:
+// fanning out over a partial group set looks like a smaller account.
+func TestFetchAccessibleGroups_RefusesShortListing(t *testing.T) {
+	var requests []string
+	srv := serveGroupPages(t, manyGroups(30), 45, 100, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/1")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	_, err := resolveFanoutLibraries(&rootFlags{})
+	if err == nil {
+		t.Fatal("resolveFanoutLibraries succeeded over a listing shorter than Total-Results")
+	}
+	if !strings.Contains(err.Error(), "Total-Results") {
+		t.Errorf("error = %v, want it to name Total-Results", err)
+	}
+}
+
+// A server that ignores start would repeat page one forever.
+func TestFetchAccessibleGroups_RefusesIgnoredStart(t *testing.T) {
+	groups := manyGroups(100)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "["+strings.Join(groups, ",")+"]")
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/1")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	if _, err := fetchAccessibleGroups(&rootFlags{}, "list groups"); err == nil {
+		t.Fatal("fetchAccessibleGroups accepted a listing that ignores start")
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,6 +157,12 @@ type fanoutReport struct {
 // Groups are only listable under the personal-library prefix, because a
 // group-scoped base URL has no user segment to enumerate from; purpose
 // completes that refusal message for the calling command.
+//
+// The listing is a paginated multi-object read (the Web API serves 25 rows
+// unless asked for more), so it is walked to completion and returned as one
+// JSON array. A set that disagrees with the Total-Results header is refused:
+// fanning out over a partial group list would look exactly like an account
+// that belongs to fewer groups.
 func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, error) {
 	c, err := flags.newClient()
 	if err != nil {
@@ -164,14 +171,48 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 	if _, ok := userIDFromBaseURL(c.BaseURL); !ok {
 		return nil, usageErr(fmt.Errorf("set a personal-library base URL (…/users/<id>) to %s; the current base URL targets a group library", purpose))
 	}
-	data, err := c.Get("/groups", nil)
-	if err != nil {
-		return nil, classifyAPIError(err, flags)
+	all := []json.RawMessage{}
+	var prev []byte
+	for start := 0; ; start += zoteroPageMax {
+		data, totalHeader, err := c.GetWithHeader("/groups", map[string]string{
+			"limit": strconv.Itoa(zoteroPageMax),
+			"start": strconv.Itoa(start),
+		}, "Total-Results")
+		if err != nil {
+			return nil, classifyAPIError(err, flags)
+		}
+		if err := validateJSONReadBody(data, nil); err != nil {
+			return nil, err
+		}
+		var page []json.RawMessage
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("parsing groups response: %w", err)
+		}
+		if len(page) > 0 && start > 0 && bytes.Equal(prev, data) {
+			return nil, apiErr(fmt.Errorf("the groups listing ignored start=%d and repeated a page; refusing to fan out over a partial group list", start))
+		}
+		prev = data
+		all = append(all, page...)
+		total, hasTotal := parseTotalResults(totalHeader)
+		switch {
+		case hasTotal && len(all) == total:
+			return json.Marshal(all)
+		case hasTotal && (len(page) == 0 || len(all) > total):
+			return nil, apiErr(fmt.Errorf("the groups listing returned %d group(s) but Total-Results is %d; refusing to fan out over a partial group list", len(all), total))
+		case !hasTotal && len(page) < zoteroPageMax:
+			// No Total-Results header: a short page is the only end marker.
+			return json.Marshal(all)
+		}
 	}
-	if err := validateJSONReadBody(data, nil); err != nil {
-		return nil, err
+}
+
+// parseTotalResults reads a Total-Results header value.
+func parseTotalResults(v string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return 0, false
 	}
-	return data, nil
+	return n, true
 }
 
 // resolveFanoutLibraries resolves the library set once per run: the personal
