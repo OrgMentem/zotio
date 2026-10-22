@@ -35,6 +35,8 @@ const (
 	odfTextNS          = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
 	odfMetaNS          = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0"
 
+	docxCustomPropsNS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
+
 	zoteroUnreadableKey = zoteroFieldKeyPrefix + "unreadable-field"
 	zoteroBookmarkProp  = "ZOTERO_BREF_"
 )
@@ -137,7 +139,15 @@ func zoteroDocxFields(zr *zip.Reader) ([]zoteroRawField, error) {
 	if doc == nil {
 		return nil, usageErr(errors.New("not a Word document: word/document.xml is missing"))
 	}
-	body, _, err := scanDocxPart(doc, false)
+	custom, err := readZoteroZipPart(zr, "docProps/custom.xml")
+	if err != nil {
+		return nil, err
+	}
+	props, err := docxCustomProps(custom)
+	if err != nil {
+		return nil, fmt.Errorf("parsing docProps/custom.xml: %w", err)
+	}
+	body, _, err := scanDocxPart(doc, false, props)
 	if err != nil {
 		return nil, fmt.Errorf("parsing word/document.xml: %w", err)
 	}
@@ -150,7 +160,7 @@ func zoteroDocxFields(zr *zip.Reader) ([]zoteroRawField, error) {
 		if data == nil {
 			continue
 		}
-		_, byID, err := scanDocxPart(data, true)
+		_, byID, err := scanDocxPart(data, true, props)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", part.name, err)
 		}
@@ -182,9 +192,11 @@ type docxField struct {
 // ... / separate / result / end run sequence, and Word splits its instruction
 // over any number of instrText runs, so text is accumulated per open field and
 // judged when the field ends. w:fldSimple carries its instruction in an
-// attribute. With notes set, fields are filed under the enclosing
+// attribute. A w:bookmarkStart named ZOTERO_BREF_* is a citation stored in
+// Bookmarks mode: its code lives in the document custom properties (props),
+// as for .odt. With notes set, fields are filed under the enclosing
 // w:footnote / w:endnote id instead of the body.
-func scanDocxPart(data []byte, notes bool) ([]zoteroPartElem, map[string][]zoteroPartElem, error) {
+func scanDocxPart(data []byte, notes bool, props map[string]string) ([]zoteroPartElem, map[string][]zoteroPartElem, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var (
 		body    []zoteroPartElem
@@ -238,6 +250,18 @@ func scanDocxPart(data []byte, notes bool) ([]zoteroPartElem, map[string][]zoter
 				}
 			case "fldSimple":
 				emit(xmlAttr(t.Attr, "instr"))
+			case "bookmarkStart":
+				// A bookmark that names a Zotero citation but has no readable
+				// code is reported as unreadable, never dropped: it is still a
+				// citation the gate has not seen.
+				name := xmlAttr(t.Attr, "name")
+				if !strings.HasPrefix(name, zoteroBookmarkProp) {
+					continue
+				}
+				code := odfBookmarkCode(props, name)
+				if code == "" || isZoteroItemCode(code) {
+					add(zoteroPartElem{field: &zoteroRawField{code: code, para: para}})
+				}
 			case "fldChar":
 				switch xmlAttr(t.Attr, "fldCharType") {
 				case "begin":
@@ -286,6 +310,47 @@ func scanDocxPart(data []byte, notes bool) ([]zoteroPartElem, map[string][]zoter
 		}
 	}
 	return body, byID, nil
+}
+
+// docxCustomProps reads the name -> string value pairs of
+// docProps/custom.xml. A missing part yields no properties.
+func docxCustomProps(custom []byte) (map[string]string, error) {
+	props := map[string]string{}
+	if custom == nil {
+		return props, nil
+	}
+	dec := xml.NewDecoder(bytes.NewReader(custom))
+	var name string
+	var val strings.Builder
+	in := false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return props, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Space == docxCustomPropsNS && t.Name.Local == "property" {
+				in = true
+				name = xmlAttr(t.Attr, "name")
+				val.Reset()
+			}
+		case xml.CharData:
+			if in && val.Len()+len(t) <= maxZoteroFieldBytes {
+				val.Write(t)
+			}
+		case xml.EndElement:
+			if in && t.Name.Space == docxCustomPropsNS && t.Name.Local == "property" {
+				if name != "" {
+					props[name] = val.String()
+				}
+				in = false
+			}
+		}
+	}
 }
 
 // ---- .odt ----

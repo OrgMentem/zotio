@@ -187,6 +187,43 @@ func TestZoteroFieldsDocxFootnoteCitedAtReference(t *testing.T) {
 	}
 }
 
+// A manuscript saved with "Store citations as: Bookmarks" carries no fields:
+// each citation is a ZOTERO_BREF_ bookmark whose code lives, split in pieces,
+// in the document custom properties. Reading none of them would let a gate
+// certify a manuscript it has not seen a single citation of.
+func TestZoteroFieldsDocxBookmarkCitations(t *testing.T) {
+	dir := t.TempDir()
+	code := strings.TrimPrefix(zfCode(zfUser("BBBB2222")), "ADDIN ")
+	var custom strings.Builder
+	for i, c := range zfChunks(code, 4) {
+		fmt.Fprintf(&custom, `<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="%d" name="ZOTERO_BREF_xyz_%d"><vt:lpwstr>%s</vt:lpwstr></property>`, i+2, i+1, strings.NewReplacer("&", "&amp;", "<", "&lt;").Replace(c))
+	}
+	// A bibliography bookmark must not be mistaken for a citation.
+	custom.WriteString(`<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="9" name="ZOTERO_BREF_bib_1"><vt:lpwstr>ZOTERO_BIBL {"uncited":[]} CSL_BIBLIOGRAPHY</vt:lpwstr></property>`)
+	path := filepath.Join(dir, "paper.docx")
+	zfWriteZip(t, path, map[string]string{
+		"word/document.xml": `<w:document ` + zfNSW + `><w:body>` +
+			`<w:p>` + zfDocxField(zfCode(zfUser("AAAA1111")), 2) + `</w:p>` +
+			`<w:p><w:bookmarkStart w:id="0" w:name="ZOTERO_BREF_xyz"/><w:r><w:t>(cited)</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>` +
+			`<w:p><w:bookmarkStart w:id="1" w:name="ZOTERO_BREF_bib"/><w:r><w:t>refs</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>` +
+			`<w:p><w:bookmarkStart w:id="2" w:name="_GoBack"/><w:bookmarkEnd w:id="2"/></w:p>` +
+			`<w:p><w:bookmarkStart w:id="3" w:name="ZOTERO_BREF_lost"/><w:r><w:t>(cited)</w:t></w:r><w:bookmarkEnd w:id="3"/></w:p>` +
+			`</w:body></w:document>`,
+		"docProps/custom.xml": `<?xml version="1.0" encoding="UTF-8"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">` + custom.String() + `</Properties>`,
+	})
+	got, _, err := parseManuscriptCitationOccurrences(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"zotero:AAAA1111", "zotero:BBBB2222", zoteroUnreadableKey}
+	if keys := citeKeysFromOccurrences(got); !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys = %v, want %v (the bookmark with no stored code must stay visible as unreadable)", keys, want)
+	}
+	if got[1].Line != 2 || got[2].Line != 5 {
+		t.Fatalf("lines = %d,%d, want 2,5", got[1].Line, got[2].Line)
+	}
+}
+
 func TestZoteroFieldsOdtReferenceMarksAndBookmarks(t *testing.T) {
 	dir := t.TempDir()
 	bookmarkCode := strings.TrimPrefix(zfCode(zfUser("BBBB2222")), "ADDIN ")
