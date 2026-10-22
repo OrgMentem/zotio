@@ -4,7 +4,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -132,4 +136,51 @@ func TestOwImportDiscoverDryRunWritesNothing(t *testing.T) {
 			t.Fatalf("dry run created siblings: %v (err=%v)", entries, err)
 		}
 	})
+}
+
+// Canceling while a candidate's metadata request is in flight must emit no
+// manifest: a new target stays absent and a reviewed one stays byte-identical
+// under --overwrite, instead of publishing the canceled candidate as an
+// ordinary unresolved entry.
+func TestImportDiscoverCancellationPreservesManifest(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		owSeedDiscover(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cancel()
+			<-r.Context().Done()
+		}))
+		withBase(t, &enrichCrossRefBase, metadata.URL)
+
+		target := filepath.Join(t.TempDir(), "review.json")
+		args := []string{"--scope", "collection:OWC", "--output", target, "--limit", "10", "--min-count", "1"}
+		if existing {
+			if err := os.WriteFile(target, []byte(owEditedManifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "--overwrite")
+		}
+		cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var stdout bytes.Buffer
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		err := cmd.ExecuteContext(ctx)
+		cancel()
+		metadata.Close()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("existing=%t: err = %v, want context canceled", existing, err)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("existing=%t: reported success output %q after cancellation", existing, stdout.String())
+		}
+		got, readErr := os.ReadFile(target)
+		switch {
+		case existing && (readErr != nil || string(got) != owEditedManifest):
+			t.Fatalf("reviewed manifest changed to %q (err=%v)", got, readErr)
+		case !existing && !os.IsNotExist(readErr):
+			t.Fatalf("canceled run created %s (err=%v)", target, readErr)
+		}
+	}
 }

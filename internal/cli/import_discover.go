@@ -154,6 +154,11 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				// The manifest is a durable apply input: publish it, and replace
+				// a reviewed one, only while the command is still live.
+				if err := cmd.Context().Err(); err != nil {
+					return err
+				}
 				manifest.Collection = strings.TrimSpace(flagCollection)
 				report.Replaced = exists
 				report.DryRun = flags.dryRun
@@ -277,6 +282,11 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 	if err != nil {
 		return importManifest{}, importDiscoverReport{}, err
 	}
+	// A canceled aggregate is a set of failed sources, not an answer: stop
+	// before it becomes a manifest that looks like a complete review input.
+	if err := ctx.Err(); err != nil {
+		return importManifest{}, importDiscoverReport{}, err
+	}
 
 	manifest := importManifest{SchemaVersion: importManifestSchemaVersion, Entries: make([]importManifestEntry, 0, max(limit, 0))}
 	report := importDiscoverReport{
@@ -309,6 +319,9 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 		if limit > 0 && len(manifest.Entries) >= limit {
 			break
 		}
+		if err := ctx.Err(); err != nil {
+			return importManifest{}, importDiscoverReport{}, err
+		}
 
 		discovery := &importDiscovery{
 			Direction:   candidate.Direction,
@@ -329,6 +342,11 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 
 		item, err := fetchDOIItemWithCache(ctx, httpClient, candidate.DOI, providerCache)
 		if err != nil {
+			// Cancellation is not provider absence: recording it as an
+			// unresolved candidate would publish a partial manifest as success.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return importManifest{}, importDiscoverReport{}, ctxErr
+			}
 			entry.Note = err.Error()
 			manifest.Entries = append(manifest.Entries, entry)
 			continue
