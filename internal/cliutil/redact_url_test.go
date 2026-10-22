@@ -28,6 +28,27 @@ func TestRedactURL(t *testing.T) {
 			raw:  "https://sekret@api.zotero.org/users/123",
 			want: "https://***@api.zotero.org/users/123",
 		},
+		{
+			// `key` is the parameter Zotero's own Web API accepts for the API key.
+			name: "zotero key parameter",
+			raw:  "https://api.zotero.org/users/1?key=SECRET&limit=5",
+			want: "https://api.zotero.org/users/1?key=***&limit=5",
+		},
+		{
+			name: "mixed-case key parameter",
+			raw:  "https://api.zotero.org/users/1?Key=SECRET",
+			want: "https://api.zotero.org/users/1?Key=***",
+		},
+		{
+			name: "mixed-case api_key parameter",
+			raw:  "https://api.zotero.org/users/1?limit=5&API_KEY=SECRET",
+			want: "https://api.zotero.org/users/1?limit=5&API_KEY=***",
+		},
+		{
+			name: "percent-encoded key parameter",
+			raw:  "https://api.zotero.org/users/1?%6Bey=SECRET",
+			want: "https://api.zotero.org/users/1?%6Bey=***",
+		},
 	}
 
 	for _, tt := range tests {
