@@ -101,7 +101,7 @@ Zotero's GUI is great for reading and citing. It is painful the moment you need 
 
 `zotio` provides that glue with these properties:
 
-- **Reads are local and free.** Point `zotio` at your running desktop app: no API key and no cloud round-trip, and it works offline against a synced mirror.
+- **Reads are local.** Point `zotio` at your running desktop app: no API key and no cloud round-trip, and it works offline against a synced mirror.
 - **Writes are preview-first.** Every mutation shows a plan before it touches anything. Gates cap blast radius; irreversible ops require an explicit opt-in; an append-only journal lets you undo the reversible ones.
 - **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is, so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it assembles and budgets the context, then hands it to the model.
 
@@ -211,7 +211,7 @@ Bulk-import references through a review checkpoint. `import apply` writes only a
 
 ```bash
 zotio import scan ~/Downloads/papers          # read-only: triage new vs duplicate vs attach-candidate
-zotio import resolve ~/Downloads/papers > manifest.json   # resolve DOI/PMID/arXiv/ISBN → editable manifest
+zotio import resolve ~/Downloads/papers > manifest.json   # resolve DOIs → editable manifest
 #   ... review and edit manifest.json ...
 zotio import apply manifest.json --dry-run     # preview the writes
 zotio import apply manifest.json --yes         # schema-valid creation via the Web API
@@ -221,7 +221,7 @@ zotio import apply manifest.json --yes         # schema-valid creation via the W
 - **Resolve** turns findings into an editable JSON manifest, enriching create-entries from CrossRef. This is the human touchpoint.
 - **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file|stored` contract. `stored` uploads the file bytes: `--via connector` hands the item and its file to Zotero desktop in one session, while the direct Web API route is guarded by the file-storage precondition (`--allow-zotero-cloud` to override).
 
-One-shot importers are there too: `import doi|pmid|arxiv|isbn|url|file|pdf`. They take the destination collection key with `--to`.
+`resolve` fetches metadata by DOI (CrossRef, with an arXiv-to-DOI lookup for preprint PDFs); it does not resolve PMIDs or ISBNs. The one-shot importers take those identifiers directly: `import doi|pmid|arxiv|isbn|url|file|pdf`. They take the destination collection key with `--to`.
 
 ---
 
@@ -238,7 +238,7 @@ zotio vault push --dry-run    # your ## Notes region → a managed Zotero child 
 zotio vault pull --dry-run    # remote note edits → your ## Notes region (fast-forward only)
 ```
 
-Each note has a **managed region** (frontmatter + a fenced annotations block, refreshed on every sync) and **your region** (`## Notes`, prose preserved untouched). Write-back is fast-forward only: if both sides changed, `zotio` never merges blindly — it writes a **reviewable conflict artifact** under `_vault-zotero-conflicts/` and reports it, so divergence becomes something you resolve on purpose (`vault resolve --keep-vault | --keep-remote | --recreate`), never a silent overwrite. Run `vault audit` for a read-only preflight before any push.
+Each note has a **managed region** (frontmatter plus fenced title, abstract, and annotations blocks, refreshed on every sync) and **your region** (`## Notes`, prose preserved untouched). Write-back is fast-forward only: if both sides changed, `zotio` never merges blindly — it writes a **reviewable conflict artifact** under `_vault-zotero-conflicts/` and reports it, so divergence becomes something you resolve on purpose (`vault resolve --keep-vault | --keep-remote | --recreate`), never a silent overwrite. Run `vault audit` for a read-only preflight before any push.
 
 Configure the vault once in `~/.config/zotio/config.toml` (the `--vault` flag overrides it):
 
@@ -286,7 +286,7 @@ format = "obsidian"      # or "logseq"
 ### Export & reproducibility
 
 - **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` (or a `.docx`/`.odt` written with the Zotero plugin) exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys. `--scope` accepts AND-joined cohorts such as `collection:KEY AND tag:NAME`.
-- **`collections export`** — a whole collection and its subcollections as one BibTeX, RIS, or CSL-JSON file, structure preserved in comments.
+- **`collections export`** — a whole collection and all its subcollections as one BibTeX, RIS, or CSL-JSON file. Items from the subtree are included recursively; the file does not encode collection hierarchy.
 - **`export snapshot`** — a reproducible, resumable, fully paginated export (JSONL by default; `--format bibtex|ris|csljson`) with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
 
 ### Freshness & schema

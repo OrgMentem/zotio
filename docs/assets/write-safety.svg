@@ -134,8 +134,8 @@
     <text x="494" y="166" class="mono-dark">--allow-destructive</text>
     <text x="646" y="166" class="tiny">irreversible</text>
     <rect x="484" y="178" width="128" height="22" rx="8" fill="var(--canvas)" stroke="var(--grey)" stroke-width="1"/>
-    <text x="494" y="193" class="mono-dark">--require-fresh</text>
-    <text x="624" y="193" class="small">fresh mirror</text>
+    <text x="494" y="193" class="mono-dark">--yes</text>
+    <text x="624" y="193" class="small">explicit apply</text>
   </g>
 
   <path class="flow" d="M726 145 H754"/>
