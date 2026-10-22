@@ -1891,7 +1891,7 @@
   },
   {
     "name": "items_create",
-    "description": "Create one or more items from JSON supplied with --items or --stdin.\n\nThis command shares one connector session across the invocation when routed\nthrough --via connector; the Zotero desktop surfaces its own progress UI and\nzotio cannot dismiss it — no connector endpoint closes or completes a save\nsession. Observed 2026-08-22: roughly 78 consecutive one-per-item\ninvocations left Zotero unresponsive with progress windows accumulating; no\nproven mechanism has been established. Prefer one invocation with many items:\nimport file --via connector and this command share one session, while import\napply currently opens one per manifest entry. --rate-limit governs only Web\nAPI requests and does not pace connector calls.",
+    "description": "Create one or more items from JSON supplied with --items or --stdin.\n\nThis command shares one connector session across the invocation when routed\nthrough --via connector; the Zotero desktop surfaces its own progress UI and\nzotio cannot dismiss it — no connector endpoint closes or completes a save\nsession. Observed 2026-08-22: roughly 78 consecutive one-per-item\ninvocations left Zotero unresponsive with progress windows accumulating; no\nproven mechanism has been established. Prefer one invocation with many items:\nimport file --via connector and this command share one session, and so does\nimport apply --attach-mode stored for the connector-bound creates that file\ninto the run's destination. import apply opens a session per manifest entry\nonly for an entry that names its own collection (when no --connector-target\nis set) and for every create when --attach-mode is not stored. --rate-limit\ngoverns only Web API requests and does not pace connector calls.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3006,7 +3006,7 @@
     "inputSchema": {
       "properties": {
         "abstract-note": {
-          "description": "Abstract or summary",
+          "description": "Abstract or summary (an empty value clears it)",
           "type": "string"
         },
         "allow-destructive": {
@@ -3034,7 +3034,7 @@
           "type": "boolean"
         },
         "extra": {
-          "description": "Extra notes field (also stores Better BibTeX citation key)",
+          "description": "Extra notes field, also stores Better BibTeX citation key (an empty value clears it)",
           "type": "string"
         },
         "max-changes": {
@@ -3054,7 +3054,7 @@
           "type": "string"
         },
         "title": {
-          "description": "Item title",
+          "description": "Item title (an empty value clears it)",
           "type": "string"
         },
         "yes": {
@@ -3118,7 +3118,7 @@
   },
   {
     "name": "journal_undo",
-    "description": "Reverse a recorded run's reversible (tag/collection) changes",
+    "description": "Reverses what one journal entry recorded, as one new run that is itself journaled.\nWithout --yes it only previews the reversal; add --yes to apply it.\n\nWhat it reverses:\n  - tag and collection additions and removals: each one is inverted\n  - field changes whose previous value the run captured while it wrote (an\n    enrichment's DOI or abstract, a line it appended to Extra): the field is\n    restored, and a field you edited since is left as it is\n  - created items (items create, import): the recorded items are moved to the\n    Zotero trash, which is not a permanent delete; restore them from the trash\n\nWhat it refuses, and reports in \"refused\": field overwrites with no captured\nprevious value, merges, deletions, renames that replace one tag or collection\nwith another, and creates whose Zotero key was not recorded. A refusal changes\nnothing, so review the entry with \"journal show \u003crun-id\u003e\" before you rely on a\nfull reversal.\n\nTake the run-id from \"journal list\". A workflow ID is not a run-id: undo each\nentry it lists.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
