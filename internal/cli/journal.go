@@ -446,7 +446,7 @@ entry it lists.`,
 			for _, inv := range inverse {
 				path := replacePathParam("/items/{itemKey}", "itemKey", inv.Key)
 				changes := inv.Changes
-				op := mutation.Op{ID: inv.ID, Key: inv.Key, Kind: inv.Kind, Changes: changes}
+				op := mutation.Op{ID: inv.ID, Key: inv.Key, Kind: inv.Kind, Changes: changes, Reconciles: true}
 				// An inverse skips whatever the live item no longer holds, so
 				// the mirror must replay and record only what the PATCH sent.
 				var effective []mutation.Change

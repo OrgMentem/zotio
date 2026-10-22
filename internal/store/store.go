@@ -2272,25 +2272,224 @@ func (s *Store) GetSyncResumeStateContext(ctx context.Context, resourceType stri
 // RecordPendingWrite marks a resource row as carrying a write that landed on the
 // write plane but that the read plane has not reported back yet. changes is the
 // serialized []mutation.Change the caller applied, so a later sync can tell
-// whether the read plane has caught up. Re-recording replaces the prior entry.
+// whether the read plane has caught up.
+//
+// Writes to one row ACCUMULATE: recording again extends the marker's change
+// list, and a later change supersedes the earlier entries it overrules (see
+// recordPendingWriteTx).
 //
 // A deletion marker outranks it. One envelope can carry a field update and a
 // permanent delete for the same key, and the delete already removed the row, so
 // recording changes to replay onto a resurrected copy would defeat the marker
-// that suppresses the resurrection. The DO UPDATE therefore skips a row with
+// that suppresses the resurrection. The upsert therefore skips a row with
 // deleted = 1 instead of overwriting it.
 func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := recordPendingWriteTx(ctx, tx, resourceType, id, changes, false); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// recordPendingWriteTx inserts or updates one field-change marker inside the
+// caller's transaction. The caller must hold the write lock.
+//
+// The marker is the obligation to replay every confirmed-but-unreported write
+// onto the read plane's copy of the row, and that obligation accumulates: a
+// second write to the same item while the first is still unconfirmed must not
+// shrink it to the second write alone, or a sync inside the lag window replays
+// only the newest change onto the stale read-plane row and rolls the earlier
+// one back in the mirror with nothing to say so. Replay is order-preserving and
+// idempotent (a change the read plane already carries is a no-op), so the list
+// converges to a no-op, and the marker clears, exactly when the read plane
+// carries every write.
+//
+// Accumulation is not append-only. A later change SUPERSEDES the earlier
+// entries it overrules (supersedePendingChanges), so the list stays bounded
+// and never replays a value the newer write already replaced.
+//
+// replace skips the accumulation and stores changes as the whole marker. It is
+// for a write that is a reconciliation against the live write-plane item (a
+// journal undo): what it sent already accounts for the live state, so an
+// earlier marker entry it did not send (a field the user corrected since) is
+// exactly what must not be replayed over that state.
+//
+// A deletion marker is left alone in both modes: it outranks any field change
+// (see RecordPendingWrite).
+func recordPendingWriteTx(ctx context.Context, tx *sql.Tx, resourceType, id string, changes []byte, replace bool) error {
+	var existing string
+	var deleted int
+	err := tx.QueryRowContext(ctx,
+		`SELECT changes, deleted FROM pending_writes WHERE resource_type = ? AND id = ?`,
+		resourceType, id,
+	).Scan(&existing, &deleted)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		existing = ""
+	case err != nil:
+		return fmt.Errorf("reading pending write for %s/%s: %w", resourceType, id, err)
+	case deleted != 0:
+		return nil
+	}
+	merged := changes
+	if existing != "" && !replace {
+		merged = mergePendingChanges([]byte(existing), changes)
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
 		 VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
 		 written_at = CURRENT_TIMESTAMP
 		 WHERE pending_writes.deleted = 0`,
-		resourceType, id, string(changes),
+		resourceType, id, string(merged),
 	)
 	return err
+}
+
+// mergePendingChanges appends next to the change list prior already holds and
+// drops the earlier entries next supersedes. A side that is not a JSON array
+// carries nothing replayable, so the other side stands alone rather than the
+// merge corrupting the marker.
+func mergePendingChanges(prior, next []byte) []byte {
+	var earlier, later []json.RawMessage
+	if json.Unmarshal(prior, &earlier) != nil || len(earlier) == 0 {
+		return next
+	}
+	if json.Unmarshal(next, &later) != nil {
+		return prior
+	}
+	merged, err := json.Marshal(supersedePendingChanges(append(earlier, later...)))
+	if err != nil {
+		return next
+	}
+	return merged
+}
+
+// pendingChangeShape is the part of a serialized mutation.Change that decides
+// what it supersedes. It is decoded here rather than imported so the store
+// keeps treating the marker as opaque bytes apart from this one rule.
+type pendingChangeShape struct {
+	Field   string `json:"field"`
+	Add     any    `json:"add"`
+	Remove  any    `json:"remove"`
+	TagType int    `json:"tag_type"`
+}
+
+// supersedePendingChanges keeps, in order, the entries of an accumulated change
+// list that still decide the final state, and drops the ones a later entry
+// overrules:
+//
+//   - a scalar field (title, DOI, ...): the latest change to that field wins;
+//   - tags and collections membership: per value, so a later add or remove of V
+//     supersedes earlier ones for V and leaves every other value alone;
+//   - a whole-list replacement (tags_set, collections_set): supersedes every
+//     earlier change to that list, including an earlier replacement.
+//
+// An entry survives whenever any of its effect is not yet overruled, so a
+// compound entry (an add and a remove) is never split. Anything the rule cannot
+// read (a creator rename, a non-string value, a malformed element) is kept:
+// accumulating too much is safe because replay is sequential and idempotent,
+// whereas dropping a live obligation reintroduces the rollback this prevents.
+func supersedePendingChanges(entries []json.RawMessage) []json.RawMessage {
+	covered := map[string]bool{}
+	keep := make([]bool, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		var c pendingChangeShape
+		if json.Unmarshal(entries[i], &c) != nil || c.Field == "" {
+			keep[i] = true
+			continue
+		}
+		slots, list := pendingChangeSlots(c)
+		if list != "" && covered["list:"+list] {
+			continue // a later whole-list replacement overrules it entirely
+		}
+		if len(slots) > 0 {
+			overruled := true
+			for _, slot := range slots {
+				if !covered[slot] {
+					overruled = false
+					break
+				}
+			}
+			if overruled {
+				continue
+			}
+		}
+		keep[i] = true
+		for _, slot := range slots {
+			covered[slot] = true
+		}
+		if wholeList := pendingWholeListOf(c.Field); wholeList != "" {
+			covered["list:"+wholeList] = true
+		}
+	}
+	kept := make([]json.RawMessage, 0, len(entries))
+	for i, entry := range entries {
+		if keep[i] {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+// pendingWholeListOf names the list a whole-list replacement field overwrites.
+func pendingWholeListOf(field string) string {
+	switch field {
+	case "tags_set":
+		return "tags"
+	case "collections_set":
+		return "collections"
+	}
+	return ""
+}
+
+// pendingChangeSlots returns the independent facts a change decides, as the
+// keys supersession compares, and the list a membership or replacement change
+// belongs to. A change with no slots is never superseded.
+func pendingChangeSlots(c pendingChangeShape) (slots []string, list string) {
+	value := func(v any) (string, bool) {
+		s, ok := v.(string)
+		return s, ok && s != ""
+	}
+	switch c.Field {
+	case "tags":
+		list = "tags"
+		for _, v := range []any{c.Add, c.Remove} {
+			if name, ok := value(v); ok {
+				slots = append(slots, fmt.Sprintf("tags\x00%s\x00%d", name, c.TagType))
+			} else if v != nil {
+				return nil, list // an unreadable value: keep the entry
+			}
+		}
+	case "collections":
+		list = "collections"
+		for _, v := range []any{c.Add, c.Remove} {
+			if key, ok := value(v); ok {
+				slots = append(slots, "collections\x00"+key)
+			} else if v != nil {
+				return nil, list
+			}
+		}
+	case "tags_set", "collections_set":
+		list = pendingWholeListOf(c.Field)
+	case "creators":
+		// A rename is relative to the name the row holds: A->B then B->C only
+		// replays as the pair, so no entry overrules another.
+	case "extra_line":
+		if line, ok := value(c.Remove); ok && c.Add == nil {
+			slots = append(slots, "extra_line\x00"+line)
+		}
+	default:
+		slots = append(slots, "field\x00"+c.Field)
+	}
+	return slots, list
 }
 
 // UpsertMirroredWrite stores one mirrored row and its pending-write marker in
@@ -2303,8 +2502,22 @@ func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) erro
 //
 // It mirrors the UpsertKeyed single-row contract (no lifecycle arbitration):
 // the only change from the former UpsertKeyed + RecordPendingWrite pair is
-// that both land or neither does.
+// that both land or neither does. The marker accumulates across writes to one
+// row (recordPendingWriteTx).
 func (s *Store) UpsertMirroredWrite(resourceType, id string, data json.RawMessage, changes []byte) error {
+	return s.upsertMirroredWrite(resourceType, id, data, changes, false)
+}
+
+// ReconcileMirroredWrite is UpsertMirroredWrite for a write that is a
+// reconciliation against the live write-plane item (a journal undo): the marker
+// becomes exactly changes instead of accumulating onto the earlier entries, so
+// a field the live item no longer holds is not replayed over it on the next
+// sync. A deletion marker is still preserved.
+func (s *Store) ReconcileMirroredWrite(resourceType, id string, data json.RawMessage, changes []byte) error {
+	return s.upsertMirroredWrite(resourceType, id, data, changes, true)
+}
+
+func (s *Store) upsertMirroredWrite(resourceType, id string, data json.RawMessage, changes []byte, replace bool) error {
 	ctx := context.Background()
 	release, err := s.acquireWrite(ctx)
 	if err != nil {
@@ -2320,14 +2533,7 @@ func (s *Store) UpsertMirroredWrite(resourceType, id string, data json.RawMessag
 		return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 	}
 	if len(changes) > 0 {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
-			 VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
-			 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
-			 written_at = CURRENT_TIMESTAMP
-			 WHERE pending_writes.deleted = 0`,
-			resourceType, id, string(changes),
-		); err != nil {
+		if err := recordPendingWriteTx(ctx, tx, resourceType, id, changes, replace); err != nil {
 			return fmt.Errorf("recording pending write for %s/%s: %w", resourceType, id, err)
 		}
 	}

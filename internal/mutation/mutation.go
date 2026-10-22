@@ -66,6 +66,12 @@ type Op struct {
 	// write-through replays and records these for an applied op; nil means the
 	// whole of Changes landed.
 	Effective func() []Change `json:"-"`
+	// Reconciles marks an op whose write was computed against the live
+	// write-plane item rather than layered onto earlier unconfirmed writes (a
+	// journal undo). The mirror write-through records its changes as the item's
+	// whole pending-write marker instead of accumulating them, so an earlier
+	// entry the op did not send is not replayed over the live state.
+	Reconciles bool `json:"-"`
 }
 
 // PlanSummary counts the planned operations before apply.

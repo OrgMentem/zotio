@@ -48,8 +48,10 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 	}
 	changesByOp := make(map[string][]mutation.Change, len(env.Plan.Operations))
 	effectiveByOp := make(map[string]func() []mutation.Change)
+	reconcilesByOp := make(map[string]bool)
 	for _, op := range env.Plan.Operations {
 		changesByOp[op.ID] = op.Changes
+		reconcilesByOp[op.ID] = op.Reconciles
 		if op.Effective != nil {
 			effectiveByOp[op.ID] = op.Effective
 		}
@@ -226,7 +228,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		// re-applies the pre-write copy and rolls the mirror back. Row and marker
 		// commit in one transaction, so a crash between them cannot strand the
 		// confirmed write without its suppression (finding zotio-f570e9ac7c877d14).
-		if err := recordMirroredWrite(db, it.Key, raw, changesByOp[it.OpID]); err != nil {
+		if err := recordMirroredWrite(db, it.Key, raw, changesByOp[it.OpID], reconcilesByOp[it.OpID]); err != nil {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
@@ -308,7 +310,11 @@ func mirrorCreatedItem(db *store.Store, key string, changes []mutation.Change) (
 // read plane over the just-written row and roll the confirmed write back
 // until Zotero syncs it down. A local-transaction failure warns without
 // failing the already-successful cloud write.
-func recordMirroredWrite(db *store.Store, key string, raw json.RawMessage, changes []mutation.Change) error {
+//
+// The marker accumulates across writes to one item, later changes superseding
+// the earlier entries they overrule. reconciles marks a write computed against
+// the live item (a journal undo): its changes become the whole marker.
+func recordMirroredWrite(db *store.Store, key string, raw json.RawMessage, changes []mutation.Change, reconciles bool) error {
 	if len(changes) == 0 {
 		_, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw})
 		return err
@@ -323,6 +329,9 @@ func recordMirroredWrite(db *store.Store, key string, raw json.RawMessage, chang
 		}
 		fmt.Fprintf(os.Stderr, "warning: could not record pending write for %s: %v\n", key, err)
 		return nil
+	}
+	if reconciles {
+		return db.ReconcileMirroredWrite("items", key, raw, encoded)
 	}
 	return db.UpsertMirroredWrite("items", key, raw, encoded)
 }

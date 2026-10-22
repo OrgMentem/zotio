@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"zotio/internal/mutation"
 )
 
 func pendingWritesTestItem(key string) json.RawMessage {
@@ -211,5 +213,121 @@ func TestReconcilePendingWritesScopesDeletionMarkersToTheirResource(t *testing.T
 	}
 	if stillPending != 0 {
 		t.Errorf("stillPending = %d, want 0", stillPending)
+	}
+}
+
+// Two writes to one item inside the plane-lag window must BOTH survive a sync
+// that still reads the pre-write row. The marker used to hold only the newest
+// write, so the sync replayed the second change and rolled the first back in
+// the mirror; the marker must also outlive a read plane that carries only one
+// of the two, and clear once it carries both (finding zotio-1cae2be097ce0be3).
+func TestReconcilePendingWritesReplaysEveryUnconfirmedWriteToOneItem(t *testing.T) {
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	const key = "TWOWRITE"
+	row := func(collections []string, tags []string, title string) json.RawMessage {
+		cols, _ := json.Marshal(collections)
+		tagObjs := make([]map[string]string, 0, len(tags))
+		for _, tag := range tags {
+			tagObjs = append(tagObjs, map[string]string{"tag": tag})
+		}
+		tagJSON, _ := json.Marshal(tagObjs)
+		return json.RawMessage(`{"key":"` + key + `","version":1,"data":{"key":"` + key + `","itemType":"book","title":"` + title + `","collections":` + string(cols) + `,"tags":` + string(tagJSON) + `}}`)
+	}
+	if _, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{row(nil, nil, "T")}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Write-through of `items add-to-collection`, `items tags add`, then two
+	// retitles: each op replays onto the mirror row and records its own changes.
+	writes := []struct {
+		row     json.RawMessage
+		changes []mutation.Change
+	}{
+		{row([]string{"COLL1"}, nil, "T"), []mutation.Change{{Field: "collections", Add: "COLL1"}}},
+		{row([]string{"COLL1"}, []string{"later"}, "T"), []mutation.Change{{Field: "tags", Add: "later"}}},
+		{row([]string{"COLL1"}, []string{"later"}, "First"), []mutation.Change{{Field: "title", Add: "First"}}},
+		{row([]string{"COLL1"}, []string{"later"}, "Second"), []mutation.Change{{Field: "title", Add: "Second"}}},
+	}
+	for i, w := range writes {
+		if err := recordMirroredWrite(db, key, w.row, w.changes, false); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+
+	shape := func(t *testing.T, raw json.RawMessage) (collections []string, tags []string, title string) {
+		t.Helper()
+		var item struct {
+			Data struct {
+				Title       string   `json:"title"`
+				Collections []string `json:"collections"`
+				Tags        []struct {
+					Tag string `json:"tag"`
+				} `json:"tags"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("decode merged row: %v", err)
+		}
+		for _, tag := range item.Data.Tags {
+			tags = append(tags, tag.Tag)
+		}
+		return item.Data.Collections, tags, item.Data.Title
+	}
+	reconcile := func(page json.RawMessage) (json.RawMessage, int) {
+		t.Helper()
+		merged, stillPending, err := reconcilePendingWrites(db, "items", []json.RawMessage{page})
+		if err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if len(merged) != 1 {
+			t.Fatalf("reconcile returned %d rows, want 1", len(merged))
+		}
+		return merged[0], stillPending
+	}
+
+	// The same-field retitles collapse to the newest one.
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	var recorded []mutation.Change
+	if err := json.Unmarshal(pending[key].Changes, &recorded); err != nil {
+		t.Fatalf("decode marker: %v", err)
+	}
+	if len(recorded) != 3 || recorded[2].Field != "title" || recorded[2].Add != "Second" {
+		t.Fatalf("marker = %+v, want the collection, the tag and only the newest title", recorded)
+	}
+
+	// The read plane has seen none of the writes yet.
+	merged, stillPending := reconcile(row(nil, nil, "T"))
+	collections, tags, title := shape(t, merged)
+	if strings.Join(collections, ",") != "COLL1" || strings.Join(tags, ",") != "later" || title != "Second" {
+		t.Fatalf("replayed row = collections %v tags %v title %q, want every unconfirmed write", collections, tags, title)
+	}
+	if stillPending != 1 {
+		t.Fatalf("stillPending = %d, want the marker held while the plane lags", stillPending)
+	}
+
+	// The read plane has caught up on the collection only: the tag and title
+	// are still owed, so the marker must survive and keep replaying them.
+	merged, stillPending = reconcile(row([]string{"COLL1"}, nil, "T"))
+	if _, tags, title := shape(t, merged); strings.Join(tags, ",") != "later" || title != "Second" {
+		t.Fatalf("replayed tags = %v title %q, want the still-unconfirmed writes replayed", tags, title)
+	}
+	if stillPending != 1 {
+		t.Fatalf("stillPending = %d, want the marker held until the plane carries every write", stillPending)
+	}
+
+	// Every write landed: replay is a no-op and the marker retires.
+	if _, stillPending = reconcile(row([]string{"COLL1"}, []string{"later"}, "Second")); stillPending != 0 {
+		t.Fatalf("stillPending = %d, want the marker cleared once the plane carries every write", stillPending)
+	}
+	pending, err = db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending markers = %v, want none after confirmation", pending)
 	}
 }

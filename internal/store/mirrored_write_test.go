@@ -133,3 +133,154 @@ func TestCreateMirroredItemRollsBackWhenMarkerFails(t *testing.T) {
 		t.Fatal("created row survived a failed marker write; the next stale sync would roll the confirmed create back")
 	}
 }
+
+// A second write to the same item, made before the read plane has reported the
+// first, must extend the marker rather than replace it. The mirror row carries
+// both writes, so a marker holding only the second one lets the next sync replay
+// the newest change onto the stale read-plane row and silently roll the earlier
+// one back in the mirror (finding zotio-1cae2be097ce0be3).
+func TestPendingWritesAccumulateAcrossWritesToOneRow(t *testing.T) {
+	collection := `{"field":"collections","add":"COLL1"}`
+	tag := `{"field":"tags","add":"later"}`
+	title := `{"field":"title","add":"Third"}`
+
+	t.Run("UpsertMirroredWrite", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		for _, changes := range []string{"[" + collection + "]", "[" + tag + "]", "[" + title + "]"} {
+			if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(changes)); err != nil {
+				t.Fatalf("UpsertMirroredWrite: %v", err)
+			}
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if got, want := string(pending["K1"].Changes), "["+collection+","+tag+","+title+"]"; got != want {
+			t.Fatalf("marker changes = %s, want every unconfirmed write in order: %s", got, want)
+		}
+	})
+
+	t.Run("RecordPendingWrite", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		for _, changes := range []string{"[" + collection + "]", "[" + tag + "]"} {
+			if err := s.RecordPendingWrite("items", "K1", []byte(changes)); err != nil {
+				t.Fatalf("RecordPendingWrite: %v", err)
+			}
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if got, want := string(pending["K1"].Changes), "["+collection+","+tag+"]"; got != want {
+			t.Fatalf("marker changes = %s, want both writes: %s", got, want)
+		}
+	})
+
+	t.Run("a deletion marker still outranks a later write", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte("["+collection+"]")); err != nil {
+			t.Fatalf("UpsertMirroredWrite: %v", err)
+		}
+		if err := s.ReapMirroredItem("K1"); err != nil {
+			t.Fatalf("ReapMirroredItem: %v", err)
+		}
+		for name, write := range map[string]func() error{
+			"accumulate": func() error {
+				return s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte("["+tag+"]"))
+			},
+			"replace": func() error {
+				return s.ReconcileMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte("["+tag+"]"))
+			},
+		} {
+			if err := write(); err != nil {
+				t.Fatalf("%s write after reap: %v", name, err)
+			}
+			pending, err := s.PendingWrites("items")
+			if err != nil {
+				t.Fatalf("PendingWrites: %v", err)
+			}
+			if mark := pending["K1"]; !mark.Deleted || string(mark.Changes) != "[]" {
+				t.Fatalf("%s: marker = %+v, want the deletion marker untouched", name, mark)
+			}
+		}
+	})
+}
+
+// A later change supersedes the earlier entries it overrules, so the marker
+// never replays a value the newer write already replaced: a scalar field keeps
+// its latest change, membership supersedes per value, and a whole-list
+// replacement supersedes everything earlier on that list.
+func TestPendingWritesSupersedeOverruledEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{
+			"a later write to the same scalar field wins",
+			[]string{`[{"field":"DOI","add":"10.1/a"}]`, `[{"field":"title","add":"T"}]`, `[{"field":"DOI","add":"10.1/b"}]`},
+			`[{"field":"title","add":"T"},{"field":"DOI","add":"10.1/b"}]`,
+		},
+		{
+			"membership supersedes per value and leaves other values alone",
+			[]string{`[{"field":"tags","add":"x"}]`, `[{"field":"tags","add":"y"}]`, `[{"field":"tags","remove":"x"}]`},
+			`[{"field":"tags","add":"y"},{"field":"tags","remove":"x"}]`,
+		},
+		{
+			"collections supersede per value",
+			[]string{`[{"field":"collections","add":"C1"}]`, `[{"field":"collections","add":"C2"}]`, `[{"field":"collections","add":"C1"}]`},
+			`[{"field":"collections","add":"C2"},{"field":"collections","add":"C1"}]`,
+		},
+		{
+			"a whole-list replacement supersedes earlier membership on that list only",
+			[]string{`[{"field":"tags","add":"x"}]`, `[{"field":"collections","add":"C1"}]`, `[{"field":"tags_set","add":[{"tag":"z"}]}]`},
+			`[{"field":"collections","add":"C1"},{"field":"tags_set","add":[{"tag":"z"}]}]`,
+		},
+		{
+			"membership after a whole-list replacement is kept",
+			[]string{`[{"field":"tags_set","add":[{"tag":"z"}]}]`, `[{"field":"tags","add":"x"}]`},
+			`[{"field":"tags_set","add":[{"tag":"z"}]},{"field":"tags","add":"x"}]`,
+		},
+		{
+			"creator renames are relative to each other and all stay",
+			[]string{`[{"field":"creators","add":"B","remove":"A"}]`, `[{"field":"creators","add":"C","remove":"B"}]`},
+			`[{"field":"creators","add":"B","remove":"A"},{"field":"creators","add":"C","remove":"B"}]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mirroredWriteTestOpen(t)
+			for _, changes := range tc.writes {
+				if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(changes)); err != nil {
+					t.Fatalf("UpsertMirroredWrite: %v", err)
+				}
+			}
+			pending, err := s.PendingWrites("items")
+			if err != nil {
+				t.Fatalf("PendingWrites: %v", err)
+			}
+			if got := string(pending["K1"].Changes); got != tc.want {
+				t.Fatalf("marker changes = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A reconciliation replaces the marker with exactly what it sent: an earlier
+// entry it did not send (a field the live item has since moved on from) must
+// not survive to be replayed over the live state.
+func TestReconcileMirroredWriteReplacesTheMarker(t *testing.T) {
+	s := mirroredWriteTestOpen(t)
+	if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(`[{"field":"DOI","add":"10.1/enrich"},{"field":"tags","add":"t"}]`)); err != nil {
+		t.Fatalf("UpsertMirroredWrite: %v", err)
+	}
+	if err := s.ReconcileMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(`[{"field":"tags","remove":"t"}]`)); err != nil {
+		t.Fatalf("ReconcileMirroredWrite: %v", err)
+	}
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if got, want := string(pending["K1"].Changes), `[{"field":"tags","remove":"t"}]`; got != want {
+		t.Fatalf("marker changes = %s, want exactly what the reconciliation sent: %s", got, want)
+	}
+}

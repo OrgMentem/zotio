@@ -461,6 +461,28 @@ An inverse-window key never reaches that code — the version GET fails first.
   again. A sync that does not include `items` keeps such a collection and warns
   instead of reaping it. The Amendment 2026-09-25 text above ("reaps mirrored
   rows absent from them ... then refetches by key") describes the earlier order.
+- **2026-10-22:** field-change markers accumulate (finding
+  `zotio-1cae2be097ce0be3`). The marker is the obligation to replay every
+  write the read plane has not reported, so a second write to the same item
+  extends its change list instead of replacing it; replacing let a sync inside
+  the plane-lag window replay only the newest change onto the stale read-plane
+  row and roll the earlier write back in the mirror. A later change
+  **supersedes** the earlier entries it overrules, so the list stays bounded
+  and never replays a value a newer write already replaced: a scalar field
+  keeps only its latest change; tag and collection membership supersede **per
+  value** (a later add or remove of V supersedes earlier ones for V); a
+  whole-list replacement (`tags_set`, `collections_set`) supersedes every
+  earlier change to that list. An entry the rule cannot read, and creator
+  renames (relative to each other), are kept. A deletion marker still outranks
+  every field change. A journal undo is the exception: it is a reconciliation
+  against the live write-plane item, so its marker is **replaced** by exactly
+  what the undo sent (`mutation.Op.Reconciles`, `Store.ReconcileMirroredWrite`),
+  never accumulated. Accumulating would keep an entry the undo skipped (a field
+  the user corrected after the run) and replay it over the user's edit on the
+  next sync. The cost is that an unrelated write still unconfirmed on the read
+  plane loses its marker entry when an undo touches the same item; the mirror
+  row keeps it, and the next sync that carries the write on the read plane
+  restores agreement.
 
 ## References
 

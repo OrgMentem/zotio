@@ -440,6 +440,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **A second write to an item no longer rolls back the first in the mirror
+  while the desktop catches up.** The pending-write marker used to hold only
+  the newest write, so a `sync` before Zotero synced down replayed just that
+  change onto the stale read-plane row and the earlier write vanished from
+  offline reads and search, with `pending_writes` still reading 1. The marker
+  now accumulates the item's unconfirmed writes; a later change supersedes
+  earlier entries for the same field, or for the same tag or collection.
+  `journal undo` is the exception: it records exactly what the undo sent, so a
+  field you corrected after the run is not replayed over your edit.
+
 - **`export snapshot verify` no longer misreports a limited or orphaned
   snapshot as drift.** A snapshot taken with `--limit` that hit its cap now
   records `"truncated": true` in its manifest, and verify checks only the
