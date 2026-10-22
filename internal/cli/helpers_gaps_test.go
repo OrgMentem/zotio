@@ -828,6 +828,23 @@ func TestClassifyAPIErrorTransportFailuresArePreconditions(t *testing.T) {
 	}
 }
 
+// A write that was sent and never answered may have committed. Classifying it
+// as an unreachable network would tell the operator to retry a write that may
+// already have landed.
+func TestClassifyAPIErrorAmbiguousWriteIsNotARetryablePrecondition(t *testing.T) {
+	cause := &url.Error{Op: "Post", URL: "https://api.zotero.org/users/1/collections", Err: &net.OpError{
+		Op: "read", Net: "tcp", Err: errors.New("connection reset by peer"),
+	}}
+	ambiguous := &client.AmbiguousWriteError{Method: "POST", Path: "/collections", Attempts: 1, Err: cause}
+	got := classifyAPIError(ambiguous, &rootFlags{})
+	if ExitCode(got) == 9 || strings.Contains(got.Error(), "network connection and retry") {
+		t.Fatalf("ambiguous write = %v (exit %d), want a may-have-committed error, not a retryable precondition", got, ExitCode(got))
+	}
+	if !strings.Contains(got.Error(), "may have applied it") {
+		t.Errorf("ambiguous write = %q, want it to say Zotero may have applied the request", got)
+	}
+}
+
 // A command that prints its report and then returns a typed error (degraded,
 // gate, ok:false) must leave exactly one JSON document on stdout.
 func TestReportErrorKeepsOneJSONDocumentWhenCommandAlreadyPrinted(t *testing.T) {

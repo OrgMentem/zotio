@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -138,4 +140,98 @@ func TestCollectionsCreatePartialBatchIsJournaled(t *testing.T) {
 		[]string{"--stdin"},
 		`[{"name":"a"},{"name":"b"},{"name":"c"}]`,
 		`{"success":{"0":"C1","2":"C3"},"successful":{},"unchanged":{},"failed":{"1":{"code":400,"message":"name is required"}}}`)
+}
+
+// TestCollectionsCreateLostResponseIsNotRetryable proves a create whose
+// response is lost is not reported as "unreachable, retry". The POST carries a
+// write token derived from the body, so a replay answers 412 instead of
+// creating a second collection, and the command reports a committed-unknown
+// conflict naming the collection rather than inviting a duplicating retry.
+func TestCollectionsCreateLostResponseIsNotRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replay  func(w http.ResponseWriter)
+		wantErr string
+	}{
+		{
+			name: "replay_answers_412",
+			replay: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = w.Write([]byte("Write token already submitted"))
+			},
+			wantErr: "Write token already submitted",
+		},
+		{
+			name:    "every_attempt_dropped",
+			replay:  nil,
+			wantErr: "ambiguous",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
+			var tokens []string
+			var bodies []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/users/0/collections" {
+					http.NotFound(w, r)
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				tokens = append(tokens, r.Header.Get("Zotero-Write-Token"))
+				bodies = append(bodies, string(raw))
+				if len(tokens) > 1 && tc.replay != nil {
+					tc.replay(w)
+					return
+				}
+				// The first request commits on the server in a real outage;
+				// the stub only needs to lose the response.
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
+			}))
+			defer srv.Close()
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+			run := func() error {
+				cmd := newCollectionsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+				cmd.SilenceErrors, cmd.SilenceUsage = true, true
+				cmd.SetErr(io.Discard)
+				cmd.SetOut(io.Discard)
+				cmd.SetArgs([]string{"--name", "Reading list"})
+				return cmd.Execute()
+			}
+			err := run()
+			if err == nil {
+				t.Fatal("collections create succeeded although no response was ever received")
+			}
+			if ExitCode(err) == 9 || strings.Contains(err.Error(), "network connection and retry") {
+				t.Fatalf("lost response reported as a retryable precondition: exit=%d err=%v", ExitCode(err), err)
+			}
+			for _, want := range []string{"refusing automatic retry", `"Reading list"`, "Zotero-Write-Token", tc.wantErr} {
+				if want == "Zotero-Write-Token" {
+					want = "write token " + tokens[0]
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q lacks %q", err, want)
+				}
+			}
+			if len(tokens) == 0 || tokens[0] == "" {
+				t.Fatalf("POST /collections carried no Zotero-Write-Token: %q", tokens)
+			}
+			for i, token := range tokens {
+				if token != tokens[0] || bodies[i] != bodies[0] {
+					t.Fatalf("attempt %d changed token/body: %q vs %q", i, token, tokens[0])
+				}
+			}
+			first := tokens[0]
+			tokens, bodies = nil, nil
+			_ = run()
+			if len(tokens) == 0 || tokens[0] != first {
+				t.Fatalf("a second identical run sent token %q, want the same token %q", tokens, first)
+			}
+		})
+	}
 }

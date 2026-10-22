@@ -69,6 +69,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 				applyErr       error // classified failure returned as the command's own error
 				batchExecuted  bool
 				batchTransport error // set only when the POST itself failed (not a per-element rejection)
+				batchAmbiguous error // set when the POST left an outcome Zotero may have committed
 				batchEnvelope  error // set when the 2xx body is not the batch envelope: no outcome is proven
 				batchFailed    map[string]batchWriteFailure
 				batchKeys      map[string]string
@@ -76,10 +77,21 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 			applyCollection := func(index int) (string, any, error) {
 				if !batchExecuted {
 					batchExecuted = true
-					data, _, postErr := c.Post(path, body)
+					// The token is a pure function of the request body, so a rerun
+					// of the same batch replays the same token: Zotero answers 412
+					// instead of committing a second copy of each collection, and
+					// the batch reports a committed conflict instead of inviting
+					// another replay.
+					token := createBatchWriteToken("zotio.collections.create", "", body)
+					data, _, postErr := c.PostWithHeaders(path, body, map[string]string{"Zotero-Write-Token": token})
 					if postErr != nil {
-						batchTransport = classifyAPIError(postErr, flags)
-						applyErr = batchTransport
+						if isCommittedCreateConflict(postErr) {
+							batchAmbiguous = collectionCreateRefusal(ops, token, postErr)
+							applyErr = batchAmbiguous
+						} else {
+							batchTransport = classifyAPIError(postErr, flags)
+							applyErr = batchTransport
+						}
 					} else if envErr := checkBatchEnvelope(data, len(ops)); envErr != nil {
 						// A 2xx without the batch envelope proves nothing: it may
 						// be a proxy error page, a singleton object, or truncated
@@ -96,6 +108,9 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				if batchTransport != nil {
 					return "failed", nil, batchTransport
+				}
+				if batchAmbiguous != nil {
+					return "conflict", map[string]any{"committed": true, "message": batchAmbiguous.Error()}, batchAmbiguous
 				}
 				if batchEnvelope != nil {
 					return "failed", batchEnvelope.Error(), batchEnvelope
@@ -129,6 +144,22 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd
+}
+
+// collectionCreateRefusal refuses an automatic retry of a collection create
+// whose outcome Zotero may have committed: the response was lost, a 5xx may
+// follow a committed write, or the write token was already submitted. Zotero
+// allows duplicate collection names, so a blind retry would duplicate every
+// collection in the request.
+func collectionCreateRefusal(ops []mutation.Op, token string, cause error) error {
+	names := make([]string, len(ops))
+	for i, op := range ops {
+		names[i] = strconv.Quote(sanitizeForTerminal(op.Key))
+	}
+	return fmt.Errorf("collections create: refusing automatic retry of the %d collection(s) in that request (%s): %w; "+
+		"the request may already be committed in Zotero (write token %s), so retrying could create duplicate collections: "+
+		"run 'zotio collections list' to check, then keep them or delete them and re-run with only the missing collection(s)",
+		len(ops), strings.Join(names, ", "), cause, token)
 }
 
 // collectionCreateBody validates the create flags or stdin payload and returns

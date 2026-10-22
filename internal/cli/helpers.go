@@ -368,6 +368,13 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	// response whose body failed to read did get a response, so it keeps the
 	// generic mapping. Auto-mode read fallback is handled before classification.
 	var bodyReadErr *client.BodyReadError
+	// A write that was sent but never answered may have committed. isNetworkError
+	// unwraps it to the transport cause, so it must be recognised first: telling
+	// the operator to "retry" would repeat a write that may already have landed.
+	if client.IsAmbiguousWriteError(err) && !isLocalZoteroTransportError(err) {
+		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the request was sent but no response arrived, so Zotero may have applied it."+
+			"\n      Check the library before re-running this command; a blind retry can duplicate or repeat the write."))
+	}
 	if isNetworkError(err) && !errors.As(err, &bodyReadErr) {
 		if isLocalZoteroTransportError(err) {
 			return preconditionErr(redactedAPIError(err, msg, secrets, "\nhint: Zotero desktop is not running or its local API is disabled; start Zotero or run: zotio doctor --ensure-live --launch"))
