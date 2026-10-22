@@ -110,6 +110,10 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
+	// backoff holds the server-directed `Backoff` deadline. It is always
+	// present (unlike limiter, which is nil without --rate-limit) and shared
+	// with clones so every request through the same session honours it.
+	backoff *cliutil.BackoffGate
 	// base context for wrapper calls; tests may replace it. It is atomic because
 	// one Client is shared across sync workers and fanout goroutines while
 	// SetContext can rebind it, and CloneForRead hands the same value to further
@@ -328,6 +332,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		backoff:    cliutil.NewBackoffGate(),
 	}
 	c.SetContext(sigintContext())
 	return c
@@ -353,6 +358,7 @@ func (c *Client) CloneForRead(baseURL string) *Client {
 		NoCache:    c.NoCache,
 		cacheDir:   c.cacheDir,
 		limiter:    c.limiter,
+		backoff:    c.backoff,
 	}
 	clone.SetContext(c.Context())
 	return clone
@@ -1236,6 +1242,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// proactive rate limiting must honor context
 		// cancellation before dialing.
+		c.backoff.WaitContext(ctx)
 		c.limiter.WaitContext(ctx)
 		if err := ctx.Err(); err != nil {
 			return nil, 0, nil, wrapAmbiguous(attempt, err)
@@ -1354,6 +1361,13 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			continue
 		}
 
+		// Backoff can ride on any response, including a 2xx. Record it before
+		// the status handling below so success, retry, and error paths all
+		// make the next request wait it out.
+		if d := cliutil.BackoffFromHeader(resp.Header); c.backoff.Extend(d) {
+			fmt.Fprintf(os.Stderr, "server asked clients to back off, pausing requests for %s\n", d)
+		}
+
 		// cap API response bodies
 		// before buffering them for cache/error handling.
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
@@ -1385,7 +1399,10 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// Only 2xx responses are successful. In particular, a caller's
 		// ErrUseLastResponse must not turn a refused redirect into success.
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			c.limiter.OnSuccess()
+			// A success that carries a Backoff must not speed the limiter up.
+			if !c.backoff.Active() {
+				c.limiter.OnSuccess()
+			}
 			if method != http.MethodGet && !c.DryRun {
 				mutationSucceeded = true
 				if ierr := c.invalidateCache(path); ierr != nil {
@@ -1447,6 +1464,11 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				ambiguousFailures = append(ambiguousFailures, apiErr)
 			}
 			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
+			// A server-supplied Retry-After (maintenance 503, for example) is
+			// the server's own schedule; ours is only the fallback.
+			if serverWait, synthetic := cliutil.RetryAfterOrFallback(resp); !synthetic {
+				wait = serverWait
+			}
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
