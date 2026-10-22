@@ -361,25 +361,58 @@ func TestTrailingLineCommentAfterAWellFormedValueStillParses(t *testing.T) {
 	}
 }
 
-// Zotero always writes prefs.js as UTF-8. A UTF-16 file makes every
-// "user_pref(" prefix match fail, so every key would read as absent and
+// Zotero always writes prefs.js as UTF-8. A differently encoded file makes
+// every "user_pref(" prefix match fail, so every key would read as absent and
 // resolve to the confident cloud+enabled defaults; that must surface as an
-// evaluation failure instead.
-func TestUTF16PrefsFileIsAnErrorNotAnEmptyReading(t *testing.T) {
-	dir := t.TempDir()
-	prefs := `user_pref("extensions.zotero.sync.storage.protocol", "webdav");` + "\n"
-	units := utf16.Encode([]rune(prefs))
-	buf := make([]byte, 0, 2+2*len(units))
-	buf = append(buf, 0xff, 0xfe) // UTF-16LE byte order mark.
-	for _, u := range units {
-		buf = append(buf, byte(u), byte(u>>8))
+// evaluation failure instead. Each fixture reaches a different rejection arm:
+// a byte order mark, then (with no BOM at all) embedded NULs, then invalid
+// UTF-8 with no NUL. BOM-less UTF-16 of ASCII text is itself valid UTF-8, so
+// only the NUL check can catch it.
+func TestNonUTF8PrefsFileIsAnErrorNotAnEmptyReading(t *testing.T) {
+	const prefs = `user_pref("extensions.zotero.sync.storage.protocol", "webdav");` + "\n"
+	encodeUTF16 := func(bom []byte, order func([]byte, uint16) []byte) []byte {
+		buf := append([]byte(nil), bom...)
+		for _, u := range utf16.Encode([]rune(prefs)) {
+			buf = order(buf, u)
+		}
+		return buf
 	}
-	if err := os.WriteFile(filepath.Join(dir, "prefs.js"), buf, 0o600); err != nil {
-		t.Fatal(err)
+	littleEndian := func(b []byte, u uint16) []byte { return append(b, byte(u), byte(u>>8)) }
+	bigEndian := func(b []byte, u uint16) []byte { return append(b, byte(u>>8), byte(u)) }
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "UTF-16LE with BOM", data: encodeUTF16([]byte{0xff, 0xfe}, littleEndian)},
+		{name: "UTF-16BE with BOM", data: encodeUTF16([]byte{0xfe, 0xff}, bigEndian)},
+		{name: "UTF-16LE without BOM", data: encodeUTF16(nil, littleEndian)},
+		{name: "invalid UTF-8 without NUL", data: []byte(prefs + "// \xc3\x28 stray bytes\n")},
 	}
-	fs, err := LoadProfile(dir)
-	if err == nil {
-		t.Fatalf("LoadProfile returned nil error for a UTF-16 prefs.js (fs = %+v)", fs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "prefs.js"), tt.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fs, err := LoadProfile(dir)
+			if err == nil {
+				t.Fatalf("LoadProfile returned nil error for a malformed prefs.js (fs = %+v)", fs)
+			}
+			if fs.Found() {
+				t.Fatalf("Found() = true after an encoding failure, want no confident reading (fs = %+v)", fs)
+			}
+		})
+	}
+
+	// Control: the same preference as valid UTF-8 must still read, so the
+	// rejections above are not simply a loader that refuses everything.
+	fs, err := LoadProfile(writeProfile(t, prefs))
+	if err != nil {
+		t.Fatalf("LoadProfile(valid UTF-8): %v", err)
+	}
+	if got := fs.Personal().Mode; got != StorageWebDAV {
+		t.Fatalf("Personal().Mode = %q, want %q for the valid UTF-8 control", got, StorageWebDAV)
 	}
 }
 
