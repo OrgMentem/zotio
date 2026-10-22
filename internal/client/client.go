@@ -1358,6 +1358,17 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				}
 				return nil, 0, nil, lastErr
 			}
+			if attempt == maxRetries || !transportErrorRetryable(err) {
+				if isMutatingMethod(method) {
+					return nil, 0, nil, wrapAmbiguous(attempt+1, nil)
+				}
+				return nil, 0, nil, lastErr
+			}
+			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
+			fmt.Fprintf(os.Stderr, "transport error, retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
+			}
 			continue
 		}
 
@@ -1508,6 +1519,20 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	}
 
 	return nil, 0, nil, wrapAmbiguous(maxRetries+1, lastErr)
+}
+
+// transportErrorRetryable reports whether a failed dial or round trip is worth
+// another attempt. A timeout is not: the per-attempt timeout is the operation's
+// budget (--timeout), and a server that accepted the connection but never
+// answered would otherwise hold every call for four times that budget. A
+// refused connection is not either: nothing is listening, so a repeat cannot
+// succeed and would only delay the mirror fallback of --data-source auto.
+func transportErrorRetryable(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return false
+	}
+	var netErr net.Error
+	return !(errors.As(err, &netErr) && netErr.Timeout())
 }
 
 // zoteroEmpty500IsNotFound reports whether path has one of the two shapes for
