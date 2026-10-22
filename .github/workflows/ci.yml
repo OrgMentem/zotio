@@ -134,7 +134,7 @@ jobs:
       - name: Test
         # Race detector on the fast runner only; the plain suite structurally
         # cannot see races.
-        run: go test ${RACE:+"$RACE"} ./...
+        run: rc=0; go test ${RACE:+"$RACE"} -v ./... > /tmp/test.log 2>&1 || rc=$?; grep -E -- "--- SKIP|23119 is unavailable" /tmp/test.log || echo NO-SKIPS; grep -E -- "^--- FAIL" /tmp/test.log || true; exit $rc
         env:
           RACE: ${{ matrix.os == 'ubuntu-latest' && '-race' || '' }}
 
