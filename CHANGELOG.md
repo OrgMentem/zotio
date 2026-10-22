@@ -366,6 +366,68 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `feedback list`, and `profile list` read `No <things> found.` Per-command
   `zotio:*` annotation literals are removed; the registry is the only source.
 
+- **`sync` and `init` treat an unfinished first items sync as incomplete.** A
+  first sync that stopped at `--max-pages` (default 100 pages) or was killed
+  stamped "last synced" on every page, so gated and badge `library health`
+  runs, `--require-fresh`, and `init` treated the prefix as the whole library.
+  `sync` now prints "Sync incomplete" and exits 13 when an incremental pass
+  stops on the page cap or a repeated cursor (`--latest-only` keeps its one
+  requested page), and the saved cursor resumes it. The `sync_summary` event
+  gains an `incomplete` count. Gated, badge, and `--require-fresh` `library
+  health` runs exit 9 until the first items pass finishes; an ungated run
+  warns on stderr. `init` offers the first sync again and its first sync has
+  no page cap.
+
+- **`library health` refuses a scope that resolves to nothing.** A gated or
+  badge run whose scope matches no mirrored item exits 9 with `zotio sync`
+  guidance (the badge reads `empty scope`), and an unknown item key exits 3.
+
+- **`search` exits 9 when nothing was searched.** With the API unreachable (or
+  `--data-source local`) and no synced mirror, `search` names `zotio sync`
+  with the live error attached, instead of printing an empty result set with
+  exit 0. An empty answer from a mirror that never completed an items sync is
+  refused the same way. Under `--group all` the unsynced library is reported
+  failed and the run exits 13.
+
+- **`groups inspect` rejects a group name or URL.** A non-numeric ID is a
+  usage error (exit 2) with a hint to run `groups list`. `found:false` with
+  exit 0 stays for a well-formed ID that the key cannot reach.
+
+- **`items enrich --validate` reports unanswered checks as incomplete.** A
+  provider lookup that got no answer was counted as "no discrepancy", so an
+  outage printed a clean report with exit 0. The report now lists each such
+  check in `incomplete` (`key`, `doi`, `provider`, `error`) and leaves the item
+  out of `validated`. The command exits 13 while any check is incomplete;
+  answered findings stay in the report.
+
+- **`collections gaps` marks a partial scan incomplete.** The report carries
+  `sources[]` with provider errors, `items_failed`, `sources_truncated` and
+  `incomplete`, prints an INCOMPLETE section, and exits 13. `items_scanned`
+  counts only items whose references were read.
+
+- **A write that was sent but never answered exits 5 with a "check before
+  re-running" hint.** `classifyAPIError` recognizes an ambiguous write before
+  it treats the error as a network failure, so a "retry" hint no longer
+  invites a blind repeat of a write that may have landed. A local-desktop
+  transport error keeps its "start Zotero" precondition.
+
+- **Saved-search scopes evaluated over the mirror say so.** When Zotero did
+  not run the search, `library health` (`scope`), `library prisma`, `creators
+  audit` (`summary`) and `import discover` report `local_evaluation` (which
+  search, mirror age, why live was skipped). `creators rename` and `creators
+  audit fix` add it as an envelope warning. The stderr notice now goes to the
+  command's own stderr writer, so MCP results include it.
+
+- **`auth set-token` JSON gains `credentials_path`.** It is omitted for an
+  agentcookie-managed store, which keeps the key in `config_path`. `config_path`
+  stays in both envelopes.
+
+- **The journal holds op-level records.** Each landed write appends a record
+  with the run's `run_id`, and the final entry reuses it, so a run leaves N+1
+  records and `JournalEntry` gains a `partial` boolean. `journal list`, `show`
+  and `undo` fold them. An older binary reads the op-level records as extra
+  runs.
+
 ### Fixed
 
 - **Failed or partial runs no longer corrupt data or report success.**
@@ -395,6 +457,355 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `items bibliography` prints its Web API key precondition envelope once, with
   `code`, `message` and `capability`. `items bibcheck --fail-on` accepts
   `critical`, `high`, `info`, `any`, and `none`.
+
+- **`tail` no longer skips changed objects past the first page.** Each poll
+  read one response and saved its Last-Modified-Version, so against the Web
+  API every changed object past the first page was lost for good. A poll now
+  pages with `limit`/`start`, ends on `Total-Results`, requires every page at
+  one library version (it re-reads a window the library moved under, then
+  fails with the cursor held), and delivers and saves the cursor only after
+  the whole window arrived.
+
+- **`sync --full` no longer deletes mirror rows on a partial listing.** A
+  short page was read as the end of the listing and everything it omitted was
+  swept. Each page is now checked against `Total-Results`: a malformed
+  header, a total that changes between pages, a page past the total, or a
+  pass that ends short of the total fails the resource before any sweep or
+  checkpoint. The sweep is skipped with a warning when a page lacks the
+  header. An incremental pass no longer checkpoints past a contradicted page.
+  `groups` reads share the same header parser and refuse a malformed one.
+
+- **A resumed incremental `sync` no longer checkpoints past edits to pages it
+  had already read.** The resume cursor now carries the library version of the
+  pass's first response, and the resumed pass checkpoints that version. A
+  resume cursor written by an earlier release has no version and is
+  discarded; that pass restarts from the committed checkpoint.
+
+- **`sync` no longer caches a `null` per-item-type schema response as
+  current.** The dependent schema rows (`schema-item-type-fields`,
+  `schema-item-type-creator-types`) must be arrays of objects before they are
+  stored or the schema version is stamped. The next ordinary sync refetches a
+  row that an earlier release poisoned, and `schema drift --deep` refuses a
+  cached or live `null` instead of reading it as an empty schema.
+
+- **`sync --fulltext` rejects a `null` fulltext index.** `null` was read as
+  "nothing changed" and the checkpoint advanced past documents that were
+  never fetched. It now fails with the checkpoint unchanged.
+
+- **An incremental `sync` keeps an erased collection's mirror row until its
+  members are repaired.** Erasing a collection does not bump member versions,
+  so the row is the only record that their `data.collections` needs repair.
+  It was reaped first, so a crash or a failed member refetch left members
+  naming a deleted collection until `--full`. The row is now reaped only
+  after every member refresh succeeds; otherwise it is kept with a warning
+  and the next `zotio sync` retries. `sync --resources collections` without
+  `items` keeps the row and warns.
+
+- **`export snapshot` no longer replaces a good backup when a page is JSON
+  `null`, and refuses a library that changes while it is read.** A `null`
+  page was read as the end of the library, so an empty or truncated snapshot
+  and manifest replaced the previous ones with exit 0. A page must now be an
+  array; `[]` still ends an empty library. Pages are fetched by offset, so an
+  edit between pages (or between an interrupted run and `--resume`) repeated
+  one record and dropped another. Every page now reports its
+  `Last-Modified-Version`, the checkpoint records it, and a change exits 9
+  before anything is published ("rerun without --resume"). The manifest
+  builder also rejects a repeated key.
+
+- **New export and card files respect your umask.** An atomically published
+  new file (for example the `library wrapped` card) was created 0644 even
+  under `umask 077`. It now gets the mode a direct write would. Existing
+  files keep their own mode.
+
+- **A stale re-send no longer deletes a newer live item from the mirror.**
+  When the version guard discarded an offered payload, the item lifecycle
+  check still compared that payload's version against the opposite canonical
+  state. A stale `items/K` at v5 beside a stored `items/K` at v10 and
+  `items-trash/K` at v7 deleted the newer live row and its full-text
+  document. The persisted row is now read back and arbitrated instead.
+
+- **A permanent delete now removes the item's children and annotations from
+  the mirror.** The server's erase destroys child notes, attachments and the
+  annotations of those attachments, but the reap removed only the deleted
+  key. The children stayed in offline reads, search, annotation exports and
+  counts until `sync --full`. The reap now walks every mirrored descendant
+  (live and trashed) and removes and marks each one the same way.
+
+- **Local search treats a `NOT` with no left operand as a word.** A leading
+  `NOT`, or one after `(` or `OR`, was an FTS5 syntax error. It is now
+  searched as the literal word.
+
+- **A cache entry stamped in the future counts as expired.** After the wall
+  clock stepped back, the HTTP response cache, the provider cache and the
+  update-check cache served such entries until the clock caught up.
+
+- **Transport retries respect `--timeout` and back off.** Retries ran back to
+  back, so a server that accepted the connection and never answered held every
+  read for 4x `--timeout`. A timed-out attempt is now final, a refused
+  connection is not repeated (so the `--data-source auto` mirror fallback is
+  not delayed), and other transport errors back off 1, 2 and 4 seconds like a
+  5xx.
+
+- **The client honors the Web API `Backoff` header and `Retry-After`.** A
+  `Backoff` header on any response, including a 2xx, sets a deadline that every
+  later request in the session waits out, including a request already queued
+  on the rate limiter. A success under backoff no longer speeds the limiter
+  up, and a retried 5xx waits the server's `Retry-After` instead of the fixed
+  schedule. Both waits are capped at 60 seconds.
+
+- **`--rate-limit` is a maximum, not a starting floor.** The adaptive limiter
+  ramped 1.25x every 10 successes with no ceiling until a 429, so
+  `--rate-limit 2` reached about 170 requests per second after 200 requests.
+  The ramp now stops at the configured rate; a 429 still halves below it and
+  recovery climbs back toward it.
+
+- **A 5xx on a version-guarded `PATCH`, `PUT` or `DELETE` is an ambiguous
+  write.** Such a write has no write token and is never retried, so a 5xx
+  that followed a commit was reported as a failed write without a read-back.
+  The guard helpers now reconcile against the write plane. A 501 stays a
+  definite failure.
+
+- **`doctor` no longer reports healthy on rejected credentials or an expired
+  update answer.** It treated any HTTP answer at `/` as reachable. It now
+  sends one cache-bypassing `GET /items?limit=1` and reports a 401/403 as an
+  error, so `--fail-on error` trips on a revoked key or a desktop with "Allow
+  other applications" off. When a failed update refresh falls back to an
+  expired cached release, the row shows the last-known release and its check
+  date instead of "current". `doctor --ensure-live --launch` also runs each
+  readiness probe under its 15 second deadline, so a desktop that stalls can
+  no longer hold the command or report a late "reachable".
+
+- **`auth logout` finishes the job and says so truthfully.** It syncs the
+  credentials directory after removing `credentials.toml`, so a reported
+  logout survives power loss. It scrubs the pre-relocation legacy config even
+  when an interrupted logout had already published the scrubbed primary
+  config, and it deletes leftover `.credentials.toml.*.tmp` and
+  `.config.toml.*.tmp` files that an interrupted save leaves with a full copy
+  of the key. A legacy config that cannot be read, parsed or rewritten now
+  fails the logout with its path instead of reporting success; the
+  credentials file is still removed.
+
+- **`auth set-token --stdin` stops waiting when cancelled.** It held the
+  installation writer lock inside a read that ignored the command context, so
+  a stalled token producer wedged every other writer after Ctrl-C or SIGTERM,
+  and a token that arrived after cancellation was still saved. The read now
+  returns when the context is done, and the context is checked again before
+  the token is persisted.
+
+- **`auth set-token` names the file that receives the key.** Help, the
+  `--dry-run` preview and the success message name the credentials file, not
+  the config file.
+
+- **`library health` publishes its baseline and report last.** The
+  `--write-baseline` file is written after the report and badge, and only when
+  `--fail-on-new` did not trip. A check that was skipped keeps its prior
+  finding identities and does not count them as resolved. `--limit` only
+  caps the findings listed; the retraction and attachment live checks cover
+  the whole cohort.
+
+- **`searches run` returns every hit of a large saved search.** It read only
+  the first 25-row page; it now walks every page and counts them all.
+
+- **`searches materialize --prune` no longer plans from a cached page.**
+  Saved-search and collection membership are read uncached, so an apply after
+  a preview cannot remove an item that has since started matching.
+
+- **`--group all` and `groups list` see every group.** The group listing is
+  read to completion (`limit=100`, `start`, `Total-Results`), so accounts with
+  more than 25 groups are no longer truncated, and a listing that disagrees
+  with `Total-Results` is refused.
+
+- **`import file` reads BibTeX the way BibTeX does.** A double quote inside
+  braces is a literal, so a `.bib` file with an inch mark no longer fails or
+  merges entries. `@comment`, `@string` and `@preamble` blocks, and `@word{`
+  text inside field values, no longer become empty items or inflate the
+  connector record count. A brace-protected corporate author such as
+  `{{Food and Agriculture Organization}}` becomes one single-field creator,
+  and `and` splits names only outside braces.
+
+- **`import pmid` no longer reports an NCBI throttle as "not found".** An
+  error in an HTTP 200 eSummary body now exits 5, and "cannot get document
+  summary" exits 3. A record with no title is refused instead of creating a
+  blank article.
+
+- **`import url` refuses to create a bare webpage when a lookup failed.** A
+  CrossRef failure other than 404/410, or a landing-page transport error, 5xx,
+  429, 401, 403 or 408, now gives an API error (exit 5) that names the cause.
+  The bare webpage item is kept for real absence only: CrossRef 404/410, an
+  empty CrossRef answer, or a page with no metadata.
+
+- **`import resolve` reports an unreadable PDF.** The manifest entry is
+  `unreadable`/`skip` with the read error as its note, and the run exits
+  non-zero. It no longer proposes Zotero recognition. Running `import
+  resolve` again on the directory reclassifies a repaired file.
+
+- **`import <resource>` rejects a JSONL `null` line.** The line counts as a
+  parse failure instead of planning an empty create.
+
+- **`import pdf` no longer reports a clean failure after Zotero saved the
+  PDF.** A recognizer error, timeout or Ctrl-C returns a `recognition_unknown`
+  committed conflict with the session and any resolved keys, and the run is
+  journaled, so a retry does not import the PDF twice.
+
+- **`import apply --attach-mode stored --via web` no longer duplicates
+  parents after a lost response.** The parent is sent under the manifest
+  entry's deterministic write token. A lost response or a replay is a
+  committed conflict and never binds the attachment to a replacement parent.
+
+- **`import file --via connector` refuses to replay an import whose outcome
+  was never confirmed.** An intent record is written before dispatch. A
+  dropped response or a 5xx reports every record as a committed conflict
+  (journaled), and importing the same bytes again is refused until
+  `--reimport` is passed.
+
+- **`import discover` emits no manifest when canceled.** Cancellation during
+  metadata lookup no longer creates a new target or replaces a reviewed
+  manifest under `--overwrite`.
+
+- **`import apply` linked-file attachments are idempotent.** Attach entries
+  and linked-file creates reuse an existing child with the same path (reported
+  as a no-op), send a deterministic write token, and reconcile ambiguous
+  answers. The WebDAV refusal no longer recommends `--via connector` for
+  attach entries; it names `zotio attachments add <existing-key> <file> --via
+  connector`. Incompatible connector flags (`--max-failures`,
+  `--continue-on-error=false`) are refused before the destination
+  collection lookup, so the refusal sends no request.
+
+- **`items create` reports every member of a sent batch after `--max-failures`
+  or cancellation.** A batch goes out in one request (Web) or one save session
+  (connector), but members after the stop were reported `not_attempted`. That
+  dropped their real keys from the result and the journal and invited a
+  duplicate retry. Dispatched members now report their own outcome.
+
+- **A `--quiet` workflow create step no longer replays on `--resume`.** The
+  runner decided from the step's stdout whether a failed `items create`,
+  `import file` or `import apply` had applied items. `--quiet` empties stdout,
+  so the step was checkpointed `failed` and the whole create ran again. The
+  decision now comes from the mutation engine's result.
+
+- **A killed bulk run keeps its journal and deletion markers.** Each landed
+  write appends an op-level journal record, and each purged item gets its
+  mirror reap and deletion marker as the delete lands. `journal list`, `show`
+  and `undo` fold these records: a finished run shows its final entry, and a
+  run killed midway shows a `partial` entry holding the writes that landed,
+  which `journal undo` reverses. SIGHUP now cancels like SIGTERM.
+
+- **`items update` clears fields with an empty value.** `--title ''`,
+  `--abstract-note ''` and `--extra ''` are sent as empty strings instead of
+  being dropped while the command reported success.
+
+- **`journal undo` of a tag rename keeps a target tag the item already had.**
+  `tags rename` and `tags audit fix` recorded no revert, so undo re-added the
+  alias and removed the target even when the item carried the target before
+  the run. The run now records whether the rename created the target, and undo
+  removes it only then. A rename journaled before this change is refused
+  rather than guessed.
+
+- **`items enrich` guards subject-tag writes with the version they were
+  derived from.** The write re-read the item and used the newer version as its
+  precondition, so a tag or Extra edit made between the two reads was
+  overwritten. A concurrent edit now conflicts.
+
+- **Repeating `items enrich --missing-pdf` before a sync no longer adds a
+  second open-access PDF link.** The attach (missing and repair) reads the
+  item's live children from the Web API, reports `no_op` when the link
+  exists, and sends a write token derived from the parent and the URL. A lost
+  or 412 response is reconciled against the live children.
+
+- **`items preprint-check fix` derives the fix from the write plane when it
+  applies.** The plan came from the read plane, which lags the Web API, so
+  apply deleted a citation-key line or note written on the Web since the last
+  sync and replaced a published DOI added there. Apply now reads the item once
+  from the write plane, re-evaluates the DOI rule, appends provenance to the
+  live Extra, and guards the `PATCH` with the version of that read. A DOI
+  conflict found at apply time is reported as skipped.
+
+- **An empty arXiv feed is a failed `items preprint-check` lookup.** A 2xx
+  feed with no entry read as "no external DOI", so a published preprint was
+  dropped from the findings, and `watch` cached "still a preprint" for the
+  whole recheck horizon. It is now an error: `watch` counts the failure,
+  leaves the cache alone, retries next cycle and names it in the skip.
+
+- **`items bibcheck` and `items bibliography --manuscript` skip TeX comments
+  and literal environments.** A commented-out or `verbatim`, `lstlisting`,
+  `minted` or `comment` `\cite{...}` counted as a real citation, so
+  `--fail-on-unknown` tripped on dead keys and the bibliography pulled in
+  comment-only items. Line numbers stay correct.
+
+- **`items bibcheck` and `items bibliography` read Zotero citations stored as
+  bookmarks in a `.docx`.** A manuscript saved with "Store citations as:
+  Bookmarks" reported zero citations and passed every gate. A `ZOTERO_BREF_`
+  bookmark with no stored code counts as an unreadable citation.
+
+- **`items fulltext` keeps its content under `--agent`.** `--agent` turns on
+  compaction, which stripped the `content` field, so an agent got a successful
+  exit with only indexing counters and could not tell matching text from no
+  match. The command now renders without the compact default; `--select` still
+  applies.
+
+- **`items list --quiet` prints nothing.** It printed the full result set,
+  unlike `items get` and `items find`.
+
+- **`attachments add --via connector` no longer says its temporary parent is
+  safe to delete.** The marker now says not to delete it while it holds an
+  attachment. A parent that carries the old text is still recognized. Resume
+  and the reaper also find stranded parents beyond the newest 500 top-level
+  items, so a delayed retry no longer uploads the bytes again.
+
+- **`attachments add` keeps the committed child in the journal when a stored
+  upload fails after it.** A lost registration response is reconciled against
+  the server instead of being reported as "not registered", and a quota
+  refusal no longer erases the created child from `journal`.
+
+- **Large stored uploads are no longer cut off by `--timeout`.** An upload is
+  abandoned only when no data moves for `--timeout`; the error names the flag.
+  The terminal preview of `attachments add` now shows the file, size, md5,
+  mode, route, and the temporary parent that the connector route creates and
+  trashes.
+
+- **`collections create` no longer duplicates collections after a lost
+  response.** The `POST` carries a write token. An unanswered write or a
+  token replay is reported as a committed conflict naming the collections and
+  the token.
+
+- **Re-creating a deleted note, attachment or collection works again.** Write
+  tokens came from content alone, and Zotero answers any reuse of a token
+  with 412 even when the object is gone, so `vault resolve --recreate`,
+  `attachments add` and `items add-to-collection --create` were refused as
+  "may have committed" after you deleted what zotio created. `--recreate`
+  binds the token to the deleted note's key; the other two move to the next
+  token when a replayed token has no live object to adopt.
+
+- **`watch --workflow-on-change` no longer loses its trigger across a partial
+  cycle, `--once`, or a restart.** The owed workflow is recorded beside the
+  mirror before a cycle can commit rows and cleared only after the workflow
+  succeeds. A watcher killed midway makes the next run owe the workflow.
+
+- **MCP mirrored commands no longer read the JSON-RPC transport as stdin.**
+  `command_run`, the mirror tools, and `workflow_submit` steps without
+  `stdin_from` now get an empty input. Under `zotio-mcp`, `os.Stdin` is the
+  protocol stream, so `items create` with `stdin: true` blocked forever on an
+  uncancellable read, held the single command slot and consumed protocol
+  bytes. It now fails at once with a JSON parse error.
+
+- **The MCP `sql` tool rejects stacked statements hidden behind `[bracket]`
+  and `` `backtick` `` identifiers.** A quote inside such an identifier opened
+  a fake string literal, so `SELECT 1 AS [']; VACUUM INTO '/tmp/x'` passed the
+  single-statement gate. The scanner now follows all four SQLite quoting
+  forms.
+
+- **`creators audit --orcid --dry-run` takes no writer lock.** It fetches
+  ORCID evidence but persists none, so it no longer contends with other
+  writers.
+
+- **Smaller fixes.** `vault resolve` help, its conflict artifact, and the
+  push and pull hints name `--allow-destructive` for `--keep-vault` and
+  `--keep-remote`. `schema` list commands no longer recommend a `--limit` flag
+  they do not have. `feedback` no longer ends a text cut at 4096 bytes with a
+  broken multi-byte character, and its dry-run line counts characters.
+  `workflow archive --help` names `sync --since-version`. The `journal undo`,
+  `items create`, `workflow run` and `library prisma` help, and the `which`
+  highlights, no longer overstate what those commands do.
 
 ## [0.29.0] — 2026-10-12
 
