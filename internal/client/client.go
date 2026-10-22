@@ -1551,7 +1551,7 @@ func transportErrorRetryable(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	return !(errors.As(err, &netErr) && netErr.Timeout())
+	return !errors.As(err, &netErr) || !netErr.Timeout()
 }
 
 // zoteroEmpty500IsNotFound reports whether path has one of the two shapes for

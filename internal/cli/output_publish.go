@@ -170,7 +170,7 @@ func newFileMode(dir string, perm os.FileMode) os.FileMode {
 		return perm
 	}
 	for range 8 {
-		probe := filepath.Join(dir, fmt.Sprintf(".zotio-mode-probe-%d.tmp", rand.Uint64()))
+		probe := filepath.Join(dir, fmt.Sprintf(".zotio-mode-probe-%d.tmp", rand.Uint64())) //nolint:gosec // G404: unique probe file name, not a secret.
 		f, err := os.OpenFile(probe, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 		if errors.Is(err, os.ErrExist) {
 			continue

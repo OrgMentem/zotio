@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,17 +170,28 @@ func TestCollectionsCreateLostResponseIsNotRetryable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
+			// The handler can still be running a dropped attempt when the
+			// command returns, so every access to the recorded requests locks.
+			var mu sync.Mutex
 			var tokens []string
 			var bodies []string
+			recorded := func() ([]string, []string) {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]string(nil), tokens...), append([]string(nil), bodies...)
+			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/users/0/collections" {
 					http.NotFound(w, r)
 					return
 				}
 				raw, _ := io.ReadAll(r.Body)
+				mu.Lock()
 				tokens = append(tokens, r.Header.Get("Zotero-Write-Token"))
 				bodies = append(bodies, string(raw))
-				if len(tokens) > 1 && tc.replay != nil {
+				attempts := len(tokens)
+				mu.Unlock()
+				if attempts > 1 && tc.replay != nil {
 					tc.replay(w)
 					return
 				}
@@ -207,30 +219,34 @@ func TestCollectionsCreateLostResponseIsNotRetryable(t *testing.T) {
 			if err == nil {
 				t.Fatal("collections create succeeded although no response was ever received")
 			}
+			sent, sentBodies := recorded()
 			if ExitCode(err) == 9 || strings.Contains(err.Error(), "network connection and retry") {
 				t.Fatalf("lost response reported as a retryable precondition: exit=%d err=%v", ExitCode(err), err)
 			}
 			for _, want := range []string{"refusing automatic retry", `"Reading list"`, "Zotero-Write-Token", tc.wantErr} {
 				if want == "Zotero-Write-Token" {
-					want = "write token " + tokens[0]
+					want = "write token " + sent[0]
 				}
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q lacks %q", err, want)
 				}
 			}
-			if len(tokens) == 0 || tokens[0] == "" {
-				t.Fatalf("POST /collections carried no Zotero-Write-Token: %q", tokens)
+			if len(sent) == 0 || sent[0] == "" {
+				t.Fatalf("POST /collections carried no Zotero-Write-Token: %q", sent)
 			}
-			for i, token := range tokens {
-				if token != tokens[0] || bodies[i] != bodies[0] {
-					t.Fatalf("attempt %d changed token/body: %q vs %q", i, token, tokens[0])
+			for i, token := range sent {
+				if token != sent[0] || sentBodies[i] != sentBodies[0] {
+					t.Fatalf("attempt %d changed token/body: %q vs %q", i, token, sent[0])
 				}
 			}
-			first := tokens[0]
+			first := sent[0]
+			mu.Lock()
 			tokens, bodies = nil, nil
+			mu.Unlock()
 			_ = run()
-			if len(tokens) == 0 || tokens[0] != first {
-				t.Fatalf("a second identical run sent token %q, want the same token %q", tokens, first)
+			again, _ := recorded()
+			if len(again) == 0 || again[0] != first {
+				t.Fatalf("a second identical run sent token %q, want the same token %q", again, first)
 			}
 		})
 	}

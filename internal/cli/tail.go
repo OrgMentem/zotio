@@ -313,7 +313,7 @@ func fetchTailWindow(ctx context.Context, c *client.Client, resource, path strin
 			return nil, 0, err
 		}
 		if attempt >= tailMaxWindowAttempts {
-			return nil, 0, fmt.Errorf("tail %s: %w on each of %d attempts; holding the cursor so the next poll retries: %v", resource, errTailWindowMoved, attempt, err)
+			return nil, 0, fmt.Errorf("tail %s: %w on each of %d attempts; holding the cursor so the next poll retries: %w", resource, errTailWindowMoved, attempt, err)
 		}
 	}
 }
