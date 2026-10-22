@@ -193,7 +193,10 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 		}
 		prev = data
 		all = append(all, page...)
-		total, hasTotal := parseTotalResults(totalHeader)
+		total, hasTotal, err := parseTotalResults(totalHeader)
+		if err != nil {
+			return nil, apiErr(fmt.Errorf("the groups listing sent an %w; refusing to fan out over a partial group list", err))
+		}
 		switch {
 		case hasTotal && len(all) == total:
 			return json.Marshal(all)
@@ -204,15 +207,6 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 			return json.Marshal(all)
 		}
 	}
-}
-
-// parseTotalResults reads a Total-Results header value.
-func parseTotalResults(v string) (int, bool) {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	return n, true
 }
 
 // resolveFanoutLibraries resolves the library set once per run: the personal
