@@ -2877,21 +2877,80 @@ func (s *Store) ReapResource(resourceType, id string) error {
 // item was trashed before it was purged. The markers are written in THIS
 // transaction, so there is no instant at which the rows are gone and the
 // suppression is not yet in force.
+//
+// The server's erase cascades, so the reap does too: a regular item takes its
+// child notes and attachments with it, and an attachment takes its annotations.
+// Every mirrored descendant, in items and items-trash alike, is reaped and
+// marked in the same transaction. Removing only the parent left the children
+// live in offline reads, search, annotation exports and mirror-derived counts,
+// attached to a parent that no longer exists, and an incremental sync never
+// reaps them (its key listings cover collections and trash, not items), so
+// nothing short of `sync --full` cleared them. The same markers keep a sync
+// inside the lag window from re-inserting children the read plane still lists.
 func (s *Store) ReapMirroredItem(key string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	ctx := context.Background()
 	return s.withDurableTx(ctx, func(tx *sql.Tx) error {
-		for _, resourceType := range []string{"items", "items-trash"} {
-			if err := reapResourceLocked(ctx, tx, resourceType, key); err != nil {
-				return err
-			}
-			if err := markPendingDeletionLocked(ctx, tx, resourceType, key); err != nil {
-				return err
+		descendants, err := mirroredItemDescendantsLocked(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		for _, id := range append([]string{key}, descendants...) {
+			for _, resourceType := range []string{"items", "items-trash"} {
+				if err := reapResourceLocked(ctx, tx, resourceType, id); err != nil {
+					return err
+				}
+				if err := markPendingDeletionLocked(ctx, tx, resourceType, id); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	})
+}
+
+// mirroredItemDescendantsLocked lists the keys of every mirrored item below
+// key, across items and items-trash, breadth first: children of the item, then
+// their children (annotations hang off attachments). The whole subtree is read
+// before the caller deletes anything, so no cursor is open across a write, and
+// a visited set keeps a corrupt parent cycle from looping. The caller must hold
+// writeMu.
+func mirroredItemDescendantsLocked(ctx context.Context, tx *sql.Tx, key string) ([]string, error) {
+	seen := map[string]bool{key: true}
+	var descendants []string
+	frontier := []string{key}
+	for len(frontier) > 0 {
+		var next []string
+		for _, parent := range frontier {
+			rows, err := tx.QueryContext(ctx,
+				`SELECT DISTINCT id FROM resources
+				 WHERE resource_type IN ('items', 'items-trash') AND parent_key = ?`, parent)
+			if err != nil {
+				return nil, fmt.Errorf("listing children of %s: %w", parent, err)
+			}
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				if !seen[id] {
+					seen[id] = true
+					next = append(next, id)
+				}
+			}
+			if err := rows.Close(); err != nil {
+				return nil, err
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+		}
+		descendants = append(descendants, next...)
+		frontier = next
+	}
+	return descendants, nil
 }
 
 // withDurableTx runs fn in a transaction whose commit is synced to disk before

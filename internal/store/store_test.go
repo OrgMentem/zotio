@@ -1149,3 +1149,81 @@ func TestSweepMissingReapsUnseenRows(t *testing.T) {
 		t.Fatalf("reaped row left %d resources_fts rows, want 0", orphanFTS)
 	}
 }
+
+// A permanent delete is erased server-side with its children: a regular item
+// takes its notes and attachments, an attachment takes its annotations. The
+// reap must follow the same cascade, across both canonical resources, with the
+// same deletion markers. Reaping only the parent left the children live in
+// offline reads and FTS, attached to a parent that no longer exists, and a
+// sync inside the lag window re-inserted them because nothing marked them.
+func TestReapMirroredItemCascadesToChildrenAndAnnotations(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenWithContext(ctx, filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	row := func(key, itemType, parent, title string) json.RawMessage {
+		data := fmt.Sprintf(`"key":%q,"itemType":%q,"title":%q`, key, itemType, title)
+		if parent != "" {
+			data += fmt.Sprintf(`,"parentItem":%q`, parent)
+		}
+		return json.RawMessage(fmt.Sprintf(`{"key":%q,"version":4,"data":{%s}}`, key, data))
+	}
+	seed := func(resource, key, itemType, parent, title string) {
+		t.Helper()
+		if _, err := s.UpsertKeyed(resource, []string{key}, []json.RawMessage{row(key, itemType, parent, title)}); err != nil {
+			t.Fatalf("seed %s/%s: %v", resource, key, err)
+		}
+	}
+	seed("items", "PARENT01", "book", "", "CascadeParent")
+	seed("items", "ATTACH01", "attachment", "PARENT01", "CascadeAttachment")
+	seed("items", "ANNOT001", "annotation", "ATTACH01", "CascadeAnnotation")
+	seed("items-trash", "NOTE0001", "note", "PARENT01", "CascadeTrashedNote")
+	// Neighbours the cascade must leave alone: another parent's child, and an
+	// unrelated top-level item.
+	seed("items", "OTHERPAR", "book", "", "CascadeOtherParent")
+	seed("items", "OTHERATT", "attachment", "OTHERPAR", "CascadeOtherAttachment")
+
+	if err := s.ReapMirroredItem("PARENT01"); err != nil {
+		t.Fatalf("ReapMirroredItem: %v", err)
+	}
+
+	gone := []struct{ resource, key, title string }{
+		{"items", "PARENT01", "CascadeParent"},
+		{"items", "ATTACH01", "CascadeAttachment"},
+		{"items", "ANNOT001", "CascadeAnnotation"},
+		{"items-trash", "NOTE0001", "CascadeTrashedNote"},
+	}
+	for _, g := range gone {
+		if got, err := s.Get(g.resource, g.key); got != nil || !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s/%s survived the cascade: got=%s err=%v", g.resource, g.key, got, err)
+		}
+		if hits, err := s.Search(g.title, 10); err != nil || len(hits) != 0 {
+			t.Errorf("FTS document %q survived the cascade: %d hits, err = %v", g.title, len(hits), err)
+		}
+		for _, resource := range []string{"items", "items-trash"} {
+			pending, err := s.PendingWrites(resource)
+			if err != nil {
+				t.Fatalf("PendingWrites(%s): %v", resource, err)
+			}
+			if !pending[g.key].Deleted {
+				t.Errorf("no deletion marker for %s in %s: a sync that still lists it would re-insert the destroyed child", g.key, resource)
+			}
+		}
+	}
+
+	for _, key := range []string{"OTHERPAR", "OTHERATT"} {
+		if got, err := s.Get("items", key); got == nil || err != nil {
+			t.Errorf("unrelated item %s was reaped by the cascade: got=%s err=%v", key, got, err)
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if _, marked := pending[key]; marked {
+			t.Errorf("unrelated item %s carries a pending marker after the cascade", key)
+		}
+	}
+}
