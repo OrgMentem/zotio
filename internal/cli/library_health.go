@@ -10,6 +10,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -21,6 +22,7 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+	"zotio/internal/store"
 )
 
 const (
@@ -541,6 +543,29 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 					return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, commandRegistryPath(cmd), scope)
 				}
 			}
+			if !scope.All {
+				// A cohort that resolves to nothing inspects nothing: a mistyped
+				// key, a collection deleted upstream, or one created since the
+				// last sync would otherwise pass a gate and light a green badge.
+				// Same stance as the never-synced refusal above.
+				if scope.Type == "item" && len(scope.Keys) == 1 {
+					if _, gerr := db.GetContext(cmd.Context(), "items", scope.Keys[0]); gerr != nil {
+						if errors.Is(gerr, store.ErrNotFound) {
+							return notFoundErr(fmt.Errorf("library health: item %s is not in the local mirror; check the key or run 'zotio sync'", scope.Keys[0]))
+						}
+						return gerr
+					}
+				}
+				if len(scope.Keys) == 0 && (flagBadge || failOn != "" || failOnNew != "") {
+					detail := fmt.Sprintf("scope %q resolves no items in the local mirror (wrong key or name, or created since the last sync), so there is nothing to inspect", scope.Expr)
+					if flagBadge {
+						if err := printHealthBadge(cmd, healthBadge{SchemaVersion: 1, Label: flagBadgeLabel, Message: "empty scope", Color: "lightgrey"}); err != nil {
+							return err
+						}
+					}
+					return preconditionErr(fmt.Errorf("library health: %s; check the scope or run 'zotio sync'", detail))
+				}
+			}
 
 			report, err := assembleHealthReport(db, ctx, preset, kinds, failOn, scope)
 			if err != nil {
@@ -578,7 +603,13 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 					return fmt.Errorf("resolving output path: %w", lockErr)
 				}
 			}
-			baselineAndReport := func() error {
+			// exitErr is decided after the report is rendered; the baseline is
+			// published last and only when --fail-on-new did not trip, so a
+			// failed gate never absorbs the findings that failed it (a rerun of
+			// the same job must fail again) and a run killed before this point
+			// leaves the previous baseline intact.
+			var exitErr error
+			publish := func() error {
 				// apply baseline diff before any output mode or report sidecar is rendered.
 				if baselinePath != "" {
 					if err := applyHealthBaseline(&report, baselinePath); err != nil {
@@ -596,56 +627,55 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 							return err
 						}
 					}
-					return nil
-				}
-				if writeBaselinePath != "" {
-					if err := writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report)); err != nil {
-						return err
-					}
-				}
-				if reportPath != "" {
+				} else if reportPath != "" {
 					if err := writeHealthReportFile(reportPath, report); err != nil {
 						return err
 					}
 				}
+
+				// badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
+				if flagBadge {
+					if err := printHealthBadge(cmd, healthBadgeForReport(report, flagBadgeLabel)); err != nil {
+						return err
+					}
+				} else if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+					data, err := json.Marshal(report)
+					if err != nil {
+						return err
+					}
+					if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+						return err
+					}
+				} else {
+					printHealthReport(cmd, report)
+				}
+
+				newGateErr := healthNewGateExitError(report)
+				exitErr = healthFreshnessExitError(report)
+				if exitErr == nil {
+					exitErr = healthGateExitError(report)
+				}
+				if exitErr == nil {
+					exitErr = newGateErr
+				}
+				if writeBaselinePath != "" && !flags.dryRun && newGateErr == nil {
+					return writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report), report.Skipped)
+				}
 				return nil
 			}
 			if len(lockPaths) == 0 {
-				if err := baselineAndReport(); err != nil {
+				if err := publish(); err != nil {
 					return err
 				}
-			} else if err := withPathWriterLocks(cmd, lockPaths, "library health baseline/report", baselineAndReport); err != nil {
+			} else if err := withPathWriterLocks(cmd, lockPaths, "library health baseline/report", publish); err != nil {
 				return err
 			}
-
-			// badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
-			if flagBadge {
-				if err := printHealthBadge(cmd, healthBadgeForReport(report, flagBadgeLabel)); err != nil {
-					return err
-				}
-			} else if !wantsHumanTable(cmd.OutOrStdout(), flags) {
-				data, err := json.Marshal(report)
-				if err != nil {
-					return err
-				}
-				if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
-					return err
-				}
-			} else {
-				printHealthReport(cmd, report)
-			}
-			if ferr := healthFreshnessExitError(report); ferr != nil {
-				return ferr
-			}
-			if gerr := healthGateExitError(report); gerr != nil {
-				return gerr
-			}
-			return healthNewGateExitError(report)
+			return exitErr
 		},
 	}
 	cmd.Flags().StringVar(&flagFor, "for", "quick", "Check preset: quick, citation, systematic-review, vault, all")
 	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); live checks always cover the whole cohort")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
 	cmd.Flags().BoolVar(&flagCheckRetractions, "check-retractions", false, "Run the live CrossRef retraction check (network; DOI-bearing items)")
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
@@ -653,7 +683,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
 	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")
 	cmd.Flags().StringVar(&flagBaseline, "baseline", "", "Read health finding identities from this baseline JSON. A missing file is reported as 'baseline: not found' and nothing is diffed; with --fail-on-new it exits 9. Create one with --write-baseline")
-	cmd.Flags().StringVar(&flagWriteBaseline, "write-baseline", "", "Write current health finding identities to this baseline JSON after checks")
+	cmd.Flags().StringVar(&flagWriteBaseline, "write-baseline", "", "Write current health finding identities to this baseline JSON after the report is written; skipped when --fail-on-new fails, and a skipped check keeps its prior identities")
 	cmd.Flags().StringVar(&flagFailOnNew, "fail-on-new", "", "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any; none disables (requires --baseline, which must exist: a missing baseline exits 9)")
 	cmd.Flags().StringVar(&flagReport, "report", "", "Write the full JSON health report to this file in addition to stdout/badge output")
 	return cmd
@@ -1072,10 +1102,14 @@ func runBrokenAttachmentFileWithClient(db localQueryStore, ctx *healthContext, c
 		}, nil
 	}
 
-	attachments, err := queryPDFAttachments(db, ctx.limit)
+	// --limit caps only the findings listed, never the work: a SQL LIMIT here
+	// would pick the newest attachments library-wide and the scope filter
+	// would then drop them, scanning none of a scoped cohort's own files.
+	attachments, err := queryPDFAttachments(db, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("querying PDF attachments: %w", err)
 	}
+	attachments = filterAuditRowsByParent(attachments, scopeSelection{Keys: ctx.scopeKeys})
 	findings := make([]Finding, 0)
 	for _, a := range attachments {
 		key := sqlStringValue(a["key"])
@@ -1271,7 +1305,7 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 		}, nil
 	}
 
-	report, err := runRetractionCheckCached(retractCtx, db, httpClient, ctx.limit, "", nil, ctx.scopeKeys)
+	report, err := runRetractionCheckCached(retractCtx, db, httpClient, 0, "", nil, ctx.scopeKeys)
 	if err != nil {
 		return nil, nil, err
 	}

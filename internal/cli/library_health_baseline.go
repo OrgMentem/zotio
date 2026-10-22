@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"zotio/internal/cliutil"
@@ -88,7 +89,12 @@ func applyHealthBaseline(report *healthReport, path string) error {
 		out.New = append(out.New, finding)
 		out.NewIDs[identity] = struct{}{}
 	}
+	skippedKinds := healthSkippedKinds(report.Skipped)
 	for identity := range baselineIDs {
+		if _, skipped := skippedKinds[healthIdentityKind(identity)]; skipped {
+			// A skipped check observed nothing; its known findings are not resolved.
+			continue
+		}
 		if _, stillPresent := currentIDs[identity]; !stillPresent {
 			out.ResolvedCount++
 		}
@@ -116,9 +122,48 @@ func readHealthBaseline(path string) (healthBaselineFile, bool, error) {
 	return baseline, true, nil
 }
 
-// writeHealthBaseline atomically persists current watch-health identities for future deltas.
-func writeHealthBaseline(path string, preset string, findings []Finding) error {
+// healthIdentityKind returns the finding kind an identity was built from
+// (watchHealthFindingKey prefixes every identity with the kind).
+func healthIdentityKind(identity string) string {
+	kind, _, _ := strings.Cut(identity, "\x00")
+	return kind
+}
+
+func healthSkippedKinds(skipped []healthSkip) map[string]struct{} {
+	kinds := make(map[string]struct{}, len(skipped))
+	for _, skip := range skipped {
+		kinds[skip.Kind] = struct{}{}
+	}
+	return kinds
+}
+
+// writeHealthBaseline atomically persists current watch-health identities for
+// future deltas. A check that was skipped this run made no observation, so the
+// identities the file being replaced holds for that check's kind are carried
+// forward unchanged: a transient CrossRef failure must neither erase known
+// retractions (the next healthy run would re-alert them as new) nor count them
+// as resolved.
+func writeHealthBaseline(path string, preset string, findings []Finding, skipped []healthSkip) error {
 	identities := FindingIdentities(findings)
+	if len(skipped) > 0 {
+		if prior, ok, err := readHealthBaseline(path); err == nil && ok {
+			skippedKinds := healthSkippedKinds(skipped)
+			set := make(map[string]struct{}, len(identities))
+			for _, id := range identities {
+				set[id] = struct{}{}
+			}
+			for _, id := range prior.Identities {
+				if _, skippedKind := skippedKinds[healthIdentityKind(id)]; skippedKind && id != "" {
+					set[id] = struct{}{}
+				}
+			}
+			identities = identities[:0]
+			for id := range set {
+				identities = append(identities, id)
+			}
+			sort.Strings(identities)
+		}
+	}
 	payload := healthBaselineFile{
 		SchemaVersion: 1,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),

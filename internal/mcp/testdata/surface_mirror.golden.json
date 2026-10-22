@@ -3196,7 +3196,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max findings listed per kind (0 = all); also caps the live attachment scan (default: 0)",
+          "description": "Max findings listed per kind (0 = all); live checks always cover the whole cohort (default: 0)",
           "type": "number"
         },
         "report": {
@@ -3216,7 +3216,7 @@
           "type": "boolean"
         },
         "write-baseline": {
-          "description": "Write current health finding identities to this baseline JSON after checks",
+          "description": "Write current health finding identities to this baseline JSON after the report is written; skipped when --fail-on-new fails, and a skipped check keeps its prior identities",
           "type": "string"
         }
       },

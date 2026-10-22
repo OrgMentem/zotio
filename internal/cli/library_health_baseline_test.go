@@ -489,3 +489,139 @@ func TestLibraryHealthReadOnlyStaysLockFreeWhileOutputHeld(t *testing.T) {
 		t.Fatalf("read-only health while output held: %v", err)
 	}
 }
+
+// A run that fails --fail-on-new must not record the findings that failed it:
+// the documented CI recipe reads and writes one baseline file, so a rerun of
+// the failed job (or the next scheduled run) has to fail again until the
+// finding is fixed or the baseline is deliberately refreshed.
+func TestLibraryHealthFailedNewGateDoesNotAdvanceBaseline(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	baselinePath := filepath.Join(home, "health-baseline.json")
+	if _, err := runLibraryHealthBaselineCmd(t, nil,
+		"--for", "citation", "--fail-on", "none", "--write-baseline", baselinePath,
+	); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+	seeded, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read seeded baseline: %v", err)
+	}
+	upsertBaselineHealthItems(t, baselineNewIncompleteItem())
+
+	recipe := []string{
+		"--for", "citation", "--fail-on", "none",
+		"--baseline", baselinePath, "--write-baseline", baselinePath,
+		"--fail-on-new", "high",
+	}
+	for run := 1; run <= 2; run++ {
+		_, err := runLibraryHealthBaselineCmd(t, nil, recipe...)
+		if code := ExitCode(err); code != 11 {
+			t.Fatalf("run %d exit = %d (%v), want gate exit 11 every time the new finding is unfixed", run, code, err)
+		}
+		got, err := os.ReadFile(baselinePath)
+		if err != nil {
+			t.Fatalf("read baseline after run %d: %v", run, err)
+		}
+		if string(got) != string(seeded) {
+			t.Fatalf("baseline after failed run %d = %q, want it untouched %q", run, got, seeded)
+		}
+	}
+
+	// Without --fail-on-new the same invocation accepts the finding.
+	if _, err := runLibraryHealthBaselineCmd(t, nil,
+		"--for", "citation", "--fail-on", "none",
+		"--baseline", baselinePath, "--write-baseline", baselinePath,
+	); err != nil {
+		t.Fatalf("accepting run: %v", err)
+	}
+	if _, err := runLibraryHealthBaselineCmd(t, nil, recipe...); err != nil {
+		t.Fatalf("run after the baseline accepted the finding = %v, want exit 0", err)
+	}
+}
+
+// A skipped check observed nothing. Rewriting the baseline must keep the
+// identities it already holds for that kind and must not count them resolved,
+// or the next healthy run re-alerts every known finding as new.
+func TestLibraryHealthSkippedCheckKeepsBaselineIdentities(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	baselinePath := filepath.Join(home, "health-baseline.json")
+	if _, err := runLibraryHealthBaselineCmd(t, nil,
+		"--for", "all", "--fail-on", "none", "--write-baseline", baselinePath,
+	); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+	retracted := "retracted_item\x00item\x00RET"
+	resolvedMissing := "missing_doi\x00item\x00GONE"
+	prior, _, err := readHealthBaseline(baselinePath)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	prior.Identities = append(prior.Identities, retracted, resolvedMissing)
+	data, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatalf("marshal baseline: %v", err)
+	}
+	if err := os.WriteFile(baselinePath, data, 0o600); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+
+	// --check-retractions is off, so retracted_item is skipped this run.
+	reportPath := filepath.Join(home, "skip-report.json")
+	if _, err := runLibraryHealthBaselineCmd(t, nil,
+		"--for", "all", "--fail-on", "none",
+		"--baseline", baselinePath, "--write-baseline", baselinePath,
+		"--report", reportPath,
+	); err != nil {
+		t.Fatalf("skipping run: %v", err)
+	}
+	report := readHealthBaselineReportFile(t, reportPath)
+	if report.Baseline == nil || report.Baseline.ResolvedCount != 1 {
+		t.Fatalf("baseline block = %+v, want only the missing_doi identity resolved (the skipped retracted_item one is not)", report.Baseline)
+	}
+	after, _, err := readHealthBaseline(baselinePath)
+	if err != nil {
+		t.Fatalf("read rewritten baseline: %v", err)
+	}
+	if !slices.Contains(after.Identities, retracted) {
+		t.Fatalf("rewritten identities = %q, want the skipped check's retracted_item identity carried forward", after.Identities)
+	}
+	if slices.Contains(after.Identities, resolvedMissing) {
+		t.Fatalf("rewritten identities = %q, want the resolved missing_doi identity dropped", after.Identities)
+	}
+}
+
+// A scope that resolves to no mirrored item inspected nothing, so a gated or
+// badge run must refuse instead of reporting a healthy library.
+func TestLibraryHealthScopeResolvingNoItemsRefusesGatedRuns(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+
+	for _, scope := range []string{"collection:ZZZZ9999", "tag:no-such-tag"} {
+		_, err := runLibraryHealthBaselineCmd(t, nil, "--for", "citation", "--fail-on", "high", "--scope", scope)
+		if code := ExitCode(err); code != 9 {
+			t.Errorf("--scope %s gated exit = %d (%v), want precondition exit 9", scope, code, err)
+		}
+	}
+	out, err := runLibraryHealthBaselineCmd(t, nil, "--for", "citation", "--scope", "tag:no-such-tag", "--badge")
+	if code := ExitCode(err); code != 9 {
+		t.Errorf("--badge on an empty scope exit = %d (%v), want 9", code, err)
+	}
+	if badge := decodeHealthBaselineBadge(t, out); badge.Color == "brightgreen" {
+		t.Errorf("badge = %+v, want no green badge for an uninspected scope", badge)
+	}
+
+	_, err = runLibraryHealthBaselineCmd(t, nil, "--for", "citation", "--fail-on", "high", "--scope", "item:ZZZZ9999")
+	if code := ExitCode(err); code != 3 {
+		t.Errorf("--scope item:<phantom> exit = %d (%v), want not-found exit 3", code, err)
+	}
+
+	// An ungated informational run may still report the empty cohort.
+	if _, err := runLibraryHealthBaselineCmd(t, nil, "--for", "citation", "--fail-on", "none", "--scope", "tag:no-such-tag"); err != nil {
+		t.Errorf("ungated empty-scope run = %v, want an informational exit 0", err)
+	}
+
+	// A scope that does hold the failing items still trips the gate.
+	_, err = runLibraryHealthBaselineCmd(t, nil, "--for", "citation", "--fail-on", "high", "--scope", "tag:y")
+	if code := ExitCode(err); code != 11 {
+		t.Errorf("--scope tag:y exit = %d (%v), want gate exit 11", code, err)
+	}
+}

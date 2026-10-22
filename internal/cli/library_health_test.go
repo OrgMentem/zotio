@@ -1260,3 +1260,42 @@ func TestLibraryHealthVaultPresetCommandEndToEnd(t *testing.T) {
 		t.Errorf("report has %d findings (%v), want the 3 filename hazards", n, findingKinds(report))
 	}
 }
+
+// --limit trims the listed findings only. The retraction probe must still
+// look up every DOI item, not the N newest: otherwise an old retracted paper
+// is never checked and a gate on critical findings passes.
+func TestLibraryHealthLimitDoesNotCapRetractionLookups(t *testing.T) {
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"OLD","version":1,"data":{"key":"OLD","itemType":"journalArticle","title":"Old Retracted","DOI":"10.777/old","dateAdded":"2019-01-01T00:00:00Z"}}`),
+	}
+	for i := 0; i < 4; i++ {
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":"NEW%d","version":1,"data":{"key":"NEW%d","itemType":"journalArticle","title":"Recent","DOI":"10.777/new%d","dateAdded":"2026-01-0%dT00:00:00Z"}}`, i, i, i, i+1)))
+	}
+	seedRetractionDefaultStore(t, items)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() == "/works/10.777%2Fold" {
+			_, _ = w.Write([]byte(`{"message":{"updated-by":[{"DOI":"10.777/notice","type":"retraction","label":"Retracted","source":"publisher","updated":{"date-parts":[[2025,1,15]]}}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+	cmd := newLibraryHealthCmd(&rootFlags{asJSON: true, timeout: 5 * time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--for", "quick", "--check-retractions", "--limit", "2"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("library health: %v", err)
+	}
+	var report healthReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report %q: %v", out.String(), err)
+	}
+	if countFindingsByKind(report.Findings, "retracted_item") != 1 {
+		t.Fatalf("findings = %+v, want the OLD retraction found beyond --limit", report.Findings)
+	}
+}
