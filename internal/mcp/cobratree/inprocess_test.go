@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -273,5 +274,116 @@ func TestSafeInProcessHandlerRejectsHiddenSubcommandViaArgs(t *testing.T) {
 	}
 	if got := toolResultText(t, ordinaryRes); !strings.Contains(got, "capabilities:some-key") {
 		t.Fatalf("run result = %q, want the ordinary positional to reach the command", got)
+	}
+}
+
+// failureRoot builds a root whose "run" command writes partial output, then
+// fails with detail (or panics with it when panics is set).
+func failureRoot(partial, detail string, panics bool) func() *cobra.Command {
+	return func() *cobra.Command {
+		root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+		root.AddCommand(&cobra.Command{
+			Use: "run",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				fmt.Fprint(cmd.OutOrStdout(), partial)
+				if panics {
+					panic(detail)
+				}
+				return fmt.Errorf("%s", detail)
+			},
+		})
+		return root
+	}
+}
+
+// A failing command's diagnostic rides outside the library-data block with its
+// own 4096-byte cap, and the data block gives up that much of the transport
+// budget. Whatever the sizes, the result must stay inside bound.MaxBytes, stay
+// valid UTF-8 (a rune split by the cut must back up, not turn into U+FFFD),
+// keep the head of the diagnostic, and keep the diagnostic out of the block.
+// The recovered-panic path prefixes "panic: ", so sizes are stated for the
+// whole diagnostic, prefix included.
+func TestInProcessHandlerBoundsFailureDiagnostics(t *testing.T) {
+	const head = "diag-head:"
+	// diagnostic returns the full text after the data block, minus the
+	// leading newline: prefix + head + padding up to total bytes.
+	pad := func(prefix string, total int) string {
+		return prefix + head + strings.Repeat("a", total-len(prefix)-len(head))
+	}
+	cases := []struct {
+		name string
+		// build returns the whole diagnostic for the given prefix.
+		build func(prefix string) string
+		// wantLen is the exact length of the diagnostic after the data block
+		// (newline included) when it is truncated; 0 means it must survive
+		// verbatim.
+		wantLen int
+	}{
+		// The suffix is "\n" + diagnostic, so 4095 diagnostic bytes is exactly the cap.
+		{name: "below cap", build: func(p string) string { return pad(p, 4094) }},
+		{name: "at cap", build: func(p string) string { return pad(p, 4095) }},
+		{name: "just above cap", build: func(p string) string { return pad(p, 4096) }, wantLen: 4096},
+		{name: "far above cap", build: func(p string) string { return pad(p, 3*4096) }, wantLen: 4096},
+		{
+			// A 3-byte rune whose first byte sits at suffix offset 4092: the
+			// 4093-byte cut lands inside it and must back up to 4092.
+			name:    "multibyte rune straddles the cut",
+			build:   func(p string) string { return pad(p, 4091) + strings.Repeat("\u20ac", 3) },
+			wantLen: 4092 + len("..."),
+		},
+	}
+	partials := map[string]string{
+		"short partial output": "partial output",
+		// Framed, this fills the transport cap exactly: it passes on its own
+		// but leaves no room for the diagnostic unless the budget shrinks.
+		"cap-filling partial output": strings.Repeat("x", bound.MaxBytes-len(bound.UntrustedBlock(""))),
+	}
+	for _, panics := range []bool{false, true} {
+		prefix := ""
+		if panics {
+			prefix = "panic: "
+		}
+		for _, tc := range cases {
+			for partialName, partial := range partials {
+				t.Run(fmt.Sprintf("panic=%t/%s/%s", panics, tc.name, partialName), func(t *testing.T) {
+					diagnostic := tc.build(prefix)
+					res := runMirroredInProcess(context.Background(),
+						failureRoot(partial, strings.TrimPrefix(diagnostic, prefix), panics), []string{"run"}, nil)
+					if res == nil || !res.IsError {
+						t.Fatalf("result = %+v, want error tool result", res)
+					}
+					got := toolResultText(t, res)
+					if len(got) > bound.MaxBytes {
+						t.Errorf("result is %d bytes, over the %d-byte transport budget", len(got), bound.MaxBytes)
+					}
+					if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
+						t.Errorf("result is not clean UTF-8 (cut rune not backed up)")
+					}
+					closer := strings.LastIndex(got, "<<<END-ZOTERO-DATA ")
+					if !strings.Contains(got, "<<<ZOTERO-DATA ") || closer < 0 {
+						t.Fatalf("library output is not framed as data")
+					}
+					tail := got[closer+strings.Index(got[closer:], ">>>")+len(">>>"):]
+					if !strings.HasPrefix(tail, "\n"+prefix+head) {
+						t.Errorf("diagnostic outside the data block lost its head: %q", tail[:min(len(tail), 40)])
+					}
+					if strings.Contains(got[:closer], head) {
+						t.Errorf("diagnostic leaked into the library-data block")
+					}
+					if tc.wantLen == 0 {
+						if tail != "\n"+diagnostic {
+							t.Errorf("a diagnostic within the cap was altered (%d bytes after the block)", len(tail))
+						}
+						return
+					}
+					if !strings.HasSuffix(tail, "...") {
+						t.Errorf("an oversized diagnostic carries no truncation marker")
+					}
+					if len(tail) != tc.wantLen {
+						t.Errorf("diagnostic is %d bytes after the block, want %d", len(tail), tc.wantLen)
+					}
+				})
+			}
+		}
 	}
 }
