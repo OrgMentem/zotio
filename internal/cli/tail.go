@@ -276,6 +276,110 @@ func tailWorkflowTrigger(resource string, batch tailChangeBatch) (*workflowRunTr
 	return trigger, ""
 }
 
+// tailPageSize is the page size tail requests for a change window. Zotero's
+// Web API answers 25 objects when no limit is sent and caps a request at 100,
+// so every poll pages explicitly instead of trusting one response to hold the
+// whole window.
+const tailPageSize = 100
+
+// tailMaxWindowAttempts bounds how often a change window is re-read from its
+// start because the library moved while it was being paged.
+const tailMaxWindowAttempts = 3
+
+// errTailWindowMoved marks a window whose pages were read at different
+// library versions.
+var errTailWindowMoved = errors.New("the library changed while the change window was being read")
+
+// fetchTailWindow reads every page of the change window since the given
+// library version (0 = the whole current set) and returns its objects with the
+// library version the window was read at.
+//
+// The returned version becomes the poll's cursor, so it may only describe a
+// window that was read completely and at one version. Last-Modified-Version is
+// the version of the whole library, not of the last object on a page: saving
+// the first page's version after one response silently skipped every object
+// past that page (Web API default: 25) for good. A page that reports a
+// different version than the first means the library changed mid-walk, so
+// offsets may have shifted and an object may sit on no page at all; the walk
+// restarts, and after tailMaxWindowAttempts the poll fails with its cursor
+// untouched. Any page failure likewise discards what was read.
+func fetchTailWindow(ctx context.Context, c *client.Client, resource, path string, since int) ([]json.RawMessage, int, error) {
+	for attempt := 1; ; attempt++ {
+		items, version, err := fetchTailWindowOnce(ctx, c, resource, path, since)
+		if err == nil {
+			return items, version, nil
+		}
+		if !errors.Is(err, errTailWindowMoved) && !errors.Is(err, errTotalResultsChanged) {
+			return nil, 0, err
+		}
+		if attempt >= tailMaxWindowAttempts {
+			return nil, 0, fmt.Errorf("tail %s: %w on each of %d attempts; holding the cursor so the next poll retries: %v", resource, errTailWindowMoved, attempt, err)
+		}
+	}
+}
+
+// fetchTailWindowOnce walks the window once. Termination is judged by the
+// server's Total-Results when it sends one, and by a short page otherwise.
+func fetchTailWindowOnce(ctx context.Context, c *client.Client, resource, path string, since int) ([]json.RawMessage, int, error) {
+	var items []json.RawMessage
+	var windowVersion int
+	var totals pageTotals
+	var previous json.RawMessage
+	for page := 0; ; page++ {
+		start := len(items)
+		params := map[string]string{
+			"limit": strconv.Itoa(tailPageSize),
+			"start": strconv.Itoa(start),
+		}
+		if since > 0 {
+			params["since"] = strconv.Itoa(since)
+		}
+		body, version, totalHeader, err := c.GetWithVersionAndHeaderContext(ctx, path, params, "Total-Results")
+		if err != nil {
+			return nil, 0, err
+		}
+		if page == 0 {
+			windowVersion = version
+		} else if version != windowVersion {
+			return nil, 0, fmt.Errorf("%w: page at offset %d is at version %d, the window began at %d", errTailWindowMoved, start, version, windowVersion)
+		}
+
+		pageItems, _, _, isPage, extractErr := extractPageItemsWithError(body, "")
+		if extractErr != nil {
+			return nil, 0, fmt.Errorf("tail %s: decoding change page: %w", resource, extractErr)
+		}
+		if !isPage {
+			return nil, 0, fmt.Errorf("tail %s: decoding change page: expected JSON array or object", resource)
+		}
+		if err := totals.observe(totalHeader, start, len(pageItems)); err != nil {
+			if errors.Is(err, errTotalResultsChanged) {
+				return nil, 0, err
+			}
+			return nil, 0, fmt.Errorf("tail %s: change page at offset %d: %w", resource, start, err)
+		}
+		// A server that ignores start answers the same page every time.
+		// Distinct objects cannot repeat byte for byte, so a repeat is a
+		// stuck walk, not more data.
+		if len(pageItems) > 0 && bytes.Equal(body, previous) {
+			return nil, 0, fmt.Errorf("tail %s: the API ignored start=%d and repeated the previous page", resource, start)
+		}
+		previous = body
+		items = append(items, pageItems...)
+
+		if totals.known {
+			if err := totals.finish(len(items)); err == nil {
+				return items, windowVersion, nil
+			} else if len(pageItems) == 0 {
+				return nil, 0, fmt.Errorf("tail %s: change window ended early: %w", resource, err)
+			}
+			continue
+		}
+		if len(pageItems) < tailPageSize {
+			return items, windowVersion, nil
+		}
+	}
+}
+
 // emitChangesWithHook polls one resource for changes since the stored tail
 // cursor, emits upsert/delete NDJSON events for the cycle, routes them to the
 // deliver sink, and advances the cursor. It returns the number of emitted
@@ -294,12 +398,17 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		return 0, fmt.Errorf("tail %s: reading cursor: %w", resource, err)
 	}
 
+	// params carries only the since filter: /deleted is a single bucketed
+	// document, not a paginated list, so it takes no limit or start.
 	params := map[string]string{}
 	if cursor > 0 {
 		params["since"] = strconv.Itoa(cursor)
 	}
 
-	body, newVer, err := c.GetWithVersionContext(ctx, path, params)
+	// The whole change window is read before anything is emitted or the
+	// cursor moves: the version saved below is the library version of the
+	// WHOLE window, so it is only valid once every page of it was seen.
+	items, newVer, err := fetchTailWindow(ctx, c, resource, path, cursor)
 	if err != nil {
 		return 0, err
 	}
@@ -315,13 +424,6 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		}
 	}
 
-	items, _, _, isPage, extractErr := extractPageItemsWithError(body, "")
-	if extractErr != nil {
-		return 0, fmt.Errorf("tail %s: decoding change page: %w", resource, extractErr)
-	}
-	if !isPage {
-		return 0, fmt.Errorf("tail %s: decoding change page: expected JSON array or object", resource)
-	}
 	for i, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
