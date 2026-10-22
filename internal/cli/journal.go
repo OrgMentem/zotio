@@ -399,8 +399,29 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 // Preview-first like every mutation: pass --yes to apply.
 func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:         "undo <run-id>",
-		Short:       "Reverse a recorded run's reversible (tag/collection) changes",
+		Use:   "undo <run-id>",
+		Short: "Reverse a recorded run's reversible changes (tags, collections, captured fields, created items)",
+		Long: `Reverses what one journal entry recorded, as one new run that is itself journaled.
+Without --yes it only previews the reversal; add --yes to apply it.
+
+What it reverses:
+  - tag and collection additions and removals: each one is inverted
+  - field changes whose previous value the run captured while it wrote (an
+    enrichment's DOI or abstract, a line it appended to Extra): the field is
+    restored, and a field you edited since is left as it is
+  - created items (items create, import): the recorded items are moved to the
+    Zotero trash, which is not a permanent delete; restore them from the trash
+
+What it refuses, and reports in "refused": field overwrites with no captured
+previous value, merges, deletions, renames that replace one tag or collection
+with another, and creates whose Zotero key was not recorded. A refusal changes
+nothing, so review the entry with "journal show <run-id>" before you rely on a
+full reversal.
+
+Take the run-id from "journal list". A workflow ID is not a run-id: undo each
+entry it lists.`,
+		Example: `  zotio journal undo 20260901T101500Z-1a2b3c4d          # preview: lists the tag changes and the items it would trash
+  zotio journal undo 20260901T101500Z-1a2b3c4d --yes    # apply the reversal`,
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
