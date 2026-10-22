@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -438,7 +439,9 @@ func (s *importFileConnectorSession) run(cmd *cobra.Command) error {
 func countImportFileRecords(content, format string) int {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "bibtex":
-		return len(bibTeXEntryStartPattern.FindAllStringIndex(content, -1))
+		// A malformed entry stops the walk; the translator reports it.
+		entries, _ := scanBibTeXEntries(content)
+		return len(entries)
 	case "ris":
 		count := 0
 		scanner := bufio.NewScanner(strings.NewReader(content))
@@ -534,8 +537,19 @@ func parseImportFileItems(content, format, collection string) ([]map[string]any,
 	}
 }
 
-func parseBibTeXItems(content, collection string) ([]map[string]any, error) {
-	items := make([]map[string]any, 0)
+// bibTeXEntry is one real bibliographic record found by scanBibTeXEntries.
+type bibTeXEntry struct {
+	entryType string
+	body      string
+}
+
+// scanBibTeXEntries walks the file at top level only. It steps over each
+// block's matching brace, so an `@word{` written inside a field value is never
+// a record, and it drops the reserved @comment, @string and @preamble blocks
+// that are not bibliographic records. It returns the entries read before any
+// malformed block together with that block's error.
+func scanBibTeXEntries(content string) ([]bibTeXEntry, error) {
+	entries := make([]bibTeXEntry, 0)
 	for offset := 0; offset < len(content); {
 		loc := bibTeXEntryStartPattern.FindStringSubmatchIndex(content[offset:])
 		if loc == nil {
@@ -546,24 +560,41 @@ func parseBibTeXItems(content, collection string) ([]map[string]any, error) {
 		openBrace := offset + loc[1] - 1
 		closeBrace, err := findMatchingBrace(content, openBrace)
 		if err != nil {
-			return nil, err
+			return entries, err
 		}
+		offset = closeBrace + 1
+		switch entryType {
+		case "comment", "string", "preamble":
+			continue
+		}
+		entries = append(entries, bibTeXEntry{entryType: entryType, body: content[openBrace+1 : closeBrace]})
+	}
+	return entries, nil
+}
 
-		fields := parseBibTeXFields(content[openBrace+1 : closeBrace])
-		item := bibTeXItemFromFields(entryType, fields)
+func parseBibTeXItems(content, collection string) ([]map[string]any, error) {
+	entries, err := scanBibTeXEntries(content)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		item := bibTeXItemFromFields(entry.entryType, parseBibTeXFields(entry.body))
 		addImportCollection(item, collection)
 		items = append(items, item)
-		offset = closeBrace + 1
 	}
 	return items, nil
 }
 
+// findMatchingBrace returns the index of the brace that closes the one at
+// open. Braces always nest; a double quote is not a delimiter here because
+// BibTeX gives it meaning only at the top of a field value, and inside braces
+// it is a literal (an inch mark, a quoted word).
 func findMatchingBrace(s string, open int) (int, error) {
 	if open < 0 || open >= len(s) || s[open] != '{' {
 		return -1, fmt.Errorf("invalid BibTeX entry")
 	}
 	depth := 0
-	inQuote := false
 	escaped := false
 	for i := open; i < len(s); i++ {
 		ch := s[i]
@@ -573,13 +604,6 @@ func findMatchingBrace(s string, open int) (int, error) {
 		}
 		if ch == '\\' {
 			escaped = true
-			continue
-		}
-		if ch == '"' {
-			inQuote = !inQuote
-			continue
-		}
-		if inQuote {
 			continue
 		}
 		switch ch {
@@ -607,15 +631,26 @@ func parseBibTeXFields(body string) map[string]string {
 		if name == "" {
 			continue
 		}
+		if name == "author" {
+			// Keep one brace layer: a doubly braced name is a protected
+			// corporate author that parseImportCreators must not split.
+			fields[name] = cleanBibTeXValueDepth(value, 1)
+			continue
+		}
 		fields[name] = cleanBibTeXValue(value)
 	}
 	return fields
 }
 
+// splitTopLevel splits s on sep outside brackets and quoted strings. A double
+// quote opens a quoted string only at depth 0; inside braces it is a literal.
+// Within a quoted string only braces nest, and the quote closes at brace depth
+// 0.
 func splitTopLevel(s string, sep byte) []string {
 	parts := make([]string, 0)
 	start := 0
 	depth := 0
+	quoteDepth := 0
 	inQuote := false
 	escaped := false
 	for i := 0; i < len(s); i++ {
@@ -628,21 +663,35 @@ func splitTopLevel(s string, sep byte) []string {
 			escaped = true
 			continue
 		}
-		if ch == '"' {
-			inQuote = !inQuote
-			continue
-		}
-		if !inQuote {
+		if inQuote {
 			switch ch {
-			case '{', '(', '[':
-				depth++
-			case '}', ')', ']':
-				if depth > 0 {
-					depth--
+			case '{':
+				quoteDepth++
+			case '}':
+				if quoteDepth > 0 {
+					quoteDepth--
+				}
+			case '"':
+				if quoteDepth == 0 {
+					inQuote = false
 				}
 			}
+			continue
 		}
-		if ch == sep && depth == 0 && !inQuote {
+		switch ch {
+		case '"':
+			if depth == 0 {
+				inQuote = true
+				quoteDepth = 0
+			}
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if ch == sep && depth == 0 {
 			parts = append(parts, s[start:i])
 			start = i + 1
 		}
@@ -652,8 +701,14 @@ func splitTopLevel(s string, sep byte) []string {
 }
 
 func cleanBibTeXValue(value string) string {
+	return cleanBibTeXValueDepth(value, -1)
+}
+
+// cleanBibTeXValueDepth strips at most maxLayers outer delimiter layers
+// (all of them when maxLayers is negative) and unescapes the rest.
+func cleanBibTeXValueDepth(value string, maxLayers int) string {
 	value = strings.TrimSpace(value)
-	for len(value) >= 2 {
+	for layers := 0; len(value) >= 2 && (maxLayers < 0 || layers < maxLayers); layers++ {
 		if value[0] == '{' && value[len(value)-1] == '}' {
 			if close, err := findMatchingBrace(value, 0); err == nil && close == len(value)-1 {
 				value = strings.TrimSpace(value[1 : len(value)-1])
@@ -838,19 +893,67 @@ func risDate(value string) string {
 	return value
 }
 
+// parseImportCreators reads a BibTeX author list. Names split on a top-level
+// "and" only; a name wrapped whole in braces is an institution, kept as one
+// single-field creator.
 func parseImportCreators(raw string) []map[string]any {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	parts := bibTeXAuthorSplitPattern.Split(raw, -1)
+	parts := splitBibTeXNames(raw)
 	creators := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
+		if name, ok := protectedBibTeXName(part); ok {
+			creators = append(creators, map[string]any{"creatorType": "author", "name": name})
+			continue
+		}
 		creator := parseImportCreator(part)
 		if len(creator) > 1 {
 			creators = append(creators, creator)
 		}
 	}
 	return creators
+}
+
+// splitBibTeXNames splits on the word "and" at brace depth 0.
+func splitBibTeXNames(raw string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth != 0 || !unicode.IsSpace(rune(raw[i])) {
+				continue
+			}
+			if loc := bibTeXAuthorSplitPattern.FindStringIndex(raw[i:]); loc != nil && loc[0] == 0 {
+				parts = append(parts, raw[start:i])
+				i += loc[1] - 1
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, raw[start:])
+}
+
+// protectedBibTeXName returns the inner text when raw is one braced group.
+func protectedBibTeXName(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '{' {
+		return "", false
+	}
+	if closeIdx, err := findMatchingBrace(raw, 0); err != nil || closeIdx != len(raw)-1 {
+		return "", false
+	}
+	name := strings.TrimSpace(cleanBibTeXValue(raw))
+	return name, name != ""
 }
 
 func parseImportCreator(raw string) map[string]any {
