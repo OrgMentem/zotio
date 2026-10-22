@@ -9,8 +9,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +24,33 @@ import (
 const defaultAPIVersion = "3"
 
 const connectorSuccessBodyLimit = 32 << 20 // Connector success payloads are JSON metadata; 32 MiB leaves headroom for large imports while bounding spoofed local endpoints.
+
+// ErrCommitted marks an error returned after Zotero answered with its success
+// status: the write exists on the desktop even though the response body could
+// not be read or decoded. Callers match it with errors.Is and must report the
+// write as committed, never as a clean failure that invites a second write.
+var ErrCommitted = errors.New("connector write committed")
+
+// ErrOutcomeUnknown marks an error after the request was dispatched whose
+// outcome the desktop never confirmed: the connection dropped, the caller was
+// canceled, or Zotero answered 5xx (which can follow a committed write). The
+// write may or may not exist, so a replay can duplicate it.
+var ErrOutcomeUnknown = errors.New("connector write outcome unknown")
+
+// markedError keeps the original message and wraps it, and also answers
+// errors.Is for one of the sentinels above.
+type markedError struct {
+	err  error
+	kind error
+}
+
+func (e markedError) Error() string        { return e.err.Error() }
+func (e markedError) Unwrap() error        { return e.err }
+func (e markedError) Is(target error) bool { return target == e.kind }
+
+func committed(err error) error { return markedError{err: err, kind: ErrCommitted} }
+
+func outcomeUnknown(err error) error { return markedError{err: err, kind: ErrOutcomeUnknown} }
 
 // Client speaks Zotero's desktop Connector API at /connector/*.
 type Client struct {
@@ -247,7 +276,7 @@ func (c *Client) SaveStandaloneAttachment(ctx context.Context, sessionID, title,
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return false, fmt.Errorf("decoding connector saveStandaloneAttachment response: %w", err)
+			return false, committed(fmt.Errorf("decoding connector saveStandaloneAttachment response: %w", err))
 		}
 	}
 	return payload.CanRecognize, nil
@@ -368,7 +397,7 @@ func (c *Client) Import(ctx context.Context, sessionID string, data []byte, cont
 	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, fmt.Errorf("decoding connector import response: %w", err)
+		return nil, committed(fmt.Errorf("decoding connector import response: %w", err))
 	}
 	return items, nil
 }
@@ -532,14 +561,20 @@ func metadataHeaderJSON(v any) (string, error) {
 func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]byte, error) {
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("connector %s: %w", endpoint, err)
+		wrapped := fmt.Errorf("connector %s: %w", endpoint, err)
+		// A refused dial never reached Zotero, so nothing was written.
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && opErr.Op == "dial" {
+			return nil, wrapped
+		}
+		return nil, outcomeUnknown(wrapped)
 	}
 	defer resp.Body.Close()
 	var body []byte
 	if resp.StatusCode == want {
 		body, err = readConnectorSuccessBody(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("connector %s: %w", endpoint, err)
+			return nil, committed(fmt.Errorf("connector %s: %w", endpoint, err))
 		}
 	} else {
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -548,7 +583,11 @@ func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]b
 		}
 	}
 	if resp.StatusCode != want {
-		return nil, fmt.Errorf("connector %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		statusErr := fmt.Errorf("connector %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		if resp.StatusCode >= 500 {
+			return nil, outcomeUnknown(statusErr)
+		}
+		return nil, statusErr
 	}
 	return body, nil
 }

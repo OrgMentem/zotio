@@ -5,15 +5,20 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"zotio/internal/connector"
 	"zotio/internal/mutation"
 )
 
@@ -376,5 +381,81 @@ func TestImportFileConnectorKeylessEntryKeepsPosition(t *testing.T) {
 	}
 	if journal.Ops[2].Key != "CCC33333" {
 		t.Fatalf("journal op 2 key = %q, want CCC33333", journal.Ops[2].Key)
+	}
+}
+
+// Zotero commits /connector/import and the response is lost. The run must
+// report committed conflicts with the session and journal them, and rerunning
+// the same file must refuse before a second POST until --reimport is passed.
+func TestConnectorImportLostResponseDoesNotReplay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/connector/import" {
+			http.NotFound(w, r)
+			return
+		}
+		if posts.Add(1) == 1 {
+			// The desktop commits, then the connection drops mid-response.
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`[{"key":"AAA11111"},{"key":"BBB22222"}]`))
+	}))
+	t.Cleanup(srv.Close)
+	conn := connector.New(srv.URL+"/connector", 5*time.Second)
+	content := []byte("TY  - JOUR\nTI  - One\nER  - \nTY  - JOUR\nTI  - Two\nER  - \n")
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/api/users/0")}
+
+	runOnce := func(reimport bool) (mutation.Envelope, error) {
+		s := &importFileConnectorSession{flags: flags, content: content, format: "ris", records: 2, reimport: reimport}
+		cmd := newImportFileCmd(flags)
+		cmd.SetContext(context.Background())
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		ops := make([]mutation.Op, 0, 2)
+		for index := range 2 {
+			ops = append(ops, mutation.Op{
+				ID: fmt.Sprintf("import.file:connector:%03d", index+1), Key: "record", Kind: "item_create",
+				Changes: []mutation.Change{{Field: "item", Add: map[string]any{"record": index + 1}}},
+				Apply:   func() (string, any, error) { return s.apply(cmd, index) },
+			})
+		}
+		// The test seam: dispatch through the in-process connector.
+		s.done = true
+		s.err = s.dispatch(cmd, conn, "")
+		return runMutation(context.Background(), flags, "import.file", ops, func(o *mutation.Options) { o.ContinueOnError = true })
+	}
+
+	env, _ := runOnce(false)
+	if env.Result == nil || env.Result.Summary.Conflicts != 2 || env.Result.Summary.Failed != 0 {
+		t.Fatalf("first run = %+v, want two committed conflicts and no clean failure", env.Result)
+	}
+	reason, _ := env.Result.Items[0].Reason.(map[string]any)
+	if reason["committed"] != true || reason["session"] == "" || reason["session"] == nil {
+		t.Fatalf("reason = %#v, want committed evidence with the session", env.Result.Items[0].Reason)
+	}
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("journal = %+v err=%v, want the unconfirmed import recorded", entries, err)
+	}
+
+	env, _ = runOnce(false)
+	if posts.Load() != 1 {
+		t.Fatalf("POST /connector/import count = %d after the rerun, want 1: the replay must be refused before dispatch", posts.Load())
+	}
+	if env.Result == nil || env.Result.Summary.Failed == 0 {
+		t.Fatalf("rerun = %+v, want a refusal", env.Result)
+	}
+
+	env, _ = runOnce(true)
+	if posts.Load() != 2 || env.Result == nil || env.Result.Summary.Applied != 2 {
+		t.Fatalf("--reimport: posts=%d result=%+v, want a second dispatch that applies both records", posts.Load(), env.Result)
 	}
 }

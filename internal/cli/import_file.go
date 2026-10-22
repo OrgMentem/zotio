@@ -5,6 +5,7 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -43,6 +44,7 @@ var bibTeXAuthorSplitPattern = regexp.MustCompile(`(?i)\s+and\s+`)
 func newImportFileCmd(flags *rootFlags) *cobra.Command {
 	var flagFormat string
 	var flagCollection string
+	var flagReimport bool
 
 	cmd := &cobra.Command{
 		Use:   "file <path>",
@@ -82,7 +84,7 @@ instead of the run stopping at the first rejection.`,
 			}
 
 			if flags.via == "connector" {
-				return importFileViaConnector(cmd, flags, filePath, content, format, flagCollection)
+				return importFileViaConnector(cmd, flags, filePath, content, format, flagCollection, flagReimport)
 			}
 			items, err := parseImportFileItems(string(content), format, flagCollection)
 			if err != nil {
@@ -123,6 +125,7 @@ instead of the run stopping at the first rejection.`,
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "", "Input format (bibtex, ris, csljson; csljson requires --via connector)")
 	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to add imported items to")
+	cmd.Flags().BoolVar(&flagReimport, "reimport", false, "With --via connector, import again even though an earlier import of this exact file was never confirmed and may have committed")
 
 	return cmd
 }
@@ -254,7 +257,7 @@ func (b *importFileBatch) failRange(start, end int, err error) {
 // The connector translates the whole file in one session, so every locally
 // counted record becomes an operation for previewing and --max-changes, and the
 // first applied operation runs the session the rest report against.
-func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string) error {
+func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string, reimport bool) error {
 	records := countImportFileRecords(string(content), format)
 	if records == 0 {
 		return fmt.Errorf("no items found in %s", filePath)
@@ -265,6 +268,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 		format:        format,
 		collectionKey: collectionKey,
 		records:       records,
+		reimport:      reimport,
 	}
 	ops := make([]mutation.Op, 0, records)
 	for index := range records {
@@ -283,7 +287,11 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 		})
 	}
 
-	env, runErr := runMutation(cmd.Context(), flags, "import.file", ops)
+	// Every record shares the one desktop session, so an early conflict cannot
+	// un-send the records behind it and they must not read as not_attempted.
+	env, runErr := runMutation(cmd.Context(), flags, "import.file", ops, func(o *mutation.Options) {
+		o.ContinueOnError = true
+	})
 	return renderMutationResult(cmd, flags, env, runErr, nil)
 }
 
@@ -297,6 +305,13 @@ type importFileConnectorSession struct {
 	content       []byte
 	format        string
 	collectionKey string
+
+	// reimport lets a run replay content whose earlier import was left
+	// unconfirmed (--reimport).
+	reimport bool
+	// ambiguousSession is the session of an import that was dispatched with no
+	// usable answer; its items may exist but are unaddressable.
+	ambiguousSession string
 
 	done      bool
 	err       error
@@ -313,6 +328,11 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 		s.err = s.run(cmd)
 	}
 	if s.err != nil {
+		if s.ambiguousSession != "" {
+			// Every record shares the one unconfirmed import and reports its
+			// own committed conflict.
+			return "conflict", connectorAmbiguousImportDetail(s, index), nil
+		}
 		if s.sessionID != "" {
 			// Import committed but UpdateSession/filing failed. The items are
 			// already in Zotero — report per-op applied with a singular key so
@@ -405,14 +425,48 @@ func (s *importFileConnectorSession) run(cmd *cobra.Command) error {
 			return err
 		}
 	}
+	return s.dispatch(cmd, conn, target)
+}
+
+// dispatch sends the file to Zotero desktop under a fresh session, guarded by
+// the durable intent record, and files the result into target.
+func (s *importFileConnectorSession) dispatch(cmd *cobra.Command, conn *connector.Client, target string) error {
+	flags := s.flags
 	sessionID, err := connector.NewID()
 	if err != nil {
 		return err
 	}
-	items, err := conn.Import(cmd.Context(), sessionID, s.content, connectorImportContentType(s.format))
+	// Zotero's /connector/import cannot be asked whether a session committed, so
+	// the intent is recorded durably BEFORE dispatch and removed only once the
+	// outcome is known. A lost response, a crash after the commit, or a cancel
+	// leaves the record, and the next run of the same bytes refuses to replay
+	// until the operator has looked at the library.
+	pendingPath, identity, err := importFilePendingPath(s.content, s.format)
 	if err != nil {
 		return err
 	}
+	if prior, err := readImportFilePending(pendingPath); err != nil {
+		return err
+	} else if prior != nil && !s.reimport {
+		return preconditionErr(fmt.Errorf("an earlier import of this exact file (session %s, started %s) was sent to Zotero desktop and its outcome was never confirmed, so it may already have created every record; importing again can duplicate them: check the library, then rerun with --reimport (or delete %s)", prior.Session, prior.StartedAt, pendingPath))
+	}
+	if err := writeImportFilePending(pendingPath, newImportFilePending(sessionID, identity, s.format, s.records, target)); err != nil {
+		return fmt.Errorf("recording import intent before dispatch: %w", err)
+	}
+	items, err := conn.Import(cmd.Context(), sessionID, s.content, connectorImportContentType(s.format))
+	if err != nil {
+		if errors.Is(err, connector.ErrCommitted) || errors.Is(err, connector.ErrOutcomeUnknown) {
+			// Dispatched with no usable answer: keep the intent record and
+			// report a committed conflict instead of a clean failure.
+			s.ambiguousSession = sessionID
+			s.target = target
+			refreshItemsFromLocalAPI(cmd.Context(), flags)
+			return err
+		}
+		_ = os.Remove(pendingPath)
+		return err
+	}
+	_ = os.Remove(pendingPath)
 	// Populate partial-result fields BEFORE the filing step: if UpdateSession
 	// fails after the items are already committed, the caller must receive the
 	// populated result (session, keys, count) alongside the error so it can
@@ -503,6 +557,20 @@ func connectorUnidentifiedDetail(s *importFileConnectorSession, index int) map[s
 		"record":    index + 1,
 		"imported":  s.imported,
 		"message":   fmt.Sprintf("translator returned record %d without a Zotero key in session %s; the item was created but cannot be addressed by key — find it in Zotero by its metadata, then either file it by hand or delete it and re-import; do not re-import blindly", index+1, s.sessionID),
+	}
+	if s.target != "" {
+		detail["target"] = s.target
+	}
+	return detail
+}
+
+func connectorAmbiguousImportDetail(s *importFileConnectorSession, index int) map[string]any {
+	detail := map[string]any{
+		"via":       "connector",
+		"committed": true,
+		"session":   s.ambiguousSession,
+		"record":    index + 1,
+		"message":   fmt.Sprintf("the import (session %s) was sent to Zotero desktop but its outcome was never confirmed (%v); the records may already exist, so check the library before importing this file again — a rerun is refused until then (--reimport overrides)", s.ambiguousSession, s.err),
 	}
 	if s.target != "" {
 		detail["target"] = s.target

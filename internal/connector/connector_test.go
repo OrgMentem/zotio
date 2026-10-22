@@ -954,3 +954,55 @@ func mustMarshalJSON(t *testing.T, value any) string {
 	}
 	return string(data)
 }
+
+// A write that was dispatched without a usable answer must be distinguishable
+// from one that provably never happened: callers replay only the latter.
+func TestImportClassifiesWhetherTheWriteMayHaveCommitted(t *testing.T) {
+	cases := []struct {
+		name        string
+		handler     http.HandlerFunc
+		wantCommit  bool
+		wantUnknown bool
+	}{
+		{"201 with an undecodable body", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("not json"))
+		}, true, false},
+		{"connection dropped before any response", func(w http.ResponseWriter, r *http.Request) {
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		}, false, true},
+		{"5xx can follow a committed write", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}, false, true},
+		{"4xx rejected before any write", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "no translator", http.StatusBadRequest)
+		}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			_, err := New(srv.URL+"/connector", 5*time.Second).Import(context.Background(), "s", []byte("x"), "text/plain")
+			if err == nil {
+				t.Fatal("Import error = nil")
+			}
+			if got := errors.Is(err, ErrCommitted); got != tc.wantCommit {
+				t.Fatalf("Is(ErrCommitted) = %t, want %t (%v)", got, tc.wantCommit, err)
+			}
+			if got := errors.Is(err, ErrOutcomeUnknown); got != tc.wantUnknown {
+				t.Fatalf("Is(ErrOutcomeUnknown) = %t, want %t (%v)", got, tc.wantUnknown, err)
+			}
+		})
+	}
+
+	// A refused dial never reached Zotero.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	base := srv.URL
+	srv.Close()
+	_, err := New(base+"/connector", 5*time.Second).Import(context.Background(), "s", []byte("x"), "text/plain")
+	if err == nil || errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, ErrCommitted) {
+		t.Fatalf("refused dial err = %v, want a plain error that proves nothing was written", err)
+	}
+}
