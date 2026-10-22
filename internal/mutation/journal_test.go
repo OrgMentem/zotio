@@ -4,8 +4,10 @@
 package mutation
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -604,5 +606,136 @@ func TestRunObservedCallsBackAfterEachAttemptedOp(t *testing.T) {
 	want := "apply:applied,outcome:a=applied,apply:failed,outcome:f=failed"
 	if got := strings.Join(seen, ","); got != want {
 		t.Fatalf("sequence = %q, want %q (fail-fast leaves z not attempted)", got, want)
+	}
+}
+
+// appendJournalBytes appends raw bytes to the journal without a terminator, as
+// a kill mid-append leaves them.
+func appendJournalBytes(t *testing.T, dir string, data []byte) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(dir, JournalFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		t.Fatalf("append journal bytes: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+}
+
+// tornFragment returns n bytes that open a journal record and never close it.
+func tornFragment(n int) []byte {
+	prefix := `{"run_id":"torn","operation":"` // an unterminated string: never valid JSON
+	return append([]byte(prefix), strings.Repeat("a", n-len(prefix))...)
+}
+
+// The repair scans backward in 4096-byte chunks for the last newline. These
+// tails straddle the chunk boundary, so a wrong offset or chunk advance would
+// truncate the preceding records or quarantine the wrong bytes.
+func TestWriteEntryRepairsTornTailAcrossChunkBoundary(t *testing.T) {
+	for _, size := range []int{4095, 4096, 4097, 3 * 4096, 3*4096 + 1} {
+		t.Run(fmt.Sprintf("torn %d bytes", size), func(t *testing.T) {
+			dir := t.TempDir()
+			for i, id := range []string{"run-1", "run-2"} {
+				entry, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9+i, 0, 0, 0, time.UTC))
+				entry.RunID = id
+				if err := WriteEntry(dir, entry); err != nil {
+					t.Fatalf("write %s: %v", id, err)
+				}
+			}
+			torn := tornFragment(size)
+			appendJournalBytes(t, dir, torn)
+
+			next, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC))
+			next.RunID = "run-3"
+			if err := WriteEntry(dir, next); err != nil {
+				t.Fatalf("write after torn tail: %v", err)
+			}
+
+			entries, err := ListEntries(dir)
+			if err != nil {
+				t.Fatalf("list after repair: %v", err)
+			}
+			if len(entries) != 3 || entries[0].RunID != "run-3" || entries[1].RunID != "run-2" || entries[2].RunID != "run-1" {
+				t.Fatalf("entries = %+v, want [run-3, run-2, run-1]: the repair lost or kept the wrong bytes", entries)
+			}
+			sidecars, _ := filepath.Glob(filepath.Join(dir, JournalFileName+".torn-*"))
+			if len(sidecars) != 1 {
+				t.Fatalf("torn sidecars = %v, want exactly one", sidecars)
+			}
+			preserved, err := os.ReadFile(sidecars[0])
+			if err != nil {
+				t.Fatalf("read sidecar: %v", err)
+			}
+			if !bytes.Equal(preserved, torn) {
+				t.Fatalf("sidecar holds %d bytes, want exactly the %d torn bytes", len(preserved), len(torn))
+			}
+		})
+	}
+}
+
+// A torn record can be the only content: the scan then reaches offset zero.
+func TestWriteEntryRepairsJournalThatIsOneTornRecord(t *testing.T) {
+	for _, size := range []int{40, 4096, 4097} {
+		t.Run(fmt.Sprintf("torn %d bytes", size), func(t *testing.T) {
+			dir := t.TempDir()
+			torn := tornFragment(size)
+			appendJournalBytes(t, dir, torn)
+
+			next, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC))
+			next.RunID = "run-1"
+			if err := WriteEntry(dir, next); err != nil {
+				t.Fatalf("write after torn tail: %v", err)
+			}
+			entries, err := ListEntries(dir)
+			if err != nil || len(entries) != 1 || entries[0].RunID != "run-1" {
+				t.Fatalf("entries = %+v, err = %v, want only run-1", entries, err)
+			}
+			sidecars, _ := filepath.Glob(filepath.Join(dir, JournalFileName+".torn-*"))
+			if len(sidecars) != 1 {
+				t.Fatalf("torn sidecars = %v, want exactly one", sidecars)
+			}
+			if preserved, _ := os.ReadFile(sidecars[0]); !bytes.Equal(preserved, torn) {
+				t.Fatalf("sidecar holds %d bytes, want the %d torn bytes", len(preserved), len(torn))
+			}
+		})
+	}
+}
+
+// A complete record longer than one chunk that only lost its newline is kept and
+// terminated, never quarantined.
+func TestWriteEntryTerminatesMultiChunkCompleteTail(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	if err := WriteEntry(dir, first); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	big, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	big.RunID = "run-2"
+	big.Ops[0].Changes = []Change{{Field: "extra", Add: strings.Repeat("x", 3*4096)}}
+	line, err := json.Marshal(big)
+	if err != nil || len(line) <= 2*4096 {
+		t.Fatalf("marshal big entry: %d bytes, err %v, want a multi-chunk record", len(line), err)
+	}
+	appendJournalBytes(t, dir, line)
+
+	third, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC))
+	third.RunID = "run-3"
+	if err := WriteEntry(dir, third); err != nil {
+		t.Fatalf("write after unterminated record: %v", err)
+	}
+	entries, err := ListEntries(dir)
+	if err != nil || len(entries) != 3 || entries[1].RunID != "run-2" {
+		t.Fatalf("entries = %+v, err = %v, want [run-3, run-2, run-1]", entries, err)
+	}
+	if got := entries[1].Ops[0].Changes[0].Add; got != strings.Repeat("x", 3*4096) {
+		t.Fatalf("the multi-chunk record came back altered (%d bytes)", len(fmt.Sprint(got)))
+	}
+	if sidecars, _ := filepath.Glob(filepath.Join(dir, JournalFileName+".torn-*")); len(sidecars) != 0 {
+		t.Fatalf("sidecars = %v, want none: the record was complete", sidecars)
 	}
 }
