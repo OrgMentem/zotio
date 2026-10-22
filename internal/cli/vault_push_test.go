@@ -216,7 +216,7 @@ func TestCreateChildNoteRefusesUnresolvedOrAmbiguousReplay(t *testing.T) {
 			c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
 			c.NoCache = true
 
-			_, err := createChildNote(c, parentKey, noteHTML)
+			_, err := createChildNote(c, parentKey, noteHTML, "")
 			var conflict *childNoteCreateConflict
 			if !errors.As(err, &conflict) {
 				t.Fatalf("error = %v, want structured committed-create conflict", err)
@@ -1211,4 +1211,64 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 			t.Errorf("RemoteHash mismatch after converged")
 		}
 	})
+}
+
+// Zotero answers any reuse of a write token with 412, whether or not the object
+// it created still exists. Re-creating a deleted note must therefore mint a new
+// token (bound to the deleted note's key), while a retry of the same re-create
+// still replays the token it used before.
+func TestCreateChildNoteRecreateAfterDeleteUsesANewToken(t *testing.T) {
+	const parentKey = "PARENTK3"
+	const noteHTML = "<h1>Obsidian notes — cite</h1><p><em>Managed from the vault by zotio. Edit in Obsidian.</em></p><p>body</p>"
+	used := map[string]bool{}
+	var tokens []string
+	nextKey := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			token := r.Header.Get("Zotero-Write-Token")
+			tokens = append(tokens, token)
+			if used[token] {
+				http.Error(w, "write token already submitted", http.StatusPreconditionFailed)
+				return
+			}
+			used[token] = true
+			nextKey++
+			_, _ = fmt.Fprintf(w, `{"success":{"0":"NOTEKEY%d"}}`, nextKey)
+		case r.Method == http.MethodGet:
+			// Every earlier note has been deleted: nothing live matches.
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+	c.NoCache = true
+
+	first, err := createChildNote(c, parentKey, noteHTML, "")
+	if err != nil || first.Key != "NOTEKEY1" {
+		t.Fatalf("first create = %+v, %v", first, err)
+	}
+	// The note is deleted in Zotero; vault resolve --recreate names its key.
+	recreated, err := createChildNote(c, parentKey, noteHTML, "NOTEKEY1")
+	if err != nil || recreated.Key != "NOTEKEY2" {
+		t.Fatalf("re-create after delete = %+v, %v; want a fresh create under a new token", recreated, err)
+	}
+	if tokens[0] == tokens[1] {
+		t.Fatalf("re-create reused the original write token %q", tokens[0])
+	}
+	// A retry of that same re-create replays its token and is refused, not
+	// duplicated, with an accurate account of why.
+	_, err = createChildNote(c, parentKey, noteHTML, "NOTEKEY1")
+	var conflict *childNoteCreateConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("replayed re-create error = %v, want a committed-create conflict", err)
+	}
+	if strings.Contains(err.Error(), "may have committed") || !strings.Contains(err.Error(), "accepted earlier") {
+		t.Fatalf("conflict message %q must say an identical create was accepted earlier, not that it may have committed", err)
+	}
+	if nextKey != 2 {
+		t.Fatalf("created %d notes, want exactly 2", nextKey)
+	}
 }

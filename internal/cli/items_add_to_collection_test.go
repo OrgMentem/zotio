@@ -21,6 +21,8 @@ type collectionFilingTestServer struct {
 	collectionCreates         int
 	collectionWriteTokens     []string
 	ambiguousCollectionCreate bool
+	rejectReusedTokens        bool // answer 412 to a write token already used, as Zotero does
+	usedTokens                map[string]bool
 	collectionsGet            func(http.ResponseWriter, *http.Request)
 	itemCollections           []string
 	itemPatchCount            int
@@ -57,7 +59,18 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 					return
 				}
 				name, _ := body[0]["name"].(string)
-				ts.collectionWriteTokens = append(ts.collectionWriteTokens, r.Header.Get("Zotero-Write-Token"))
+				token := r.Header.Get("Zotero-Write-Token")
+				ts.collectionWriteTokens = append(ts.collectionWriteTokens, token)
+				if ts.rejectReusedTokens {
+					if ts.usedTokens[token] {
+						http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+						return
+					}
+					if ts.usedTokens == nil {
+						ts.usedTokens = map[string]bool{}
+					}
+					ts.usedTokens[token] = true
+				}
 				if ts.ambiguousCollectionCreate && ts.collectionCreates > 0 {
 					http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
 					return
@@ -238,6 +251,33 @@ func TestItemsAddToCollectionReconcilesWriteTokenRetry(t *testing.T) {
 	}
 	if srv.collectionWriteTokens[0] == "" || srv.collectionWriteTokens[0] != srv.collectionWriteTokens[1] {
 		t.Fatalf("write tokens = %v, want non-empty deterministic token", srv.collectionWriteTokens)
+	}
+}
+
+// Zotero answers any reuse of a write token with 412, deleted object or not.
+// Re-creating a collection the operator deleted must not be refused as a
+// "version conflict" that no re-run can clear.
+func TestItemsAddToCollectionCreateAfterDeleteMintsANewToken(t *testing.T) {
+	srv := newCollectionFilingTestServer(t)
+	srv.rejectReusedTokens = true
+
+	first := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
+	if !first.OK || srv.collectionCreates != 1 {
+		t.Fatalf("first filing = %+v, creates=%d", first, srv.collectionCreates)
+	}
+	// The collection (and the membership it carried) is deleted in Zotero.
+	srv.collectionKey, srv.collectionName = "", ""
+	srv.itemCollections = []string{"EXISTAB2"}
+
+	second := runItemsAddToCollectionTestCmd(t, srv, "ITEMAB23", "--collection-name", "Inbox")
+	if !second.OK || second.Result == nil || second.Result.Summary.Applied != 2 {
+		t.Fatalf("re-create filing = %+v, want the collection create and membership applied", second)
+	}
+	if srv.collectionCreates != 2 {
+		t.Fatalf("collection creates = %d, want the deleted collection re-created", srv.collectionCreates)
+	}
+	if n := len(srv.collectionWriteTokens); n != 3 || srv.collectionWriteTokens[1] != srv.collectionWriteTokens[0] || srv.collectionWriteTokens[2] == srv.collectionWriteTokens[0] {
+		t.Fatalf("write tokens = %v, want the original replayed once (412) and then a new token", srv.collectionWriteTokens)
 	}
 }
 

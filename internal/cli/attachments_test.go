@@ -55,7 +55,9 @@ type fakeZoteroUpload struct {
 	storageReplyAfterContentLength bool
 	storageChunkDelay              time.Duration // read the upload body slowly: 8 KiB, then this pause
 	storageStall                   time.Duration // read nothing for this long, then answer
-	dropRegisterResponse           string        // "commit" or "lose": hang up on the registration request, committing it or not
+	rejectReusedTokens             bool          // 412 on a write token already used, as Zotero does, deleted object or not
+	usedTokens                     map[string]bool
+	dropRegisterResponse           string // "commit" or "lose": hang up on the registration request, committing it or not
 
 	// observed traffic
 	creates       int
@@ -132,6 +134,16 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPost && path == "/items":
 		token := r.Header.Get("Zotero-Write-Token")
+		if f.rejectReusedTokens {
+			if f.usedTokens[token] {
+				http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+				return
+			}
+			if f.usedTokens == nil {
+				f.usedTokens = map[string]bool{}
+			}
+			f.usedTokens[token] = true
+		}
 		if f.replayCreate {
 			http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
 			return
@@ -1439,6 +1451,45 @@ func TestAttachmentsAddTerminalPreviewDescribesFileAndRoute(t *testing.T) {
 				if !strings.Contains(out.String(), want) {
 					t.Errorf("preview lacks %q:\n%s", want, out.String())
 				}
+			}
+		})
+	}
+}
+
+// Zotero answers any reuse of a write token with 412, deleted object or not.
+// Deleting an attachment and adding the same file again is a deliberate
+// re-create, not a lost response, and must not be refused for review.
+func TestAttachmentsAddAfterDeletingTheAttachmentMintsANewToken(t *testing.T) {
+	for _, mode := range []string{"stored", "linked-file"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFakeZoteroUpload(t, "PARENTAB")
+			f.rejectReusedTokens = true
+			setUploadTestEnv(t, f)
+			path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+			args := []string{"add", "PARENTAB", path, "--mode", mode}
+
+			if env, stderr, err := runAttachmentsAdd(t, applyFlags(), args); err != nil || env.Result.Summary.Applied != 1 {
+				t.Fatalf("first add: %+v, %v, %s", env, err, stderr)
+			}
+			// The operator deletes the attachment in Zotero.
+			f.mu.Lock()
+			f.children = nil
+			f.mu.Unlock()
+
+			env, stderr, err := runAttachmentsAdd(t, applyFlags(), args)
+			if err != nil {
+				t.Fatalf("re-add after delete: %v; stderr=%s", err, stderr)
+			}
+			if env.Result == nil || env.Result.Summary.Applied != 1 {
+				t.Fatalf("re-add = %+v, want applied", env)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.creates != 2 || len(f.children) != 1 {
+				t.Fatalf("creates=%d children=%d, want the deleted attachment re-created once", f.creates, len(f.children))
+			}
+			if len(f.createTokens) != 2 || f.createTokens[0] == f.createTokens[1] {
+				t.Fatalf("create tokens = %v, want two accepted creates under distinct tokens", f.createTokens)
 			}
 		})
 	}

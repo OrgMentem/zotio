@@ -241,7 +241,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 			res.Status = "would_create"
 			return res
 		}
-		created, err := createChildNote(c, n.itemKey, desiredHTML)
+		created, err := createChildNote(c, n.itemKey, desiredHTML, "")
 		if err != nil {
 			res.Status = "failed"
 			res.Note = pushErr(err, flags)
@@ -640,7 +640,7 @@ against --max-changes.`,
 					if preview {
 						return emit("would_resolve", fmt.Sprintf("Would resolve %s: child note would be (re)created under item %s", n.citekey, n.itemKey))
 					}
-					created, cerr := createChildNote(c, n.itemKey, desiredHTML)
+					created, cerr := createChildNote(c, n.itemKey, desiredHTML, n.state.NoteKey)
 					if cerr != nil {
 						return classifyAPIError(cerr, flags)
 					}
@@ -955,6 +955,12 @@ type childNoteCreateConflict struct {
 }
 
 func (e *childNoteCreateConflict) Error() string {
+	if len(e.Evidence.CandidateKeys) == 0 && apiStatus(e.Cause) == 412 {
+		return fmt.Sprintf(
+			"an identical note create under %s was accepted earlier and no live matching child note remains (it was deleted, or its content changed); Zotero will not accept the same create again inside its write-token window",
+			e.Evidence.ParentKey,
+		)
+	}
 	return fmt.Sprintf(
 		"note create may have committed, but reconciliation found %d matching child note(s) under %s; candidates: %v",
 		len(e.Evidence.CandidateKeys), e.Evidence.ParentKey, e.Evidence.CandidateKeys,
@@ -965,13 +971,24 @@ func (e *childNoteCreateConflict) Unwrap() error {
 	return e.Cause
 }
 
-func createChildNote(c *client.Client, parentKey, noteHTML string) (childNoteCreateResult, error) {
+// createChildNote creates the managed child note under a deterministic write
+// token, so a retry whose response was lost replays the token and reconciles
+// instead of duplicating. Zotero answers any reuse of a token with 412 whether
+// or not the object it created still exists, so a deliberate re-create after
+// the note was deleted must not reuse the original token: replaces names the
+// deleted note's key, and binds the token to that intent. Retrying the same
+// re-create reuses the same key and so the same token.
+func createChildNote(c *client.Client, parentKey, noteHTML, replaces string) (childNoteCreateResult, error) {
 	body := []map[string]any{{
 		"itemType":   "note",
 		"parentItem": parentKey,
 		"note":       noteHTML,
 	}}
-	headers := map[string]string{"Zotero-Write-Token": writeToken(parentKey, noteHTML)}
+	token := writeToken(parentKey, noteHTML)
+	if replaces != "" {
+		token = writeToken(parentKey, noteHTML, "recreate", replaces)
+	}
+	headers := map[string]string{"Zotero-Write-Token": token}
 	data, _, err := c.PostWithHeaders("/items", body, headers)
 	if err != nil {
 		if apiStatus(err) == 412 || client.IsAmbiguousWriteError(err) {
@@ -1262,6 +1279,23 @@ func sha256hex(s string) string {
 func writeToken(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:16]) // 32 hex chars
+}
+
+// writeTokenMaxGenerations bounds how many times one create intent may be
+// re-minted after Zotero reports its token already used with nothing live left
+// to adopt.
+const writeTokenMaxGenerations = 8
+
+// writeTokenGeneration derives the nth token for one create intent. Zotero
+// answers any reuse of a write token with 412, whether or not the object it
+// created still exists, so a create whose earlier twin was deleted needs the
+// next generation. Generation 0 is base itself; a retry of the same intent walks
+// the same sequence, so a lost response still replays the token it sent.
+func writeTokenGeneration(base string, generation int) string {
+	if generation == 0 {
+		return base
+	}
+	return writeToken(base, "generation", strconv.Itoa(generation))
 }
 
 func apiStatus(err error) int {

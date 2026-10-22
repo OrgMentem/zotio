@@ -179,12 +179,18 @@ func addToCollectionLine(name string) func(mutation.Envelope) string {
 // createCollectionByName POSTs a new top-level collection and returns its key.
 // The caller has already confirmed no same-named collection exists.
 func createCollectionByName(c *client.Client, name string) (string, error) {
-	created, _, err := c.PostWithHeaders(
-		"/collections",
-		[]map[string]any{{"name": name}},
-		map[string]string{"Zotero-Write-Token": writeToken("zotio.items.add-to-collection", name)},
-	)
-	if err != nil {
+	baseToken := writeToken("zotio.items.add-to-collection", name)
+	var created json.RawMessage
+	for generation := 0; ; generation++ {
+		var err error
+		created, _, err = c.PostWithHeaders(
+			"/collections",
+			[]map[string]any{{"name": name}},
+			map[string]string{"Zotero-Write-Token": writeTokenGeneration(baseToken, generation)},
+		)
+		if err == nil {
+			break
+		}
 		var apiErr *client.APIError
 		if !client.IsAmbiguousWriteError(err) &&
 			(!errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusPreconditionFailed) {
@@ -200,6 +206,11 @@ func createCollectionByName(c *client.Client, name string) (string, error) {
 		}
 		if key := collections[name]; key != "" {
 			return key, nil
+		}
+		// A used token with no collection of that name left means the earlier
+		// one was deleted: a deliberate re-create takes the next token.
+		if apiErr != nil && generation+1 < writeTokenMaxGenerations {
+			continue
 		}
 		return "", err
 	}

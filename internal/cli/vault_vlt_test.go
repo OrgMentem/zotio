@@ -511,3 +511,61 @@ func TestVltSyncVaultNoteTransitions(t *testing.T) {
 		}
 	})
 }
+
+// A note zotio created and the operator then deleted cannot be re-created with
+// its original write token: Zotero answers 412 to any reuse, deleted object or
+// not, and zotio's own advice (vault resolve --recreate) would fail forever.
+func TestVltVaultResolveRecreateAfterDeleteUsesAFreshWriteToken(t *testing.T) {
+	const region = "local notes"
+	desired := markdownToNoteHTML(vltCitekey, region)
+	// The token the original push sent, already accepted by Zotero.
+	used := map[string]bool{writeToken(vltItemKey, desired): true}
+	var posts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/users/0/items":
+			token := r.Header.Get("Zotero-Write-Token")
+			posts = append(posts, token)
+			if used[token] {
+				http.Error(w, "write token already submitted", http.StatusPreconditionFailed)
+				return
+			}
+			used[token] = true
+			_, _ = w.Write([]byte(`{"success":{"0":"NTKEYAB9"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/users/0/items/NTKEYAB9":
+			w.Header().Set("Last-Modified-Version", "9")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key": "NTKEYAB9", "version": 9,
+				"data": map[string]string{"itemType": "note", "parentItem": vltItemKey, "note": desired},
+			})
+		case r.Method == http.MethodGet:
+			// The deleted note, and any child listing, are gone.
+			if strings.HasSuffix(r.URL.Path, "/children") {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			http.Error(w, "not found", http.StatusNotFound)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_USER_ID", "")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	outDir := t.TempDir()
+	path, _ := vltWriteNote(t, outDir, "", region)
+
+	out, err := vltRun(t, newVaultResolveCmd, rootFlags{asJSON: true, yes: true, maxChanges: -1}, vltCitekey, "--keep-vault", "--recreate", "--vault", outDir)
+	if err != nil {
+		t.Fatalf("resolve --recreate: %v\n%s", err, out)
+	}
+	if len(posts) != 1 || posts[0] == writeToken(vltItemKey, desired) {
+		t.Fatalf("recreate POST tokens = %v, want one POST under a token other than the original", posts)
+	}
+	if st, err := parseStateComment(readNote(t, path)); err != nil || st.NoteKey != "NTKEYAB9" {
+		t.Fatalf("state after recreate = %+v, %v; want the new note key", st, err)
+	}
+}

@@ -296,12 +296,23 @@ func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *ro
 		"itemType": "attachment", "linkMode": "linked_file", "parentItem": req.ParentKey,
 		"title": req.Title, "path": req.Path, "contentType": req.ContentType,
 	}
-	resp, _, err := c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": token})
-	if err != nil {
+	var resp json.RawMessage
+	for generation := 0; ; generation++ {
+		var err error
+		resp, _, err = c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": writeTokenGeneration(token, generation)})
+		if err == nil {
+			break
+		}
 		var respErr *client.APIError
 		if client.IsAmbiguousWriteError(err) || (errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed) {
-			if key, reconcileErr := findLinkedAttachment(c, req.ParentKey, req.Path); reconcileErr == nil && key != "" {
+			key, reconcileErr := findLinkedAttachment(c, req.ParentKey, req.Path)
+			if reconcileErr == nil && key != "" {
 				return key, false, nil
+			}
+			// A used token with no live attachment left means the earlier one
+			// was deleted: a deliberate re-add takes the next token.
+			if reconcileErr == nil && respErr != nil && generation+1 < writeTokenMaxGenerations {
+				continue
 			}
 			return "", false, &storedConflictError{fmt.Sprintf(
 				"write token for linked file %q under %s was already submitted but no matching attachment was found; review the item manually",
@@ -621,8 +632,13 @@ func createStoredAttachmentChild(c *client.Client, req storedUploadRequest, flag
 		"filename":    req.Filename,
 		"contentType": req.ContentType,
 	}
-	resp, _, err := c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": req.WriteToken})
-	if err != nil {
+	var resp json.RawMessage
+	for generation := 0; ; generation++ {
+		var err error
+		resp, _, err = c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": writeTokenGeneration(req.WriteToken, generation)})
+		if err == nil {
+			break
+		}
 		var respErr *client.APIError
 		if client.IsAmbiguousWriteError(err) || (errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed) {
 			// The deterministic write token was already accepted once (lost
@@ -634,6 +650,12 @@ func createStoredAttachmentChild(c *client.Client, req storedUploadRequest, flag
 				}
 				if sibling.PendingKey != "" {
 					return sibling.PendingKey, nil
+				}
+				// The token was used, yet no live attachment of ours exists: its
+				// earlier child was deleted. That is a deliberate re-add, not a
+				// lost response, so it takes the next token.
+				if respErr != nil && generation+1 < writeTokenMaxGenerations {
+					continue
 				}
 			}
 			return "", &storedConflictError{fmt.Sprintf(
