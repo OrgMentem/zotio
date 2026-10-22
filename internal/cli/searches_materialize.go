@@ -61,6 +61,12 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 		return err
 	}
 
+	// Both memberships decide what the apply removes, so a cached page (up to
+	// 5 minutes old) would plan a removal against a cohort that has since
+	// changed in Zotero desktop, which no zotio mutation invalidates. Set
+	// here, as resolveScopeLive does for the same endpoint.
+	readClient.NoCache = true
+
 	// Both sets come from the configured read plane. /collections/{key}/items
 	// covers every item the collection endpoint returns; /items/top would
 	// omit child rows and cannot scope to this collection. Zotero can return

@@ -400,3 +400,50 @@ func TestSearchesMaterializeCollectionCrossPageRepeatRefuses(t *testing.T) {
 		t.Fatalf("repeating collection pages should refuse: err=%v pages=%d", err, collectionPages)
 	}
 }
+
+// A preview and the apply that follows must each read the saved search and the
+// collection afresh: an item fixed in Zotero desktop between them would
+// otherwise still be planned as stale from the cached preview page.
+func TestSearchesMaterializePruneDoesNotPlanFromCachedMembership(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var searchReads int
+	var patches []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/users/0/searches/SEARCH22/items":
+			searchReads++
+			if searchReads == 1 {
+				_, _ = fmt.Fprint(w, `[{"key":"A"}]`)
+				return
+			}
+			// The operator fixed Y in the meantime: it now matches.
+			_, _ = fmt.Fprint(w, `[{"key":"A"},{"key":"Y"}]`)
+		case r.URL.Path == "/users/0/collections/TARGET22":
+			_, _ = fmt.Fprint(w, `{"key":"TARGET22","version":1,"data":{}}`)
+		case r.URL.Path == "/users/0/collections/TARGET22/items":
+			_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET22"]}},{"key":"Y","data":{"collections":["TARGET22"]}}]`)
+		case r.Method == http.MethodPatch:
+			patches = append(patches, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	preview := writePlaneTestMustRunMutationCmd(t, "searches materialize preview", newSearchesMaterializeCmd,
+		&rootFlags{asJSON: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
+	if len(preview.Plan.Operations) != 1 {
+		t.Fatalf("preview plan = %+v, want the single removal of Y", preview.Plan)
+	}
+	apply := writePlaneTestMustRunMutationCmd(t, "searches materialize apply", newSearchesMaterializeCmd,
+		&rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SEARCH22", "--to", "TARGET22", "--prune")
+	if searchReads != 2 {
+		t.Fatalf("saved search was read %d time(s), want 2: the apply planned from a cached page", searchReads)
+	}
+	if len(apply.Plan.Operations) != 0 || len(patches) != 0 {
+		t.Fatalf("apply plan = %+v, patches = %v; Y matches the search now and must not be removed", apply.Plan, patches)
+	}
+}
