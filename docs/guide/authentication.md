@@ -1,10 +1,10 @@
 # Authentication
 
-`zotio` is keyless for the common case and only needs a Zotero Web API key when a write can't go through the local desktop connector.
+`zotio` is keyless for the common case and only needs a Zotero Web API key when a write can't go through the local desktop connector, or for the few reads that only the Web API serves, such as `items bibliography`.
 
-## Reads — no key
+## Reads — no key for local reads
 
-Reads go to your Zotero desktop app at `localhost:23119`. No API key is required while Zotero is running. Enable the local API once:
+Local reads go to your Zotero desktop app at `localhost:23119`. No API key is required for these reads while Zotero is running. Web-only reads, such as every `items bibliography` format, need a key and fail without one. Enable the local API once:
 
 **Zotero → Settings → Advanced → "Allow other applications to communicate with Zotero."**
 

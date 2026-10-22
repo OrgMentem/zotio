@@ -32,8 +32,8 @@ zotio tags audit fix --agent --yes   # apply the merge
 
 ## Safety for automated callers
 
-- Reads are safe and keyless. Writes preview by default; `--agent` does **not** auto-apply them.
+- Reads from the local desktop or mirror are safe and keyless; a few commands, such as `items bibliography`, read the Zotero Web API and need a key. Writes preview by default; `--agent` does **not** auto-apply them.
 - `--max-changes` caps how many operations a single mutation may apply (lower under `--agent`).
-- `--dry-run` performs no write of any kind (no Zotero write, local file, config save, or journal entry); read requests still run.
+- `--dry-run` suppresses every write the command itself performs (no Zotero write, local file, config save, or journal entry); read requests still run. Output you request with `--deliver` is still published, including to a file or webhook sink.
 
 See [Safe-by-default writes](../concepts/write-safety.md) for the full mutation contract and the [command reference](../reference/commands.md) for every flag.

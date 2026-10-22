@@ -14,7 +14,7 @@ flowchart LR
     W -. syncs down to .-> D[Zotero desktop]
 ```
 
-- **Reads** are served locally and are **keyless**. `zotio` also keeps a synced SQLite mirror so reads can run offline — see [Local read parity](local-read-parity.md).
+- **Reads** are served locally and are **keyless**, except Web-only reads such as `items bibliography`, which need a key. `zotio` also keeps a synced SQLite mirror so reads can run offline — see [Local read parity](local-read-parity.md).
 - **New items** (with attachments/PDFs) prefer the keyless local desktop connector.
 - **Other writes** — field edits, deletes, enrichment, tag ops, collection changes, note write-back — use the Zotero **Web API** and need a key. `attachments add --via connector` saves bytes through the desktop, then uses the Web API to move the attachment to an existing item. See [Authentication](../guide/authentication.md).
 
@@ -22,7 +22,7 @@ flowchart LR
 
 Zotero's local API currently serves reads only; writes are "coming" but not shipped. `zotio` handles this transparently:
 
-- With a Web API key configured, mutating commands **auto-route** their writes to `api.zotero.org` (reads stay local). A one-time notice on stderr names the target. Web API writes sync back down to your desktop.
+- With a Web API key configured, mutating commands **auto-route** their writes to `api.zotero.org` (ordinary library reads stay local; `vault push` reads its managed note from the Web write target). A one-time notice on stderr names the target. Web API writes sync back down to your desktop.
 - With **no** key, a write whose route is the Web API cannot run and `zotio` prints read-only guidance instead of a misleading auth error. A new-item create that qualifies for the keyless desktop connector route above still applies locally.
 
 !!! tip "Check writability"
