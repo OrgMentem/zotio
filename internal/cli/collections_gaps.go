@@ -30,17 +30,30 @@ type collectionGapRow struct {
 }
 
 type collectionGapsSummary struct {
+	// ItemsScanned counts the source items whose references were read. An item
+	// whose providers all failed is counted in ItemsFailed instead, so a partial
+	// provider outage cannot read as a complete scan.
 	ItemsScanned     int `json:"items_scanned"`
+	ItemsFailed      int `json:"items_failed"`
 	ReferencesSeen   int `json:"references_seen"`
 	UniqueCitedDOIs  int `json:"unique_cited_dois"`
 	AlreadyInLibrary int `json:"already_in_library"`
 	Gaps             int `json:"gaps"`
+	// SourcesTruncated counts source items whose reference list hit a provider
+	// cap, so some of their references are not in this report.
+	SourcesTruncated int `json:"sources_truncated"`
 }
 
 type collectionGapsReport struct {
 	CollectionKey string                `json:"collection_key"`
 	Summary       collectionGapsSummary `json:"summary"`
-	Rows          []collectionGapRow    `json:"results"`
+	// Incomplete is true when any source item failed or was truncated: the gap
+	// counts are then a lower bound, not the collection's coverage.
+	Incomplete bool `json:"incomplete"`
+	// Sources carries each source item's outcome, with the provider error that
+	// failed it, keyed by item key.
+	Sources []referenceSourceSummary `json:"sources"`
+	Rows    []collectionGapRow       `json:"results"`
 }
 
 func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
@@ -84,9 +97,19 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
-				return printJSONFiltered(cmd.OutOrStdout(), report, flags)
+				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
+					return err
+				}
+			} else if err := printCollectionGapsReport(cmd, report); err != nil {
+				return err
 			}
-			return printCollectionGapsReport(cmd, report)
+			if report.Incomplete {
+				// The report above already carries sources[] and the counts, so
+				// the central printer must not add a second JSON document.
+				return markRendered(degradedErr(fmt.Errorf("collections gaps: %d of %d source item(s) failed and %d were truncated; the gap counts are a lower bound, results incomplete",
+					report.Summary.ItemsFailed, report.Summary.ItemsFailed+report.Summary.ItemsScanned, report.Summary.SourcesTruncated)))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum DOI-bearing collection items to scan (0 = no limit)")
@@ -134,16 +157,28 @@ func buildCollectionGapsReportWithCache(ctx context.Context, db localQueryStore,
 		}
 	}
 
+	failed, truncated := 0, 0
+	for _, source := range agg.Sources {
+		if source.Error != "" {
+			failed++
+		} else if source.Truncated {
+			truncated++
+		}
+	}
 	return collectionGapsReport{
 		CollectionKey: collectionKey,
 		Summary: collectionGapsSummary{
-			ItemsScanned:     len(items),
+			ItemsScanned:     len(items) - failed,
+			ItemsFailed:      failed,
 			ReferencesSeen:   agg.ReferencesSeen,
 			UniqueCitedDOIs:  agg.UniqueCitedDOIs,
 			AlreadyInLibrary: alreadyInLibrary,
 			Gaps:             len(candidates),
+			SourcesTruncated: truncated,
 		},
-		Rows: rows,
+		Incomplete: failed > 0 || truncated > 0,
+		Sources:    agg.Sources,
+		Rows:       rows,
 	}, nil
 }
 
@@ -302,6 +337,18 @@ func printCollectionGapsReport(cmd *cobra.Command, report collectionGapsReport) 
 		report.Summary.AlreadyInLibrary,
 		report.Summary.Gaps,
 	)
+	if report.Incomplete {
+		fmt.Fprintf(cmd.OutOrStdout(), "INCOMPLETE: %d source item(s) could not be scanned and %d were truncated; gaps and counts are a lower bound\n",
+			report.Summary.ItemsFailed, report.Summary.SourcesTruncated)
+		for _, source := range report.Sources {
+			switch {
+			case source.Error != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s): %s\n", advisoryCell(source.Key), advisoryCell(source.DOI), advisoryCell(source.Error))
+			case source.Truncated:
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s): reference list truncated at %d\n", advisoryCell(source.Key), advisoryCell(source.DOI), source.Refs)
+			}
+		}
+	}
 	return nil
 }
 

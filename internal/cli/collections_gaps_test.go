@@ -275,3 +275,59 @@ func TestPrintCollectionGapsReportRendersHostileRemoteTextAsInertData(t *testing
 		t.Fatalf("the ACTION column names %q %d times, want once per row:\n%q", gapImportActionPrefix, got, body)
 	}
 }
+
+// One source returns references the library already holds while both reference
+// providers fail for the other. The scan must say it is incomplete, name the
+// failed source with its provider error, and count it as failed rather than
+// scanned instead of reporting a clean zero-gap result.
+func TestCollectionGapsReportsPartialSourceFailure(t *testing.T) {
+	db := seedCollectionGapsStore(t)
+	more := []json.RawMessage{
+		json.RawMessage(`{"key":"SRC2","version":3,"data":{"key":"SRC2","itemType":"journalArticle","title":"Second Paper","DOI":"10.1000/other","collections":["COL"],"dateModified":"2026-01-01T12:00:00Z"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", more); err != nil {
+		t.Fatalf("seed second source: %v", err)
+	}
+
+	coci := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.EscapedPath(), "source") {
+			_, _ = w.Write([]byte(`[{"cited":"10.1000/existing"}]`))
+			return
+		}
+		http.Error(w, "COCI down", http.StatusInternalServerError)
+	}))
+	t.Cleanup(coci.Close)
+	withBase(t, &collectionGapsOpenCitationsBase, coci.URL)
+	ss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "S2 down", http.StatusInternalServerError)
+	}))
+	t.Cleanup(ss.Close)
+	withBase(t, &enrichSemanticScholarBase, ss.URL)
+
+	report, err := buildCollectionGapsReportWithCache(context.Background(), db, http.DefaultClient, nil, "COL", 10, 5)
+	if err != nil {
+		t.Fatalf("buildCollectionGapsReportWithCache: %v", err)
+	}
+	if !report.Incomplete || report.Summary.ItemsScanned != 1 || report.Summary.ItemsFailed != 1 || report.Summary.Gaps != 0 {
+		t.Fatalf("report = %+v, want incomplete with one scanned, one failed, zero gaps", report)
+	}
+	var failed []referenceSourceSummary
+	for _, source := range report.Sources {
+		if source.Error != "" {
+			failed = append(failed, source)
+		}
+	}
+	if len(failed) != 1 || failed[0].Key != "SRC2" || !strings.Contains(failed[0].Error, "500") {
+		t.Fatalf("failed sources = %+v, want SRC2 with its provider error", failed)
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := printCollectionGapsReport(cmd, report); err != nil {
+		t.Fatalf("printCollectionGapsReport: %v", err)
+	}
+	if !strings.Contains(out.String(), "INCOMPLETE: 1 source item(s) could not be scanned") || !strings.Contains(out.String(), "SRC2") {
+		t.Fatalf("human output does not mark the partial scan:\n%s", out.String())
+	}
+}
