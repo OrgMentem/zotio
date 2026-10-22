@@ -390,7 +390,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		if werr != nil {
 			res.Note = "remote note diverged; failed to write conflict artifact: " + werr.Error()
 		} else {
-			res.Note = "remote note diverged; see " + filepath.Base(artifact) + "; resolve with vault resolve " + shellSingleQuote(n.citekey) + " --keep-vault or --keep-remote"
+			res.Note = "remote note diverged; see " + filepath.Base(artifact) + "; resolve with vault resolve " + shellSingleQuote(n.citekey) + " --keep-vault or --keep-remote (each with --allow-destructive)"
 		}
 		return res
 	}
@@ -510,11 +510,15 @@ Exactly one direction is required so the destructive side is explicit, but a
 direction is not consent: it only selects WHICH side wins. Previews by default,
 describing the note and side that would be written without creating, patching,
 or removing anything; pass --yes to apply. --dry-run always wins over --yes.
+--keep-vault and --keep-remote each overwrite one side, so both need
+--allow-destructive, in the preview as well as the apply; without it they print
+ok:false with destructive_opt_in_required and exit non-zero. --recreate does not.
 The resolved conflict artifact is removed on success. Counts as one change
 against --max-changes.`,
-		Example: `  zotio vault resolve smith2024 --keep-vault
-  zotio vault resolve smith2024 --keep-vault --yes
-  zotio vault resolve smith2024 --keep-remote --yes`,
+		Example: `  zotio vault resolve smith2024 --keep-vault --allow-destructive
+  zotio vault resolve smith2024 --keep-vault --allow-destructive --yes
+  zotio vault resolve smith2024 --keep-remote --allow-destructive --yes
+  zotio vault resolve smith2024 --recreate --yes`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -888,9 +892,9 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	// Quote the displayed command argument and use variable-length fences so
 	// citekeys cannot break the sh block.
 	b.WriteString("Resolve — keep the vault copy (writes to Zotero):\n\n")
-	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-vault\n") + "\n\n")
+	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-vault --allow-destructive\n") + "\n\n")
 	b.WriteString("…or keep the remote copy (overwrites the vault Notes region):\n\n")
-	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-remote\n") + "\n\n")
+	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-remote --allow-destructive\n") + "\n\n")
 	b.WriteString("## Local Notes (vault)\n\n")
 	b.WriteString(n.region + "\n\n")
 	b.WriteString("## Remote note (Zotero, HTML)\n\n")

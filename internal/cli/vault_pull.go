@@ -30,8 +30,8 @@ func newVaultPullCmd(flags *rootFlags) *cobra.Command {
 "## Notes" region. This is fast-forward only: a note is updated only when its
 local region is unchanged since the last sync. If both the local region and the
 remote note changed, it is reported as a conflict and nothing is merged or
-overwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault
-copy). Only notes in the shape this CLI writes are pulled.
+overwritten (resolve by hand, or 'vault resolve --keep-vault --allow-destructive'
+to keep the vault copy). Only notes in the shape this CLI writes are pulled.
 
 Pull previews by default and writes to the vault only under --yes; --dry-run
 always wins over --yes. Each note write it plans (a pull or a conflict
@@ -206,7 +206,7 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 			if werr != nil {
 				res.Note = "local and remote both changed; failed to write conflict artifact: " + werr.Error()
 			} else {
-				res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: 'vault resolve " + n.citekey + " --keep-remote')"
+				res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: 'vault resolve " + n.citekey + " --keep-remote --allow-destructive')"
 			}
 		}
 		return res
