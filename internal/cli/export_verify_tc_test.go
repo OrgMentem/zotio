@@ -57,6 +57,8 @@ func TestExportSnapshotVerifyComparesAgainstRecordedScope(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
+				case "/users/0/collections/CDEF2345":
+					_, _ = w.Write([]byte(`{"key":"CDEF2345","version":1,"data":{"key":"CDEF2345","name":"Scope"}}`))
 				case "/users/0/collections/CDEF2345/items":
 					_, _ = w.Write([]byte("[" + exportVerifyJoinRaw([]json.RawMessage{inScopeA, inScopeB}) + "]"))
 				case "/users/0/items":

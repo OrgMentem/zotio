@@ -4,6 +4,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -209,5 +210,40 @@ func TestBuildExportLockfileRejectsDuplicateKeys(t *testing.T) {
 	}
 	if _, err := buildExportLockfile("library", "jsonl", []json.RawMessage{a, b}); err != nil {
 		t.Fatalf("distinct keys rejected: %v", err)
+	}
+}
+
+// --limit caps the snapshot, so the manifest must say its items may be a
+// prefix of the scope; verify reads that to avoid reporting the rest as added.
+func TestExportSnapshotManifestRecordsLimitTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit string
+		want  bool
+	}{
+		{"cap reached", "2", true},
+		{"cap above library size", "10", false},
+		{"no cap", "0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newSnapshotServer(t, &snapshotServer{})
+			output := filepath.Join(t.TempDir(), "snap.jsonl")
+			cmd := newExportSnapshotCmd(&rootFlags{asJSON: true})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"--output", output, "--limit", tc.limit})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("export snapshot --limit %s: %v", tc.limit, err)
+			}
+			_, manifest := publishedSnapshot(t, output)
+			var lf exportLockfile
+			if err := json.Unmarshal(manifest, &lf); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+			if lf.Truncated != tc.want {
+				t.Fatalf("manifest truncated = %v with %d items, want %v", lf.Truncated, lf.Count, tc.want)
+			}
+		})
 	}
 }

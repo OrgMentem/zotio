@@ -103,11 +103,26 @@ func resolveExportVerifyCurrentItems(ctx context.Context, c *client.Client, flag
 	if strings.TrimSpace(lf.Scope) != "" {
 		path, params, _, err := snapshotScopePath(lf.Scope)
 		if err == nil {
+			// The local API answers /collections/<missing>/items with the
+			// whole library, so a deleted collection must be caught before
+			// its item listing is trusted as the scope's members.
+			if err := verifySnapshotCollection(c, flags, path); err != nil {
+				return nil, "skipped", "", err
+			}
+			// A limited snapshot holds an unspecified prefix of the scope;
+			// every other member would read as an addition, so check only the
+			// recorded keys.
+			if lf.Truncated {
+				return fetchExportVerifyRecordedItems(ctx, c, flags, lf, fmt.Sprintf("snapshot of scope %q was capped by --limit; verified only the recorded keys", lf.Scope))
+			}
 			items, err := fetchSnapshotItemsForVerify(ctx, c, path, params, flags)
 			return items, "resolved", "", err
 		}
 	}
+	return fetchExportVerifyRecordedItems(ctx, c, flags, lf, fmt.Sprintf("lockfile scope %q cannot be re-resolved; verified only the recorded keys", lf.Scope))
+}
 
+func fetchExportVerifyRecordedItems(ctx context.Context, c *client.Client, flags *rootFlags, lf exportLockfile, reason string) ([]json.RawMessage, string, string, error) {
 	items := make([]json.RawMessage, 0, len(lf.Items))
 	for _, lockItem := range lf.Items {
 		if err := ctx.Err(); err != nil {
@@ -125,7 +140,7 @@ func resolveExportVerifyCurrentItems(ctx context.Context, c *client.Client, flag
 		}
 		items = append(items, raw)
 	}
-	return items, "skipped", fmt.Sprintf("lockfile scope %q cannot be re-resolved; verified only the recorded keys", lf.Scope), nil
+	return items, "skipped", reason, nil
 }
 
 func fetchSnapshotItemsForVerify(ctx context.Context, c *client.Client, path string, params map[string]string, flags *rootFlags) ([]json.RawMessage, error) {

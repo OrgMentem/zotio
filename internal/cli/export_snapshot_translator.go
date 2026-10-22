@@ -124,6 +124,7 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 	if err != nil {
 		return err
 	}
+	lf.Truncated = limit > 0 && lf.Count >= limit
 	manifestPath := outputFile + ".manifest.json"
 	// Stage the manifest beside the staged data and publish both as one
 	// generation (see commitSnapshot), so --resume can finish an interrupted

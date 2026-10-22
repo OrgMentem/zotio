@@ -226,3 +226,116 @@ func assertExportVerifyClasses(t *testing.T, report exportVerifyReport, want map
 		}
 	}
 }
+
+func exportVerifyTestServer(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+}
+
+func executeExportVerifyTestCmd(t *testing.T, lockPath string, failOnDrift bool) (string, error) {
+	t.Helper()
+	cmd := newExportSnapshotVerifyCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	args := []string{lockPath}
+	if failOnDrift {
+		args = append(args, "--fail-on-drift")
+	}
+	cmd.SetArgs(args)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	return stdout.String(), err
+}
+
+// A snapshot capped by --limit holds a prefix of its scope. Verify must not
+// report the rest of the scope as added, or --fail-on-drift fails on an
+// unchanged library.
+func TestExportSnapshotVerifyLimitedSnapshotChecksOnlyRecordedKeys(t *testing.T) {
+	library := []json.RawMessage{
+		exportVerifyTestItem("KEY00001", 1, "One"),
+		exportVerifyTestItem("KEY00002", 1, "Two"),
+		exportVerifyTestItem("KEY00003", 1, "Three"),
+		exportVerifyTestItem("KEY00004", 1, "Four"),
+		exportVerifyTestItem("KEY00005", 1, "Five"),
+	}
+	lf, err := buildExportLockfile("library", "jsonl", library[:2])
+	if err != nil {
+		t.Fatalf("build lockfile: %v", err)
+	}
+	lf.Truncated = true
+	lockPath := filepath.Join(t.TempDir(), "limited.jsonl.manifest.json")
+	file, err := os.Create(lockPath)
+	if err != nil {
+		t.Fatalf("create lockfile: %v", err)
+	}
+	if err := writeExportLockfile(file, lf); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close lockfile: %v", err)
+	}
+
+	exportVerifyTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		if path == "/items" {
+			_, _ = w.Write([]byte("[" + exportVerifyJoinRaw(library) + "]"))
+			return
+		}
+		for _, item := range library {
+			if path == "/items/"+exportItemKey(item) {
+				_, _ = w.Write(item)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
+
+	stdout, err := executeExportVerifyTestCmd(t, lockPath, true)
+	if err != nil {
+		t.Fatalf("verify limited snapshot of an unchanged library with --fail-on-drift: %v", err)
+	}
+	var report exportVerifyReport
+	if err := json.Unmarshal(bytes.TrimSpace([]byte(stdout)), &report); err != nil {
+		t.Fatalf("decode report %q: %v", stdout, err)
+	}
+	if report.AddedDetection != "skipped" || !strings.Contains(report.AddedDetectionReason, "--limit") {
+		t.Fatalf("added detection = %q reason %q, want skipped with a --limit reason", report.AddedDetection, report.AddedDetectionReason)
+	}
+	if want := (exportVerifySummary{Unchanged: 2}); report.Summary != want {
+		t.Fatalf("summary = %+v, want %+v", report.Summary, want)
+	}
+}
+
+// The local API answers /collections/<missing>/items with the whole library.
+// Verify must report the missing collection, not a flood of additions.
+func TestExportSnapshotVerifyDeletedCollectionIsNotFound(t *testing.T) {
+	library := []json.RawMessage{
+		exportVerifyTestItem("KEY00001", 1, "One"),
+		exportVerifyTestItem("KEY00002", 1, "Two"),
+		exportVerifyTestItem("KEY00003", 1, "Three"),
+	}
+	lockPath := writeExportVerifyTestLockfile(t, "collection:ABCD2345", library[:1])
+
+	exportVerifyTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/users/0") {
+		case "/collections/ABCD2345/items":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[" + exportVerifyJoinRaw(library) + "]"))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	stdout, err := executeExportVerifyTestCmd(t, lockPath, false)
+	if code := ExitCode(err); code != 3 {
+		t.Fatalf("ExitCode(err) = %d (%v), want 3 (not found)", code, err)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("stdout = %q, want no drift report for a missing collection", stdout)
+	}
+}

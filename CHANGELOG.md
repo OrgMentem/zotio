@@ -430,6 +430,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **`export snapshot verify` no longer misreports a limited or orphaned
+  snapshot as drift.** A snapshot taken with `--limit` that hit its cap now
+  records `"truncated": true` in its manifest, and verify checks only the
+  recorded keys (`added_detection: skipped`) instead of listing every other
+  item in the scope as `added`, which made `--fail-on-drift` exit 11 on an
+  unchanged library. Manifests written before this change do not carry the
+  flag; take a new snapshot to get the behavior. Verify of a `collection:KEY`
+  scope also checks that the collection still exists and exits 3 when it was
+  deleted, because the local API answers a missing collection's items with the
+  whole library.
+
 - **Failed or partial runs no longer corrupt data or report success.**
   A failed `export snapshot` keeps the previous data file and manifest, and
   `export snapshot "collection:KEY AND tag:NAME"` no longer exports an unscoped

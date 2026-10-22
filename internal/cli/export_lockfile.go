@@ -24,11 +24,15 @@ type exportLockItem struct {
 }
 
 type exportLockfile struct {
-	SchemaVersion int              `json:"schema_version"`
-	GeneratedAt   string           `json:"generated_at"`
-	Scope         string           `json:"scope"`
-	Format        string           `json:"format"`
-	Count         int              `json:"count"`
+	SchemaVersion int    `json:"schema_version"`
+	GeneratedAt   string `json:"generated_at"`
+	Scope         string `json:"scope"`
+	Format        string `json:"format"`
+	Count         int    `json:"count"`
+	// Truncated is set when --limit capped the snapshot, so Items may be a
+	// prefix of Scope in unspecified server order. Verify then checks only
+	// the recorded keys: any other member of Scope is not a real addition.
+	Truncated     bool             `json:"truncated,omitempty"`
 	ContentSHA256 string           `json:"content_sha256"`
 	Items         []exportLockItem `json:"items"`
 }

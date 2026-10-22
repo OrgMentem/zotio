@@ -380,6 +380,7 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	if err != nil {
 		return err
 	}
+	lf.Truncated = limit > 0 && lf.Count >= limit
 	// Stage the manifest next to the staged data, then publish both as one
 	// generation. Until commitSnapshot finishes, both stay as .partial files,
 	// so a run that dies between the two renames can be completed by --resume
