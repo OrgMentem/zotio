@@ -360,3 +360,73 @@ func TestImportResolveCancellationWritesNoPartialManifest(t *testing.T) {
 		t.Fatalf("cancelled import resolve wrote a partial manifest:\n%s", out.String())
 	}
 }
+
+// An unreadable PDF is a failed input, not a PDF with no identifier: the
+// manifest must not propose recognition, the run must fail, and repairing the
+// file and resolving again must classify it normally.
+func TestImportResolveUnreadablePDFReportsDegraded(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "unreadable.pdf")
+	if err := os.Symlink(filepath.Join(dir, "missing.pdf"), broken); err != nil {
+		t.Fatalf("create broken symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scan.pdf"), []byte("no identifier here"), 0o600); err != nil {
+		t.Fatalf("write pdf: %v", err)
+	}
+	iprSeedSyncedLibrary(t)
+
+	resolve := func() (importManifest, error) {
+		cmd := newImportResolveCmd(&rootFlags{timeout: 5 * time.Second})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetArgs([]string{dir})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		err := cmd.Execute()
+		var m importManifest
+		if out.Len() > 0 {
+			if decodeErr := json.Unmarshal(out.Bytes(), &m); decodeErr != nil {
+				t.Fatalf("decode manifest %q: %v", out.String(), decodeErr)
+			}
+		}
+		return m, err
+	}
+	byBase := func(m importManifest, base string) importManifestEntry {
+		for _, e := range m.Entries {
+			if filepath.Base(e.Path) == base {
+				return e
+			}
+		}
+		t.Fatalf("no entry for %s in %+v", base, m.Entries)
+		return importManifestEntry{}
+	}
+
+	m, err := resolve()
+	if err == nil || !strings.Contains(err.Error(), broken) {
+		t.Fatalf("err = %v, want a path-qualified read failure", err)
+	}
+	bad := byBase(m, "unreadable.pdf")
+	if bad.Action == "recognize" || bad.Classification == "unidentified" || bad.Status != "unresolved" {
+		t.Fatalf("unreadable entry = %+v, want no recognition proposal and unresolved status", bad)
+	}
+	if strings.Contains(bad.Note, "no DOI or arXiv ID found") || !strings.Contains(bad.Note, "could not read") {
+		t.Fatalf("note = %q, want the read failure, not an identifier-absence claim", bad.Note)
+	}
+	if good := byBase(m, "scan.pdf"); good.Action != "recognize" {
+		t.Fatalf("readable entry = %+v, want an ordinary recognize proposal", good)
+	}
+
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(broken, []byte("no identifier here"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err = resolve()
+	if err != nil {
+		t.Fatalf("resolve after repair: %v", err)
+	}
+	if fixed := byBase(m, "unreadable.pdf"); fixed.Classification != "unidentified" || fixed.Action != "recognize" {
+		t.Fatalf("repaired entry = %+v, want reclassified as unidentified/recognize", fixed)
+	}
+}

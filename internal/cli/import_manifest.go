@@ -40,7 +40,7 @@ type importDiscovery struct {
 // before applying.
 type importManifestEntry struct {
 	Path           string           `json:"path"`                      // absolute PDF path (for attach)
-	Classification string           `json:"classification"`            // new|duplicate|attach_candidate|unidentified
+	Classification string           `json:"classification"`            // new|duplicate|attach_candidate|unidentified|unreadable
 	Action         string           `json:"action"`                    // create|attach|skip
 	IdentifierType string           `json:"identifier_type,omitempty"` // e.g. doi
 	Identifier     string           `json:"identifier,omitempty"`

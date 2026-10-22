@@ -142,10 +142,27 @@ type importManifestEntryResolution struct {
 }
 
 func resolveImportManifestEntry(ctx context.Context, path string, idx libraryDOIIndex, httpClient *http.Client) (importManifestEntryResolution, error) {
-	res := classifyPDF(ctx, path, idx, httpClient)
+	res, classifyErr := classifyPDFWithErr(ctx, path, idx, httpClient)
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return importManifestEntryResolution{}, fmt.Errorf("resolving absolute path for %q: %w", path, err)
+	}
+	if classifyErr != nil {
+		// The file could not be read, so nothing is known about its content.
+		// Claiming "no identifier found" would send it to the recognizer and
+		// hide the failure; keep the entry reviewable, skip it on apply, and
+		// report the read failure so the run exits non-zero. Re-running
+		// resolve on the directory reads the file again.
+		return importManifestEntryResolution{
+			Entry: importManifestEntry{
+				Path:           abs,
+				Classification: "unreadable",
+				Action:         manifestActionForStatus("unreadable"),
+				Status:         "unresolved",
+				Note:           fmt.Sprintf("could not read the PDF: %v; fix the file and re-run import resolve", classifyErr),
+			},
+			Err: fmt.Errorf("reading PDF %s: %w", abs, classifyErr),
+		}, nil
 	}
 	entry := importManifestEntry{
 		Path:           abs,
