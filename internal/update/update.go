@@ -30,6 +30,9 @@ type Info struct {
 	LatestVersion string
 	URL           string
 	CheckedAt     time.Time
+	// Stale means a refresh was attempted and failed, so this is the last-known
+	// release metadata (CheckedAt says how old), not a current answer.
+	Stale bool
 }
 
 // Options configures a Checker. ReleasesURL, Client, and Now make checks
@@ -104,10 +107,19 @@ func (c *Checker) Check(ctx context.Context) (*Info, error) {
 	if checkedRecently(cached.CheckedAt, now) {
 		return cached.info(), nil
 	}
+	// From here on a refresh is due. Any fallback to the cache below is a
+	// failed refresh and says so instead of passing as a current answer.
+	stale := func() *Info {
+		info := cached.info()
+		if info != nil {
+			info.Stale = true
+		}
+		return info
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.releasesURL, nil)
 	if err != nil {
-		return cached.info(), nil
+		return stale(), nil
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if cached.ETag != "" {
@@ -115,7 +127,7 @@ func (c *Checker) Check(ctx context.Context) (*Info, error) {
 	}
 	response, err := c.client.Do(req)
 	if err != nil {
-		return cached.info(), nil
+		return stale(), nil
 	}
 	defer response.Body.Close()
 
@@ -128,16 +140,16 @@ func (c *Checker) Check(ctx context.Context) (*Info, error) {
 		return cached.info(), nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return cached.info(), nil
+		return stale(), nil
 	}
 
 	var latest release
 	if err := json.NewDecoder(response.Body).Decode(&latest); err != nil {
-		return cached.info(), nil
+		return stale(), nil
 	}
 	latest.TagName = strings.TrimPrefix(latest.TagName, "v")
 	if latest.TagName == "" || latest.HTMLURL == "" {
-		return cached.info(), nil
+		return stale(), nil
 	}
 
 	cached.ETag = response.Header.Get("ETag")

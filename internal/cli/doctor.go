@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -257,14 +258,21 @@ releases feed at most once a day.`,
 						report["api"] = fmt.Sprintf("unreachable: %s", reachErr)
 					}
 
-					// Step 2: Validate credentials with an authenticated probe.
+					// Step 2: Validate credentials with one authenticated read.
+					// Reachability alone is not a health verdict: a revoked key,
+					// or a desktop with "Allow other applications" turned off,
+					// answers every path with a 4xx that step 1 reads as
+					// "reachable".
 					authHeader := cfg.AuthHeader()
-					if authHeader == "" {
-						// No auth configured — skip credential validation
-					} else if reachErr != nil && !errors.As(reachErr, &reachAPIErr) {
-						report["credentials"] = "skipped (API unreachable)"
-					} else {
-						report["credentials"] = "present (not verified)"
+					switch {
+					case reachErr != nil && !errors.As(reachErr, &reachAPIErr):
+						if authHeader != "" {
+							report["credentials"] = "skipped (API unreachable)"
+						}
+					default:
+						if msg := doctorCredentialProbe(c, authHeader != "", localAPI); msg != "" {
+							report["credentials"] = msg
+						}
 					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
@@ -388,6 +396,38 @@ releases feed at most once a day.`,
 	return cmd
 }
 
+// doctorCredentialProbe sends one authenticated read through the response-cache
+// bypass and reports its verdict, or "" when there is nothing to add. A 401/403
+// is an error: every sync and read through this configuration will fail the
+// same way. Any other outcome that is not a success is "unverified", not an
+// error, because it says nothing about the credential itself.
+func doctorCredentialProbe(c *client.Client, keyConfigured, localAPI bool) string {
+	const probePath = "/items?limit=1"
+	_, err := c.ProbeGet(probePath)
+	if err == nil {
+		if keyConfigured && !localAPI {
+			return "OK accepted by the API"
+		}
+		return ""
+	}
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		return "INFO unverified (the credential probe did not complete)"
+	}
+	switch apiErr.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		switch {
+		case localAPI:
+			return fmt.Sprintf("error: the Zotero local API refused a library read (HTTP %d); enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero'", apiErr.StatusCode)
+		case keyConfigured:
+			return fmt.Sprintf("error: the API key was rejected (HTTP %d); it is invalid, revoked, or cannot read this library", apiErr.StatusCode)
+		default:
+			return fmt.Sprintf("error: the API refused a library read with no key configured (HTTP %d); set ZOTERO_API_KEY", apiErr.StatusCode)
+		}
+	}
+	return fmt.Sprintf("INFO unverified (HTTP %d on %s)", apiErr.StatusCode, probePath)
+}
+
 func collectUpdateReport(ctx context.Context, cfg *config.Config) string {
 	currentVersion := Version()
 	if cfg == nil || !cfg.UpdateChecksEnabled() || update.IsDevelopmentVersion(currentVersion) {
@@ -420,6 +460,15 @@ func updateReport(ctx context.Context, cfg *config.Config, checker *update.Check
 	}
 	if update.IsNewer(latest.LatestVersion, currentVersion) {
 		return fmt.Sprintf("WARN %s available — %s", latest.LatestVersion, update.UpgradeHint(executable, latest.URL))
+	}
+	if latest.Stale {
+		// The refresh failed and the cached answer is past its freshness
+		// window, so "current" is unproven: say so with the evidence's age.
+		checked := "never"
+		if !latest.CheckedAt.IsZero() {
+			checked = latest.CheckedAt.UTC().Format("2006-01-02")
+		}
+		return fmt.Sprintf("INFO unavailable (release check failed; last-known latest is %s, checked %s; try again later)", latest.LatestVersion, checked)
 	}
 	return fmt.Sprintf("OK current (%s)", currentVersion)
 }

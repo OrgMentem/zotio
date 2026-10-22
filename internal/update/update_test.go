@@ -140,6 +140,65 @@ func TestUpdateCheckSoftFailsForRateLimit(t *testing.T) {
 	}
 }
 
+// Every failed refresh that falls back to the cache must say so; a recent or
+// refreshed answer must not.
+func TestUpdateCheckMarksFailedRefreshFallbackStale(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		wantOld bool
+	}{
+		{"rate limited", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }, true},
+		{"malformed json", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{not json`)) }, true},
+		{"missing fields", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) }, true},
+		{"healthy", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","html_url":"https://example.test/release/v1.2.3"}`))
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(tc.handler)
+			defer server.Close()
+			checker := NewWithOptions(Options{DataDir: t.TempDir(), ReleasesURL: server.URL, Client: server.Client(), Now: func() time.Time { return now }})
+			if err := checker.writeCache(cacheEntry{LatestVersion: "1.2.2", URL: "https://example.test/release/v1.2.2", CheckedAt: now.Add(-checkInterval)}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := checker.Check(context.Background())
+			if err != nil || info == nil {
+				t.Fatalf("Check = %#v, %v", info, err)
+			}
+			if info.Stale != tc.wantOld {
+				t.Fatalf("Stale = %v, want %v (info %#v)", info.Stale, tc.wantOld, info)
+			}
+		})
+	}
+
+	t.Run("unreachable", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		url := server.URL
+		server.Close()
+		checker := NewWithOptions(Options{DataDir: t.TempDir(), ReleasesURL: url, Client: http.DefaultClient, Now: func() time.Time { return now }})
+		if err := checker.writeCache(cacheEntry{LatestVersion: "1.2.2", URL: "https://example.test/release/v1.2.2", CheckedAt: now.Add(-checkInterval)}); err != nil {
+			t.Fatal(err)
+		}
+		info, _ := checker.Check(context.Background())
+		if info == nil || !info.Stale {
+			t.Fatalf("info = %#v, want stale last-known metadata", info)
+		}
+	})
+
+	t.Run("recent cache is not stale", func(t *testing.T) {
+		checker := NewWithOptions(Options{DataDir: t.TempDir(), ReleasesURL: "http://127.0.0.1:1", Client: http.DefaultClient, Now: func() time.Time { return now }})
+		if err := checker.writeCache(cacheEntry{LatestVersion: "1.2.2", URL: "https://example.test/release/v1.2.2", CheckedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		info, _ := checker.Check(context.Background())
+		if info == nil || info.Stale {
+			t.Fatalf("info = %#v, want a fresh cached answer", info)
+		}
+	})
+}
+
 func TestCompareVersion(t *testing.T) {
 	tests := []struct {
 		name        string
