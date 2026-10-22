@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3224,7 +3225,13 @@ func TestValidateEnrichItemsAppliesLimitAfterCohortFilter(t *testing.T) {
 		json.RawMessage(`{"key":"DIN","version":1,"data":{"key":"DIN","itemType":"journalArticle","title":"Alpha","DOI":"10.1/alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLD"]}}`),
 		json.RawMessage(`{"key":"DOUT","version":1,"data":{"key":"DOUT","itemType":"journalArticle","title":"Gamma","DOI":"10.1/gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
 	})
+	// CrossRef and OpenCitations answer in different shapes: one body for
+	// every request would make the OpenCitations probe undecodable.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "metadata") {
+			_, _ = w.Write([]byte(`[{"doi":"10.1/alpha"}]`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"message":{"DOI":"10.1/alpha","title":["Alpha"]}}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -3246,6 +3253,176 @@ func TestValidateEnrichItemsAppliesLimitAfterCohortFilter(t *testing.T) {
 	}
 	if report.Validated != 1 {
 		t.Fatalf("validated = %d, want 1 (the cohort member, not the newest library row)", report.Validated)
+	}
+}
+
+// enrichValidationAnswer is what a fake provider says next. hang holds the
+// request open until the client gives up, which is how a timeout looks.
+type enrichValidationAnswer struct {
+	mu     sync.Mutex
+	status int
+	body   string
+	hang   bool
+}
+
+func (a *enrichValidationAnswer) set(status int, body string, hang bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status, a.body, a.hang = status, body, hang
+}
+
+func (a *enrichValidationAnswer) serve(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	status, body, hang := a.status, a.body, a.hang
+	a.mu.Unlock()
+	if hang {
+		<-r.Context().Done()
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
+// A provider that cannot answer is not a clean pass. Before, both failures
+// collapsed to "no discrepancy" while the item was already counted as
+// validated, so an outage printed the same report as a library with sound
+// metadata.
+func TestEnrichValidationProviderFailures(t *testing.T) {
+	const (
+		crossRefOK = `{"message":{"title":["Provider Title"],"DOI":"10.1/v","published":{"date-parts":[[2020]]}}}`
+		ocOK       = `[{"doi":"10.1/v"}]`
+	)
+	type reply struct {
+		status int
+		body   string
+		hang   bool
+	}
+	ok := func(body string) reply { return reply{status: http.StatusOK, body: body} }
+	down := reply{status: http.StatusServiceUnavailable, body: "unavailable"}
+	malformed := ok(`{"message":`)
+	hung := reply{hang: true}
+
+	cases := []struct {
+		name           string
+		crossRef       reply
+		openCitations  reply
+		wantValidated  int
+		wantIncomplete []string
+		wantFindings   []string
+		wantUnverified int
+	}{
+		{name: "both answer", crossRef: ok(crossRefOK), openCitations: ok(ocOK), wantValidated: 1, wantFindings: []string{"title"}},
+		{name: "crossref 503", crossRef: down, openCitations: ok(ocOK), wantIncomplete: []string{"crossref"}},
+		{name: "crossref malformed", crossRef: malformed, openCitations: ok(ocOK), wantIncomplete: []string{"crossref"}},
+		{name: "crossref timeout", crossRef: hung, openCitations: ok(ocOK), wantIncomplete: []string{"crossref"}},
+		// The provider that did answer keeps its finding; only the count waits.
+		{name: "opencitations 503", crossRef: ok(crossRefOK), openCitations: down, wantIncomplete: []string{"opencitations"}, wantFindings: []string{"title"}},
+		{name: "opencitations malformed", crossRef: ok(crossRefOK), openCitations: malformed, wantIncomplete: []string{"opencitations"}, wantFindings: []string{"title"}},
+		{name: "opencitations timeout", crossRef: ok(crossRefOK), openCitations: hung, wantIncomplete: []string{"opencitations"}, wantFindings: []string{"title"}},
+		{name: "opencitations null body", crossRef: ok(crossRefOK), openCitations: ok(`null`), wantIncomplete: []string{"opencitations"}, wantFindings: []string{"title"}},
+		{name: "both 503", crossRef: down, openCitations: down, wantIncomplete: []string{"crossref", "opencitations"}},
+		{name: "both malformed", crossRef: malformed, openCitations: malformed, wantIncomplete: []string{"crossref", "opencitations"}},
+		// "No such record" is an answer, not an outage.
+		{name: "crossref has no record", crossRef: reply{status: http.StatusNotFound, body: "{}"}, openCitations: ok(ocOK), wantValidated: 1},
+		{name: "opencitations empty list", crossRef: ok(crossRefOK), openCitations: ok(`[]`), wantValidated: 1, wantFindings: []string{"title", "doi_registration"}, wantUnverified: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+				json.RawMessage(`{"key":"VITEM","version":1,"data":{"key":"VITEM","itemType":"journalArticle","title":"Stored Title","date":"2020","DOI":"10.1/v"}}`),
+			})
+			crossRef, openCitations := &enrichValidationAnswer{}, &enrichValidationAnswer{}
+			crossRef.set(tc.crossRef.status, tc.crossRef.body, tc.crossRef.hang)
+			openCitations.set(tc.openCitations.status, tc.openCitations.body, tc.openCitations.hang)
+			crossRefSrv := httptest.NewServer(http.HandlerFunc(crossRef.serve))
+			t.Cleanup(crossRefSrv.Close)
+			openCitationsSrv := httptest.NewServer(http.HandlerFunc(openCitations.serve))
+			t.Cleanup(openCitationsSrv.Close)
+			withBase(t, &enrichCrossRefBase, crossRefSrv.URL)
+			withBase(t, &enrichOpenCitationsBase, openCitationsSrv.URL)
+			httpClient := &http.Client{Timeout: 200 * time.Millisecond}
+
+			report, err := validateEnrichItems(context.Background(), db, httpClient, 0, "", nil)
+			if err != nil {
+				t.Fatalf("validateEnrichItems: %v", err)
+			}
+			if report.Validated != tc.wantValidated {
+				t.Errorf("validated = %d, want %d", report.Validated, tc.wantValidated)
+			}
+			var gotIncomplete []string
+			for _, gap := range report.Incomplete {
+				if gap.Key != "VITEM" || gap.DOI != "10.1/v" || gap.Error == "" {
+					t.Errorf("incomplete entry = %+v, want it to name the item, its DOI and the failure", gap)
+				}
+				gotIncomplete = append(gotIncomplete, gap.Provider)
+			}
+			if !reflect.DeepEqual(gotIncomplete, tc.wantIncomplete) {
+				t.Errorf("incomplete providers = %v, want %v", gotIncomplete, tc.wantIncomplete)
+			}
+			var gotFindings []string
+			for _, f := range report.Findings {
+				gotFindings = append(gotFindings, sqlStringValue(f.Evidence["field"]))
+			}
+			if !reflect.DeepEqual(gotFindings, tc.wantFindings) {
+				t.Errorf("finding fields = %v, want %v", gotFindings, tc.wantFindings)
+			}
+			if len(report.UnverifiedDOIs) != tc.wantUnverified {
+				t.Errorf("unverified DOIs = %v, want %d", report.UnverifiedDOIs, tc.wantUnverified)
+			}
+		})
+	}
+}
+
+// An incomplete validation is a partial result: the report is printed with the
+// gaps in it and the exit code says so, so a script cannot take an outage for a
+// clean pass. Once the providers recover, a rerun completes.
+func TestItemsEnrichValidateExitsDegradedWhileProvidersAreDown(t *testing.T) {
+	crossRef, openCitations := &enrichValidationAnswer{}, &enrichValidationAnswer{}
+	crossRef.set(http.StatusServiceUnavailable, "unavailable", false)
+	openCitations.set(http.StatusServiceUnavailable, "unavailable", false)
+	crossRefSrv := httptest.NewServer(http.HandlerFunc(crossRef.serve))
+	t.Cleanup(crossRefSrv.Close)
+	openCitationsSrv := httptest.NewServer(http.HandlerFunc(openCitations.serve))
+	t.Cleanup(openCitationsSrv.Close)
+	withBase(t, &enrichCrossRefBase, crossRefSrv.URL)
+	withBase(t, &enrichOpenCitationsBase, openCitationsSrv.URL)
+
+	_ = seedEnrichWorkQueueStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"VITEM","version":1,"data":{"key":"VITEM","itemType":"journalArticle","title":"Stored Title","date":"2020","DOI":"10.1/v"}}`),
+	})
+
+	run := func() (enrichValidationReport, error) {
+		t.Helper()
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, maxChanges: -1})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetArgs([]string{"--validate"})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		err := cmd.Execute()
+		var report enrichValidationReport
+		if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+			t.Fatalf("decode %q: %v (command err=%v)", out.String(), decodeErr, err)
+		}
+		return report, err
+	}
+
+	report, err := run()
+	if ExitCode(err) != 13 {
+		t.Fatalf("exit = %d (err %v), want 13 while neither provider answers", ExitCode(err), err)
+	}
+	if report.Validated != 0 || len(report.Incomplete) != 2 {
+		t.Fatalf("report = %+v, want nothing validated and two incomplete checks", report)
+	}
+
+	crossRef.set(http.StatusOK, `{"message":{"title":["Stored Title"],"DOI":"10.1/v","published":{"date-parts":[[2020]]}}}`, false)
+	openCitations.set(http.StatusOK, `[{"doi":"10.1/v"}]`, false)
+	report, err = run()
+	if err != nil {
+		t.Fatalf("rerun after recovery: %v", err)
+	}
+	if report.Validated != 1 || len(report.Incomplete) != 0 {
+		t.Fatalf("rerun report = %+v, want the item validated with no gaps", report)
 	}
 }
 

@@ -300,7 +300,16 @@ Applied field changes record provenance in the item's Extra field.`,
 				if err != nil {
 					return err
 				}
-				return renderEnrichValidationReport(cmd, flags, report)
+				if err := renderEnrichValidationReport(cmd, flags, report); err != nil {
+					return err
+				}
+				// The report is printed, but a run in which a provider could
+				// not answer is a partial result. Exit 13 lets a script tell
+				// it from a clean pass, as the other degraded reports do.
+				if len(report.Incomplete) > 0 {
+					return markRendered(degradedErr(fmt.Errorf("validation incomplete: %d provider check(s) got no answer; those items are not counted as validated. Rerun when the providers recover", len(report.Incomplete))))
+				}
+				return nil
 			}
 
 			var proposals []enrichProposal
@@ -782,10 +791,25 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 	}
 }
 
+// enrichValidationIncomplete names one provider check that could not be
+// answered for one item: a transport failure, a 5xx or 429, an undecodable
+// body. It is not a finding about the metadata, and the item is not counted as
+// validated while one is outstanding.
+type enrichValidationIncomplete struct {
+	Key      string `json:"key"`
+	DOI      string `json:"doi"`
+	Provider string `json:"provider"`
+	Error    string `json:"error"`
+}
+
 type enrichValidationReport struct {
+	// Validated counts DOI items whose every provider check was answered.
 	Validated      int       `json:"validated"`
 	Findings       []Finding `json:"findings"`
 	UnverifiedDOIs []string  `json:"unverified_dois"`
+	// Incomplete lists the checks no provider answered, so an outage cannot
+	// read as a clean pass.
+	Incomplete []enrichValidationIncomplete `json:"incomplete"`
 }
 
 // Validation mode uses the local enrichment selection path but narrows it to DOI-bearing items.
@@ -812,6 +836,7 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 	report := enrichValidationReport{
 		Findings:       []Finding{},
 		UnverifiedDOIs: []string{},
+		Incomplete:     []enrichValidationIncomplete{},
 	}
 	// The key filter runs in Go, so a SQL LIMIT has to come off whenever a
 	// selection is present: it would spend the budget on rows the filter then
@@ -830,6 +855,7 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 		validated     bool
 		findings      []Finding
 		unverifiedDOI string
+		incomplete    []enrichValidationIncomplete
 	}
 	results, fanoutErrs := cliutil.FanoutRun(ctx, rows,
 		func(row map[string]any) string { return sqlStringValue(row["key"]) },
@@ -852,8 +878,14 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 				return outcome{}, nil
 			}
 
-			result := outcome{validated: true}
-			if work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi); ok {
+			result := outcome{}
+			work, crossRefFound, crossRefErr := lookupCrossRefWork(ctx, httpClient, doi)
+			if crossRefErr != nil {
+				result.incomplete = append(result.incomplete, enrichValidationIncomplete{Key: key, DOI: doi, Provider: "crossref", Error: crossRefErr.Error()})
+			}
+			// CrossRef answering "no such record" (404/410) leaves nothing to
+			// compare, but it is an answer, not an outage.
+			if crossRefFound {
 				storedTitle := strings.TrimSpace(stringFromMap(data, "title"))
 				providerTitle := ""
 				if len(work.Title) > 0 {
@@ -880,23 +912,34 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 					}
 				}
 			}
-			if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
+			registered, openCitationsErr := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi)
+			if openCitationsErr != nil {
+				result.incomplete = append(result.incomplete, enrichValidationIncomplete{Key: key, DOI: doi, Provider: "opencitations", Error: openCitationsErr.Error()})
+			} else if !registered {
 				result.unverifiedDOI = key + ":" + doi
 				result.findings = append(result.findings, enrichValidationFinding(key, stringFromMap(data, "title"), "doi_registration", doi, "not_registered", "opencitations"))
 			}
+			// A lookup cut short by cancellation is the run being stopped, not
+			// a provider outage: surface it as the worker's error.
+			if err := ctx.Err(); err != nil {
+				return outcome{}, err
+			}
+			result.validated = len(result.incomplete) == 0
 			return result, nil
 		})
 
 	// FanoutRun returns successful outcomes in row order. Merge them here so
 	// report ordering stays byte-identical and no worker mutates shared slices.
 	for _, result := range results {
-		if !result.Value.validated {
-			continue
-		}
-		report.Validated++
+		// Findings from a provider that did answer stay in the report even
+		// when the other one did not; only the validated count waits for both.
+		report.Incomplete = append(report.Incomplete, result.Value.incomplete...)
 		report.Findings = append(report.Findings, result.Value.findings...)
 		if result.Value.unverifiedDOI != "" {
 			report.UnverifiedDOIs = append(report.UnverifiedDOIs, result.Value.unverifiedDOI)
+		}
+		if result.Value.validated {
+			report.Validated++
 		}
 	}
 	return report, FanoutReportErrors(fanoutErrs)
@@ -936,7 +979,14 @@ func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report e
 		}
 		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Validated %d DOI item(s); %d finding(s); %d DOI(s) not registered in OpenCitations.\n", report.Validated, len(report.Findings), len(report.UnverifiedDOIs))
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Validated %d DOI item(s); %d finding(s); %d DOI(s) not registered in OpenCitations.\n", report.Validated, len(report.Findings), len(report.UnverifiedDOIs))
+	if len(report.Incomplete) > 0 {
+		fmt.Fprintf(out, "Incomplete: %d provider check(s) got no answer and are not counted as validated:\n", len(report.Incomplete))
+		for _, gap := range report.Incomplete {
+			fmt.Fprintf(out, "  %s %s (%s): %s\n", sanitizeForTerminal(gap.Key), sanitizeForTerminal(gap.DOI), gap.Provider, sanitizeForTerminal(gap.Error))
+		}
+	}
 	return nil
 }
 
@@ -2250,9 +2300,9 @@ func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Cli
 	return abstract, true, nil
 }
 
-// CrossRef DOI fetch for the validation and creator-audit passes, which count a
-// failed lookup themselves. Enrichment resolvers use lookupCrossRefWork, which
-// keeps a provider failure apart from a missing record.
+// CrossRef DOI fetch for the creator-audit pass, which counts a failed lookup
+// itself. Enrichment and validation use lookupCrossRefWork, which keeps a
+// provider failure apart from a missing record.
 func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool) {
 	work, err := fetchCrossRefWork(ctx, httpClient, doi, nil)
 	if err != nil {
@@ -2261,14 +2311,20 @@ func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi st
 	return work, true
 }
 
-// OpenCitations registration probe for DOI validation mode.
-func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) (registered bool, known bool) {
+// OpenCitations registration probe for DOI validation mode. An answer is
+// (registered, nil): an empty result is OpenCitations saying it holds no record
+// of the DOI. Anything that is not an answer (transport failure, non-2xx, an
+// undecodable or null body) is an error, never a "not registered" verdict, so
+// the caller can report the check as incomplete.
+func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) (bool, error) {
 	var resp []map[string]any
 	if err := getJSON(ctx, httpClient, enrichOpenCitationsBase+"/metadata/"+url.PathEscape(doi), &resp); err != nil {
-		// Transport/non-2xx failure: unverifiable, NOT a definitive "not registered".
-		return false, false
+		return false, fmt.Errorf("OpenCitations: %w", err)
 	}
-	return len(resp) > 0, true
+	if resp == nil {
+		return false, errors.New("OpenCitations: response body was null, not a list")
+	}
+	return len(resp) > 0, nil
 }
 
 // --- OpenAlex (fallback for DOI + abstract; OA PDFs stay on Unpaywall, whose
