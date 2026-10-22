@@ -104,6 +104,14 @@ func SaveCredentials(creds *Credentials) error {
 	return AtomicWritePrivateFile(path, data, 0o600, 0o700)
 }
 
+// RemoveCredentials deletes the credentials file and any temporary file an
+// interrupted save of it left behind, and does not return until the removal is
+// durable. The sweep belongs here, not in SaveCredentials: logout runs under the
+// installation writer lock (ADR-0005), whereas a save-time sweep could delete the
+// live temporary file of a concurrent save that is not serialized. Without the directory sync a power loss after a reported logout can
+// restore the old directory entry, and the next Load authenticates again with
+// a key the operator was told was gone. The sync also runs when the file is
+// already absent, so a retry after a failed sync completes the barrier.
 func RemoveCredentials() error {
 	path, err := credentialsPath()
 	if err != nil {
@@ -111,6 +119,12 @@ func RemoveCredentials() error {
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("removing credentials: %w", err)
+	}
+	if err := RemoveAtomicTemps(path); err != nil {
+		return err
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("syncing credentials directory after removal: %w", err)
 	}
 	return nil
 }

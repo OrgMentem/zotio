@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 const appName = "zotio"
@@ -148,9 +150,77 @@ func atomicWrite(path string, data []byte, fileMode, dirMode os.FileMode, durabl
 	if durable {
 		// Some platforms cannot sync directories, but the published file remains
 		// usable, so do not make a completed write fail for that limitation.
-		if dirFile, err := os.Open(dir); err == nil {
-			_ = dirFile.Sync()
-			_ = dirFile.Close()
+		_ = syncDir(dir)
+	}
+	return nil
+}
+
+// syncDir flushes directory entry changes (a rename or an unlink) in dir to
+// stable storage. Windows cannot open a directory for syncing and journals
+// metadata itself, so it is a no-op there; a filesystem that reports it cannot
+// sync a directory (EINVAL, ENOTSUP, ENOSYS) is also accepted, because retrying
+// cannot change that answer. Any other failure is returned. It is a variable so
+// tests can observe the barrier, which no unit test can otherwise detect.
+var syncDir = func(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) && !errors.Is(syncErr, syscall.ENOSYS) {
+		return syncErr
+	}
+	return closeErr
+}
+
+// atomicTempSiblings lists the temporary files an interrupted atomicWrite of
+// path can leave behind: ".<base>.<digits>.tmp", the exact shape os.CreateTemp
+// produces for atomicWrite's pattern. Matching the digits (not a bare
+// wildcard) keeps an unrelated user file such as ".config.toml.bak.tmp" out of
+// the sweep.
+func atomicTempSiblings(path string) ([]string, error) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	prefix := "." + filepath.Base(path) + "."
+	var found []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		middle := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".tmp")
+		if middle == "" || strings.Trim(middle, "0123456789") != "" {
+			continue
+		}
+		found = append(found, filepath.Join(dir, name))
+	}
+	return found, nil
+}
+
+// RemoveAtomicTemps deletes the orphaned temporary files an interrupted
+// atomic write of path left beside it. SIGKILL, OOM and power loss skip
+// atomicWrite's in-process cleanup, and a credential temp holds the complete
+// secret, so a later logout or save must not leave it behind. Callers MUST hold
+// the installation writer lock (ADR-0005): with it no other zotio writer has a
+// live temporary file for the same target.
+func RemoveAtomicTemps(path string) error {
+	orphans, err := atomicTempSiblings(path)
+	if err != nil {
+		return fmt.Errorf("listing leftover temporary files for %s: %w", path, err)
+	}
+	for _, orphan := range orphans {
+		if err := os.Remove(orphan); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing leftover temporary file %s: %w", orphan, err)
 		}
 	}
 	return nil

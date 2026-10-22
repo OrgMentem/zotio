@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,12 @@ type Config struct {
 	// credential-source fallback below reports where config-stored
 	// credentials actually live. Unexported: never persisted.
 	configOwner string
+	// legacyConfigPath is the pre-relocation config location, recorded for
+	// every non-explicit Load whether or not that load read it. ClearTokens
+	// scrubs it even when the primary config already exists, so a logout that
+	// was killed before the legacy scrub can be retried. Unexported: never
+	// persisted.
+	legacyConfigPath string
 	// legacySourcePath records the legacy config path when Load fell
 	// back to it. Used by save() to scrub credential fields from the
 	// old location after relocation. Unexported: never persisted.
@@ -131,6 +138,7 @@ func Load(configPath string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
+		cfg.legacyConfigPath = legacyPath
 		data, sourcePath, err := cliutil.ReadFileWithLegacyFallback(path, legacyPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -455,13 +463,29 @@ func (c *Config) ClearTokens() error {
 	// save() persists the full config (credential fields included) for
 	// agentcookie-managed stores, so the zeroed fields must be written back;
 	// skipping it would leave the secrets in config.toml.
-	if err := c.save(); err != nil {
+	if err := c.publish(); err != nil {
 		return err
 	}
-	if err := cliutil.RemoveCredentials(); err != nil {
-		return err
+	// Every remaining step is idempotent and independent, so run them all and
+	// report every failure: a legacy file that cannot be scrubbed must not stop
+	// the credential actually in use from being removed.
+	var errs []error
+	// The legacy config is a credential-bearing source too, and logout must
+	// not report success while it still holds a key: Load reads it again as
+	// soon as the directory override that hid it goes away. Scrub it from the
+	// recorded fallback or, when the primary already existed (a retry after a
+	// kill between the two publications), from the discovered legacy path.
+	errs = append(errs, c.scrubLegacyCredentials(c.legacyScrubPath()))
+	// A save killed between its temp write and rename leaves a complete copy of
+	// the secret in a dot-temp file; logout runs under the installation writer
+	// lock, so no live writer owns one.
+	for _, target := range []string{c.Path, c.legacyScrubPath()} {
+		if target != "" {
+			errs = append(errs, cliutil.RemoveAtomicTemps(target))
+		}
 	}
-	return nil
+	errs = append(errs, cliutil.RemoveCredentials())
+	return errors.Join(errs...)
 }
 
 // SaveUserID persists the resolved numeric Zotero user ID so write routing can
@@ -563,7 +587,23 @@ func (c *Config) updateFileConfigField(field string) {
 	}
 }
 
+// save publishes the config and, for a config that relocated away from the
+// legacy path, scrubs credentials from the legacy file. The scrub is only
+// warned about here: the credential was just migrated to the credentials
+// store, so a stale legacy copy is shadowed. ClearTokens treats the same scrub
+// as required.
 func (c *Config) save() error {
+	if err := c.publish(); err != nil {
+		return err
+	}
+	if err := c.scrubLegacyCredentials(c.legacySourcePath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	return nil
+}
+
+// publish writes the config and refreshes the in-memory file snapshot.
+func (c *Config) publish() error {
 	persisted := c.configForSave()
 	// A save must never drop credentials present in the file: the persisted
 	// form omits them, so migrate inline credentials to the credentials store
@@ -587,7 +627,6 @@ func (c *Config) save() error {
 	if err := cliutil.AtomicWritePrivateFile(c.Path, data, 0o600, 0o700); err != nil {
 		return err
 	}
-	c.scrubLegacyCredentials()
 	if !c.AgentcookieManagedByExternalStore() {
 		persisted.clearCredentialFields()
 	}
@@ -602,35 +641,51 @@ func (c *Config) save() error {
 	c.fileConfig.Updates = cloneUpdatesConfig(c.fileConfig.Updates)
 	return nil
 }
-func (c *Config) scrubLegacyCredentials() {
-	if c.legacySourcePath == "" || c.legacySourcePath == c.Path {
-		return
+
+// legacyScrubPath is the legacy config file a logout must clear: the path Load
+// fell back to, else the pre-relocation default Load recorded.
+func (c *Config) legacyScrubPath() string {
+	if c.legacySourcePath != "" {
+		return c.legacySourcePath
+	}
+	return c.legacyConfigPath
+}
+
+// scrubLegacyCredentials removes credential fields from the legacy config file
+// at path, leaving the file untouched when it holds none. A missing file is
+// nothing to scrub; an unreadable, unparseable or unwritable one is an error,
+// because the credential it may hold stays live.
+func (c *Config) scrubLegacyCredentials(path string) error {
+	if path == "" || path == c.Path {
+		return nil
 	}
 	if c.AgentcookieManagedByExternalStore() {
-		return
+		return nil
 	}
-	data, err := os.ReadFile(c.legacySourcePath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "warning: cannot read legacy config to scrub credentials: %v\n", err)
+		if os.IsNotExist(err) {
+			return nil
 		}
-		return
+		return fmt.Errorf("cannot read legacy config %s to scrub credentials: %w", path, err)
 	}
 	var legacy Config
 	if err := toml.Unmarshal(data, &legacy); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot parse legacy config to scrub credentials: %v\n", err)
-		return
+		return fmt.Errorf("cannot parse legacy config %s to scrub credentials: %w", path, err)
+	}
+	if !legacy.hasCredentialFields() {
+		return nil
 	}
 	legacy.clearCredentialFields()
 	scrubbed := legacy.persisted()
 	scrubbedData, err := toml.Marshal(scrubbed)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot marshal scrubbed legacy config: %v\n", err)
-		return
+		return fmt.Errorf("cannot marshal scrubbed legacy config %s: %w", path, err)
 	}
-	if err := cliutil.AtomicWritePrivateFile(c.legacySourcePath, scrubbedData, 0o600, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot write scrubbed legacy config: %v\n", err)
+	if err := cliutil.AtomicWritePrivateFile(path, scrubbedData, 0o600, 0o700); err != nil {
+		return fmt.Errorf("cannot write scrubbed legacy config %s: %w", path, err)
 	}
+	return nil
 }
 
 type persistedConfig struct {
