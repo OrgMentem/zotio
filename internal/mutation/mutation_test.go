@@ -193,8 +193,8 @@ func TestRunApplyStopsOnCanceledContext(t *testing.T) {
 		}},
 	}
 	env, err := Run(Options{Yes: true, MaxChanges: -1, Context: ctx}, "test", ops)
-	if err == nil {
-		t.Fatal("Run canceled err = nil, want non-nil")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("errors.Is(err, context.Canceled) = false, err=%v", err)
 	}
 	if applied != 1 {
 		t.Fatalf("applied %d operation(s) after cancellation, want 1", applied)
@@ -360,25 +360,5 @@ func TestRunApplyAppliedWithReasonRemainsApplied(t *testing.T) {
 	}
 	if env.Result.Items[0].Reason == nil {
 		t.Fatal("reason is nil, want partial-success reason preserved")
-	}
-}
-
-func TestRunCanceledErrorIsWrappable(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ops := []Op{
-		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
-			cancel()
-			return "applied", nil, nil
-		}},
-		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
-			return "applied", nil, nil
-		}},
-	}
-	_, err := Run(Options{Yes: true, MaxChanges: -1, Context: ctx}, "test", ops)
-	if err == nil {
-		t.Fatal("Run err = nil, want non-nil on cancellation")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("errors.Is(err, context.Canceled) = false, err=%v", err)
 	}
 }
