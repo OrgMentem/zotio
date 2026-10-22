@@ -685,6 +685,44 @@ func TestImportApplyStoredAttachRefusedUnderWebDAV(t *testing.T) {
 	assertPreconditionExitCode(t, err, 9)
 }
 
+// An attach entry uploads through the Web API whatever --via says, so the
+// refusal must not tell the operator that switching import apply's --via fixes
+// it; it names the separate per-item command that does reach the desktop.
+func TestImportApplyAttachRefusalDoesNotAdviseViaConnector(t *testing.T) {
+	stubZoteroFileStorage(t, "webdav", true)
+	pdfPath := writeUploadFixture(t, "attach.pdf", []byte(uploadFixturePDF))
+	m := importApplyTestManifest()
+	m.Entries = []importManifestEntry{{
+		Path: pdfPath, Action: "attach", Status: "resolved", MatchedKey: "MATCH1", Title: "Attach Paper",
+	}}
+	manifestPath := writeImportApplyTestManifest(t, m)
+
+	for _, via := range []string{"auto", "connector"} {
+		flags := applyFlags()
+		flags.via = via
+		cmd := newImportApplyCmd(flags)
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--attach-mode", "stored", manifestPath})
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("via=%s: stored attach under WebDAV succeeded, want a refusal", via)
+		}
+		var env preconditionUnmetEnvelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("via=%s: decode precondition envelope: %v; output=%q", via, err, out.String())
+		}
+		joined := strings.Join(env.Remediation, " ")
+		if strings.Contains(joined, "Use '--via connector'") {
+			t.Fatalf("via=%s: remediation = %q, must not advise --via connector on import apply", via, joined)
+		}
+		if !strings.Contains(joined, "zotio attachments add <existing-key> <file> --via connector") {
+			t.Fatalf("via=%s: remediation = %q, want the per-item command that reaches the desktop", via, joined)
+		}
+	}
+}
+
 // The connector route creates the parent and its file in one desktop session,
 // which is the one path that reaches a WebDAV store, so it must NOT be refused.
 func TestImportApplyStoredCreateViaConnectorNotRefusedUnderWebDAV(t *testing.T) {

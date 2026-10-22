@@ -223,6 +223,11 @@ const (
 type storedUploadRoute struct {
 	kind  storedUploadRouteKind
 	cause webRouteCause
+	// noConnectorReparent marks a caller that cannot use the connector
+	// re-parent route for this attachment, so its remediation must not tell
+	// the operator to switch --via. import apply's attach entries are such a
+	// caller: they always upload through the Web API, whatever --via says.
+	noConnectorReparent bool
 	// detail carries the classified connector failure for
 	// webRouteCauseConnectorUnavailable.
 	detail string
@@ -234,6 +239,10 @@ var storedUploadRouteUnknown = storedUploadRoute{kind: storedUploadRouteKindUnkn
 // storedUploadToExistingItem is the route for attaching to an item that is
 // already in the library.
 var storedUploadToExistingItem = storedUploadRoute{kind: storedUploadKindExistingItem}
+
+// storedUploadImportApplyAttach is the route for an import apply attach entry:
+// an item already in the library, in a command whose --via never reaches it.
+var storedUploadImportApplyAttach = storedUploadRoute{kind: storedUploadKindExistingItem, noConnectorReparent: true}
 
 // storedUploadCreateFellBack builds the route for a create that the Web API
 // uploader picked up, carrying the recorded reason it did.
@@ -288,6 +297,9 @@ type storedUploadVerdict struct {
 	// targets (see dev/adr/0006), so naming the contributors is how an
 	// operator recognises a refusal produced by another account's profile.
 	profiles []string
+	// route is the routing the refusal was decided for. Only the remediation
+	// reads it, to avoid advising a route the calling command cannot take.
+	route storedUploadRoute
 }
 
 // refused reports whether the upload must not proceed.
@@ -365,7 +377,7 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 				". Zotero has %d profiles here and which one is running cannot be determined, so this reads the WebDAV one; pin it with %s if that is not the profile you use",
 				fs.ProfileCount, zoteroprefs.ProfileDirEnv)
 		}
-		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail, profiles: fs.PersonalWebDAVProfiles()}
+		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail, profiles: fs.PersonalWebDAVProfiles(), route: route}
 	case fs.AnyPersonalSyncDisabled():
 		// A separate problem from the WebDAV mismatch: the destination is
 		// right, but Zotero will never download what is uploaded.
@@ -531,6 +543,16 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 			override,
 		}
 	default:
+		if v.route.noConnectorReparent {
+			return []string{
+				"'--via connector' does not help here: 'import apply' uploads every attach entry through the Web API, so the same refusal repeats. Attach those files one at a time with 'zotio attachments add <existing-key> <file> --via connector', which creates a temporary parent plus the file in one desktop session, moves the attachment onto your item, and trashes the temporary parent (Zotero desktop must be running, and one throwaway item is created and trashed in your library). Then remove the attach entries from the manifest.",
+				"New-item creates in the manifest can use 'zotio import apply --attach-mode stored --via connector' once no attach entries remain.",
+				"Or attach the file by hand in Zotero desktop (right-click the item -> Add Attachment -> Attach Stored Copy of File); Zotero then syncs the bytes to your own file store.",
+				pin,
+				linkedFile,
+				override,
+			}
+		}
 		return []string{
 			"Use '--via connector' to route the bytes through Zotero desktop instead of uploading them: zotio creates a temporary parent plus the file in one connector session, moves the attachment onto your item, and trashes the temporary parent. Requires Zotero desktop running, and it creates and trashes one throwaway item in your library.",
 			"For a NEW item, create it and its file in one desktop session instead: 'zotio import apply --attach-mode stored --via connector'.",

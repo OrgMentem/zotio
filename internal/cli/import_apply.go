@@ -157,7 +157,7 @@ refused before any item is created; apply it in a separate run.`,
 				// uploader. That cause is known from the flag, not probed.
 				route := storedUploadCreateFellBack(createRoute{via: "web", cause: webRouteCauseExplicitWeb})
 				if manifestHasAttachEntries(m) {
-					route = storedUploadToExistingItem
+					route = storedUploadImportApplyAttach
 				}
 				if err := refuseStoredWebUpload(cmd, flags, "import apply", route); err != nil {
 					return err
@@ -198,7 +198,7 @@ refused before any item is created; apply it in a separate run.`,
 					// re-probing now would describe a different moment.
 					route := storedUploadCreateFellBack(storedCreateRoute)
 					if manifestHasAttachEntries(m) {
-						route = storedUploadToExistingItem
+						route = storedUploadImportApplyAttach
 					}
 					if err := refuseStoredWebUpload(cmd, flags, "import apply", route); err != nil {
 						return err
