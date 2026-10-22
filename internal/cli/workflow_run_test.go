@@ -198,6 +198,28 @@ func TestWorkflowRunRejectsWorkflowStep(t *testing.T) {
 	}
 }
 
+// A command annotated read-only that declares its own --dry-run (and no
+// mcp:writes-files) is annotation drift: the preview must not run it for real.
+// The local --dry-run arm is the only thing that catches it.
+func TestWorkflowRunStepWithOwnDryRunFlagIsNotReadOnly(t *testing.T) {
+	root := &cobra.Command{Use: "zotio"}
+	writer := &cobra.Command{Use: "child", Annotations: map[string]string{"mcp:read-only": "true"}}
+	writer.Flags().Bool("dry-run", false, "")
+	reader := &cobra.Command{Use: "plain", Annotations: map[string]string{"mcp:read-only": "true"}}
+	root.AddCommand(writer, reader)
+
+	if workflowRunStepIsReadOnlyWithRoot(root, []string{"child"}) {
+		t.Fatal("a command declaring its own --dry-run was resolved as read-only; the preview would run it for real")
+	}
+	if !workflowRunStepIsReadOnlyWithRoot(root, []string{"plain"}) {
+		t.Fatal("control: a read-only command without --dry-run must stay read-only")
+	}
+	got := workflowRunStepArgs(workflowRunModePreview, workflowRunStepIsReadOnlyWithRoot(root, []string{"child"}), []string{"child"})
+	if want := []string{"child", "--dry-run"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("preview args = %q, want %q", got, want)
+	}
+}
+
 func TestWorkflowRunTransformsStepArgsByMode(t *testing.T) {
 	readOnlyArgs := []string{"journal", "list"}
 	mutatingArgs := []string{"journal", "undo", "RUN-ID"}
