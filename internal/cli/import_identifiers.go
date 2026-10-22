@@ -188,15 +188,31 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 		return nil, fmt.Errorf("PubMed request failed: HTTP %d", resp.StatusCode)
 	}
 
+	// NCBI reports throttling and other failures inside an HTTP 200 body, as
+	// a top-level "error" or a per-record "error". A throttle is a provider
+	// failure the caller can retry, never a missing PMID.
 	var decoded struct {
+		Error  any            `json:"error"`
 		Result map[string]any `json:"result"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("parsing PubMed response: %w", err)
 	}
+	if decoded.Error != nil {
+		return nil, apiErr(fmt.Errorf("PubMed: %v", decoded.Error))
+	}
 	rec, ok := decoded.Result[pmid].(map[string]any)
 	if !ok || len(rec) == 0 {
 		return nil, notFoundErr(fmt.Errorf("PubMed ID not found: %s", pmid))
+	}
+	if msg := importIdentifierString(rec["error"]); msg != "" {
+		if pubmedMissingDocRE.MatchString(msg) {
+			return nil, notFoundErr(fmt.Errorf("PubMed ID not found: %s", pmid))
+		}
+		return nil, apiErr(fmt.Errorf("PubMed: %s", msg))
+	}
+	if importIdentifierString(rec["title"]) == "" {
+		return nil, apiErr(fmt.Errorf("PubMed record %s has no title; not importing an empty article", pmid))
 	}
 	return pubmedItemFromSummary(rec, pmid), nil
 }

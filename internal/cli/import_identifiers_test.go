@@ -592,3 +592,49 @@ func TestPubmedCreatorNamePubMedScope(t *testing.T) {
 		t.Errorf("pubmedCreatorName(%q) = %q, want unchanged (three initials treated as surname by design)", "Smith JAB", jab)
 	}
 }
+
+// NCBI answers some failures with HTTP 200. A throttle must surface as a
+// provider error, a missing record as not-found, and neither may reach a
+// create.
+func TestFetchPubMedItemClassifiesErrorsInOKBody(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{"top-level rate limit", `{"error":"API rate limit exceeded"}`, 5},
+		{"per-record missing document", `{"result":{"uids":["1"],"1":{"uid":"1","error":"cannot get document summary"}}}`, 3},
+		{"per-record other error", `{"result":{"uids":["1"],"1":{"uid":"1","error":"temporarily unavailable"}}}`, 5},
+		{"record without title", `{"result":{"uids":["1"],"1":{"uid":"1","pubdate":"2000"}}}`, 5},
+		{"no result at all", `{"result":{"uids":[]}}`, 3},
+		{"normal record", `{"result":{"uids":["1"],"1":{"uid":"1","title":"Real"}}}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					posts++
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			withBase(t, &importPubMedBase, srv.URL)
+
+			out, err := runImportValidationCmd(t, newImportPmidCmd, "1")
+			if tc.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("err = %v (%s)", err, out)
+				}
+				return
+			}
+			if err == nil || ExitCode(err) != tc.wantCode {
+				t.Fatalf("err = %v (exit %d), want exit %d", err, ExitCode(err), tc.wantCode)
+			}
+			if posts != 0 {
+				t.Fatalf("issued %d write(s), want none", posts)
+			}
+		})
+	}
+}
