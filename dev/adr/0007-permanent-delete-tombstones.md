@@ -92,7 +92,7 @@ whose key carries one.**
 
 6. **The sweep is gated on total observation, not on the `--full` flag, and
    total observation has two halves.** `full` names the user's intent; the sweep
-   needs the property. The two came apart the moment `--full --since N` became
+   needs the property. The two came apart the moment `--full --since-version N` became
    expressible: `full` stays true while every request carries a since filter, so
    the plane omits every unchanged object. `syncResource` therefore requires
    both of:
@@ -114,16 +114,16 @@ whose key carries one.**
      the nesting as absent, and a rule spread 35 lines apart reads as two
      accidents.
 
-7. **`--full --since N` runs without sweeping, and says so.** It is not refused.
+7. **`--full --since-version N` runs without sweeping, and says so.** It is not refused.
    The sweep is the only part of `--full` that requires a total observation;
    cursor reset, stored-version invalidation and authoritative re-fetch of the
    selected objects are all coherent under a `since` filter, so refusing the
    whole request to withhold one component would deny a meaningful ask, break a
    combination the flags already accept, and follow no precedent — `--latest-only`
-   plus `--since` already resolves by warning and degrading, not by erroring. But
+   plus `--since-version` already resolves by warning and degrading, not by erroring. But
    silence was the actual defect: a filtered pass masqueraded as a complete one.
    So a skipped sweep prints a warning naming the resource, why it was skipped,
-   and the command that does reap (`zotio sync --full` without `--since`).
+   and the command that does reap (`zotio sync --full` without `--since-version`).
 
 8. **A deletion marker retires on confirmation and on nothing else. There is no
    TTL backstop.** The marker is written only after `deleteWithVersionGuard`
@@ -152,8 +152,14 @@ whose key carries one.**
    fetches anything: before, so an expired field marker does not hold the mirror
    against the very pass that retires it. It retires; it never confirms.
 
-9. **Growth is one row per permanent delete, retired on the next
-   total-observation pass.** For a user whose desktop syncs, that is a handful
+9. **Growth is two rows per permanent delete (one for `items`, one for
+   `items-trash`; see decision 2), each retired by the next total-observation
+   pass of its own resource.** `pending_writes` is keyed on
+   `(resource_type, id)`, so the paired markers are distinct rows, and each
+   retires independently when a complete pass of that resource stops listing the
+   key. One resource's completed pass therefore does not lift the suppression
+   the other resource still needs. Count pending deletions in marker rows, not
+   in deleted items. For a user whose desktop syncs, that is a handful
    of rows for minutes. For a user whose desktop never syncs again, the rows
    persist indefinitely, and that is the correct trade: each one suppresses a
    row that genuinely no longer exists, so the cost of keeping it is a
@@ -194,7 +200,7 @@ The honest bound, checked against the code rather than assumed:
   offline read to poison and nothing mirrored to resurrect.
 - **The first sync may store the row**, because the read plane still lists the
   item until Zotero syncs the delete down.
-- **The row then survives until the next `zotio sync --full` without `--since`,
+- **The row then survives until the next `zotio sync --full` without `--since-version`,
   which the user may never run.** Not "the first sync": a default `zotio sync`
   is not a full pass (`full` comes only from the `--full` flag), and
   `SweepMissing` is the only thing that can reap a row for an object that is
@@ -319,7 +325,7 @@ An inverse-window key never reaches that code — the version GET fails first.
   indefinitely, and keeps suppressing rows for objects that genuinely do not
   exist. It is warned on every sync of the affected resource. That noise is the
   price of not serving a ghost.
-- A filtered `--full` pass (`--full --since N`) reaps nothing and confirms
+- A filtered `--full` pass (`--full --since-version N`) reaps nothing and confirms
   nothing, and warns that it skipped the reap. That is a behaviour change for
   that combination: before, it reaped almost the whole mirror.
 - The trash and restore paths are untouched. `mirrorTrashedItem` still keeps the
@@ -353,9 +359,9 @@ An inverse-window key never reaches that code — the version GET fails first.
 | **Retire a deletion marker at the TTL and restore the row** | This was the first design here, and it is wrong. The marker is written only after the write plane reported the delete applied, so the clock would overrule a confirmed fact — and it would fire in exactly the scenario the marker exists for, a desktop that has not synced, putting a purged item into offline reads and `search`. A warning does not undo a ghost. The clock stays as a diagnostic. |
 | **Retire a deletion marker at the TTL and leave the row reaped** | Retires the only thing suppressing re-insertion while the read plane still lists the key, so the next page that reports it stores it. The marker's absence is not neutral; it is permission. |
 | **Check the TTL per row, inside `reconcilePendingWrites`** | It only sees keys a fetched page contained, and a marker guards precisely the key the plane is not reporting. A quiet sync returns an empty page and breaks out before the reconciliation runs at all, so the field-marker TTL was never reached and an abandoned write pinned its row forever. It also reads as correct, which is why the age pass is separate and commented against being folded back in. |
-| **Gate the sweep on the `--full` flag** | A flag names intent, not the property the sweep needs. `--full --since N` kept the flag true while every request narrowed the response, so the sweep reaped almost the whole mirror and confirmed every marker. |
+| **Gate the sweep on the `--full` flag** | A flag names intent, not the property the sweep needs. `--full --since-version N` kept the flag true while every request narrowed the response, so the sweep reaped almost the whole mirror and confirmed every marker. |
 | **Allowlist known narrowing params instead of default-deny** | Puts the next filter's author in charge of remembering to disable the sweep. Default-deny fails safe: an unrecognized param costs one skipped reap and a warning, while a missed one costs mirror rows and a reopened resurrection window. |
-| **Refuse `--full --since N` as a contradiction** | Only the sweep needs a total observation; the rest of `--full` (cursor reset, stored-version invalidation, authoritative re-fetch of the selected objects) is coherent under a filter. Refusing would break a combination the flags accept today to withhold one component of it, and it has no precedent here: `--latest-only` plus `--since` warns and degrades. The defect was the silence, so the fix is the warning. |
+| **Refuse `--full --since-version N` as a contradiction** | Only the sweep needs a total observation; the rest of `--full` (cursor reset, stored-version invalidation, authoritative re-fetch of the selected objects) is coherent under a filter. Refusing would break a combination the flags accept today to withhold one component of it, and it has no precedent here: `--latest-only` plus `--since-version` warns and degrades. The defect was the silence, so the fix is the warning. |
 | **Create the mirror from the delete path so a never-synced install gets a marker** | A command that removes something must not have "and now you have a local mirror" as a side effect, and it would put store creation on a path with no other reason to touch the store. The bound is documented instead, with a stderr notice at delete time. |
 | **Keep reporting every write-plane 404 on the delete path as a plain error** | It answers three different states with one sentence, and for one of them the sentence is false. A key carrying a deletion marker is gone because this installation's own confirmed delete removed it, so the error contradicted the mirror it had itself purged; the operator who hit this read it as "the delete failed" and went looking for a live item. Correctness of a report is not cosmetic when the report is the only thing the operator can see. |
 | **Treat any write-plane 404 as a reconciled success** | Reintroduces the false success `SDLDFA9W` produced. Inside the inverse window the item is alive on the read plane and the write plane has simply not heard of it yet; reporting the delete as done leaves an untouched item the operator believes is destroyed. Absence on one plane is not absence. |
@@ -395,7 +401,7 @@ An inverse-window key never reaches that code — the version GET fails first.
   being simplified into the confirmation pass.
 - A marker whose `written_at` is NULL must never be retired by the age pass: an
   unrecorded clock is not an expired one.
-- `--full --since N` must reap no rows, retire no markers, and warn that it
+- `--full --since-version N` must reap no rows, retire no markers, and warn that it
   skipped the reap; `--full` alone must still reap and still retire a confirmed
   marker, so the gate is not "never sweep".
 - `--full --max-pages 1` over a multi-page resource must reap no rows and retire
@@ -411,6 +417,15 @@ An inverse-window key never reaches that code — the version GET fails first.
 - A permanent delete the write plane rejects outright (HTTP 500) must keep the
   mirror row and write no marker. A marker for a key that still exists is worse
   than no reap at all.
+
+## Amendments
+
+- **2026-10-22:** `sync` registers the version filter as `--since-version`, not
+  `--since` (commit `70c88db`). Command references in the active decisions above
+  name the current flag. `since` still names the Web API query parameter that
+  flag sends. Decision 9 originally said "one row per permanent delete", which
+  contradicted decision 2 (a marker for each of `items` and `items-trash`); it
+  now counts two rows.
 
 ## References
 
