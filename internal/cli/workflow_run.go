@@ -14,8 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"zotio/internal/mutation"
@@ -998,7 +1000,8 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 			}
 		}
 
-		output, stderr, err := executeWorkflowRunStepWithRoot(ctx, root, args, stdin)
+		stepCtx, evidence := withWorkflowRunCreateEvidence(ctx)
+		output, stderr, err := executeWorkflowRunStepWithRoot(stepCtx, root, args, stdin)
 		stepReport.Output = capWorkflowRunOutput(output)
 		if err != nil {
 			stepReport.Status = "failed"
@@ -1006,11 +1009,13 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 			report.OK = false
 			// A failed create step may still have committed part of its batch
 			// (items create, import file, import apply report per-index
-			// outcomes inside a non-zero run). Replaying the same step on
+			// outcomes inside a non-zero run). The evidence comes from the
+			// engine's result, not the step's stdout, which --quiet empties.
+			// Replaying the same step on
 			// --resume would post the confirmed successes a second time, so
 			// refuse an automatic replay and keep the original failure output
 			// for reconciliation instead of only the latest attempt.
-			if partial := workflowRunConfirmedCreateOutcomes(output); partial != "" {
+			if partial := evidence.confirmedCreateOutcomes(); partial != "" {
 				refusal := fmt.Sprintf("refusing automatic resume of step %d: it already applied %s; reconcile those items in Zotero (keep them or delete them) and edit the step to create only the missing items before resuming", stepReport.Index, partial)
 				stepReport.Error = fmt.Sprintf("%s: %s", refusal, stepReport.Error)
 				if checkpointErr := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, "blocked", output); checkpointErr != nil {
@@ -1055,37 +1060,67 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 	return report, executionErr
 }
 
-// workflowRunConfirmedCreateOutcomes inspects a failed step's mutation output
-// for confirmed applied sub-operations: an items create / import file / import
-// apply run uses ContinueOnError, so a non-zero run can still carry per-index
-// successes that Zotero committed. A non-empty return names those successes
-// for the resume refusal; anything unparseable or without an applied count
-// returns "" and the step resumes as before.
-func workflowRunConfirmedCreateOutcomes(output string) string {
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return ""
+// workflowRunCreateOperations are the mutation operations whose applied outcomes
+// are creates a replay would post a second time.
+var workflowRunCreateOperations = map[string]bool{"items.create": true, "import.file": true, "import.apply": true}
+
+type workflowRunEvidenceKey struct{}
+
+// workflowRunCreateEvidence collects the applied counts a step's mutation runs
+// reported. It is the typed outcome of the step, independent of what the step
+// rendered: --quiet, --select or --csv change stdout but not the engine's
+// result, and a replay decision resting on stdout would read "nothing printed"
+// as "nothing committed".
+type workflowRunCreateEvidence struct {
+	mu      sync.Mutex
+	applied map[string]int
+}
+
+// withWorkflowRunCreateEvidence returns a context that makes runMutation report
+// each run's applied count to the returned collector.
+func withWorkflowRunCreateEvidence(ctx context.Context) (context.Context, *workflowRunCreateEvidence) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	var env struct {
-		Operation string `json:"operation"`
-		Result    *struct {
-			Summary struct {
-				Applied int `json:"applied"`
-			} `json:"summary"`
-		} `json:"result"`
+	evidence := &workflowRunCreateEvidence{applied: map[string]int{}}
+	return context.WithValue(ctx, workflowRunEvidenceKey{}, evidence), evidence
+}
+
+// recordWorkflowRunMutation reports an engine result to the workflow step
+// collector carried by ctx, if any. runMutation calls it for every run.
+func recordWorkflowRunMutation(ctx context.Context, env *mutation.Envelope) {
+	if ctx == nil || env == nil || env.Result == nil {
+		return
 	}
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return ""
+	evidence, _ := ctx.Value(workflowRunEvidenceKey{}).(*workflowRunCreateEvidence)
+	if evidence == nil {
+		return
 	}
-	switch env.Operation {
-	case "items.create", "import.file", "import.apply":
-	default:
-		return ""
+	evidence.mu.Lock()
+	evidence.applied[env.Operation] += env.Result.Summary.Applied
+	evidence.mu.Unlock()
+}
+
+// confirmedCreateOutcomes names the creates a failed step already committed:
+// an items create / import file / import apply run uses ContinueOnError, so a
+// non-zero run can still carry per-index successes. A non-empty return feeds
+// the resume refusal; "" means the step committed no create and may be
+// replayed.
+func (e *workflowRunCreateEvidence) confirmedCreateOutcomes() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	operations := make([]string, 0, len(e.applied))
+	for operation, applied := range e.applied {
+		if workflowRunCreateOperations[operation] && applied > 0 {
+			operations = append(operations, operation)
+		}
 	}
-	if env.Result == nil || env.Result.Summary.Applied <= 0 {
-		return ""
+	sort.Strings(operations)
+	parts := make([]string, 0, len(operations))
+	for _, operation := range operations {
+		parts = append(parts, fmt.Sprintf("%d %s item(s)", e.applied[operation], operation))
 	}
-	return fmt.Sprintf("%d %s item(s)", env.Result.Summary.Applied, env.Operation)
+	return strings.Join(parts, ", ")
 }
 
 func checkpointWorkflowRunStep(execution workflowRunExecution, index int, name, status, output string) error {

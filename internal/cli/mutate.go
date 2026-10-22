@@ -50,6 +50,7 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		adjust(&opts)
 	}
 	env, err := mutation.Run(opts, operation, ops)
+	recordWorkflowRunMutation(ctx, &env)
 	if mirrorWriteThrough != nil {
 		mirrorWriteThrough(&env)
 	}
