@@ -269,23 +269,38 @@ func findLinkedAttachment(c *client.Client, parentKey, path string) (string, err
 }
 
 // findLinkedURLAttachment reports an existing, untrashed linked_url child of
-// parentKey pointing at url. `items enrich --repair-pdf` reconciles against it:
-// its queue re-selects the same parent on every run, so without this check a
-// repeated repair would stack duplicate links on one item.
-func findLinkedURLAttachment(c *client.Client, parentKey, url string) (string, error) {
+// parentKey pointing at url, read from the WRITE plane. `items enrich` guards
+// its linked-url POST with it: the work queue is a mirror query that cannot see
+// a child created since the last sync, so a repeated run would otherwise stack
+// duplicate links on one item. The desktop plane lags a Web write by a sync
+// cycle, so it cannot answer this question.
+func findLinkedURLAttachment(ctx context.Context, r writePlaneReader, parentKey, url string) (string, error) {
 	if url == "" {
 		return "", nil
 	}
-	rows, err := attachmentChildRows(c, parentKey)
-	if err != nil {
-		return "", err
-	}
-	for _, row := range rows {
-		if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_url" && row.Data.URL == url && row.Data.Deleted == 0 {
-			return row.Key, nil
+	for start := 0; ; start += connectorChildrenPageSize {
+		params := map[string]string{
+			"itemType": "attachment",
+			"limit":    strconv.Itoa(connectorChildrenPageSize),
+			"start":    strconv.Itoa(start),
+		}
+		data, _, err := r.GetFromWriteBaseWithVersionContext(ctx, "/items/"+parentKey+"/children", params)
+		if err != nil {
+			return "", fmt.Errorf("listing children of %s: %w", parentKey, err)
+		}
+		var page []childRow
+		if err := json.Unmarshal(data, &page); err != nil {
+			return "", fmt.Errorf("parsing children of %s: %w", parentKey, err)
+		}
+		for _, row := range page {
+			if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_url" && row.Data.URL == url && row.Data.Deleted == 0 {
+				return row.Key, nil
+			}
+		}
+		if len(page) < connectorChildrenPageSize {
+			return "", nil
 		}
 	}
-	return "", nil
 }
 
 // storedUploadRequest carries everything the upload protocol needs for one file.

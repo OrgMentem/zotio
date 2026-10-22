@@ -738,6 +738,16 @@ type fakeMutator struct {
 	writeData     json.RawMessage
 	writeVerErr   error
 	writeVerPaths []string
+	// children is the live children list the write plane reports (default
+	// empty); childrenErr fails that read.
+	children    json.RawMessage
+	childrenErr error
+	postHeaders map[string]string
+}
+
+func (f *fakeMutator) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	f.postHeaders = headers
+	return f.Post(path, body)
 }
 
 func (f *fakeMutator) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -747,6 +757,16 @@ func (f *fakeMutator) PatchWithHeaders(path string, body any, headers map[string
 
 func (f *fakeMutator) GetFromWriteBaseWithVersionContext(_ context.Context, path string, _ map[string]string) (json.RawMessage, int, error) {
 	f.writeVerPaths = append(f.writeVerPaths, path)
+	if strings.HasSuffix(path, "/children") {
+		// Linked-url reconcile reads the live children, not the item.
+		if f.childrenErr != nil {
+			return nil, 0, f.childrenErr
+		}
+		if f.children != nil {
+			return f.children, f.writeVersion, nil
+		}
+		return json.RawMessage(`[]`), f.writeVersion, nil
+	}
 	if f.writeVerErr != nil {
 		return nil, 0, f.writeVerErr
 	}
@@ -1064,6 +1084,140 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 	}
 }
 
+// fakeLinkedURLLibrary models the write plane for one parent: it lists the
+// linked_url children created so far and commits a POST at most once per
+// Zotero-Write-Token (a replayed token answers 412, as Zotero does). dropFirst
+// makes the first commit answer 500 after committing, the lost-response case.
+type fakeLinkedURLLibrary struct {
+	mu        sync.Mutex
+	children  []map[string]any
+	tokens    map[string]bool
+	posts     int
+	dropFirst bool
+}
+
+func (l *fakeLinkedURLLibrary) handler(parent string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/items/"+parent+"/children":
+			rows := make([]map[string]any, 0, len(l.children))
+			for i, child := range l.children {
+				rows = append(rows, map[string]any{"key": fmt.Sprintf("CHILD%d", i+1), "data": child})
+			}
+			_ = json.NewEncoder(w).Encode(rows)
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			l.posts++
+			token := r.Header.Get("Zotero-Write-Token")
+			if token != "" && l.tokens[token] {
+				http.Error(w, "token already submitted", http.StatusPreconditionFailed)
+				return
+			}
+			var body []map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 {
+				http.Error(w, "bad body", http.StatusBadRequest)
+				return
+			}
+			if l.tokens == nil {
+				l.tokens = map[string]bool{}
+			}
+			if token != "" {
+				l.tokens[token] = true
+			}
+			l.children = append(l.children, body[0])
+			if l.dropFirst {
+				l.dropFirst = false
+				http.Error(w, "gateway lost the response", http.StatusBadGateway)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"successful":{"0":{"key":"CHILD%d"}},"success":{"0":"CHILD%d"},"unchanged":{},"failed":{}}`, len(l.children), len(l.children))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func missingPDFProposal() enrichProposal {
+	return enrichProposal{
+		Key: "ABC", Category: "missing_pdf", Action: enrichActionAttach, Source: "Unpaywall",
+		AttachMode: "linked-url", DownloadURL: "https://oa/p.pdf",
+		Attachment: map[string]any{
+			"itemType": "attachment", "linkMode": "linked_url", "title": "Open-access PDF (Unpaywall)",
+			"url": "https://oa/p.pdf", "parentItem": "ABC", "contentType": "application/pdf",
+		},
+	}
+}
+
+// The --missing-pdf queue is a mirror query, so a run repeated before a sync
+// selects the same parent again. The second apply must find the child the
+// first one created on the write plane and create nothing.
+func TestApplyEnrichProposalMissingPDFRerunCreatesOneAttachment(t *testing.T) {
+	lib := &fakeLinkedURLLibrary{}
+	srv := httptest.NewServer(lib.handler("ABC"))
+	t.Cleanup(srv.Close)
+
+	for run, wantStatus := range []string{"applied", "no_op"} {
+		p := missingPDFProposal()
+		status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), newEnrichWriteClient(t, srv.URL), &p, &rootFlags{})
+		if err != nil || status != wantStatus {
+			t.Fatalf("run %d = (%q, %v, %v), want %q", run+1, status, reason, err, wantStatus)
+		}
+	}
+	if len(lib.children) != 1 || lib.posts != 1 {
+		t.Fatalf("children = %d, POSTs = %d, want exactly one of each across two runs", len(lib.children), lib.posts)
+	}
+}
+
+// A response lost after Zotero committed must not become a second attachment
+// on the rerun, and the lost write must be reconciled to a result.
+func TestApplyEnrichProposalMissingPDFLostResponseDoesNotDuplicate(t *testing.T) {
+	t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
+	lib := &fakeLinkedURLLibrary{dropFirst: true}
+	srv := httptest.NewServer(lib.handler("ABC"))
+	t.Cleanup(srv.Close)
+
+	for run, wantStatus := range []string{"applied", "no_op"} {
+		p := missingPDFProposal()
+		status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), newEnrichWriteClient(t, srv.URL), &p, &rootFlags{})
+		if err != nil || status != wantStatus {
+			t.Fatalf("run %d = (%q, %v, %v), want %q", run+1, status, reason, err, wantStatus)
+		}
+	}
+	if len(lib.children) != 1 {
+		t.Fatalf("children = %d, want the lost write and the rerun to leave exactly one attachment", len(lib.children))
+	}
+}
+
+// A child that exists only on the write plane (trashed children excluded) is
+// found; the same URL on a trashed child does not block a fresh attachment.
+func TestApplyEnrichProposalMissingPDFIgnoresTrashedChild(t *testing.T) {
+	f := &fakeMutator{children: json.RawMessage(`[{"key":"OLD1","data":{"itemType":"attachment","linkMode":"linked_url","url":"https://oa/p.pdf","deleted":1}}]`)}
+	p := missingPDFProposal()
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
+	if err != nil || status != "applied" {
+		t.Fatalf("apply = (%q, %v, %v), want applied", status, reason, err)
+	}
+	if f.postHeaders["Zotero-Write-Token"] == "" {
+		t.Fatalf("POST headers = %v, want a Zotero-Write-Token", f.postHeaders)
+	}
+}
+
+// A failed children read must stop the write: posting without knowing what the
+// item already owns is how the duplicate got made.
+func TestApplyEnrichProposalMissingPDFFailsClosedOnChildrenReadError(t *testing.T) {
+	f := &fakeMutator{childrenErr: errors.New("write plane unreachable")}
+	p := missingPDFProposal()
+	status, _, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
+	if err == nil || status != "failed" {
+		t.Fatalf("apply status %q err %v, want failed", status, err)
+	}
+	if f.postPath != "" {
+		t.Fatalf("POSTed %q after the children read failed", f.postPath)
+	}
+}
+
 // A Zotero batch write answers HTTP 200 and reports a rejected element only in
 // the body, so the transport error is nil for a write that never landed. The
 // linked-url attach must read that body instead of assuming success.
@@ -1100,6 +1254,11 @@ func TestApplyEnrichProposalLinkedURLReadsBatchOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			posts := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
 				if r.Method != http.MethodPost || r.URL.Path != "/items" {
 					http.NotFound(w, r)
 					return

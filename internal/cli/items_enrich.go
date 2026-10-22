@@ -1321,28 +1321,37 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 				err := errors.New("missing API client")
 				return "failed", err.Error(), err
 			}
-			// A repair runs against an item that already owns children, and
-			// the queue re-selects that parent on every run: without a
-			// reconcile step, each repair would hang another copy of the same
-			// open-access link on the item while the broken child stays put.
-			// The one-shot missing-pdf case cannot hit this (its queue
-			// requires NO pdf child), but the code path is shared.
-			if p.Category == "repair_pdf" {
-				readClient, ok := c.(*client.Client)
-				if !ok || readClient == nil {
-					err := errors.New("repairing an attachment requires the Zotero write client to reconcile existing children")
-					return "failed", err.Error(), err
-				}
-				existing, reconcileErr := findLinkedURLAttachment(readClient, p.Key, p.DownloadURL)
-				if reconcileErr != nil {
-					return enrichErrorStatus(reconcileErr)
-				}
-				if existing != "" {
-					return "no_op", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
-				}
+			// The work queue is a mirror query, so it cannot see a child this
+			// or an earlier run created since the last sync: re-running the
+			// command (the natural retry after a partial failure) would
+			// otherwise hang another copy of the same open-access link on the
+			// item. Reconcile against the live write plane before posting, and
+			// send a token derived from parent and URL so a response lost
+			// after Zotero committed cannot commit a second copy either.
+			writer, ok := c.(linkedURLWriter)
+			if !ok {
+				err := errors.New("attaching an open-access PDF requires the Zotero write client to reconcile existing children")
+				return "failed", err.Error(), err
 			}
-			resp, _, err := c.Post("/items", []map[string]any{p.Attachment})
+			existing, reconcileErr := findLinkedURLAttachment(ctx, writer, p.Key, p.DownloadURL)
+			if reconcileErr != nil {
+				return enrichErrorStatus(reconcileErr)
+			}
+			if existing != "" {
+				return "no_op", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
+			}
+			token := writeToken("zotio.items.enrich.linked-url", p.Key, p.DownloadURL)
+			resp, _, err := writer.PostWithHeaders("/items", []map[string]any{p.Attachment}, map[string]string{"Zotero-Write-Token": token})
 			if err != nil {
+				var apiErr *client.APIError
+				if client.IsAmbiguousWriteError(err) || (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusPreconditionFailed) {
+					// The token may already have committed the child. Only the
+					// live children can say.
+					if existing, rerr := findLinkedURLAttachment(ctx, writer, p.Key, p.DownloadURL); rerr == nil && existing != "" {
+						return "applied", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
+					}
+					err = fmt.Errorf("creating linked-url attachment: %w; the write token for %s under %s was already submitted but no matching attachment was found; review the item in Zotero before re-running", err, p.DownloadURL, p.Key)
+				}
 				return enrichErrorStatus(err)
 			}
 			// A Zotero batch write answers HTTP 200 even when it rejects the
@@ -1535,6 +1544,14 @@ func linkedAttachmentCreationConfirmedAbsent(err error) bool {
 // includes the write-plane precondition surface because a key-based Zotero
 // write must carry an If-Unmodified-Since-Version read from the plane the
 // write is routed to (see write_precondition.go).
+// linkedURLWriter is what the linked-url attach needs beyond apiMutator: a
+// write-plane children read to reconcile against, and a POST that carries a
+// Zotero-Write-Token.
+type linkedURLWriter interface {
+	writePlaneReader
+	PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
+}
+
 type apiMutator interface {
 	Patch(path string, body any) (json.RawMessage, int, error)
 	PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
