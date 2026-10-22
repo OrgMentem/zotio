@@ -164,7 +164,7 @@ refused before any item is created; apply it in a separate run.`,
 				}
 			}
 
-			var writeClient importApplyPoster
+			var writeClient *client.Client
 			var storedClient *client.Client
 			storedCreateVia := ""
 			if resolveMutationMode(flags).Apply {
@@ -587,7 +587,7 @@ func storedConnectorCommittedDetail(res itemCreateResult, entryTitle, marker, me
 }
 
 // Build mutation ops without network or disk I/O.
-func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool, defaultCollection string) []mutation.Op {
+func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Client, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool, defaultCollection string) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
 	var session *importApplyConnectorSession
 	if attachMode == "stored" {
@@ -783,7 +783,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					// `journal undo` can trash this item.
 					detail := map[string]any{"key": createdKey, "parent_key": createdKey}
 					if attachMode == "linked-file" && entryPath != "" {
-						attachmentKey, err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags)
+						attachmentKey, _, err := attachImportLinkedFile(writeClient, createdKey, entryPath, flags)
 						if err != nil {
 							// The parent is already committed and nothing rolls it back, so the
 							// failure must carry the evidence to reconcile by hand: "key" lets
@@ -868,11 +868,26 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 				if writeClient == nil {
 					return "failed", nil, fmt.Errorf("missing write client")
 				}
-				attachmentKey, err := postLinkedFileAttachment(writeClient, matchedKey, entryPath, flags)
+				attachmentKey, created, err := attachImportLinkedFile(writeClient, matchedKey, entryPath, flags)
+				var conflict *storedConflictError
+				if errors.As(err, &conflict) {
+					// The token was already submitted but no matching child is
+					// visible: the write may have committed, so keep the
+					// evidence in the journal instead of inviting a re-apply.
+					return "conflict", map[string]any{
+						"committed": true, "parent_key": matchedKey, "title": filepath.Base(entryPath),
+						"message": conflict.Error(),
+					}, nil
+				}
 				if err != nil {
 					return "failed", nil, err
 				}
-				return "applied", map[string]any{"parent_key": matchedKey, "attachment_key": attachmentKey}, nil
+				detail := map[string]any{"parent_key": matchedKey, "attachment_key": attachmentKey}
+				if !created {
+					detail["note"] = "identical linked-file attachment already present"
+					return "no_op", detail, nil
+				}
+				return "applied", detail, nil
 			}
 			ops = append(ops, op)
 		case "skip":
@@ -889,21 +904,6 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 	return ops
 }
 
-// prepareStoredCreate checks a stored create's file before any parent exists,
-// so an unreadable file never leaves an orphaned item behind.
-func prepareStoredCreate(entryNumber int, entryPath string) (storedUploadRequest, error) {
-	if entryPath == "" {
-		return storedUploadRequest{}, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
-	}
-	if err := validateImportStoredAttachment(entryPath); err != nil {
-		return storedUploadRequest{}, err
-	}
-	return newStoredUploadRequest("", entryPath, "")
-}
-
-// importApplyStoredEntry is one stored create manifest entry and, once the
-// shared connector session has run, that entry's own outcome.
-type importApplyStoredEntry struct {
 // postImportApplyParent creates one manifest entry's parent item through the
 // Web API. The write token is a pure function of the manifest entry, so
 // applying the same manifest replays the same token: an entry Zotero already
@@ -927,6 +927,21 @@ func postImportApplyParent(writeClient importApplyPoster, flags *rootFlags, entr
 	return createdKey, nil, nil
 }
 
+// prepareStoredCreate checks a stored create's file before any parent exists,
+// so an unreadable file never leaves an orphaned item behind.
+func prepareStoredCreate(entryNumber int, entryPath string) (storedUploadRequest, error) {
+	if entryPath == "" {
+		return storedUploadRequest{}, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
+	}
+	if err := validateImportStoredAttachment(entryPath); err != nil {
+		return storedUploadRequest{}, err
+	}
+	return newStoredUploadRequest("", entryPath, "")
+}
+
+// importApplyStoredEntry is one stored create manifest entry and, once the
+// shared connector session has run, that entry's own outcome.
+type importApplyStoredEntry struct {
 	number    int
 	title     string
 	path      string
@@ -1243,32 +1258,16 @@ func importApplyEntryTitle(entry importManifestEntry, item map[string]any) strin
 	return "item"
 }
 
-// Post linked-file attachment children through the write client.
-func postLinkedFileAttachment(c importApplyPoster, parentKey, absPath string, flags *rootFlags) (string, error) {
-	// Child items are created by POSTing the attachment (with parentItem set)
-	// to /items. /items/{key}/children is GET-only on the Web API and rejects
-	// POST with HTTP 405.
-	data, _, err := c.Post("/items", []map[string]any{linkedFileAttachmentItem(parentKey, absPath)})
-	if err != nil {
-		return "", classifyAPIError(err, flags)
-	}
-	key, ok := createdItemKey(data)
-	if !ok {
-		return "", fmt.Errorf("could not read created attachment key from /items response")
-	}
-	return key, nil
-}
-
-// Construct Zotero's linked-file attachment child payload.
-func linkedFileAttachmentItem(parentKey, absPath string) map[string]any {
-	return map[string]any{
-		"itemType":    "attachment",
-		"linkMode":    "linked_file",
-		"parentItem":  parentKey,
-		"title":       filepath.Base(absPath),
-		"path":        absPath,
-		"contentType": "application/pdf",
-	}
+// attachImportLinkedFile attaches absPath to parentKey as a linked_file child
+// through the same idempotent helper as `attachments add --mode linked-file`:
+// an existing child with that path is reused (created=false), and the create
+// carries a deterministic write token whose ambiguous or 412 answer is
+// reconciled against the parent's children. Re-applying a manifest therefore
+// never stacks a second child on the same file.
+func attachImportLinkedFile(c *client.Client, parentKey, absPath string, flags *rootFlags) (string, bool, error) {
+	return ensureLinkedAttachment(c, storedUploadRequest{
+		ParentKey: parentKey, Path: absPath, Title: filepath.Base(absPath), ContentType: "application/pdf",
+	}, flags)
 }
 
 // Extract the created item key from Zotero batch-create responses.

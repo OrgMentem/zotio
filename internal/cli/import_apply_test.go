@@ -1245,27 +1245,6 @@ func TestStoredConnectorCreateResultPropagatesCancellation(t *testing.T) {
 	}
 }
 
-func TestLinkedFileAttachmentItem(t *testing.T) {
-	path := filepath.Join(string(filepath.Separator), "tmp", "Paper.pdf")
-	item := linkedFileAttachmentItem("PARENT1", path)
-	want := map[string]any{
-		"itemType":   "attachment",
-		"linkMode":   "linked_file",
-		"parentItem": "PARENT1",
-		"title":      "Paper.pdf",
-		"path":       path,
-
-		"contentType": "application/pdf",
-	}
-	if len(item) != len(want) {
-		t.Fatalf("item = %+v, want %+v", item, want)
-	}
-	for key, wantValue := range want {
-		if item[key] != wantValue {
-			t.Fatalf("item[%s] = %v, want %v; item=%+v", key, item[key], wantValue, item)
-		}
-	}
-}
 func TestOrphanedConnectorParentDetailOmitsUnprovenKey(t *testing.T) {
 	detail := orphanedConnectorParentDetail(itemCreateResult{
 		Via: "connector", WebKey: "UNPROVEN", Session: "session-1", ConnKey: "connector-1",

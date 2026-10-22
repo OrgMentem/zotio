@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -142,7 +143,6 @@ func TestImportApplyReplayedWriteTokenRefusesDuplicate(t *testing.T) {
 	}
 }
 
-// An items create batch lost in transit must report a committed conflict with
 // The stored Web route used to POST the parent without a write token, so a
 // lost response and a rerun of the same manifest created a second parent. The
 // parent now goes out under the entry's deterministic token, the lost response
@@ -216,6 +216,7 @@ func TestImportApplyStoredWebLostParentResponseReplaysSameToken(t *testing.T) {
 	}
 }
 
+// An items create batch lost in transit must report a committed conflict with
 // the deterministic write token attached, not a plain transport failure.
 func TestItemsCreateLostBatchResponseReportsCommittedConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -259,5 +260,91 @@ func TestItemsCreateLostBatchResponseReportsCommittedConflict(t *testing.T) {
 	}
 	if journal, ok := env.Journal.(map[string]any); !ok || journal["run_id"] == nil {
 		t.Fatalf("ambiguous batch has no journal entry: %v", env.Journal)
+	}
+}
+
+// Re-applying a manifest must not stack a second linked_file child on the same
+// parent and path: the second apply reports the existing attachment as a no-op
+// and never POSTs, including after the first POST's response was lost.
+func TestImportApplyLinkedFileAttachIsIdempotent(t *testing.T) {
+	for _, dropFirstResponse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drop_first_response=%t", dropFirstResponse), func(t *testing.T) {
+			fastRetryBackoff(t)
+			var mu sync.Mutex
+			var posts int
+			tokens := map[string]bool{}
+			var children []map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/users/0/items/MATCH1/children":
+					_ = json.NewEncoder(w).Encode(children)
+				case r.Method == http.MethodPost && r.URL.Path == "/users/0/items":
+					posts++
+					token := r.Header.Get("Zotero-Write-Token")
+					if token == "" {
+						t.Error("linked-file POST arrived without Zotero-Write-Token")
+					}
+					if tokens[token] {
+						http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+						return
+					}
+					tokens[token] = true
+					var body []map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 {
+						http.Error(w, "bad body", http.StatusBadRequest)
+						return
+					}
+					children = append(children, map[string]any{"key": "CHILD001", "data": map[string]any{
+						"key": "CHILD001", "itemType": "attachment", "linkMode": "linked_file", "path": body[0]["path"],
+					}})
+					if dropFirstResponse && posts == 1 {
+						hj, _ := w.(http.Hijacker)
+						conn, _, _ := hj.Hijack()
+						_ = conn.Close()
+						return
+					}
+					_, _ = fmt.Fprint(w, `{"success":{"0":"CHILD001"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+			pdf := writeUploadFixture(t, "linked.pdf", []byte("%PDF-1.4\nlinked\n%%EOF"))
+			manifestPath := writeImportApplyTestManifest(t, importManifest{
+				SchemaVersion: importManifestSchemaVersion,
+				Dir:           filepath.Dir(pdf),
+				Entries: []importManifestEntry{{
+					Path: pdf, Action: "attach", Status: "resolved", MatchedKey: "MATCH1", Title: "Linked",
+				}},
+			})
+			var statuses []string
+			for run := 1; run <= 2; run++ {
+				env, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web", yes: true, maxChanges: -1},
+					[]string{"--attach-mode", "linked-file", manifestPath})
+				if err != nil || env.Result == nil || len(env.Result.Items) != 1 {
+					t.Fatalf("run %d: result=%+v err=%v", run, env.Result, err)
+				}
+				statuses = append(statuses, env.Result.Items[0].Status)
+				if run == 2 {
+					reason, _ := env.Result.Items[0].Reason.(map[string]any)
+					if env.Result.Items[0].Status != "no_op" || reason["attachment_key"] != "CHILD001" {
+						t.Fatalf("second apply = %q %#v, want no_op naming the existing attachment", env.Result.Items[0].Status, reason)
+					}
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(children) != 1 {
+				t.Fatalf("children = %d after two applies (statuses %v), want exactly one linked attachment", len(children), statuses)
+			}
+			if !dropFirstResponse && posts != 1 {
+				t.Fatalf("POST /items count = %d, want 1 across both applies", posts)
+			}
+		})
 	}
 }
