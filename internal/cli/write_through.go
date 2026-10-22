@@ -319,7 +319,7 @@ func recordMirroredWrite(db *store.Store, key string, raw json.RawMessage, chang
 		_, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw})
 		return err
 	}
-	encoded, err := json.Marshal(changes)
+	encoded, err := json.Marshal(pendingChangesWithWas(db, key, changes))
 	if err != nil {
 		// Unreachable in practice — changes marshal by construction — but keep
 		// the prior degraded state (row lands, marker missing) rather than
@@ -943,4 +943,58 @@ func applyCollectionsSetChangeToData(data map[string]any, c mutation.Change) boo
 	}
 	data["collections"] = replaced
 	return true
+}
+
+// pendingChange is one marker entry: the applied change plus, for a scalar
+// field, the values the read plane could still show while it lags the write.
+type pendingChange struct {
+	mutation.Change
+	Was []string `json:"was,omitempty"`
+}
+
+// isMirrorScalarChange reports whether applyChangeToItemData replays c as a
+// plain set or clear of one allowlisted field, returning the value it leaves.
+func isMirrorScalarChange(c mutation.Change) (string, bool) {
+	if mirrorIdentityFields[c.Field] || !mirrorReplayableFields[c.Field] {
+		return "", false
+	}
+	if c.Add != nil {
+		v, ok := c.Add.(string)
+		return v, ok
+	}
+	if _, ok := c.Remove.(string); ok {
+		return "", true
+	}
+	return "", false
+}
+
+// pendingChangesWithWas annotates each scalar change with the value the mirror
+// holds for its field right now, before this write lands. That value is what the
+// read plane shows until Zotero syncs the write down, so a later sync can tell a
+// lagging read plane from a field someone else changed in the meantime
+// (reconcilePendingWrites): a plane that shows neither the written value nor a
+// Was value has moved on, and the marker must not replay the write over it. A
+// missing or unreadable row leaves the entries unannotated, which keeps plain
+// replay.
+func pendingChangesWithWas(db *store.Store, key string, changes []mutation.Change) []pendingChange {
+	entries := make([]pendingChange, len(changes))
+	for i, c := range changes {
+		entries[i] = pendingChange{Change: c}
+	}
+	raw, err := db.Get("items", key)
+	if err != nil || len(raw) == 0 {
+		return entries
+	}
+	var item struct {
+		Data map[string]any `json:"data"`
+	}
+	if json.Unmarshal(raw, &item) != nil || item.Data == nil {
+		return entries
+	}
+	for i, c := range changes {
+		if _, ok := isMirrorScalarChange(c); ok {
+			entries[i].Was = []string{stringFromMap(item.Data, c.Field)}
+		}
+	}
+	return entries
 }

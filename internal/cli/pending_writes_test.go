@@ -331,3 +331,60 @@ func TestReconcilePendingWritesReplaysEveryUnconfirmedWriteToOneItem(t *testing.
 		t.Fatalf("pending markers = %v, want none after confirmation", pending)
 	}
 }
+
+// An accumulated marker must not replay an earlier write over a field someone
+// else has changed since. Sequence, with no sync in between: a CLI write sets
+// the title to A and Zotero receives it; the user then retitles to B; a second
+// CLI write changes only the DOI. The marker holds both writes, so the sync that
+// finally reports title B and the new DOI used to replay A over B and, because
+// the plane keeps reporting B, never clear the marker.
+func TestReconcilePendingWritesDoesNotReplayAFieldTheReadPlaneMovedOn(t *testing.T) {
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	const key = "MOVEDON"
+	row := func(title, doi string) json.RawMessage {
+		return json.RawMessage(`{"key":"` + key + `","version":1,"data":{"key":"` + key + `","itemType":"book","title":"` + title + `","DOI":"` + doi + `"}}`)
+	}
+	if _, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{row("Original", "")}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for i, w := range []struct {
+		row     json.RawMessage
+		changes []mutation.Change
+	}{
+		{row("A", ""), []mutation.Change{{Field: "title", Add: "A"}}},
+		{row("A", "10.1/new"), []mutation.Change{{Field: "DOI", Add: "10.1/new"}}},
+	} {
+		if err := recordMirroredWrite(db, key, w.row, w.changes, false); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	reconcile := func(page json.RawMessage) (data map[string]any, stillPending int) {
+		t.Helper()
+		merged, stillPending, err := reconcilePendingWrites(db, "items", []json.RawMessage{page})
+		if err != nil || len(merged) != 1 {
+			t.Fatalf("reconcile: rows=%d err=%v", len(merged), err)
+		}
+		var item struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(merged[0], &item); err != nil {
+			t.Fatalf("decode merged row: %v", err)
+		}
+		return item.Data, stillPending
+	}
+
+	// A plane that still shows the pre-write row lags: both writes replay.
+	if data, stillPending := reconcile(row("Original", "")); data["title"] != "A" || data["DOI"] != "10.1/new" || stillPending != 1 {
+		t.Fatalf("lagging plane: title %v DOI %v pending %d, want both writes replayed and the marker held", data["title"], data["DOI"], stillPending)
+	}
+	// The user retitled to B; the plane carries B and the DOI write.
+	data, stillPending := reconcile(row("B", "10.1/new"))
+	if data["title"] != "B" {
+		t.Fatalf("title = %v, want the user's later edit B kept, not the recorded A replayed over it", data["title"])
+	}
+	if stillPending != 0 {
+		t.Fatalf("stillPending = %d, want the marker cleared: the plane carries the DOI write and moved past the title write", stillPending)
+	}
+}

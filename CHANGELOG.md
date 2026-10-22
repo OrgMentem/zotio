@@ -447,8 +447,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   offline reads and search, with `pending_writes` still reading 1. The marker
   now accumulates the item's unconfirmed writes; a later change supersedes
   earlier entries for the same field, or for the same tag or collection.
-  `journal undo` is the exception: it records exactly what the undo sent, so a
-  field you corrected after the run is not replayed over your edit.
+  A field the desktop later reports with a value you changed after the write
+  is no longer replayed over it. A tag or collection you removed or added
+  yourself after a write, before the desktop synced, can still be put back in
+  the mirror until the desktop reports it. `journal undo` is the exception: it
+  records exactly what the undo sent, so a field you corrected after the run is
+  not replayed over your edit.
 
 - **`export snapshot verify` no longer misreports a limited or orphaned
   snapshot as drift.** A snapshot taken with `--limit` that hit its cap now

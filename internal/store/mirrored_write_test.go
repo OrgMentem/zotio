@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -282,5 +283,40 @@ func TestReconcileMirroredWriteReplacesTheMarker(t *testing.T) {
 	}
 	if got, want := string(pending["K1"].Changes), `[{"field":"tags","remove":"t"}]`; got != want {
 		t.Fatalf("marker changes = %s, want exactly what the reconciliation sent: %s", got, want)
+	}
+}
+
+// A superseded scalar entry's written value and prior values are inherited by
+// the entry that replaces it, so a read plane stopping at an intermediate state
+// still reads as lagging rather than as edited by someone else.
+func TestSupersededScalarEntryPassesItsValuesToTheNewestEntry(t *testing.T) {
+	s := mirroredWriteTestOpen(t)
+	for _, changes := range []string{
+		`[{"field":"title","add":"A1","was":["Orig"]}]`,
+		`[{"field":"title","add":"A2","was":["A1"]}]`,
+	} {
+		if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(changes)); err != nil {
+			t.Fatalf("UpsertMirroredWrite: %v", err)
+		}
+	}
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	var got []struct {
+		Field string   `json:"field"`
+		Add   string   `json:"add"`
+		Was   []string `json:"was"`
+	}
+	if err := json.Unmarshal(pending["K1"].Changes, &got); err != nil {
+		t.Fatalf("decode marker: %v", err)
+	}
+	if len(got) != 1 || got[0].Add != "A2" {
+		t.Fatalf("marker = %s, want only the newest title entry", pending["K1"].Changes)
+	}
+	for _, want := range []string{"Orig", "A1"} {
+		if !slices.Contains(got[0].Was, want) {
+			t.Fatalf("was = %v, want it to include %q so an intermediate read-plane state reads as lag", got[0].Was, want)
+		}
 	}
 }

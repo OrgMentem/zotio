@@ -484,6 +484,22 @@ An inverse-window key never reaches that code — the version GET fails first.
   row keeps it, and the next sync that carries the write on the read plane
   restores agreement.
 
+  Accumulation widens what a marker can wrongly replay, because an entry now
+  outlives the write that follows it. The write-through holds no live
+  write-plane snapshot (only the mirror row and the changes), so the protection
+  differs by kind. A **scalar** entry records `was`: the value the mirror held
+  before the write, plus the values of every earlier write to that field it
+  superseded. Replay skips a scalar entry when the read plane shows neither the
+  written value nor a `was` value, because someone else changed the field after
+  the write; the entry no longer pins the marker open, and the marker clears
+  once the plane carries the remaining writes. **Membership** entries (tags,
+  collections) have no such evidence: a plane without tag V looks the same
+  whether it lags or the user removed V after the write, so an unconfirmed
+  add/remove can be replayed over a later user edit until the plane confirms it
+  or the TTL retires the marker. That window existed for a single write before
+  and now also covers the item's earlier writes. Closing it needs the live item
+  threaded to the write-through.
+
 ## References
 
 - ADR-0005 — Single-writer concurrency contract: the reap, the sweep and their

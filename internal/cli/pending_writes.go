@@ -32,9 +32,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
-	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
 
@@ -191,7 +191,7 @@ func reconcilePendingWrites(db *store.Store, resource string, items []json.RawMe
 // changed reports whether the row lacked the write; ok=false means the changes
 // could not be replayed and the caller should not merge.
 func replayPendingChanges(raw json.RawMessage, encoded []byte) (json.RawMessage, bool, bool) {
-	var changes []mutation.Change
+	var changes []pendingChange
 	if err := json.Unmarshal(encoded, &changes); err != nil || len(changes) == 0 {
 		return nil, false, false
 	}
@@ -208,7 +208,10 @@ func replayPendingChanges(raw json.RawMessage, encoded []byte) (json.RawMessage,
 		return nil, false, false
 	}
 	for _, change := range changes {
-		if !applyChangeToItemData(data, change) {
+		if pendingScalarMovedOn(data, change) {
+			continue
+		}
+		if !applyChangeToItemData(data, change.Change) {
 			return nil, false, false
 		}
 	}
@@ -225,6 +228,22 @@ func replayPendingChanges(raw json.RawMessage, encoded []byte) (json.RawMessage,
 		return nil, false, false
 	}
 	return replayed, true, true
+}
+
+// pendingScalarMovedOn reports a recorded scalar write the read plane has been
+// overtaken on: the field shows neither the value written nor any value the
+// plane could show while it lags (change.Was). Someone else changed the field
+// after this write, so replaying it would overrule that newer edit in the
+// mirror, and, because the plane keeps reporting the newer value, would pin the
+// marker open until the TTL. An entry with no Was list predates the annotation
+// and always replays.
+func pendingScalarMovedOn(data map[string]any, change pendingChange) bool {
+	written, ok := isMirrorScalarChange(change.Change)
+	if !ok || len(change.Was) == 0 {
+		return false
+	}
+	live := stringFromMap(data, change.Field)
+	return live != written && !slices.Contains(change.Was, live)
 }
 
 func clearPendingWrite(db *store.Store, resource, id string) {

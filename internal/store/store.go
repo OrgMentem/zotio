@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -2375,18 +2376,27 @@ func mergePendingChanges(prior, next []byte) []byte {
 // pendingChangeShape is the part of a serialized mutation.Change that decides
 // what it supersedes. It is decoded here rather than imported so the store
 // keeps treating the marker as opaque bytes apart from this one rule.
+//
+// Was is the set of values a scalar field could legitimately still show on the
+// read plane while it lags: what the mirror held before the write, plus the
+// value of every earlier write to the field that this entry superseded. Replay
+// uses it to tell a lagging read plane (shows a Was value) from a field someone
+// else has since changed (shows neither the written value nor a Was value).
 type pendingChangeShape struct {
-	Field   string `json:"field"`
-	Add     any    `json:"add"`
-	Remove  any    `json:"remove"`
-	TagType int    `json:"tag_type"`
+	Field   string   `json:"field"`
+	Add     any      `json:"add"`
+	Remove  any      `json:"remove"`
+	TagType int      `json:"tag_type"`
+	Was     []string `json:"was"`
 }
 
 // supersedePendingChanges keeps, in order, the entries of an accumulated change
 // list that still decide the final state, and drops the ones a later entry
 // overrules:
 //
-//   - a scalar field (title, DOI, ...): the latest change to that field wins;
+//   - a scalar field (title, DOI, ...): the latest change to that field wins,
+//     and inherits the dropped entries' written values and Was values so the
+//     read plane's intermediate states still read as lag;
 //   - tags and collections membership: per value, so a later add or remove of V
 //     supersedes earlier ones for V and leaves every other value alone;
 //   - a whole-list replacement (tags_set, collections_set): supersedes every
@@ -2398,8 +2408,10 @@ type pendingChangeShape struct {
 // accumulating too much is safe because replay is sequential and idempotent,
 // whereas dropping a live obligation reintroduces the rollback this prevents.
 func supersedePendingChanges(entries []json.RawMessage) []json.RawMessage {
-	covered := map[string]bool{}
+	owner := map[string]int{} // slot -> index of the newest kept entry deciding it
+	wholeList := map[string]bool{}
 	keep := make([]bool, len(entries))
+	carried := map[int][]string{} // kept scalar entry -> values inherited from dropped ones
 	for i := len(entries) - 1; i >= 0; i-- {
 		var c pendingChangeShape
 		if json.Unmarshal(entries[i], &c) != nil || c.Field == "" {
@@ -2407,36 +2419,74 @@ func supersedePendingChanges(entries []json.RawMessage) []json.RawMessage {
 			continue
 		}
 		slots, list := pendingChangeSlots(c)
-		if list != "" && covered["list:"+list] {
+		if list != "" && wholeList[list] {
 			continue // a later whole-list replacement overrules it entirely
 		}
 		if len(slots) > 0 {
 			overruled := true
 			for _, slot := range slots {
-				if !covered[slot] {
+				if _, ok := owner[slot]; !ok {
 					overruled = false
 					break
 				}
 			}
 			if overruled {
+				if len(slots) == 1 && strings.HasPrefix(slots[0], "field\x00") {
+					written, _ := c.Add.(string)
+					carried[owner[slots[0]]] = append(append(carried[owner[slots[0]]], written), c.Was...)
+				}
 				continue
 			}
 		}
 		keep[i] = true
 		for _, slot := range slots {
-			covered[slot] = true
+			owner[slot] = i
 		}
-		if wholeList := pendingWholeListOf(c.Field); wholeList != "" {
-			covered["list:"+wholeList] = true
+		if whole := pendingWholeListOf(c.Field); whole != "" {
+			wholeList[whole] = true
 		}
 	}
 	kept := make([]json.RawMessage, 0, len(entries))
 	for i, entry := range entries {
-		if keep[i] {
-			kept = append(kept, entry)
+		if !keep[i] {
+			continue
 		}
+		if extra := carried[i]; len(extra) > 0 {
+			entry = withInheritedWas(entry, extra)
+		}
+		kept = append(kept, entry)
 	}
 	return kept
+}
+
+// withInheritedWas adds values to an entry's Was list, without duplicates. An
+// entry that carries no Was list is returned as it is: it predates Was, and
+// giving it a partial list would make replay treat its lagging read plane as a
+// plane someone else has edited.
+func withInheritedWas(entry json.RawMessage, inherited []string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(entry, &fields) != nil {
+		return entry
+	}
+	var was []string
+	if json.Unmarshal(fields["was"], &was) != nil || fields["was"] == nil {
+		return entry
+	}
+	for _, v := range inherited {
+		if !slices.Contains(was, v) {
+			was = append(was, v)
+		}
+	}
+	encoded, err := json.Marshal(was)
+	if err != nil {
+		return entry
+	}
+	fields["was"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return entry
+	}
+	return out
 }
 
 // pendingWholeListOf names the list a whole-list replacement field overwrites.
