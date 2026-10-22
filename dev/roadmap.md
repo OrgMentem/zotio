@@ -382,6 +382,29 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 | **Park** (2026-10-01) | SARIF for manuscript diagnostics (`zotio-d45e133688d232e7`) | `items bibcheck` already reports findings and source locations with a CI gate. Add SARIF when a CI or editor consumer requests its serialization and validates its location contract. |
 | **Park** (2026-10-01) | Expiring health-gate exceptions (`zotio-38e6a2b18ca7dae3`) | Selective exceptions could solve the documented limits of blanket baselines, but the finding requires demand validation with CI teams. Confirm that demand before changing gate suppression semantics. |
 | **Defer** (until 2027-01-01) | Periodic published-preprint alerts (`zotio-8d1a7bf7f44d9ac2`) | `items preprint-check` is one-shot and detects no provider-side change over time. Scoped watch-health checks already ship (`zotio-c13d2b5cc67733c2`); adding preprint rechecks to the watch loop still needs a provider cache, a recheck cadence, and failure semantics that stay loud without duplicate alerts. Reassess on a user signal. |
+| **Defer** (until 2027-04-01) | Connector route for existing-item PDF attachments in mixed import manifests (`zotio-4457f1a21dc23176`) | `attachments add` already has the connector re-parent route. Import apply sends existing-item attachments to the Web route on purpose. Needs an operator decision on the WebDAV guard for mixed manifests. |
+| **Park** (2026-10-22) | Stream discovery manifests to stdout (`zotio-536ffeb7bb1325d0`) | Manifests already write to files. Build when a no-write workflow preview needs fresh candidates. |
+| **Park** (2026-10-22) | BibTeX and RIS file imports through a reviewable manifest (`zotio-7e0cf60f633e9f18`) | Manifest review already covers discovery and monitor output. Build when users migrate bibliography files and ask for review. |
+| **Defer** (until 2027-04-01) | Zotero-equivalent duplicate merge with `dc:replaces` (`zotio-00075f3c3c5d9689`) | Re-parent merge already exists. `dc:replaces` and safe trash handling are open. Prerequisite: a decision on trash policy and merge verification. |
+| **Park** (2026-10-22) | PubMed search to import manifest (`zotio-514b1b4c728fb1e4`) | Only single-PMID import exists. Build when evidence-review users ask for search-driven import. |
+| **Park** (2026-10-22) | Signed webhook events and stable event envelope (`zotio-5b89fdd4d19c7c1f`) | No signing or envelope code exists. Build when an automation consumer needs authenticated events. |
+| **Park** (2026-10-22) | Translation Server capture for arbitrary URLs (`zotio-7e5d9a13e29a712a`) | Translator support is diagnostic only. Needs an external service. Build on user demand. |
+| **Park** (2026-10-22) | Manuscript-linked evidence briefs from cited works (`zotio-bf9ec6d73f3b32ac`) | No demand signal. Idea stage only. |
+| **Park** (2026-10-22) | Operator-enforced read-only MCP deployment mode (`zotio-bfdbac4df99d70ec`) | `ZOTIO_MCP_SURFACE` selects surface only. Build when a research-only host requires it. |
+| **Park** (2026-10-22) | Committed sync change keys in watch-triggered workflows (`zotio-babb2b05e3bf5972`) | `--workflow-on-change` gates on counts only. Build with the tail delete feed (`zotio-9f8cc6af51284e0b`) when users need changed-item automation. |
+| **Park** (2026-10-22) | Scoped full-text coverage before search and synthesis (`zotio-400d7442165e1d9e`) | No coverage denominator exists. Build when users ask for a readiness gate. |
+| **Park** (2026-10-22) | Publish zotio scopes as Zotero saved searches (`zotio-0589bd8f0e94c95b`) | `searches` has no create subcommand. Live saved-search writes need design. Build on demand. |
+| **Park** (2026-10-22) | Restorable export snapshot and snapshot import (`zotio-a428e5d67a02d84a`) | Export exists. Restore writes many objects and needs batching design. Build on demand. |
+| **Defer** (until 2027-04-01) | Relation write path and import-apply relation links (`zotio-e0589afe7ba7abca`) | `items related` is read-only. Needs a relation mutation with write-through and journal, plus `cited_by_keys` use in import apply. |
+| **Defer** (until 2027-01-31) | Tags, related-item edges, and venue in vault notes (`zotio-81880f13b6e30785`) | Read-only projection with no Zotero write. Tiny candidate to build now on user approval. |
+| **Park** (2026-10-22) | RSS and Atom literature alerts into import manifests (`zotio-fb17507bb79166ad`) | Monitor uses OpenAlex only. Build when users ask for feed-based monitoring. |
+| **Park** (2026-10-22) | RO-Crate profile from collection bundles (`zotio-1a0fa810a56d0300`) | No RO-Crate writer exists. Build when a repository target needs it. |
+| **Park** (2026-10-22) | ORCID registry as authoritative creator identity (`zotio-e0e3e4e32a2bcefd`) | CrossRef ORCID sidecar exists. Registry lookup builds on demand. |
+| **Park** (2026-10-22) | Quarto project inputs for citation checks (`zotio-426cb94a26f39dcb`) | Manuscript parser handles one file only. Build when Quarto users ask. |
+| **Park** (2026-10-22) | Count-consistent screening handoff bundle (`zotio-19112342a476c34d`) | PRISMA report exists. Handoff bundle builds on demand. |
+| **Defer** (until 2027-01-31) | `--batch` in bulk field writers (`zotio-8ec3223a9335bc22`) | ADR-0008 keeps `items enrich` unbatched by design. Prerequisite: ADR-0008 revision with measured gain. |
+| **Park** (2026-10-22) | MCP resource subscriptions (`zotio-4b6935e94c05b4ac`) | No subscription capability exists. Build when an MCP host needs live updates. |
+| **Defer** (until 2027-04-01) | Synthesized delete events for tail and watch triggers (`zotio-9f8cc6af51284e0b`) | `tail` silently misses deletions on local base. Prerequisite: keys-diff path reusing `sync_reap` helpers. |
 
 ### Competitive scan — MCP-registry Zotero servers (2026-07-11)
 
