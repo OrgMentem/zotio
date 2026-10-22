@@ -451,6 +451,16 @@ An inverse-window key never reaches that code — the version GET fails first.
   flag sends. Decision 9 originally said "one row per permanent delete", which
   contradicted decision 2 (a marker for each of `items` and `items-trash`); it
   now counts two rows.
+- **2026-10-22:** the incremental collection reconciliation reaps a
+  confirmed-erased collection **after** its members are repaired, not before
+  (finding `zotio-aca1c81c9de802d0`). The mirrored collection row is the only
+  durable record that member repair is owed, because an erase bumps no member
+  version; committing the reap first lost that record if the process died, or a
+  member refetch failed, before the repair. The row is now kept until every
+  member that listed it was refreshed, so the next sync probes and repairs it
+  again. A sync that does not include `items` keeps such a collection and warns
+  instead of reaping it. The Amendment 2026-09-25 text above ("reaps mirrored
+  rows absent from them ... then refetches by key") describes the earlier order.
 
 ## References
 

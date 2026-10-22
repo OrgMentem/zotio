@@ -56,10 +56,13 @@ import (
 // members, one member is probed on the plane: if it still names the
 // collection, the collection is merely trashed and everything is kept (the
 // mirror already matches the plane, and a later restore needs no repair);
-// otherwise it is erased and the row is reaped with member repair.
+// otherwise it is erased and the row is reaped with member repair. The row
+// goes after the repair, never before: it is the only durable record that
+// repair is owed (an erase bumps no member version), so a crash or a failed
+// member fetch in between leaves it for the next sync to find again.
 //
 // Member repair refetches by key only the mirrored items that listed a
-// confirmed-erased collection — zero requests when nothing was reaped, which
+// confirmed-erased collection — zero requests when nothing was erased, which
 // is the common case. Trash rows are never edited: the mirror reflects the
 // plane's last observation, and invented payload edits would diverge from it
 // on any plane whose trash payloads keep the key. A full pass already sweeps
@@ -93,10 +96,9 @@ func reconcileIncrementalSync(ctx context.Context, c syncHTTPClient, db *store.S
 	for _, r := range resources {
 		inSet[r] = true
 	}
-	var confirmedCollections []string
-	var probes *reapProbes
+	var plan collectionReapPlan
 	if inSet["collections"] && clean["collections"] {
-		confirmedCollections, probes = sweepIncrementalCollections(ctx, c, db, &out)
+		plan = sweepIncrementalCollections(ctx, c, db, &out)
 	}
 	if ctx.Err() != nil {
 		return out
@@ -104,18 +106,27 @@ func reconcileIncrementalSync(ctx context.Context, c syncHTTPClient, db *store.S
 	if inSet["items-trash"] && clean["items-trash"] {
 		sweepIncrementalResource(ctx, c, db, "items-trash", &out)
 	}
-	if len(confirmedCollections) == 0 {
+	if len(plan.confirmed) == 0 {
 		return out
 	}
 	if ctx.Err() != nil {
 		return out
 	}
-	if inSet["items"] && clean["items"] {
-		refreshReapedCollectionMembers(ctx, c, db, confirmedCollections, probes, &out)
-	} else {
+	// A confirmed-erased collection's row is its members' only durable
+	// repair trigger: after a restart the candidates are rediscovered from
+	// the mirrored collection rows, so the row goes last, and only once
+	// every member that listed it has been refreshed. Anything short of
+	// that keeps the row, and the next ordinary sync probes, repairs and
+	// reaps it again.
+	if !inSet["items"] || !clean["items"] {
 		out.warn(ctx, "items",
-			"an erased collection was reaped but items did not sync, so member links still name it; run `zotio sync` (which includes items) to refresh them")
+			"an erased collection was kept because items did not sync, so member links still name it; run `zotio sync` (which includes items) to repair them and drop it")
+		return out
 	}
+	if !refreshReapedCollectionMembers(ctx, c, db, plan.confirmed, plan.probes, &out) {
+		return out
+	}
+	reapConfirmedCollections(ctx, db, plan, &out)
 	return out
 }
 
@@ -152,26 +163,47 @@ func sweepIncrementalResource(ctx context.Context, c syncHTTPClient, db *store.S
 	}
 }
 
+// collectionReapPlan is what sweepIncrementalCollections hands to the member
+// repair: the confirmed-erased collections whose rows are still mirrored, the
+// probe cache their repair reuses, and the key set that finishes the reap.
+type collectionReapPlan struct {
+	confirmed []string
+	probes    *reapProbes
+	// listed is the complete listing plus the spared (trashed) collections:
+	// every key a sweep must keep. Sweeping with it reaps exactly the rows
+	// that are still absent, i.e. the confirmed ones.
+	listed map[string]bool
+}
+
 // sweepIncrementalCollections reaps mirrored collections absent from the
 // complete key listing, except ones the plane still references (see
-// classifyAbsentCollections). It returns the confirmed-erased ids — the only
-// ones whose member links may be repaired — with the probe cache that lets
-// the repair reuse their fetches.
-func sweepIncrementalCollections(ctx context.Context, c syncHTTPClient, db *store.Store, out *incrementalReapOutcome) ([]string, *reapProbes) {
+// classifyAbsentCollections) and the confirmed-erased ones, whose rows stay
+// until reapConfirmedCollections runs after their members are repaired. The
+// returned plan names those confirmed ids — the only ones whose member links
+// may be repaired — with the probe cache that lets the repair reuse their
+// fetches.
+//
+// The confirmed rows are not swept here because the sweep would destroy the
+// only durable evidence that member repair is owed: erasing a collection
+// bumps no member version, so nothing but the surviving row makes a later
+// sync probe the collection again. Reaping first and repairing second left
+// stale data.collections behind forever when the process died, or a member
+// fetch failed, in between.
+func sweepIncrementalCollections(ctx context.Context, c syncHTTPClient, db *store.Store, out *incrementalReapOutcome) collectionReapPlan {
 	path, err := syncResourcePath("collections")
 	if err != nil {
 		out.warn(ctx, "collections", fmt.Sprintf("could not reconcile deleted collections rows: %v", err))
-		return nil, nil
+		return collectionReapPlan{}
 	}
 	before, err := db.ResourceIDs("collections")
 	if err != nil {
 		out.warn(ctx, "collections", fmt.Sprintf("could not read mirrored collections rows: %v; kept them", err))
-		return nil, nil
+		return collectionReapPlan{}
 	}
 	seen, complete := fetchPlaneKeySet(ctx, syncClientForResource(c, "collections"), path, "collections", out)
 	if !complete {
 		// fetchPlaneKeySet already warned with the reason.
-		return nil, nil
+		return collectionReapPlan{}
 	}
 	var absent []string
 	for id := range before {
@@ -180,22 +212,45 @@ func sweepIncrementalCollections(ctx context.Context, c syncHTTPClient, db *stor
 		}
 	}
 	if len(absent) == 0 {
-		return nil, nil
+		return collectionReapPlan{}
 	}
 	confirmed, spared, probes := classifyAbsentCollections(ctx, syncClientForResource(c, "collections"), db, absent, out)
 	for _, id := range spared {
 		seen[id] = true
 	}
+	listed := make(map[string]bool, len(seen))
+	for id := range seen {
+		listed[id] = true
+	}
+	for _, id := range confirmed {
+		seen[id] = true
+	}
 	reaped, err := db.SweepMissingContext(ctx, "collections", seen)
 	if err != nil {
 		out.warn(ctx, "collections", fmt.Sprintf("could not reap deleted collections rows: %v; kept them", err))
-		return nil, nil
+		return collectionReapPlan{}
 	}
 	out.collectionsReaped += reaped
 	if reaped > 0 && humanFriendly {
 		fmt.Fprintf(os.Stderr, "  reaped %d collections row(s) for objects that no longer exist\n", reaped)
 	}
-	return confirmed, probes
+	return collectionReapPlan{confirmed: confirmed, probes: probes, listed: listed}
+}
+
+// reapConfirmedCollections removes the confirmed-erased collection rows once
+// their members were repaired. It sweeps with the listing-plus-spared key set
+// of the earlier pass, which never contained the confirmed ids, so exactly
+// those rows are reaped.
+func reapConfirmedCollections(ctx context.Context, db *store.Store, plan collectionReapPlan, out *incrementalReapOutcome) {
+	reaped, err := db.SweepMissingContext(ctx, "collections", plan.listed)
+	if err != nil {
+		out.warn(ctx, "collections", fmt.Sprintf("could not reap erased collections rows after repairing their members: %v; kept them, the next sync retries", err))
+		return
+	}
+	out.collectionsReaped += reaped
+	if reaped > 0 && humanFriendly {
+		fmt.Fprintf(os.Stderr, "  reaped %d collections row(s) for objects that no longer exist\n", reaped)
+	}
 }
 
 // fetchPlaneKeySet fetches one complete `format=keys` listing in a single
@@ -440,15 +495,20 @@ const reapMemberBatchSize = 50
 // >=), which is exactly the unchanged-version case that motivated this
 // repair.
 //
+// It reports whether every member was either refreshed or deliberately
+// skipped: false means a lookup, fetch, upsert or cancellation left some
+// member's links unrepaired, and the caller must then keep the collection
+// rows so the next sync rediscovers the work.
+//
 // Rows the mirror cannot arbitrate are left for the normal sync: a member
 // with local trash state (the tie would kill the just-confirmed live row),
 // and a member the plane no longer returns (gone; the next full pass reaps
 // the row).
-func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *store.Store, reaped []string, probes *reapProbes, out *incrementalReapOutcome) {
+func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *store.Store, reaped []string, probes *reapProbes, out *incrementalReapOutcome) bool {
 	members, err := db.KeysWithCollections(ctx, "items", reaped)
 	if err != nil {
-		out.warn(ctx, "items", fmt.Sprintf("could not find items listing an erased collection: %v; member links still name it until `zotio sync --full`", err))
-		return
+		out.warn(ctx, "items", fmt.Sprintf("could not find items listing an erased collection: %v; kept the collection row so the next `zotio sync` retries the repair", err))
+		return false
 	}
 	if probes == nil {
 		probes = &reapProbes{byKey: map[string]*reapProbe{}, inTrash: map[string]bool{}}
@@ -475,7 +535,7 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 	var firstErr error
 	for _, key := range members {
 		if err := ctx.Err(); err != nil {
-			return
+			return false
 		}
 		p, ok := probes.byKey[key]
 		if !ok {
@@ -524,7 +584,7 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 	}
 	for start := 0; start < len(cached); start += reapMemberBatchSize {
 		if err := ctx.Err(); err != nil {
-			return
+			return false
 		}
 		end := start + reapMemberBatchSize
 		if end > len(cached) {
@@ -534,7 +594,7 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 	}
 	for start := 0; start < len(fetchQueue); start += reapMemberBatchSize {
 		if err := ctx.Err(); err != nil {
-			return
+			return false
 		}
 		end := start + reapMemberBatchSize
 		if end > len(fetchQueue) {
@@ -589,10 +649,13 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 		upsertRefetches(batch)
 	}
 	if failed > 0 {
-		out.warn(ctx, "items", fmt.Sprintf("could not refresh %d item(s) that listed an erased collection (first error: %v); run `zotio sync --full` to reconcile", failed, firstErr))
-	} else if out.membersRefreshed > 0 && humanFriendly {
+		out.warn(ctx, "items", fmt.Sprintf("could not refresh %d item(s) that listed an erased collection (first error: %v); kept the collection row so the next `zotio sync` retries the repair", failed, firstErr))
+		return false
+	}
+	if out.membersRefreshed > 0 && humanFriendly {
 		fmt.Fprintf(os.Stderr, "  refreshed %d item(s) that listed an erased collection\n", out.membersRefreshed)
 	}
+	return true
 }
 
 // warn records an incomplete reconciliation without changing sync's warning
