@@ -302,7 +302,7 @@ func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, in *bufio.Reader, loc
 	return true, initStepReport{Step: initStepSync, OK: true, Status: "synced"}, resources, nil
 }
 
-// Consider a missing DB or zero synced items as needing the first sync.
+// Consider a missing DB or an unfinished first items sync as needing the first sync.
 func localStoreNeedsFirstSync(cmd *cobra.Command, cliName string) (bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), cliName)
 	if err != nil {
@@ -312,11 +312,14 @@ func localStoreNeedsFirstSync(cmd *cobra.Command, cliName string) (bool, error) 
 		return true, nil
 	}
 	defer rawDB.Close()
-	count, err := rawDB.Count("items")
+	// Rows alone prove nothing: a first pass that was killed or hit its page
+	// cap leaves a partial items table behind. Only a completed items pass
+	// (cleared cursor, or a cursor over an earlier completed pass) is ready.
+	ready, _, err := importItemsMirrorReady(cmd.Context(), rawDB)
 	if err != nil {
 		return false, err
 	}
-	return count == 0, nil
+	return !ready, nil
 }
 
 // Reuse syncResource/defaultSyncResources while forcing progress away from JSON stdout.
@@ -346,13 +349,19 @@ func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceRep
 
 	var failures []string
 	for _, resource := range resources {
-		res := syncResource(cmd.Context(), c, db, resource, 0, false, 100, true)
+		// The first sync mirrors the whole library, so it takes no page cap: a
+		// cap would stop a large library partway and report it as synced.
+		res := syncResource(cmd.Context(), c, db, resource, 0, false, 0, true)
 		r := initSyncResourceReport{Resource: res.Resource, Count: res.Count, Status: "ok"}
 		switch {
 		case res.Err != nil:
 			r.Status = "error"
 			r.Error = res.Err.Error()
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, res.Err))
+		case res.Incomplete != "":
+			r.Status = "incomplete"
+			r.Error = res.Incomplete
+			failures = append(failures, fmt.Sprintf("%s: stopped early: %s", resource, res.Incomplete))
 		case res.Warn != nil:
 			r.Status = "warning"
 			r.Error = res.Warn.Error()

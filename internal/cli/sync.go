@@ -30,7 +30,11 @@ type syncResult struct {
 	Count    int
 	Err      error
 	Warn     error
-	Duration time.Duration
+	// Incomplete is set when the pass stopped before the end of the resource
+	// (page cap or repeated cursor) and left a resume cursor. The rows it
+	// fetched are stored; the resource is not fully mirrored.
+	Incomplete string
+	Duration   time.Duration
 }
 
 type syncEventWriterContextKey struct{}
@@ -374,8 +378,10 @@ Exit codes & warnings:
 			// of the sync loop stays oblivious. Mutually-useful with
 			// --since-version: if the user set it, that threshold still wins
 			// and we don't short-circuit historical context they asked for.
+			headRefresh := false
 			if latestOnly {
 				if sinceVersion == 0 {
+					headRefresh = true
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
@@ -453,6 +459,7 @@ Exit codes & warnings:
 			var errCount int
 			var fullIncompleteResources []string
 			var warnCount int
+			var incompleteResources []string
 			// cleanSync marks the resources whose pass completed without error or
 			// access warning. The incremental reconciliation below only acts for
 			// those: it needs a successfully observed pass to build on.
@@ -492,6 +499,15 @@ Exit codes & warnings:
 					}
 					totalSynced += res.Count
 					successCount++
+					// --latest-only asked for one page; stopping there is the
+					// request, not a shortfall.
+					if res.Incomplete != "" && !headRefresh {
+						detail := fmt.Sprintf("%s: %s", res.Resource, res.Incomplete)
+						incompleteResources = append(incompleteResources, detail)
+						if humanFriendly {
+							fmt.Fprintf(os.Stderr, "  %s: incomplete: %s\n", res.Resource, res.Incomplete)
+						}
+					}
 				}
 			}
 			if ctx.Err() != nil {
@@ -536,6 +552,9 @@ Exit codes & warnings:
 				} else if len(fullIncompleteResources) > 0 {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) incomplete, %.1fs)\n",
 						totalSynced, totalResources, len(fullIncompleteResources), elapsed.Seconds())
+				} else if len(incompleteResources) > 0 {
+					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) stopped early, %.1fs)\n",
+						totalSynced, totalResources, len(incompleteResources), elapsed.Seconds())
 				} else if warnCount > 0 {
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
 						totalSynced, totalResources, warnCount, elapsed.Seconds())
@@ -554,6 +573,7 @@ Exit codes & warnings:
 					Success       int    `json:"success"`
 					Warned        int    `json:"warned"`
 					Errored       int    `json:"errored"`
+					Incomplete    int    `json:"incomplete"`
 					PendingWrites int    `json:"pending_writes"`
 					FulltextOK    bool   `json:"fulltext_ok"`
 					DurationMS    int64  `json:"duration_ms"`
@@ -564,6 +584,7 @@ Exit codes & warnings:
 					Success:       successCount,
 					Warned:        warnCount,
 					Errored:       errCount,
+					Incomplete:    len(incompleteResources),
 					PendingWrites: pendingWrites,
 					FulltextOK:    fulltextErr == nil,
 					DurationMS:    elapsed.Milliseconds(),
@@ -573,6 +594,7 @@ Exit codes & warnings:
 			// Exit-code policy:
 			//   1. any degraded resource           -> exit 13
 			//   2. --full + any other incomplete   -> non-zero
+			//      incremental pass stopped early  -> exit 13
 			//   3. --strict + any error             -> non-zero
 			//   4. any critical failure             -> non-zero regardless of --strict
 			//   5. nothing synced                   -> non-zero (preserves all-failed exits)
@@ -587,6 +609,13 @@ Exit codes & warnings:
 			if full && len(fullIncompleteResources) > 0 {
 				return fmt.Errorf("%d resource(s) incomplete during full sync: %s",
 					len(fullIncompleteResources), strings.Join(fullIncompleteResources, "; "))
+			}
+			if len(incompleteResources) > 0 {
+				// The cursor is saved, so the next run resumes where this one
+				// stopped. Exiting 0 here let a truncated first sync pass for a
+				// finished mirror.
+				return degradedErr(fmt.Errorf("%d resource(s) stopped before the end: %s; rerun `zotio sync` to resume (--max-pages 0 removes the page cap)",
+					len(incompleteResources), strings.Join(incompleteResources, "; ")))
 			}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
@@ -611,7 +640,7 @@ Exit codes & warnings:
 	cmd.Flags().IntVar(&sinceVersion, "since-version", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
-	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event, saves the resume cursor, and exits 13)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13).")
 	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
@@ -1350,9 +1379,11 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 			pagesFetched++
 			if maxPages > 0 && pagesFetched >= maxPages {
+				incompleteReason = fmt.Sprintf("reached --max-pages cap of %d", maxPages)
 				break
 			}
 			if nextCursor == lastNextCursor {
+				incompleteReason = "the API returned a repeated pagination cursor"
 				break
 			}
 			lastNextCursor = nextCursor
@@ -1744,7 +1775,16 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		})
 	}
 
-	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
+	result := syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
+	if !completedNaturally {
+		// Only an incremental pass reaches here (a full one returned above).
+		// Its cursor is saved, but the mirror holds a prefix of the resource.
+		result.Incomplete = incompleteReason
+		if result.Incomplete == "" {
+			result.Incomplete = "pagination stopped before the end of the resource"
+		}
+	}
+	return result
 }
 
 // paginationDefaults holds the resolved pagination parameter names and page size.

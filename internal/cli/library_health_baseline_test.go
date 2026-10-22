@@ -280,7 +280,7 @@ func upsertBaselineHealthItems(t *testing.T, items ...json.RawMessage) {
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed items: %v", err)
 	}
-	if err := db.SaveSyncState("items", "cursor", len(items)); err != nil {
+	if err := db.SaveSyncState("items", "", len(items)); err != nil {
 		t.Fatalf("save sync state: %v", err)
 	}
 }

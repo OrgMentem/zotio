@@ -1224,7 +1224,7 @@ func TestLibraryHealthVaultPresetCommandEndToEnd(t *testing.T) {
 	if _, _, err := db.UpsertBatch("items", vaultPresetItems()); err != nil {
 		t.Fatalf("seed items: %v", err)
 	}
-	if err := db.SaveSyncState("items", "cursor", len(vaultPresetItems())); err != nil {
+	if err := db.SaveSyncState("items", "", len(vaultPresetItems())); err != nil {
 		t.Fatalf("save sync state: %v", err)
 	}
 	if err := db.Close(); err != nil {

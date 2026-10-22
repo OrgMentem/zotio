@@ -518,6 +518,30 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionSyncedStore, detail,
 					remediationFor(cmd.Context(), flags, preconditionSyncedStore))
 			}
+			// A first items pass that stopped partway (page cap, kill, timeout)
+			// has already stamped "last synced", so the guard above and
+			// --require-fresh both pass over whatever pages landed. Gates and
+			// the badge must not certify a library the run never finished
+			// mirroring; the completed-pass predicate is the one import uses.
+			if syncedAt != nil {
+				ready, _, readyErr := importItemsMirrorReady(cmd.Context(), rawDB)
+				if readyErr != nil {
+					return readyErr
+				}
+				if !ready {
+					const detail = "the first items sync has not finished, so the checks would inspect only part of the library"
+					if flagBadge || failOn != "" || failOnNew != "" || flagRequireFresh > 0 {
+						if flagBadge {
+							return notSyncedBadge(detail)
+						}
+						return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionSyncedStore, detail,
+							importItemsMirrorRemediation())
+					}
+					if !flags.quiet {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s; run 'zotio sync --resources items' to finish it\n", detail)
+					}
+				}
+			}
 			ctx := &healthContext{
 				src:              FindingSource{Kind: "local", SyncedAt: syncedAt},
 				preset:           preset,

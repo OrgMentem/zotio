@@ -132,9 +132,10 @@ This site does exactly that: the zotio README badge is regenerated from the main
 | Code | Meaning |
 | --- | --- |
 | `0` | Gate passed. |
-| `9` | Setup/precondition failure (missing key, unmet check requirement, unsynced store, or a `--baseline` file that does not exist when `--fail-on-new` is set). |
+| `9` | Setup/precondition failure (missing key, unmet check requirement, unsynced store, a first items sync that has not finished, or a `--baseline` file that does not exist when `--fail-on-new` is set). |
 | `11` | Quality gate failed — findings at or above `--fail-on`, new findings at or above `--fail-on-new`, or `doctor --fail-on` with an error. |
 | `12` | Freshness gate failed (`--require-fresh`, or `doctor --fail-on` with a stale check). |
+| `13` | `zotio sync` stopped before the end of a resource (the `--max-pages` cap, default 100 pages of 100 rows, or a repeated cursor). The cursor is saved: run `zotio sync --max-pages 0` on a large library to finish the first pass. |
 
 `--baseline` reads finding identities from a file. If the file does not exist, `library health` reports `baseline: not found` and diffs nothing; with `--fail-on-new` it exits `9` instead of passing. Create the file with `--write-baseline` once to record the baseline. `--write-baseline` publishes last, after the report and badge are written, and only when `--fail-on-new` did not fail: a run that exits `11` for new findings leaves the baseline file as it was, so rerunning the job fails again until the finding is fixed. To accept the new findings, run once without `--fail-on-new`. A check that was skipped in a run (for example `--check-retractions` when Crossref is unreachable) keeps its previously recorded identities in the rewritten baseline and does not count them as resolved. A `--scope` that resolves to no mirrored item exits `9` when the run is gated or a badge (an unknown `item:` key exits `3`), instead of passing on an empty cohort. `--limit` trims the findings listed per kind only; live checks cover the whole cohort. On a first run there is no file, so skip `--fail-on-new` then (see the script below). An invalid `--fail-on` value exits `2` before any work.
 
