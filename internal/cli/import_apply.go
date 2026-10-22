@@ -105,9 +105,6 @@ refused before any item is created; apply it in a separate run.`,
 			if defaultCollection == "" {
 				defaultCollection = strings.TrimSpace(m.Collection)
 			}
-			if err := verifyImportApplyCollections(cmd.Context(), flags, m, defaultCollection); err != nil {
-				return err
-			}
 			if fetchPDF || (attachMode == "stored" && flags.via == "connector") {
 				if err := refuseImportApplySplitSession(m, defaultCollection); err != nil {
 					return err
@@ -127,6 +124,12 @@ refused before any item is created; apply it in a separate run.`,
 				if err := validateStoredCreateTitles(m); err != nil {
 					return err
 				}
+			}
+			// The collection check reads the library, so it runs only after every
+			// local flag/manifest refusal above (ADR-0008: incompatible connector
+			// flags are refused before any request).
+			if err := verifyImportApplyCollections(cmd.Context(), flags, m, defaultCollection); err != nil {
+				return err
 			}
 			// Stored CREATES, PDF recognition, and resolver fetches require the desktop
 			// Connector API; stored attach to an EXISTING item uses the Web API

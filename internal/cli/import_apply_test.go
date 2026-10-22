@@ -1953,6 +1953,23 @@ func TestImportApplyConnectorRefusesMaxFailures(t *testing.T) {
 	}
 }
 
+// The refusal is local, so it precedes the destination check, which reads the
+// library (ADR-0008: refused before any request). A manifest naming an
+// unknown collection must still get the flag refusal, not a lookup failure.
+func TestImportApplyConnectorRefusesMaxFailuresBeforeDestinationCheck(t *testing.T) {
+	flags := importApplyConnectorTestFlags(t)
+	flags.maxFailures = 1
+	m := importApplyCollectionManifest("")
+	m.Collection = "NOSUCH99"
+	fake, _, err := runImportApplyConnectorRun(t, context.Background(), m, flags, nil, "--attach-mode", "stored")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--max-failures") {
+		t.Fatalf("err = %v (exit %d), want usage refusal naming --max-failures", err, ExitCode(err))
+	}
+	if fake.requests != 0 {
+		t.Fatalf("connector requests = %d, want none", fake.requests)
+	}
+}
+
 // An explicit fail-fast cannot hold either once SaveItems has carried every
 // batch-mate, so it is refused instead of silently overridden. The whole root
 // runs because --continue-on-error is a persistent root flag and the refusal
