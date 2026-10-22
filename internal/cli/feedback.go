@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +33,20 @@ type FeedbackEntry struct {
 }
 
 const feedbackMaxTextLen = 4096
+
+// truncateFeedbackText caps text at feedbackMaxTextLen bytes without cutting a
+// multi-byte rune: a split rune is invalid UTF-8, which JSON encoding turns
+// into U+FFFD in both the local ledger entry and the upstream POST.
+func truncateFeedbackText(text string) (string, bool) {
+	if len(text) <= feedbackMaxTextLen {
+		return text, false
+	}
+	n := feedbackMaxTextLen
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n], true
+}
 
 func feedbackFilePath() (string, error) {
 	home, err := cliutil.HomeDir()
@@ -155,11 +170,7 @@ maintainer sees it.`,
 			if text == "" {
 				return usageErr(fmt.Errorf("feedback text is empty (pass arguments or --stdin)"))
 			}
-			truncated := false
-			if len(text) > feedbackMaxTextLen {
-				text = text[:feedbackMaxTextLen]
-				truncated = true
-			}
+			text, truncated := truncateFeedbackText(text)
 
 			entry := FeedbackEntry{
 				Text:      text,
@@ -180,7 +191,7 @@ maintainer sees it.`,
 						"entry":      entry,
 					}, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would record feedback locally (%d chars%s)", len(text), map[bool]string{true: ", truncated"}[truncated])
+				fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would record feedback locally (%d chars%s)", utf8.RuneCountInString(text), map[bool]string{true: ", truncated"}[truncated])
 				if willSend {
 					fmt.Fprint(cmd.OutOrStdout(), " and POST it upstream")
 				}

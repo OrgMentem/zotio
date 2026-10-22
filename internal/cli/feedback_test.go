@@ -116,3 +116,38 @@ func TestPostFeedbackStatusHandling(t *testing.T) {
 		})
 	}
 }
+
+// Truncation must land on a rune boundary: a byte slice through a multi-byte
+// rune stores and posts U+FFFD in place of its last character.
+func TestFeedbackTruncationKeepsRunesWhole(t *testing.T) {
+	// 3-byte runes: 4096 is not a multiple of 3, so byte 4096 falls inside one.
+	text := strings.Repeat("語", feedbackMaxTextLen)
+	cmd := newFeedbackCmd(&rootFlags{asJSON: true, dryRun: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetIn(strings.NewReader(text))
+	cmd.SetArgs([]string{"--stdin"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("feedback: %v", err)
+	}
+	var result struct {
+		Truncated bool          `json:"truncated"`
+		Entry     FeedbackEntry `json:"entry"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if !result.Truncated {
+		t.Fatal("over-long text not reported as truncated")
+	}
+	if strings.ContainsRune(result.Entry.Text, '\uFFFD') {
+		t.Fatalf("truncated text ends in a corrupted rune: %q", result.Entry.Text[len(result.Entry.Text)-6:])
+	}
+	if want := feedbackMaxTextLen / 3 * 3; len(result.Entry.Text) != want {
+		t.Fatalf("truncated text is %d bytes, want %d (the last whole rune within the cap)", len(result.Entry.Text), want)
+	}
+	if got, kept := truncateFeedbackText(strings.Repeat("a", feedbackMaxTextLen)); kept || len(got) != feedbackMaxTextLen {
+		t.Fatalf("text at the cap was changed: truncated=%v len=%d", kept, len(got))
+	}
+}
