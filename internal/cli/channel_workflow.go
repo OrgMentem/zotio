@@ -38,7 +38,7 @@ func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command {
 		Long: `Archive runs 'zotio sync --strict' over the default sync resources. It
 uses the same code, JSON events, and exit codes as sync, so any resource that
 fails to sync makes it exit non-zero. --full and --db mean what they mean for
-sync. Run 'zotio sync' directly to choose resources, --since, or concurrency.`,
+sync. Run 'zotio sync' directly to choose resources, --since-version, or concurrency.`,
 		Example: `  # Incremental sync of the default resources; a failed resource exits non-zero
   zotio workflow archive
 
