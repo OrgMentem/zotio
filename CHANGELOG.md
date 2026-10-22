@@ -44,6 +44,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   pages (comment widgets, injected detection scripts, an article that only
   names the vendor) do not trigger it.
 
+- **`journal undo` reverses an `import apply` run.** Each item the run created
+  is moved to Zotero's reversible trash with a version-guarded PATCH, never
+  deleted permanently; a resolver PDF from `--fetch-pdf` goes with its parent.
+  Web creates now journal their real Zotero key, so undo can find them. A
+  create whose key was never confirmed is still refused, with its evidence.
+
 ### Changed — breaking
 
 #### Keys and not-found
@@ -331,50 +337,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   baseline lives in the zotio data directory, honoring `ZOTIO_DATA_HOME` and
   `XDG_DATA_HOME`.
 
-#### MCP and agent-context
-
-- **`agent-context` `schema_version` is `4`.** The `zotio:supports-dry-run`,
-  `zotio:destructive`, `zotio:requires-allow-destructive`, and
-  `zotio:default-max-changes` annotations come from the capability registry for
-  every write command (literals on 17 commands, absent on 28).
-  `zotio:default-max-changes` stays `500`; new `zotio:default-max-changes-agent`
-  is `50`. Command flags list only command-local flags; global flags appear once
-  in `global_flags`.
-
-- **MCP mirror hints follow the registry.** `annotations search` is a mirrored
-  tool (framework commands match by full path). `destructiveHint` is `true` only
-  for registry-destructive commands and local file writers; additive writes
-  report `false`. Commands that read only the mirror report
-  `openWorldHint:false`. Every `mcp:writes-files` command exposes `--dry-run`.
-  The `command_run` description says read-only file writers expose dry-run and
-  `yes` means "Apply writes (otherwise preview only)".
-
-### Added
-
-- **`journal undo` reverses an `import apply` run.** Each item the run created
-  is moved to Zotero's reversible trash with a version-guarded PATCH, never
-  deleted permanently; a resolver PDF from `--fetch-pdf` goes with its parent.
-  Web creates now journal their real Zotero key, so undo can find them. A
-  create whose key was never confirmed is still refused, with its evidence.
-
-### Changed
-
-- **`capabilities` and `agent-context` carry more metadata.** Every
-  `mcp:writes-files` command reports `write_target: "local_file"` (its
-  `operation` is unchanged). `agent-context` gains `annotation_semantics`,
-  `exit_codes`, `global_flags` (with `applies_to`), per-command
-  `typed_exit_codes`, a derived `mcp:effect` annotation
-  (`read|write|local-file|local-state|other`), and per-flag `shorthand` and
-  `required`.
-
-- **Help text is corrected.** `--limit` says `(0 = no limit)`; `items list
-  --query` says to quote multi-word queries; `groups inspect` documents that
-  exit 0 with `found:false` means no access; `which --help`, `items create`,
-  `items duplicates resolve` (now with `--allow-destructive`), `tail`, and
-  `profile save` use real examples; collections help uses real key shapes.
-  `tail` with no resource exits 2. Empty-state messages for `journal list`,
-  `feedback list`, and `profile list` read `No <things> found.` Per-command
-  `zotio:*` annotation literals are removed; the registry is the only source.
+#### Incomplete results, ambiguous writes, and new fields
 
 - **`sync` and `init` treat an unfinished first items sync as incomplete.** A
   first sync that stopped at `--max-pages` (default 100 pages) or was killed
@@ -437,6 +400,43 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   records and `JournalEntry` gains a `partial` boolean. `journal list`, `show`
   and `undo` fold them. An older binary reads the op-level records as extra
   runs.
+
+#### MCP and agent-context
+
+- **`agent-context` `schema_version` is `4`.** The `zotio:supports-dry-run`,
+  `zotio:destructive`, `zotio:requires-allow-destructive`, and
+  `zotio:default-max-changes` annotations come from the capability registry for
+  every write command (literals on 17 commands, absent on 28).
+  `zotio:default-max-changes` stays `500`; new `zotio:default-max-changes-agent`
+  is `50`. Command flags list only command-local flags; global flags appear once
+  in `global_flags`.
+
+- **MCP mirror hints follow the registry.** `annotations search` is a mirrored
+  tool (framework commands match by full path). `destructiveHint` is `true` only
+  for registry-destructive commands and local file writers; additive writes
+  report `false`. Commands that read only the mirror report
+  `openWorldHint:false`. Every `mcp:writes-files` command exposes `--dry-run`.
+  The `command_run` description says read-only file writers expose dry-run and
+  `yes` means "Apply writes (otherwise preview only)".
+
+### Changed
+
+- **`capabilities` and `agent-context` carry more metadata.** Every
+  `mcp:writes-files` command reports `write_target: "local_file"` (its
+  `operation` is unchanged). `agent-context` gains `annotation_semantics`,
+  `exit_codes`, `global_flags` (with `applies_to`), per-command
+  `typed_exit_codes`, a derived `mcp:effect` annotation
+  (`read|write|local-file|local-state|other`), and per-flag `shorthand` and
+  `required`.
+
+- **Help text is corrected.** `--limit` says `(0 = no limit)`; `items list
+  --query` says to quote multi-word queries; `groups inspect` documents that
+  exit 0 with `found:false` means no access; `which --help`, `items create`,
+  `items duplicates resolve` (now with `--allow-destructive`), `tail`, and
+  `profile save` use real examples; collections help uses real key shapes.
+  `tail` with no resource exits 2. Empty-state messages for `journal list`,
+  `feedback list`, and `profile list` read `No <things> found.` Per-command
+  `zotio:*` annotation literals are removed; the registry is the only source.
 
 ### Fixed
 
