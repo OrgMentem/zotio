@@ -42,6 +42,82 @@ Wildcard-only nocite is ignored: \nocite{*}; real nocite stays: \nocite{iota}.
 	}
 }
 
+// A commented-out or literal-environment \cite is not a citation. Counting it
+// fails --fail-on-unknown on a key the author already removed and pulls
+// comment-only items into a manuscript bibliography.
+func TestBibcheckParseLatexCiteKeysSkipsCommentsAndLiteralEnvironments(t *testing.T) {
+	content := "" +
+		"\\cite{live1}\n" + // 1
+		"% \\cite{commented}\n" + // 2
+		"text \\citep{live2} % \\cite{trailing}\n" + // 3
+		"100\\% \\cite{afterEscapedPercent}\n" + // 4
+		"\\begin{verbatim}\n" + // 5
+		"\\cite{verbatimFake}\n" + // 6
+		"\\end{verbatim}\n" + // 7
+		"\\begin{lstlisting}\\cite{listingFake}\\end{lstlisting} \\cite{afterListing}\n" + // 8
+		"\\begin{minted}{latex}\n100% \\cite{mintedFake}\n\\end{minted}\n" + // 9-11
+		"\\begin{comment}\n\\cite{commentEnvFake}\n\\end{comment}\n" + // 12-14
+		"\\cite{multi1, % note, nope\n  multi2}\n" // 15-16
+	want := []bibcheckOccurrence{
+		{CiteKey: "live1", Line: 1},
+		{CiteKey: "live2", Line: 3},
+		{CiteKey: "afterEscapedPercent", Line: 4},
+		{CiteKey: "afterListing", Line: 8},
+		{CiteKey: "multi1", Line: 15},
+		{CiteKey: "multi2", Line: 15},
+	}
+	got := parseLatexCitationOccurrences("", content)
+	for i := range got {
+		got[i].Format = ""
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("occurrences = %+v, want %+v", got, want)
+	}
+}
+
+// The include walker reads citations in both report orders (bibcheck keeps the
+// root first; bibliography selection interleaves them in source order). Each
+// must skip comments and literal environments in the root and in an include,
+// and keep the line numbers of the citations it does count.
+func TestBibcheckFollowIncludesSkipsCommentedAndLiteralCitations(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\cite{rootLive}\n" +
+			"% \\cite{rootCommented}\n" +
+			"\\begin{verbatim}\n\\cite{rootVerbatim}\n\\end{verbatim}\n" +
+			"\\input{chapter}\n" +
+			"\\cite{rootAfter}\n",
+		"chapter.tex": "% \\cite{chapterCommented}\n" +
+			"\\begin{comment}\\cite{chapterEnv}\\end{comment}\n" +
+			"\\cite{chapterLive}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	chapter := filepath.Join(home, "chapter.tex")
+	want := []bibcheckOccurrence{
+		{CiteKey: "rootLive", File: root, Line: 1, Format: "tex"},
+		{CiteKey: "chapterLive", File: chapter, Line: 3, Format: "tex"},
+		{CiteKey: "rootAfter", File: root, Line: 7, Format: "tex"},
+	}
+	got, findings, err := parseManuscriptFiles([]string{root}, true)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("source order: err=%v findings=%+v", err, findings)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source-order occurrences = %+v, want %+v", got, want)
+	}
+
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes", "--fail-on", "none")
+	if err != nil {
+		t.Fatalf("bibcheck: %v", err)
+	}
+	keys := map[string]bool{}
+	for _, key := range report.Keys {
+		keys[key.CiteKey] = true
+	}
+	if !reflect.DeepEqual(keys, map[string]bool{"rootLive": true, "rootAfter": true, "chapterLive": true}) {
+		t.Fatalf("bibcheck keys = %v, want only the live citations", keys)
+	}
+}
+
 func TestBibcheckParsePandocMarkdownCiteKeys(t *testing.T) {
 	cases := []struct {
 		name    string

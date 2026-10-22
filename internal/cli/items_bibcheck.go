@@ -294,16 +294,26 @@ func parseManuscriptCitationOccurrences(path string) ([]bibcheckOccurrence, stri
 	return parsePandocMarkdownCitationOccurrences(path, content), format, nil
 }
 
+// parseLatexCitationOccurrences finds citation commands in TeX source outside
+// comments and literal environments, so a commented-out or verbatim \cite is
+// not read as a citation.
 func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
-	matches := latexCitationRE.FindAllStringSubmatchIndex(content, -1)
-	lines := lineStartOffsets(content)
+	return latexCitationOccurrences(path, latexIncludeSearchText(content))
+}
+
+// latexCitationOccurrences matches citation commands over text that
+// latexIncludeSearchText has already masked. Masking preserves byte offsets,
+// so every occurrence keeps the line it has in the source.
+func latexCitationOccurrences(path, text string) []bibcheckOccurrence {
+	matches := latexCitationRE.FindAllStringSubmatchIndex(text, -1)
+	lines := lineStartOffsets(text)
 	out := make([]bibcheckOccurrence, 0, len(matches))
 	for _, match := range matches {
 		if len(match) < 4 || match[2] < 0 || match[3] < 0 {
 			continue
 		}
 		line := lineNumberForOffset(lines, match[0])
-		for _, key := range appendCiteKeyList(nil, content[match[2]:match[3]]) {
+		for _, key := range appendCiteKeyList(nil, text[match[2]:match[3]]) {
 			out = append(out, bibcheckOccurrence{CiteKey: key, File: path, Line: line, Format: "tex"})
 		}
 	}
@@ -403,22 +413,27 @@ func (w *bibcheckIncludeWalker) walk(path, pathAbs, content, rootDir, rootAbsDir
 	var out []bibcheckOccurrence
 	cite := !w.cited[pathAbs]
 	w.cited[pathAbs] = true
+	// Citations and includes are both read from the masked text, so a
+	// commented-out or verbatim \cite or \input is neither followed nor
+	// counted. Masking once, then slicing, keeps a literal environment that
+	// spans a segment boundary masked in every segment.
+	text := latexIncludeSearchText(content)
 	citationStart, citationLine := 0, 0
 	appendCitations := func(end int) {
 		if cite && w.sourceOrder {
-			occurrences := parseLatexCitationOccurrences(path, content[citationStart:end])
+			occurrences := latexCitationOccurrences(path, text[citationStart:end])
 			for i := range occurrences {
 				occurrences[i].Line += citationLine
 			}
 			out = append(out, occurrences...)
-			citationLine += strings.Count(content[citationStart:end], "\n")
+			citationLine += strings.Count(text[citationStart:end], "\n")
 			citationStart = end
 		}
 	}
 	if cite && !w.sourceOrder {
-		out = parseLatexCitationOccurrences(path, content)
+		out = latexCitationOccurrences(path, text)
 	}
-	for _, inc := range latexIncludeTargets(content) {
+	for _, inc := range latexIncludeTargets(text) {
 		appendCitations(inc.offset)
 		target := strings.TrimSpace(inc.path)
 		if filepath.Ext(target) == "" {
@@ -494,12 +509,12 @@ type latexInclude struct {
 // an example, not an include.
 var latexLiteralBeginRE = regexp.MustCompile(`\\begin\s*\{(verbatim\*?|Verbatim\*?|lstlisting|minted|comment)\}`)
 
-// latexIncludeTargets finds braced \input/\include commands outside TeX
-// comments and literal environments. It matches over the whole cleaned
-// content, so a command split from its braced argument by a newline or a
-// comment is still found, at the line of the command.
-func latexIncludeTargets(content string) []latexInclude {
-	text := latexIncludeSearchText(content)
+// latexIncludeTargets finds braced \input/\include commands in text, which is
+// latexIncludeSearchText output: comments and literal environments are
+// already masked. It matches over the whole cleaned text, so a command split
+// from its braced argument by a newline or a comment is still found, at the
+// line of the command.
+func latexIncludeTargets(text string) []latexInclude {
 	lines := lineStartOffsets(text)
 	var out []latexInclude
 	for _, m := range latexIncludeRE.FindAllStringSubmatchIndex(text, -1) {
