@@ -133,3 +133,67 @@ func TestCreateMirroredItemRollsBackWhenMarkerFails(t *testing.T) {
 		t.Fatal("created row survived a failed marker write; the next stale sync would roll the confirmed create back")
 	}
 }
+
+// A second write to the same item, made before the read plane has reported the
+// first, must extend the marker rather than replace it. The mirror row carries
+// both writes, so a marker holding only the second one lets the next sync replay
+// the newest change onto the stale read-plane row and silently roll the earlier
+// one back in the mirror.
+func TestPendingWritesAccumulateAcrossWritesToOneRow(t *testing.T) {
+	collection := `{"field":"collections","add":"COLL1"}`
+	tag := `{"field":"tags","add":"later"}`
+	title := `{"field":"title","add":"Third"}`
+
+	t.Run("UpsertMirroredWrite", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		for _, changes := range []string{"[" + collection + "]", "[" + tag + "]", "[" + title + "]"} {
+			if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte(changes)); err != nil {
+				t.Fatalf("UpsertMirroredWrite: %v", err)
+			}
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if got, want := string(pending["K1"].Changes), "["+collection+","+tag+","+title+"]"; got != want {
+			t.Fatalf("marker changes = %s, want every unconfirmed write in order: %s", got, want)
+		}
+	})
+
+	t.Run("RecordPendingWrite", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		if err := s.RecordPendingWrite("items", "K1", []byte("["+collection+"]")); err != nil {
+			t.Fatalf("RecordPendingWrite: %v", err)
+		}
+		if err := s.RecordPendingWrite("items", "K1", []byte("["+tag+"]")); err != nil {
+			t.Fatalf("RecordPendingWrite: %v", err)
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if got, want := string(pending["K1"].Changes), "["+collection+","+tag+"]"; got != want {
+			t.Fatalf("marker changes = %s, want both writes: %s", got, want)
+		}
+	})
+
+	t.Run("a deletion marker still outranks a later write", func(t *testing.T) {
+		s := mirroredWriteTestOpen(t)
+		if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte("["+collection+"]")); err != nil {
+			t.Fatalf("UpsertMirroredWrite: %v", err)
+		}
+		if err := s.ReapMirroredItem("K1"); err != nil {
+			t.Fatalf("ReapMirroredItem: %v", err)
+		}
+		if err := s.UpsertMirroredWrite("items", "K1", mirroredWriteTestRow("K1"), []byte("["+tag+"]")); err != nil {
+			t.Fatalf("UpsertMirroredWrite after reap: %v", err)
+		}
+		pending, err := s.PendingWrites("items")
+		if err != nil {
+			t.Fatalf("PendingWrites: %v", err)
+		}
+		if mark := pending["K1"]; !mark.Deleted || string(mark.Changes) != "[]" {
+			t.Fatalf("marker = %+v, want the deletion marker untouched", mark)
+		}
+	})
+}
