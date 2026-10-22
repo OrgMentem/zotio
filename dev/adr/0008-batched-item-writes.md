@@ -1,4 +1,4 @@
-# ADR 0008 — Batched item writes are opt-in; planning reads always batch
+# ADR 0008 — Batched item writes are opt-in, and only the writes batch
 
 **Status:** Accepted (2026-09-15)
 
@@ -74,28 +74,20 @@ the chunk carrying the remaining ops has already been sent, those items are
 reported `failed` with an explicit unknown-outcome reason rather than
 `not_attempted`, which would be the same lie point 2 refuses.
 
-Both write paths reuse the planning snapshot instead of re-reading at apply
-time, and both carry that snapshot's version as the precondition. This removes
-the apply-time re-read. It widens the window in which a concurrent edit can
-land; that edit loses the precondition and is reported as a conflict, never as
-a silent overwrite.
+The batched path also reuses the planning read instead of re-reading at apply
+time. This is what removes the second request per item. It widens the window
+in which a concurrent edit can land; that edit loses the precondition and is
+reported as a conflict, never as a silent overwrite.
 
-**Planning reads are always batched; writes batch only with `--batch`.** Tag
-merging needs each item's current tags, so planning fetches them with
-`GET /items?itemKey=K1,K2,...`, at most 50 keys per request
-(`fetchItemSnapshots`), in preview and apply alike. N items cost
-`ceil(N/50)` planning requests. Without `--batch` each item that needs a write
-adds one guarded `PATCH`; with `--batch` the writes add `ceil(M/50)` requests
-for M items that need one. For 200 items that all need a write that is 4
-planning plus 200 writes, or 4 plus 4 with `--batch`. An item that already
-carries the tag is planned as a no-op and costs no write. The default path
-still sends one write per item, so claiming a 50x speedup for it would be
-dishonest. `TestItemsTagsPlanningReadIsBatched` and
-`TestItemsTagsBatchSplitsAtZoteroCeiling` pin these counts.
+**Reads are not batched.** Tag merging needs each item's current tags, so the
+saving is in writes only: 200 items that all need a write go from 600
+requests to 204, not to 4. An item that already carries the tag is planned as
+a no-op and costs only its one planning read. Claiming a 50x speedup would be
+dishonest.
 
 ## Consequences
 
-- Bulk tag hygiene gets roughly a 3x request reduction from reusing the planning read (measured when planning was still per-item), and batched planning reads cut it further; `--batch` is opt-in, with per-item
+- Bulk tag hygiene gets roughly a 3x request reduction, opt-in, with per-item
   status, per-item conflicts, and Zotero's own per-object error messages
   intact. Measured on a real 59-item library sweep: 2.8x fewer requests and
   2.5x faster wall clock, with a live 412 exiting 1 and attributed to the
@@ -117,3 +109,22 @@ dishonest. `TestItemsTagsPlanningReadIsBatched` and
   outcome, so the opt-in `mutation.Op.Dispatched` hook lets the engine
   collect that real outcome instead of reporting `not_attempted`; entries
   never sent stay `not_attempted`.
+
+## Amendments
+
+- **2026-10-22 — planning reads are batched; both write paths reuse the
+  planning snapshot.** This supersedes "**Reads are not batched.**" and the
+  sentence that limits snapshot reuse to the batched path. Tag merging still
+  needs each item's current tags, but planning now fetches them with
+  `GET /items?itemKey=K1,K2,...`, at most 50 keys per request
+  (`fetchItemSnapshots` in `internal/cli/items_tags_write.go`), in preview and
+  apply alike, so N items cost `ceil(N/50)` planning requests. Without
+  `--batch` each item that needs a write adds one guarded `PATCH`; with
+  `--batch` the M writes cost `ceil(M/50)` requests. For 200 items that all
+  need a write that is 4 + 200 requests, or 4 + 4 with `--batch`. Both paths
+  carry the snapshot's version as the precondition, so a concurrent edit is
+  still reported as a conflict, never a silent overwrite.
+  `TestItemsTagsPlanningReadIsBatched` and
+  `TestItemsTagsBatchSplitsAtZoteroCeiling` pin these counts. The roughly 3x
+  figure in Consequences is the historical measurement of batched writes with
+  snapshot reuse, taken while planning was still per item.

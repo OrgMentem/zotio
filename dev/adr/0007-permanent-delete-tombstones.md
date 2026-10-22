@@ -176,8 +176,9 @@ whose key carries one.**
    fetches anything: before, so an expired field marker does not hold the mirror
    against the very pass that retires it. It retires; it never confirms.
 
-9. **Growth is two rows per permanent delete (one for `items`, one for
-   `items-trash`; see decision 2), each retired by the next total-observation
+9. **Growth is two rows per reaped key (one for `items`, one for
+   `items-trash`; see decision 2): the deleted item and each mirrored
+   descendant the reap cascades to, each retired by the next total-observation
    pass of its own resource.** `pending_writes` is keyed on
    `(resource_type, id)`, so the paired markers are distinct rows, and each
    retires independently when a complete pass of that resource stops listing the
