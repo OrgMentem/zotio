@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,7 +50,30 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 	for _, adjust := range tune {
 		adjust(&opts)
 	}
-	env, err := mutation.Run(opts, operation, ops)
+	var observe func(op mutation.Op, item mutation.ResultItem)
+	recordOutcomes := resolveMutationMode(flags).Apply && (mutationOutcomeRecorder != nil || mirrorPermanentDelete != nil)
+	if recordOutcomes {
+		// Record each landed write next to its side effect. A kill, a closed
+		// terminal or a panic in a later op would otherwise lose the journal
+		// line and the permanent-delete marker of every write that already
+		// reached the library, because both used to be produced once from the
+		// final envelope.
+		if mutationOutcomeRecorder != nil {
+			opts.RunID = mutation.NewRunID(time.Now())
+		}
+		mode := mutation.ResolveMode(opts).Mode
+		observe = func(op mutation.Op, item mutation.ResultItem) {
+			if mutationOutcomeRecorder != nil {
+				// A failed record is not fatal: the run's final entry repeats
+				// every op, and its failure is what gets reported.
+				_ = mutationOutcomeRecorder(opts.RunID, operation, mode, op, item)
+			}
+			if mirrorPermanentDelete != nil && op.Kind == "item_delete" && item.Status == "applied" && item.Key != "" {
+				mirrorPermanentDelete(item.Key)
+			}
+		}
+	}
+	env, err := mutation.RunObserved(opts, operation, ops, observe)
 	recordWorkflowRunMutation(ctx, &env)
 	if mirrorWriteThrough != nil {
 		mirrorWriteThrough(&env)

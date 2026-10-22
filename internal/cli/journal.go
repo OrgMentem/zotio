@@ -24,6 +24,18 @@ import (
 // subcommands directly never write to the filesystem.
 var mutationJournalRecorder func(env *mutation.Envelope) error
 
+// mutationOutcomeRecorder, when non-nil, appends the op-level journal record of
+// one op that already landed, from runMutation's per-op callback. It is what
+// keeps a run killed between ops undoable: the run's own entry is written once,
+// after the last op.
+var mutationOutcomeRecorder func(runID, operation, mode string, op mutation.Op, item mutation.ResultItem) error
+
+// mirrorPermanentDelete, when non-nil, reaps a just-purged item from the local
+// mirror and writes its ADR-0007 deletion marker. runMutation calls it per op
+// so the marker exists as soon as the delete landed; the final write-through
+// repeats the (idempotent) reap and reports any failure.
+var mirrorPermanentDelete func(key string)
+
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
 func journalDir() (string, error) {
@@ -200,6 +212,21 @@ func recordMutationJournal(env *mutation.Envelope) error {
 	}
 	env.Journal = journal
 	return nil
+}
+
+// recordMutationOutcome appends the op-level journal record for one landed op.
+func recordMutationOutcome(runID, operation, mode string, op mutation.Op, item mutation.ResultItem) error {
+	entry, ok := mutation.BuildJournalCheckpoint(runID, operation, mode, op, item, time.Now())
+	if !ok {
+		return nil
+	}
+	entry.WorkflowRunID = activeWorkflowRunID
+	entry.Library = currentJournalLibrary()
+	dir, err := journalDir()
+	if err != nil {
+		return err
+	}
+	return mutation.WriteEntry(dir, entry)
 }
 
 func newJournalCmd(flags *rootFlags) *cobra.Command {

@@ -56,6 +56,14 @@ type JournalEntry struct {
 	OK            bool          `json:"ok"`
 	Summary       ResultSummary `json:"summary"`
 	Ops           []JournalOp   `json:"ops"`
+	// Partial marks a run that landed writes without finishing. On disk it is
+	// an op-level record appended right after one op's write (ops holds just
+	// that op, summary is empty); the run's final record, without Partial,
+	// follows when the run ends. Readers fold the two: a run with a final
+	// record shows only that record, and a run killed before it shows the
+	// merge of its op-level records with Partial still true, so a kill
+	// mid-run leaves every landed write listed and undoable.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // IncompleteJournalError reports that a final unterminated journal record could
@@ -95,42 +103,15 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	}
 	ops := make([]JournalOp, 0, len(env.Plan.Operations))
 	for _, op := range env.Plan.Operations {
-		item := results[op.ID]
-		key := op.Key
-		// Creates do not know their key at plan time. Run adopts the key
-		// returned by Apply into ResultItem.Key; use that applied key in the
-		// journal so undo targets the object that was actually created. If the
-		// route could not confirm a Zotero key (for example, a connector
-		// correlation ID), keep it empty rather than recording the item type.
-		if IsCreateKind(op.Kind) {
-			key = item.Key
-		} else if item.Key != "" {
-			key = item.Key
-		}
-		var reason any
-		if detail, ok := item.Reason.(map[string]any); ok && detail["committed"] == true {
-			reason = detail
-		}
-		// The inverse is only meaningful for a write that landed. Apply has
-		// finished by now, so the op's recorder holds what that write did.
-		var revert []Change
-		if item.Status == "applied" && op.Revert != nil {
-			revert = op.Revert()
-		}
-		ops = append(ops, JournalOp{
-			ID:          op.ID,
-			Key:         key,
-			Kind:        op.Kind,
-			Status:      item.Status,
-			Destructive: op.Destructive,
-			Changes:     op.Changes,
-			Revert:      revert,
-			Reason:      reason,
-		})
+		ops = append(ops, journalOp(op, results[op.ID]))
+	}
+	runID := env.RunID
+	if runID == "" {
+		runID = NewRunID(now)
 	}
 	return JournalEntry{
 		SchemaVersion: JournalSchemaVersion,
-		RunID:         NewRunID(now),
+		RunID:         runID,
 		Library:       "user",
 		Operation:     env.Operation,
 		Mode:          env.Mode,
@@ -138,6 +119,71 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 		OK:            env.OK,
 		Summary:       env.Result.Summary,
 		Ops:           ops,
+	}, true
+}
+
+// journalOp joins one planned op with its result item: the post-write key, the
+// status, and the inverse the write captured.
+func journalOp(op Op, item ResultItem) JournalOp {
+	key := op.Key
+	// Creates do not know their key at plan time. Run adopts the key
+	// returned by Apply into ResultItem.Key; use that applied key in the
+	// journal so undo targets the object that was actually created. If the
+	// route could not confirm a Zotero key (for example, a connector
+	// correlation ID), keep it empty rather than recording the item type.
+	if IsCreateKind(op.Kind) {
+		key = item.Key
+	} else if item.Key != "" {
+		key = item.Key
+	}
+	var reason any
+	if detail, ok := item.Reason.(map[string]any); ok && detail["committed"] == true {
+		reason = detail
+	}
+	// The inverse is only meaningful for a write that landed. Apply has
+	// finished by now, so the op's recorder holds what that write did.
+	var revert []Change
+	if item.Status == "applied" && op.Revert != nil {
+		revert = op.Revert()
+	}
+	return JournalOp{
+		ID:          op.ID,
+		Key:         key,
+		Kind:        op.Kind,
+		Status:      item.Status,
+		Destructive: op.Destructive,
+		Changes:     op.Changes,
+		Revert:      revert,
+		Reason:      reason,
+	}
+}
+
+// OpLanded reports whether an op outcome left a write behind that a journal
+// must keep: an applied op, or a conflict the engine knows was committed.
+func OpLanded(item ResultItem) bool {
+	if item.Status == "applied" {
+		return true
+	}
+	detail, ok := item.Reason.(map[string]any)
+	return ok && detail["committed"] == true
+}
+
+// BuildJournalCheckpoint builds the op-level record appended right after one
+// op's write landed, before the run ends. It returns ok=false for an outcome
+// that left nothing behind.
+func BuildJournalCheckpoint(runID, operation, mode string, op Op, item ResultItem, now time.Time) (JournalEntry, bool) {
+	if !OpLanded(item) {
+		return JournalEntry{}, false
+	}
+	return JournalEntry{
+		SchemaVersion: JournalSchemaVersion,
+		RunID:         runID,
+		Library:       "user",
+		Operation:     operation,
+		Mode:          mode,
+		Timestamp:     now.UTC(),
+		Ops:           []JournalOp{journalOp(op, item)},
+		Partial:       true,
 	}, true
 }
 
@@ -317,7 +363,7 @@ func ListEntries(dir string) ([]JournalEntry, error) {
 
 		entries, finalDecodeFailure, finalIncomplete, err := parseJournalSnapshot(snapshot)
 		if err == nil {
-			return newestFirst(entries), nil
+			return newestFirst(foldPartialRuns(entries)), nil
 		}
 		if !finalDecodeFailure {
 			return nil, err
@@ -327,7 +373,7 @@ func ListEntries(dir string) ([]JournalEntry, error) {
 			continue
 		}
 		if finalIncomplete {
-			return newestFirst(entries), &IncompleteJournalError{Path: path, Err: err}
+			return newestFirst(foldPartialRuns(entries)), &IncompleteJournalError{Path: path, Err: err}
 		}
 		return nil, err
 	}
@@ -369,6 +415,52 @@ func parseJournalSnapshot(snapshot []byte) ([]JournalEntry, bool, bool, error) {
 		entries = append(entries, entry)
 	}
 	return entries, false, false, nil
+}
+
+// foldPartialRuns collapses the op-level records of each run (see
+// JournalEntry.Partial). A run that wrote its final record keeps only that
+// record. A run with op-level records and no final record was cut short, so its
+// records merge, in file order, into one entry at the first record's position:
+// Partial stays true, OK is false and the summary counts what landed.
+func foldPartialRuns(entries []JournalEntry) []JournalEntry {
+	finished := make(map[string]bool)
+	for _, entry := range entries {
+		if !entry.Partial {
+			finished[entry.RunID] = true
+		}
+	}
+	merged := make(map[string]int)
+	out := make([]JournalEntry, 0, len(entries))
+	for _, entry := range entries {
+		switch {
+		case !entry.Partial:
+			out = append(out, entry)
+		case finished[entry.RunID]:
+		default:
+			at, seen := merged[entry.RunID]
+			if !seen {
+				entry.OK = false
+				entry.Ops = append([]JournalOp(nil), entry.Ops...)
+				merged[entry.RunID] = len(out)
+				out = append(out, entry)
+				at = len(out) - 1
+			} else {
+				out[at].Ops = append(out[at].Ops, entry.Ops...)
+			}
+			recount := &out[at]
+			recount.Summary = ResultSummary{}
+			for _, op := range recount.Ops {
+				recount.Summary.Attempted++
+				switch op.Status {
+				case "applied":
+					recount.Summary.Applied++
+				case "conflict":
+					recount.Summary.Conflicts++
+				}
+			}
+		}
+	}
+	return out
 }
 
 func newestFirst(entries []JournalEntry) []JournalEntry {

@@ -48,7 +48,9 @@ const (
 // points. Reinstalling the same hooks is safe for MCP startup and CLI calls.
 func InstallRuntimeHooks() {
 	mutationJournalRecorder = recordMutationJournal
+	mutationOutcomeRecorder = recordMutationOutcome
 	mirrorWriteThrough = applyMirrorWriteThrough
+	mirrorPermanentDelete = reapPermanentDeleteNow
 }
 
 var activeWorkflowRunID string

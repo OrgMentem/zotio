@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 func TestMutationOptionsFromFlags(t *testing.T) {
@@ -211,5 +213,139 @@ func TestRenderMutationQuietPrintsNothing(t *testing.T) {
 	}
 	if out.Len() != 0 || errOut.Len() != 0 {
 		t.Fatalf("quiet output stdout=%q stderr=%q, want nothing", out.String(), errOut.String())
+	}
+}
+
+// installOutcomeHooks installs the production per-op hooks for one test and
+// restores the previous ones.
+func installOutcomeHooks(t *testing.T) {
+	t.Helper()
+	prevJournal, prevOutcome, prevMirror, prevDelete := mutationJournalRecorder, mutationOutcomeRecorder, mirrorWriteThrough, mirrorPermanentDelete
+	t.Cleanup(func() {
+		mutationJournalRecorder, mutationOutcomeRecorder, mirrorWriteThrough, mirrorPermanentDelete = prevJournal, prevOutcome, prevMirror, prevDelete
+	})
+	InstallRuntimeHooks()
+}
+
+// killedRun drives runMutation with three ops and a process "kill" (a panic the
+// test recovers) inside the third Apply, after the first two writes landed.
+func killedRun(t *testing.T, kind string, change mutation.Change, keys [3]string) {
+	t.Helper()
+	ops := make([]mutation.Op, 0, len(keys))
+	for i, key := range keys {
+		index := i
+		ops = append(ops, mutation.Op{
+			ID: fmt.Sprintf("op%d", i+1), Key: key, Kind: kind,
+			Changes: []mutation.Change{change},
+			Apply: func() (string, any, error) {
+				if index == 2 {
+					panic("killed between ops")
+				}
+				return "applied", nil, nil
+			},
+		})
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("the third op did not die; the test did not simulate a kill")
+		}
+	}()
+	_, _ = runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1, allowDestructive: true}, "test", ops)
+}
+
+// A run killed after some writes landed must leave each of them journaled and
+// undoable: the run's own entry used to be written once, after the last op.
+func TestRunMutationKilledMidRunKeepsLandedOpsJournaled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	installOutcomeHooks(t)
+
+	killedRun(t, "tag_add", mutation.Change{Field: "tags", Add: "x", TagType: 0}, [3]string{"AAAA1111", "BBBB2222", "CCCC3333"})
+
+	dir, err := journalDir()
+	if err != nil {
+		t.Fatalf("journalDir: %v", err)
+	}
+	entries, err := mutation.ListEntries(dir)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("journal has %d runs, want the one killed run: %+v", len(entries), entries)
+	}
+	run := entries[0]
+	if !run.Partial || run.OK || run.Summary.Applied != 2 || len(run.Ops) != 2 {
+		t.Fatalf("run = %+v, want a partial run with its two landed ops", run)
+	}
+	for i, want := range []string{"AAAA1111", "BBBB2222"} {
+		if run.Ops[i].Key != want || run.Ops[i].Status != "applied" {
+			t.Fatalf("op %d = %+v, want applied %s", i, run.Ops[i], want)
+		}
+	}
+	if inverse, refused := mutation.InverseOps(run); len(inverse) != 2 || len(refused) != 0 {
+		t.Fatalf("InverseOps = %d inverse, %d refused, want both landed ops undoable", len(inverse), len(refused))
+	}
+}
+
+// A run that finishes keeps exactly one journal run: its final entry replaces
+// the op-level records written along the way.
+func TestRunMutationFinishedRunFoldsToItsFinalEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	installOutcomeHooks(t)
+
+	ops := []mutation.Op{
+		{ID: "op1", Key: "AAAA1111", Kind: "item_trash", Changes: []mutation.Change{{Field: "deleted", Add: true}}, Apply: func() (string, any, error) { return "applied", nil, nil }},
+		{ID: "op2", Key: "BBBB2222", Kind: "item_trash", Changes: []mutation.Change{{Field: "deleted", Add: true}}, Apply: func() (string, any, error) { return "applied", nil, nil }},
+	}
+	env, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1}, "test", ops)
+	if err != nil {
+		t.Fatalf("runMutation: %v", err)
+	}
+	dir, _ := journalDir()
+	entries, err := mutation.ListEntries(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ListEntries = %d entries, err %v, want one folded run", len(entries), err)
+	}
+	if entries[0].Partial || !entries[0].OK || len(entries[0].Ops) != 2 {
+		t.Fatalf("entry = %+v, want the final, complete entry", entries[0])
+	}
+	if journal, _ := env.Journal.(map[string]any); journal["run_id"] != entries[0].RunID {
+		t.Fatalf("envelope journal = %+v, want the run id %s shared with the op-level records", env.Journal, entries[0].RunID)
+	}
+}
+
+// A permanent delete kills the same way: the items that were purged before the
+// kill must already carry their deletion marker, or offline reads keep listing
+// destroyed items and a rerun reports "nothing was deleted".
+func TestRunMutationKilledMidRunMarksPurgedItems(t *testing.T) {
+	db, dbPath := reapTestStore(t)
+	for _, key := range []string{"AAAA1111", "BBBB2222", "CCCC3333"} {
+		if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+			json.RawMessage(`{"key":"` + key + `","version":1,"data":{"key":"` + key + `","itemType":"book"}}`),
+		}); err != nil {
+			t.Fatalf("seed mirror: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	installOutcomeHooks(t)
+
+	killedRun(t, "item_delete", mutation.Change{Field: "deleted", Add: true}, [3]string{"AAAA1111", "BBBB2222", "CCCC3333"})
+
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db.Close()
+	for key, wantGone := range map[string]bool{"AAAA1111": true, "BBBB2222": true, "CCCC3333": false} {
+		marked, err := db.PendingDeletion("items", key)
+		if err != nil {
+			t.Fatalf("PendingDeletion(%s): %v", key, err)
+		}
+		if marked != wantGone || mirroredItemKeys(t, db, "items")[key] == wantGone {
+			t.Fatalf("%s: deletion marked=%t mirrored=%t, want marked=%t mirrored=%t", key, marked, mirroredItemKeys(t, db, "items")[key], wantGone, !wantGone)
+		}
 	}
 }

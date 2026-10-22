@@ -124,16 +124,18 @@ type Result struct {
 
 // Envelope is the stable preview/apply contract returned to callers.
 type Envelope struct {
-	SchemaVersion int      `json:"schema_version"`
-	OK            bool     `json:"ok"`
-	Operation     string   `json:"operation"`
-	Mode          string   `json:"mode"`
-	PreviewReason string   `json:"preview_reason,omitempty"`
-	Plan          Plan     `json:"plan"`
-	Result        *Result  `json:"result"`
-	Journal       any      `json:"journal"`
-	Warnings      []string `json:"warnings,omitempty"`
-	Error         *Error   `json:"error,omitempty"`
+	SchemaVersion int     `json:"schema_version"`
+	OK            bool    `json:"ok"`
+	Operation     string  `json:"operation"`
+	Mode          string  `json:"mode"`
+	PreviewReason string  `json:"preview_reason,omitempty"`
+	Plan          Plan    `json:"plan"`
+	Result        *Result `json:"result"`
+	Journal       any     `json:"journal"`
+	// RunID is the journal run id of an apply (Options.RunID); never rendered.
+	RunID    string   `json:"-"`
+	Warnings []string `json:"warnings,omitempty"`
+	Error    *Error   `json:"error,omitempty"`
 }
 
 // Options carries the resolved write-safety knobs, decoupled from any flag type.
@@ -149,6 +151,9 @@ type Options struct {
 	// Apply is cancelled by the context its own transport already carries; this
 	// stops the engine from starting the next one. A nil Context never cancels.
 	Context context.Context
+	// RunID, when set, is the journal run id Run stamps on the Envelope so the
+	// final journal entry reuses the id the per-op records already carry.
+	RunID string
 }
 
 // Mode is the resolved preview/apply decision.
@@ -213,6 +218,15 @@ func CheckGates(o Options, ops []Op) *Error {
 // Run builds the preview envelope and, in apply mode, executes each operation's
 // Apply closure with fail-fast / continue-on-error semantics.
 func Run(o Options, operation string, ops []Op) (Envelope, error) {
+	return RunObserved(o, operation, ops, nil)
+}
+
+// RunObserved is Run with onOutcome, called right after each attempted op's
+// outcome is final (anything but not_attempted and no_op) and before the next op
+// starts. It lets a caller record a landed write durably next to the side effect
+// instead of once after the last op. The engine ignores what it does: a
+// recording failure cannot undo the write.
+func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, item ResultItem)) (Envelope, error) {
 	mode := ResolveMode(o)
 	env := Envelope{
 		SchemaVersion: SchemaVersion,
@@ -224,6 +238,7 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			Operations: ops,
 		},
 		Journal: nil,
+		RunID:   o.RunID,
 	}
 
 	if invalid := firstInvalid(ops); invalid != nil {
@@ -326,6 +341,9 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			failures++
 		}
 		result.Items = append(result.Items, item)
+		if onOutcome != nil {
+			onOutcome(op, item)
+		}
 
 		if (item.Status == "conflict" || item.Status == "failed") && !o.ContinueOnError {
 			stop = true

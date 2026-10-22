@@ -90,12 +90,12 @@ func SetRetryBackoffBaseForTest(d time.Duration) (restore func()) {
 
 func sigintContext() context.Context {
 	interruptCtxOnce.Do(func() {
-		interruptCtx, _ = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		interruptCtx, _ = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	})
 	return interruptCtx
 }
 
-// InterruptContext returns the process-wide context cancelled on Ctrl-C/SIGTERM.
+// InterruptContext returns the process-wide context cancelled on Ctrl-C, SIGTERM or SIGHUP (a closed terminal or SSH session).
 // CLI and MCP entry points use it as the root command context so cancellation
 // propagates to client HTTP work through cmd.Context().
 func InterruptContext() context.Context {

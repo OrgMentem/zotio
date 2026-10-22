@@ -1287,13 +1287,21 @@ func TestInstallRuntimeHooksInstallsProductionHooks(t *testing.T) {
 		mutationJournalRecorder = previousRecorder
 		mirrorWriteThrough = previousMirror
 	})
+	previousOutcome := mutationOutcomeRecorder
+	previousDelete := mirrorPermanentDelete
+	t.Cleanup(func() {
+		mutationOutcomeRecorder = previousOutcome
+		mirrorPermanentDelete = previousDelete
+	})
 	mutationJournalRecorder = nil
 	mirrorWriteThrough = nil
+	mutationOutcomeRecorder = nil
+	mirrorPermanentDelete = nil
 
 	InstallRuntimeHooks()
 	InstallRuntimeHooks()
 
-	if mutationJournalRecorder == nil || mirrorWriteThrough == nil {
+	if mutationJournalRecorder == nil || mirrorWriteThrough == nil || mutationOutcomeRecorder == nil || mirrorPermanentDelete == nil {
 		t.Fatal("runtime hooks were not installed")
 	}
 }

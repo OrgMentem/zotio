@@ -380,6 +380,20 @@ func reapMirroredItem(db *store.Store, key string) {
 	}
 }
 
+// reapPermanentDeleteNow is the per-op half of the permanent-delete write-through:
+// it reaps the item and writes the deletion marker the moment the delete landed,
+// so a kill before the run ends cannot leave the purged item listed by offline
+// reads. It is silent about a missing mirror and about failures: the final
+// write-through repeats the reap and is the one that reports them once.
+func reapPermanentDeleteNow(key string) {
+	db, err := openExistingStoreForWrite(context.Background(), "zotio")
+	if err != nil || db == nil {
+		return
+	}
+	defer db.Close()
+	_ = db.ReapMirroredItem(key)
+}
+
 // writePlaneAbsence classifies what this machine's mirror knows about a key the
 // write plane answers 404 for. That one status code covers three states, and
 // they need three different reports.

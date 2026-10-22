@@ -513,3 +513,96 @@ func TestNewRunIDSuccessPathUnchanged(t *testing.T) {
 		t.Fatalf("success suffix length = %d, want 8 (4 random bytes hex); id=%q", len(suffix), id)
 	}
 }
+
+func checkpointRecord(t *testing.T, runID, opID, key, status string, reason any) JournalEntry {
+	t.Helper()
+	entry, ok := BuildJournalCheckpoint(runID, "items.tags.add", "apply",
+		Op{ID: opID, Key: key, Kind: "tag_add", Changes: []Change{{Field: "tags", Add: "ml"}}},
+		ResultItem{OpID: opID, Key: key, Status: status, Reason: reason}, time.Unix(1700000000, 0))
+	if !ok {
+		t.Fatalf("BuildJournalCheckpoint(%s %s) ok = false, want a record", opID, status)
+	}
+	return entry
+}
+
+// An op that left nothing behind has no op-level record.
+func TestBuildJournalCheckpointSkipsOpsThatLeftNothing(t *testing.T) {
+	for _, item := range []ResultItem{
+		{OpID: "op1", Status: "failed", Reason: "boom"},
+		{OpID: "op1", Status: "conflict", Reason: "stale"},
+		{OpID: "op1", Status: "skipped"},
+	} {
+		if entry, ok := BuildJournalCheckpoint("run", "x", "apply", Op{ID: "op1"}, item, time.Now()); ok {
+			t.Fatalf("BuildJournalCheckpoint(%s) = %+v, want no record", item.Status, entry)
+		}
+	}
+	if _, ok := BuildJournalCheckpoint("run", "x", "apply", Op{ID: "op1"}, ResultItem{OpID: "op1", Status: "conflict", Reason: map[string]any{"committed": true}}, time.Now()); !ok {
+		t.Fatal("a committed conflict wrote something, so it must keep its op-level record")
+	}
+}
+
+// A run killed before its final record shows the merge of its op-level records;
+// a run that finished shows only its final record; other runs are untouched.
+func TestListEntriesFoldsOpLevelRecords(t *testing.T) {
+	dir := t.TempDir()
+	killed := "20231114T221320Z-killed00"
+	finished := "20231114T221321Z-finish00"
+	for _, entry := range []JournalEntry{
+		checkpointRecord(t, killed, "op1", "K1", "applied", nil),
+		checkpointRecord(t, finished, "op1", "F1", "applied", nil),
+		checkpointRecord(t, killed, "op2", "K2", "applied", nil),
+		checkpointRecord(t, finished, "op2", "F2", "applied", nil),
+		{SchemaVersion: JournalSchemaVersion, RunID: finished, Operation: "items.tags.add", Mode: "apply", OK: true,
+			Summary: ResultSummary{Attempted: 2, Applied: 2},
+			Ops:     []JournalOp{{ID: "op1", Key: "F1", Status: "applied"}, {ID: "op2", Key: "F2", Status: "applied"}}},
+	} {
+		if err := WriteEntry(dir, entry); err != nil {
+			t.Fatalf("WriteEntry: %v", err)
+		}
+	}
+	entries, err := ListEntries(dir)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("ListEntries = %d runs, want 2 (killed, finished): %+v", len(entries), entries)
+	}
+	done, cut := entries[0], entries[1]
+	if done.RunID != finished || done.Partial || !done.OK || len(done.Ops) != 2 {
+		t.Fatalf("finished run = %+v, want its final record alone", done)
+	}
+	if cut.RunID != killed || !cut.Partial || cut.OK || cut.Summary.Applied != 2 || cut.Summary.Attempted != 2 {
+		t.Fatalf("killed run = %+v, want a partial run counting its two landed ops", cut)
+	}
+	if len(cut.Ops) != 2 || cut.Ops[0].Key != "K1" || cut.Ops[1].Key != "K2" {
+		t.Fatalf("killed run ops = %+v, want K1 then K2 in write order", cut.Ops)
+	}
+	got, err := ReadEntry(dir, killed)
+	if err != nil || len(got.Ops) != 2 {
+		t.Fatalf("ReadEntry(killed) = %+v, %v, want the merged run", got, err)
+	}
+}
+
+// RunObserved reports each attempted op, in order, before the next one starts.
+func TestRunObservedCallsBackAfterEachAttemptedOp(t *testing.T) {
+	var seen []string
+	apply := func(status string) func() (string, any, error) {
+		return func() (string, any, error) {
+			seen = append(seen, "apply:"+status)
+			return status, nil, nil
+		}
+	}
+	ops := []Op{
+		{ID: "a", Key: "A", Changes: []Change{{Field: "x"}}, Apply: apply("applied")},
+		{ID: "n", Key: "N"}, // no-op: nothing attempted, nothing reported
+		{ID: "f", Key: "F", Changes: []Change{{Field: "x"}}, Apply: apply("failed")},
+		{ID: "z", Key: "Z", Changes: []Change{{Field: "x"}}, Apply: apply("applied")},
+	}
+	_, _ = RunObserved(Options{Yes: true, MaxChanges: -1, RunID: "run-1"}, "t", ops, func(op Op, item ResultItem) {
+		seen = append(seen, "outcome:"+op.ID+"="+item.Status)
+	})
+	want := "apply:applied,outcome:a=applied,apply:failed,outcome:f=failed"
+	if got := strings.Join(seen, ","); got != want {
+		t.Fatalf("sequence = %q, want %q (fail-fast leaves z not attempted)", got, want)
+	}
+}
