@@ -31,6 +31,7 @@ type fakePreprintProviders struct {
 	mu           sync.Mutex
 	published    map[string]string
 	failing      bool
+	emptyFeed    bool
 	arxivHits    map[string]int
 	crossrefHits int
 	next         http.RoundTripper
@@ -53,11 +54,13 @@ func (f *fakePreprintProviders) RoundTrip(req *http.Request) (*http.Response, er
 		id := req.URL.Query().Get("id_list")
 		f.mu.Lock()
 		f.arxivHits[id]++
-		failing, doi := f.failing, f.published[id]
+		failing, empty, doi := f.failing, f.emptyFeed, f.published[id]
 		f.mu.Unlock()
 		switch {
 		case failing:
 			return testHTTPResponse(http.StatusInternalServerError, "arXiv down"), nil
+		case empty:
+			return testHTTPResponse(http.StatusOK, `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>`), nil
 		case doi == "":
 			return testHTTPResponse(http.StatusOK, arxivAtomFeedXML(`<id>http://arxiv.org/abs/`+id+`</id>`)), nil
 		default:
@@ -87,6 +90,13 @@ func (f *fakePreprintProviders) setFailing(failing bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failing = failing
+}
+
+// setEmptyFeed makes arXiv answer HTTP 200 with a feed holding no entry.
+func (f *fakePreprintProviders) setEmptyFeed(empty bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.emptyFeed = empty
 }
 
 func (f *fakePreprintProviders) hits(arxivID string) int {
@@ -452,6 +462,57 @@ func TestWatchHealthPreprintProviderFailureKeepsBaselineAndReportsSkip(t *testin
 	}
 	if len(got[2].New) != 1 || got[2].New[0].ItemKey != "DRAFT" {
 		t.Fatalf("recovery webhook new = %+v, want exactly DRAFT", got[2].New)
+	}
+}
+
+// An arXiv feed with no entry is not an answer. Caching it as a fresh "still a
+// preprint" result would hide a preprint that already has a journal DOI for
+// the whole recheck horizon, with no skip to say it was never checked.
+func TestWatchHealthPreprintEmptyArxivFeedIsReportedAndRetried(t *testing.T) {
+	stateDir := seedWatchPreprintEnv(t, []json.RawMessage{watchPreprintItem("PUB", "2401.00001")})
+	providers := newFakePreprintProviders(t)
+	providers.publish("2401.00001", "10.2000/published")
+	providers.setEmptyFeed(true)
+	clock := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	monitor := newWatchPreprintMonitor(t, &clock, "")
+
+	report, err := monitor.report(context.Background())
+	if err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	skip := watchPreprintSkipOf(report)
+	if skip == nil || skip.Precondition != "external_arxiv_crossref" || !strings.Contains(skip.Detail, "2401.00001") {
+		t.Fatalf("cycle 1 skip = %+v, want external_arxiv_crossref naming the arXiv ID", skip)
+	}
+	if findings := watchPreprintFindings(report); len(findings) != 0 {
+		t.Fatalf("cycle 1 findings = %+v, want none while the lookup is unanswered", findings)
+	}
+	if data, err := os.ReadFile(filepath.Join(stateDir, watchPreprintCacheName)); err == nil {
+		var file watchPreprintCacheFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			t.Fatalf("decode cache %q: %v", data, err)
+		}
+		if entry, ok := file.Entries["2401.00001"]; ok {
+			t.Fatalf("cache holds %+v for the ID, want nothing recorded for an empty feed", entry)
+		}
+	}
+
+	// arXiv recovers inside the recheck horizon. Nothing was cached, so the
+	// ID is asked again at once and the publication shows.
+	providers.setEmptyFeed(false)
+	clock = clock.Add(5 * time.Minute)
+	report, err = monitor.report(context.Background())
+	if err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if providers.hits("2401.00001") != 2 {
+		t.Fatalf("lookups = %d, want 2: the empty answer must not be cached", providers.hits("2401.00001"))
+	}
+	if findings := watchPreprintFindings(report); len(findings) != 1 || findings[0].ItemKey != "PUB" {
+		t.Fatalf("cycle 2 findings = %+v, want PUB published", findings)
+	}
+	if watchPreprintSkipOf(report) != nil {
+		t.Fatalf("cycle 2 skip = %+v, want it cleared", watchPreprintSkipOf(report))
 	}
 }
 

@@ -195,6 +195,24 @@ func TestCheckPreprintCandidateResolvesPublished(t *testing.T) {
 	}
 }
 
+// An arXiv feed with no entry at all says nothing about the paper. It must
+// surface as a lookup error: reading it as "no external DOI" tells the operator
+// a published preprint is still a preprint, and the finding never appears.
+func TestCheckPreprintCandidateRejectsEmptyArxivFeed(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() != "export.arxiv.org" {
+			t.Fatalf("unexpected host %q: an empty feed must stop before CrossRef", req.URL.Hostname())
+		}
+		return testHTTPResponse(http.StatusOK, `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>`), nil
+	})}
+	result, err := checkPreprintCandidate(context.Background(),
+		map[string]any{"key": "PUB1", "title": "Published paper", "url": "https://arxiv.org/abs/2301.00001"},
+		client)
+	if err == nil || !strings.Contains(err.Error(), "2301.00001") || !strings.Contains(err.Error(), "no entries") {
+		t.Fatalf("checkPreprintCandidate = %+v, %v; want an error naming the arXiv ID and the empty feed, not Status preprint", result, err)
+	}
+}
+
 // runPreprintCheckCmd executes the preprint-check command against a stub
 // Zotero server holding one arXiv-linked item, with arXiv and CrossRef
 // answered by the given transport.

@@ -307,6 +307,15 @@ func lookupArxivExternalDOI(ctx context.Context, httpClient *http.Client, arxivI
 	if err := xml.Unmarshal(body, &feed); err != nil {
 		return "", false, fmt.Errorf("parsing arXiv metadata for %s: %w", arxivID, err)
 	}
+	// A 2xx feed with no entry at all says nothing about the paper. Reading it
+	// as "no external DOI" reports a published preprint as still unpublished
+	// and, in watch, caches that answer for the whole recheck horizon. Only an
+	// entry that is present and carries no external DOI means "still a
+	// preprint". import_identifiers.go treats an empty id_list answer the same
+	// way.
+	if len(feed.Entries) == 0 {
+		return "", false, fmt.Errorf("arXiv metadata lookup for %s returned no entries; cannot tell whether it was published", arxivID)
+	}
 	for _, entry := range feed.Entries {
 		if doi := externalDOIFromArxivEntry(entry); doi != "" {
 			return doi, true, nil
