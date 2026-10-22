@@ -3,7 +3,7 @@
 
 Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.
 
-Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. `analytics` is in this group too: every mode answers `results` rows carrying a `count`, so one jq works across `--group-by`, `--type`, and the no-flag resource breakdown. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, `items bibcheck`, `library health`, `library prisma`, and `creators audit` expose named report fields instead of `results`. `annotations export` is also an explicit raw-export exception: its `--format markdown` and `--format json` outputs are consumable documents, not read-list envelopes.
+Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. `analytics` is in this group too: every mode answers `results` rows carrying a `count`, so one jq works across `--group-by`, `--type`, and the no-flag resource breakdown. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, `items bibcheck`, `library health`, `library prisma`, and `creators audit` expose named report fields instead of `results`. `annotations export` is a partial raw-export exception: its `--format markdown` stdout is a consumable Markdown document, not an envelope (under `--json` or `--agent` it is wrapped as `{format, content}`). Its `--format json` stdout is the same `{meta, results}` read envelope as other reads, with `results` holding one group per owning item. With `--output FILE`, the file receives that same Markdown or JSON envelope, and stdout carries only a short result summary (a result object under `--json`, otherwise a message on stderr).
 
 A read command may also emit sibling top-level keys beside its own payload, for advisory data it did NOT match. Three commands do this, and they share one naming convention so the grammar is learned once: the rows arrive under `near_<selector>_<thing>`, the outcome under `meta.<selector>_lookup`, and the truncation count under `meta.near_<selector>_total`. `items find --title` reports `near_title_matches` (rows `{key, title, score, year, item_type, trashed}`) with `meta.title_lookup`; `items find --citekey` reports `near_citekey_matches` (rows `{cite_key, item_key, title, score}`) with `meta.citekey_lookup`; `items duplicates --by title|all` reports `near_title_groups` (rows `{group, score, count, keys, titles, item_type, requires_review}`, where `group` is `title_near`) with `meta.title_lookup`. Rows are strongest first and the score is rounded to two decimals.
 
@@ -319,7 +319,9 @@ zotio auth logout
 
 ### `zotio auth set-token`
 
-Save an API token to the config file
+Save an API token to the credentials file
+
+Reads the token from stdin and saves it to the credentials file (credentials.toml in the data directory), not to the config file, which is rewritten without credentials. Under an agentcookie-managed store the token goes to the config file instead. Preview with --dry-run.
 
 ```
 zotio auth set-token --stdin [flags]
@@ -1377,6 +1379,7 @@ zotio import file <path> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` |  | Input format (bibtex, ris, csljson; csljson requires --via connector) |
+| `--reimport` | `bool` | `false` | With --via connector, import again even though an earlier import of this exact file was never confirmed and may have committed |
 | `--to` | `string` |  | Destination collection key to add imported items to |
 
 ### `zotio import isbn`
@@ -1862,9 +1865,12 @@ zotio cannot dismiss it — no connector endpoint closes or completes a save
 session. Observed 2026-08-22: roughly 78 consecutive one-per-item
 invocations left Zotero unresponsive with progress windows accumulating; no
 proven mechanism has been established. Prefer one invocation with many items:
-import file --via connector and this command share one session, while import
-apply currently opens one per manifest entry. --rate-limit governs only Web
-API requests and does not pace connector calls.
+import file --via connector and this command share one session, and so does
+import apply --attach-mode stored for the connector-bound creates that file
+into the run's destination. import apply opens a session per manifest entry
+only for an entry that names its own collection (when no --connector-target
+is set) and for every create when --attach-mode is not stored. --rate-limit
+governs only Web API requests and does not pace connector calls.
 
 ```
 zotio items create [flags]
@@ -2548,12 +2554,12 @@ zotio items update ABCD1234 --title "Updated title"
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--abstract-note` | `string` |  | Abstract or summary |
+| `--abstract-note` | `string` |  | Abstract or summary (an empty value clears it) |
 | `--collections` | `string` |  | Collection keys to assign this item to |
-| `--extra` | `string` |  | Extra notes field (also stores Better BibTeX citation key) |
+| `--extra` | `string` |  | Extra notes field, also stores Better BibTeX citation key (an empty value clears it) |
 | `--stdin` | `bool` | `false` | Read request body as JSON from stdin |
 | `--tags` | `string` |  | Tags to apply (array of {tag: string} objects) |
-| `--title` | `string` |  | Item title |
+| `--title` | `string` |  | Item title (an empty value clears it) |
 
 ### `zotio items venues`
 
@@ -2607,10 +2613,37 @@ zotio journal show <run-id>
 
 ### `zotio journal undo`
 
-Reverse a recorded run's reversible (tag/collection) changes
+Reverse a recorded run's reversible changes (tags, collections, captured fields, created items)
+
+Reverses what one journal entry recorded, as one new run that is itself journaled.
+Without --yes it only previews the reversal; add --yes to apply it.
+
+What it reverses:
+  - tag and collection additions and removals: each one is inverted
+  - field changes whose previous value the run captured while it wrote (an
+    enrichment's DOI or abstract, a line it appended to Extra): the field is
+    restored, and a field you edited since is left as it is
+  - created items (items create, import): the recorded items are moved to the
+    Zotero trash, which is not a permanent delete; restore them from the trash
+
+What it refuses, and reports in "refused": field overwrites with no captured
+previous value, merges, deletions, renames that replace one tag or collection
+with another, and creates whose Zotero key was not recorded. A refusal changes
+nothing, so review the entry with "journal show <run-id>" before you rely on a
+full reversal.
+
+Take the run-id from "journal list". A workflow ID is not a run-id: undo each
+entry it lists.
 
 ```
 zotio journal undo <run-id>
+```
+
+Examples:
+
+```bash
+zotio journal undo 20260901T101500Z-1a2b3c4d          # preview: lists the tag changes and the items it would trash
+  zotio journal undo 20260901T101500Z-1a2b3c4d --yes    # apply the reversal
 ```
 
 ## `zotio library`
@@ -2657,12 +2690,12 @@ zotio library health [flags]
 | `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's) |
 | `--fail-on-new` | `string` |  | Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any; none disables (requires --baseline, which must exist: a missing baseline exits 9) |
 | `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, vault, all |
-| `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
+| `--limit` | `int` | `0` | Max findings listed per kind (0 = all); live checks always cover the whole cohort |
 | `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
 | `--require-fresh` | `duration` | `0s` | Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library) |
 | `--verify-files` | `bool` | `false` | Run the live broken-attachment check (needs Zotero desktop running) |
-| `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after checks |
+| `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after the report is written; skipped when --fail-on-new fails, and a skipped check keeps its prior identities |
 
 ### `zotio library prisma`
 
@@ -2670,11 +2703,14 @@ Report PRISMA 2020 identification-stage counts from the local store
 
 Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.
 
-The report counts records identified (including their source databases), duplicate
-records removed, and the records-after-deduplication input to screening. Screening
+The report counts records identified (including their source databases), the duplicate
+records that resolving the current duplicate clusters would remove, and the
+projected records-after-deduplication input to screening. The removal figures
+are a projection over the corpus as it is now, not a record of past
+deduplication. Screening
 itself is deliberately out of scope: use Rayyan, ASReview, or another screening tool
 for that stage. Run 'zotio items duplicates resolve' to actually remove duplicates
-before exporting the certified corpus.
+first; the projected removals fall to zero once the clusters are resolved.
 
 ```
 zotio library prisma [flags]
@@ -3240,7 +3276,7 @@ Examples:
 | `--full` | `bool` | `false` | Full resync (ignore previous checkpoint) |
 | `--fulltext` | `bool` | `false` | Also sync PDF full-text content (slower; one request per attachment) |
 | `--latest-only` | `bool` | `false` | Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins). |
-| `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) |
+| `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event, saves the resume cursor, and exits 13) |
 | `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type) |
 | `--since-version` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'. |
 | `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13). |
@@ -3459,8 +3495,8 @@ Pull edits made to a managed Zotero child note back into the vault note's
 "## Notes" region. This is fast-forward only: a note is updated only when its
 local region is unchanged since the last sync. If both the local region and the
 remote note changed, it is reported as a conflict and nothing is merged or
-overwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault
-copy). Only notes in the shape this CLI writes are pulled.
+overwritten (resolve by hand, or 'vault resolve --keep-vault --allow-destructive'
+to keep the vault copy). Only notes in the shape this CLI writes are pulled.
 
 Pull previews by default and writes to the vault only under --yes; --dry-run
 always wins over --yes. Each note write it plans (a pull or a conflict
@@ -3530,6 +3566,9 @@ Exactly one direction is required so the destructive side is explicit, but a
 direction is not consent: it only selects WHICH side wins. Previews by default,
 describing the note and side that would be written without creating, patching,
 or removing anything; pass --yes to apply. --dry-run always wins over --yes.
+--keep-vault and --keep-remote each overwrite one side, so both need
+--allow-destructive, in the preview as well as the apply; without it they print
+ok:false with destructive_opt_in_required and exit non-zero. --recreate does not.
 The resolved conflict artifact is removed on success. Counts as one change
 against --max-changes.
 
@@ -3540,9 +3579,10 @@ zotio vault resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--vaul
 Examples:
 
 ```bash
-zotio vault resolve smith2024 --keep-vault
-  zotio vault resolve smith2024 --keep-vault --yes
-  zotio vault resolve smith2024 --keep-remote --yes
+zotio vault resolve smith2024 --keep-vault --allow-destructive
+  zotio vault resolve smith2024 --keep-vault --allow-destructive --yes
+  zotio vault resolve smith2024 --keep-remote --allow-destructive --yes
+  zotio vault resolve smith2024 --recreate --yes
 ```
 
 | Flag | Type | Default | Description |
@@ -3629,7 +3669,9 @@ Add --workflow-on-change to run the workflow only after a cycle that changed
 the mirror: a row stored, rewritten with different content, or reaped because
 its object no longer exists upstream. An unchanged cycle logs that it skipped
 the workflow. A cycle whose sync failed, or in which any resource failed, never
-runs it; its changes wait for the next complete cycle.
+runs it; its changes wait for the next complete cycle, even when that cycle
+is a later watch process or --once run: the wait is recorded beside the local
+mirror and cleared only when the workflow runs.
 
 Add --health-check-preprints to --health to watch the arXiv preprints in the
 library for a published record. Each cycle looks up the preprints whose last
@@ -3701,7 +3743,7 @@ Run zotio sync --strict over the default resources
 Archive runs 'zotio sync --strict' over the default sync resources. It
 uses the same code, JSON events, and exit codes as sync, so any resource that
 fails to sync makes it exit non-zero. --full and --db mean what they mean for
-sync. Run 'zotio sync' directly to choose resources, --since, or concurrency.
+sync. Run 'zotio sync' directly to choose resources, --since-version, or concurrency.
 
 ```
 zotio workflow archive [flags]
@@ -3766,7 +3808,7 @@ zotio workflow run workflow.json
   zotio workflow run workflow.json --var PROJECT=demo
   zotio workflow run workflow.json --yes
   zotio workflow run workflow.json --yes --resume
-  {"steps":[{"name":"diagnose","args":["library","health","--json"]},{"name":"fix","args":["items","enrich","--keys-from","-"],"stdin_from":"diagnose"}]}
+  {"steps":[{"name":"diagnose","args":["library","health","--for","all","--json"]},{"name":"fix","args":["items","enrich","--missing-doi","--keys-from","-"],"stdin_from":"diagnose","stdin_select":"findings[kind=missing_doi].item_key"}]}
 ```
 
 | Flag | Type | Default | Description |

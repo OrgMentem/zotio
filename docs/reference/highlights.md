@@ -13,9 +13,9 @@ Ranked, CI-gateable health report: citekey conflicts, duplicates, missing metada
 
 ### `library prisma`
 
-PRISMA 2020 identification-stage counts for a screening corpus: records identified (per source database), duplicate records removed, records after deduplication — scoped to a collection or tag.
+PRISMA 2020 identification-stage counts for a screening corpus: records identified (per source database), projected duplicate removals, projected records after deduplication — scoped to a collection or tag.
 
-> **Why it matters** — Arrive at Rayyan or ASReview with certified counts for the PRISMA 2020 flow diagram.
+> **Why it matters** — Arrive at Rayyan or ASReview with PRISMA 2020 identification counts; the removal and after-deduplication figures project what resolving the duplicate clusters now present would remove, so resolve them before you report them as removed.
 
 ### `items duplicates`
 
@@ -111,7 +111,7 @@ Find arXiv preprints that have since been published in a journal (via CrossRef) 
 
 ### `journal undo`
 
-Applied mutation-envelope runs are journaled; `journal undo <run-id>` reverses supported tag, collection-membership, and item-create runs, and refuses the rest.
+Applied mutation-envelope runs are journaled; `journal undo <run-id>` reverses supported tag, collection-membership, item-create, and `items enrich` runs (a field is restored only while it still holds the value enrich wrote), and refuses the rest.
 
 > **Why it matters** — Batch writes are only safe when you can see what ran and take it back; this is the take-it-back.
 
@@ -169,9 +169,9 @@ Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinel
 
 ### `collections export`
 
-Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file, preserving structure in comments.
+Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file; items are included recursively and the hierarchy is not encoded.
 
-> **Why it matters** — Use this to hand a complete literature snapshot to LaTeX or to another researcher without losing the organizational hierarchy.
+> **Why it matters** — Use this to hand a complete literature snapshot to LaTeX or to another researcher without hand-collecting each subcollection.
 
 ### `items citekey-conflicts`
 
@@ -189,7 +189,7 @@ Check a manuscript (.tex or pandoc Markdown) against your library: every \cite a
 
 ### `reading-list`
 
-Surface your oldest unread papers sorted by date added — your reading backlog, oldest-first, with abstract preview.
+Surface your oldest unread papers sorted by date added — your reading backlog, oldest-first, with key, title, author, year, and item type.
 
 > **Why it matters** — Use this to fetch the next paper an agent should fetch fulltext for, or to triage a reading session.
 

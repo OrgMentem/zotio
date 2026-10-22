@@ -1223,6 +1223,10 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
+        "reimport": {
+          "description": "With --via connector, import again even though an earlier import of this exact file was never confirmed and may have committed (default: false)",
+          "type": "boolean"
+        },
         "to": {
           "description": "Destination collection key to add imported items to",
           "type": "string"
@@ -3936,7 +3940,7 @@
   },
   {
     "name": "vault_pull",
-    "description": "Pull edits made to a managed Zotero child note back into the vault note's\n\"## Notes\" region. This is fast-forward only: a note is updated only when its\nlocal region is unchanged since the last sync. If both the local region and the\nremote note changed, it is reported as a conflict and nothing is merged or\noverwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault\ncopy). Only notes in the shape this CLI writes are pulled.\n\nPull previews by default and writes to the vault only under --yes; --dry-run\nalways wins over --yes. Each note write it plans (a pull or a conflict\nartifact) counts as one change against --max-changes.",
+    "description": "Pull edits made to a managed Zotero child note back into the vault note's\n\"## Notes\" region. This is fast-forward only: a note is updated only when its\nlocal region is unchanged since the last sync. If both the local region and the\nremote note changed, it is reported as a conflict and nothing is merged or\noverwritten (resolve by hand, or 'vault resolve --keep-vault --allow-destructive'\nto keep the vault copy). Only notes in the shape this CLI writes are pulled.\n\nPull previews by default and writes to the vault only under --yes; --dry-run\nalways wins over --yes. Each note write it plans (a pull or a conflict\nartifact) counts as one change against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -4028,7 +4032,7 @@
   },
   {
     "name": "vault_resolve",
-    "description": "Resolve a conflict (or a remotely-deleted note) by choosing a direction:\n\n--keep-vault writes the vault's Notes region over the Zotero child note, using\nthe live remote version as the precondition. --recreate re-creates a child note\nthat was deleted in Zotero.\n\n--keep-remote does the reverse: it pulls the live Zotero note body over the\nvault Notes region, discarding local edits (a forced 'vault pull'). Only notes\nin the shape this CLI writes are pulled.\n\nExactly one direction is required so the destructive side is explicit, but a\ndirection is not consent: it only selects WHICH side wins. Previews by default,\ndescribing the note and side that would be written without creating, patching,\nor removing anything; pass --yes to apply. --dry-run always wins over --yes.\nThe resolved conflict artifact is removed on success. Counts as one change\nagainst --max-changes.",
+    "description": "Resolve a conflict (or a remotely-deleted note) by choosing a direction:\n\n--keep-vault writes the vault's Notes region over the Zotero child note, using\nthe live remote version as the precondition. --recreate re-creates a child note\nthat was deleted in Zotero.\n\n--keep-remote does the reverse: it pulls the live Zotero note body over the\nvault Notes region, discarding local edits (a forced 'vault pull'). Only notes\nin the shape this CLI writes are pulled.\n\nExactly one direction is required so the destructive side is explicit, but a\ndirection is not consent: it only selects WHICH side wins. Previews by default,\ndescribing the note and side that would be written without creating, patching,\nor removing anything; pass --yes to apply. --dry-run always wins over --yes.\n--keep-vault and --keep-remote each overwrite one side, so both need\n--allow-destructive, in the preview as well as the apply; without it they print\nok:false with destructive_opt_in_required and exit non-zero. --recreate does not.\nThe resolved conflict artifact is removed on success. Counts as one change\nagainst --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
