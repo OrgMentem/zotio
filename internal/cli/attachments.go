@@ -170,13 +170,45 @@ By default this previews the planned attachment; apply with --yes.`,
 					}
 				},
 			}
+			// The shared terminal preview prints only each op's kind and key, which
+			// is identical for a cloud upload, a connector upload that creates and
+			// trashes a temporary item, and a linked path. Describe the file and
+			// the route in the preview; the applied result keeps the shared render.
+			var previewLine func(mutation.Envelope) string
+			if !resolveMutationMode(flags).Apply {
+				previewLine = func(mutation.Envelope) string {
+					return attachmentsAddPreviewText(req, mode, viaConnector)
+				}
+			}
 			env, runErr := runMutation(cmd.Context(), flags, "attachments.add", []mutation.Op{op})
-			return renderMutationResult(cmd, flags, env, runErr, nil)
+			return renderMutationResult(cmd, flags, env, runErr, previewLine)
 		},
 	}
 	cmd.Flags().StringVar(&mode, "attach-mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")
 	cmd.Flags().StringVar(&title, "title", "", "Attachment title (default: the file name)")
 	return cmd
+}
+
+// attachmentsAddPreviewText describes what an apply would do, for the terminal
+// preview: the file, its mode, and the route with its side effects.
+func attachmentsAddPreviewText(req storedUploadRequest, mode string, viaConnector bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Would attach a file to %s (preview; pass --yes to apply)\n", req.ParentKey)
+	fmt.Fprintf(&b, "  file:  %s\n", sanitizeForTerminal(req.Path))
+	switch {
+	case mode == "linked-file":
+		b.WriteString("  mode:  linked-file\n")
+		b.WriteString("  route: records the absolute path only; no bytes are uploaded and no storage quota is used")
+	case viaConnector:
+		fmt.Fprintf(&b, "  size:  %d bytes, md5 %s\n", req.Size, req.MD5)
+		b.WriteString("  mode:  stored\n")
+		fmt.Fprintf(&b, "  route: Zotero desktop connector: creates a temporary parent item, saves the file under it, moves the attachment onto %s, then trashes the temporary parent", req.ParentKey)
+	default:
+		fmt.Fprintf(&b, "  size:  %d bytes, md5 %s\n", req.Size, req.MD5)
+		b.WriteString("  mode:  stored\n")
+		b.WriteString("  route: Zotero Web API upload into Zotero's own cloud storage, billed to the library owner's plan; refused when Zotero desktop keeps files elsewhere (pass --via connector for that case)")
+	}
+	return b.String()
 }
 
 // applyStoredUpload maps upload outcomes onto mutation-engine statuses so both

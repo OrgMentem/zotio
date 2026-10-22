@@ -1389,3 +1389,57 @@ func TestAttachmentsAddStalledUploadIsAbandonedAtTheIdleBound(t *testing.T) {
 		t.Fatalf("stalled upload took %s to fail, want about the 1s idle bound", elapsed)
 	}
 }
+
+// terminalCapture is a stdout that isTerminal treats as a terminal while the
+// test reads what was written.
+type terminalCapture struct {
+	bytes.Buffer
+	tty *os.File
+}
+
+func (c *terminalCapture) Unwrap() io.Writer { return c.tty }
+
+// The terminal preview is what the operator approves. It must show the file and
+// the route, and tell a cloud upload from a connector upload (which creates and
+// trashes a temporary item) and from a linked path, without --json.
+func TestAttachmentsAddTerminalPreviewDescribesFileAndRoute(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENTAB")
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+	tty, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer tty.Close()
+
+	for _, tc := range []struct {
+		name  string
+		via   string
+		args  []string
+		wants []string
+	}{
+		{"stored web", "", []string{"add", "PARENTAB", path},
+			[]string{path, "bytes, md5 ", "stored", "Zotero Web API upload", "cloud storage"}},
+		{"stored connector", "connector", []string{"add", "PARENTAB", path},
+			[]string{path, "bytes, md5 ", "stored", "temporary parent", "trashes the temporary parent"}},
+		{"linked file", "", []string{"add", "PARENTAB", path, "--mode", "linked-file"},
+			[]string{path, "linked-file", "no bytes are uploaded"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := &terminalCapture{tty: tty}
+			cmd := newAttachmentsCmd(&rootFlags{maxChanges: -1, via: tc.via})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetOut(out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("preview lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
