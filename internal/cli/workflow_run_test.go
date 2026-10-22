@@ -1534,3 +1534,53 @@ func TestWorkflowStepPastTheCeilingStillDeliversEverythingItWrote(t *testing.T) 
 		})
 	}
 }
+
+// The Example spec of `workflow run` is what readers copy. Its enrichment step
+// must select at least one category, or saving and running it fails with a
+// usage error in preview and apply alike; its stdin_select must be a selector
+// the runner accepts.
+func TestWorkflowRunExampleSpecIsRunnable(t *testing.T) {
+	var specJSON string
+	for _, line := range strings.Split(newWorkflowRunCmd(&rootFlags{}).Example, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "{") {
+			specJSON = line
+		}
+	}
+	if specJSON == "" {
+		t.Fatal("workflow run has no JSON spec in its Example")
+	}
+	path := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(path, []byte(specJSON), 0o600); err != nil {
+		t.Fatalf("write example spec: %v", err)
+	}
+	spec, _, err := readWorkflowRunSpecFile(path)
+	if err != nil {
+		t.Fatalf("the Example spec does not load: %v", err)
+	}
+	categories := []string{"validate", "missing-doi", "missing-abstract", "missing-pdf", "repair-pdf", "missing-citation", "missing-subjects", "missing-mesh"}
+	enrichSteps := 0
+	for _, step := range spec.Steps {
+		root := RootCmd()
+		command, _, err := root.Find(workflowRunStepPositionalsWithRoot(root, step.Args))
+		if err != nil || command == nil {
+			t.Fatalf("step %q does not resolve to a command: %v", step.Name, err)
+		}
+		if command.CommandPath() != "zotio items enrich" {
+			continue
+		}
+		enrichSteps++
+		if err := command.ParseFlags(step.Args[2:]); err != nil {
+			t.Fatalf("step %q flags do not parse: %v", step.Name, err)
+		}
+		selected := false
+		for _, name := range categories {
+			selected = selected || command.Flags().Changed(name)
+		}
+		if !selected {
+			t.Fatalf("step %q runs items enrich without a category flag (%v): it fails with usage error 2", step.Name, categories)
+		}
+	}
+	if enrichSteps == 0 {
+		t.Fatal("the Example spec has no items enrich step to check")
+	}
+}

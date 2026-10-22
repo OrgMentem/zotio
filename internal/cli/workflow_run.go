@@ -149,7 +149,7 @@ sidecar; continue it with --yes --resume, which skips the completed steps.`,
   zotio workflow run workflow.json --var PROJECT=demo
   zotio workflow run workflow.json --yes
   zotio workflow run workflow.json --yes --resume
-  {"steps":[{"name":"diagnose","args":["library","health","--json"]},{"name":"fix","args":["items","enrich","--keys-from","-"],"stdin_from":"diagnose"}]}`,
+  {"steps":[{"name":"diagnose","args":["library","health","--for","all","--json"]},{"name":"fix","args":["items","enrich","--missing-doi","--keys-from","-"],"stdin_from":"diagnose","stdin_select":"findings[kind=missing_doi].item_key"}]}`,
 		Args: cobra.ExactArgs(1),
 		// Workflow specs can execute arbitrary CLI argument vectors. Keep this
 		// local-file runner off the MCP command surface rather than bypassing its
