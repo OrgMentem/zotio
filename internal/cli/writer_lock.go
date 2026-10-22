@@ -327,6 +327,11 @@ func shouldAcquireInstallationWriterLock(cmd *cobra.Command, mode writerLockMode
 		dryRun, err := commandBoolFlag(cmd, "dry-run")
 		return err != nil || !dryRun
 	case writerLockOnORCID:
+		// --orcid --dry-run fetches evidence but persists none (creators_audit.go),
+		// so it is a preview and takes no lock (ADR-0005).
+		if flags != nil && flags.dryRun {
+			return false
+		}
 		orcid, err := commandBoolFlag(cmd, "orcid")
 		return err == nil && orcid
 	default:

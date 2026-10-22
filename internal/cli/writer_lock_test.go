@@ -345,6 +345,7 @@ func TestInstallationWriterLockExceptionsResolveAndClassify(t *testing.T) {
 		{path: "vault resolve", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
 		{path: "creators audit", wantMode: writerLockOnORCID},
 		{path: "creators audit", flag: "orcid", flagValue: "true", wantMode: writerLockOnORCID, wantAcquireLock: true},
+		{path: "creators audit", flags: rootFlags{dryRun: true}, flag: "orcid", flagValue: "true", wantMode: writerLockOnORCID},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path+"/"+tt.flagValue, func(t *testing.T) {
