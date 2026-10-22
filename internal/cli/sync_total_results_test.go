@@ -158,6 +158,39 @@ func TestFullSyncSkipsSweepWithoutTotalResults(t *testing.T) {
 	}
 }
 
+// The global schema listings are one unpaginated response that Zotero sends
+// without Total-Results, so the count rule does not apply to them: a full
+// pass still reaps a field Zotero no longer lists, and raises no anomaly.
+func TestFullSyncSweepsSchemaListingsWithoutTotalResults(t *testing.T) {
+	for _, resource := range []string{"schema-item-fields", "schema-creator-fields"} {
+		t.Run(resource, func(t *testing.T) {
+			syncTestWithHumanFriendly(t, true)
+			db := syncTestOpenStore(t)
+			defer db.Close()
+
+			var script atomic.Pointer[func(string) totalsReply]
+			script.Store(totalsConstant(totalsReply{body: `[{"field":"title","localized":"Title"}]`}))
+			srv := totalsServer(t, &script)
+
+			if _, err := db.UpsertKeyed(resource, []string{"retired"}, []json.RawMessage{json.RawMessage(`{"field":"retired","localized":"Retired"}`)}); err != nil {
+				t.Fatalf("seed mirror: %v", err)
+			}
+			stderr := captureStderr(t, func() {
+				if res := syncResource(context.Background(), syncTestClient(srv.URL), db, resource, 0, true, 0, false); res.Err != nil {
+					t.Fatalf("full sync: %v", res.Err)
+				}
+			})
+			ids, err := db.ResourceIDs(resource)
+			if err != nil || ids["retired"] || !ids["title"] {
+				t.Errorf("%s rows = %v (err %v), want the unlisted field reaped and title kept", resource, ids, err)
+			}
+			if strings.Contains(stderr, "Total-Results") {
+				t.Errorf("stderr = %q, want no Total-Results warning for a schema listing", stderr)
+			}
+		})
+	}
+}
+
 // The same count evidence guards the version checkpoint of an incremental
 // pass: a short page the server contradicts, or a total that moves between
 // pages, must not advance the cursor past changes it never delivered.

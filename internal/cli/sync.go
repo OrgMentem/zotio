@@ -1792,8 +1792,9 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// whose Total-Results agrees is a complete listing, but a page with no
 		// header at all is missing evidence and must not read as "everything
 		// else was deleted" (the same rule as fetchPlaneKeySet). The global
-		// schema endpoints send no Total-Results, so they are exempt.
-		countsVerified := resource == "schema" || totals.verified()
+		// schema endpoints are one unpaginated response sent without
+		// Total-Results, so they are exempt.
+		countsVerified := isSchemaSyncResource(resource) || totals.verified()
 		shouldSweep := full || resource == "schema"
 		if shouldSweep && observedEverything && countsVerified && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
