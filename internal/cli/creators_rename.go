@@ -99,6 +99,9 @@ field.`,
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "creators.rename", ops)
+			if scope.LocalEvaluation != "" {
+				env.Warnings = append(env.Warnings, scope.LocalEvaluation)
+			}
 			return renderMutationResult(cmd, flags, env, runErr, creatorRenameSingleLine(flagFrom, flagTo))
 		},
 	}

@@ -15,6 +15,7 @@ import (
 type libraryPrismaReport struct {
 	SchemaVersion             int            `json:"schema_version"`
 	Scope                     string         `json:"scope"`
+	LocalEvaluation           string         `json:"local_evaluation,omitempty"`
 	By                        string         `json:"by"`
 	SyncedAt                  string         `json:"synced_at"`
 	Identified                prismaCorpus   `json:"identified"`
@@ -152,6 +153,7 @@ func assembleLibraryPrismaReport(db localQueryStore, scope scopeResult, by strin
 	return libraryPrismaReport{
 		SchemaVersion:             1,
 		Scope:                     scope.Expr,
+		LocalEvaluation:           scope.LocalEvaluation,
 		By:                        by,
 		SyncedAt:                  syncedAt,
 		Identified:                identified,

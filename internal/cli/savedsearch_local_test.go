@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -838,5 +839,114 @@ func TestSavedSearchLocalItemsIncludeDescendantsOfMatches(t *testing.T) {
 	want := ssKeys("P1", "SA", "UM", "PA1", "PN1", "PANN1", "PANN2", "SANN", "UMANN")
 	if !reflect.DeepEqual(itemKeys, want) {
 		t.Fatalf("items = %v, want %v", itemKeys, want)
+	}
+}
+
+// A cohort chosen by zotio's replay of a saved search must say so in the
+// machine-readable report (not only in a stderr notice a CI job, --quiet run
+// or MCP caller never sees), and the human notice must reach the command's own
+// stderr writer.
+func TestLibraryHealthSavedSearchLocalEvaluationIsReportedInTheScopeBlock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTIO_DEMO", "0")
+	stubSavedSearchLiveUnavailable(t)
+
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	seeded, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := seeded.UpsertBatch("items", []json.RawMessage{
+		ssItem("ONLY1", "book", map[string]any{"title": "Offline"}),
+		ssItem("OTHER", "book", map[string]any{"title": "Elsewhere"}),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	def := `{"key":"SD","version":1,"data":{"key":"SD","name":"d","conditions":` + ssConds([3]string{"title", "is", "offline"}) + `}}`
+	if _, _, err := seeded.UpsertBatch("searches", []json.RawMessage{json.RawMessage(def)}); err != nil {
+		t.Fatalf("seed search: %v", err)
+	}
+	if err := seeded.SaveSyncState("items", "", 2); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	if err := seeded.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var notice bytes.Buffer
+	flags := &rootFlags{asJSON: true, timeout: time.Second, errorOutput: &notice}
+	out, _, err := hsRunHealthCmd(t, flags, "--for", "quick", "--scope", "saved-search:SD")
+	if err != nil {
+		t.Fatalf("library health --scope saved-search:SD: %v", err)
+	}
+	var report healthReport
+	if jerr := json.Unmarshal([]byte(out), &report); jerr != nil {
+		t.Fatalf("decode report %q: %v", out, jerr)
+	}
+	if got := report.Scope.LocalEvaluation; !strings.Contains(got, "saved search SD") || !strings.Contains(got, "local mirror") {
+		t.Fatalf("scope.local_evaluation = %q, want the mirror-evaluation provenance", got)
+	}
+	if !strings.Contains(notice.String(), "notice: saved search SD") {
+		t.Fatalf("command stderr = %q, want the notice routed through the command's error writer", notice.String())
+	}
+
+	// --quiet silences the human notice, never the structured field: the
+	// --report file still carries it.
+	notice.Reset()
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	quiet := &rootFlags{asJSON: true, quiet: true, timeout: time.Second, errorOutput: &notice}
+	if _, _, err = hsRunHealthCmd(t, quiet, "--for", "quick", "--scope", "saved-search:SD", "--report", reportPath); err != nil {
+		t.Fatalf("library health --quiet: %v", err)
+	}
+	if notice.Len() != 0 {
+		t.Fatalf("--quiet still printed %q", notice.String())
+	}
+	written, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read --report file: %v", err)
+	}
+	if !strings.Contains(string(written), "local_evaluation") {
+		t.Fatalf("--quiet report lacks local_evaluation: %q", written)
+	}
+}
+
+// A mutation planned over a mirror-evaluated saved-search cohort carries the
+// provenance in its envelope warnings, so a consumer can see Zotero did not
+// draw the cohort the writes were planned from.
+func TestCreatorsRenameSavedSearchLocalEvaluationIsAnEnvelopeWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTIO_DEMO", "0")
+	stubSavedSearchLiveUnavailable(t)
+
+	seeded, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := seeded.UpsertBatch("items", []json.RawMessage{
+		ssItem("ONLY1", "book", map[string]any{"title": "Offline", "creators": []map[string]any{ssCreator("author", "Jane", "Smith")}}),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	def := `{"key":"SD","version":1,"data":{"key":"SD","name":"d","conditions":` + ssConds([3]string{"title", "is", "offline"}) + `}}`
+	if _, _, err := seeded.UpsertBatch("searches", []json.RawMessage{json.RawMessage(def)}); err != nil {
+		t.Fatalf("seed search: %v", err)
+	}
+	if err := seeded.SaveSyncState("items", "", 1); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	if err := seeded.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	env := writePlaneTestMustRunMutationCmd(t, "creators rename", newCreatorsRenameCmd,
+		&rootFlags{asJSON: true, timeout: time.Second, maxChanges: -1, allowDestructive: true, errorOutput: &bytes.Buffer{}},
+		"--from", "Jane Smith", "--to", "Jane Q Smith", "--scope", "saved-search:SD")
+	if len(env.Plan.Operations) != 1 {
+		t.Fatalf("plan = %+v, want the one item in the cohort; env=%+v", env.Plan, env)
+	}
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "saved search SD") {
+		t.Fatalf("warnings = %v, want the mirror-evaluation provenance", env.Warnings)
 	}
 }

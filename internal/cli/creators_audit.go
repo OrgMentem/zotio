@@ -54,11 +54,14 @@ type creatorVariantGroup struct {
 }
 
 type creatorsAuditSummary struct {
-	Scope        string                     `json:"scope"`
-	CreatorNames int                        `json:"creator_names"`
-	ItemCount    int                        `json:"item_count"`
-	GroupsByTier map[creatorVariantTier]int `json:"groups_by_tier"`
-	ORCID        *creatorsAuditORCIDSummary `json:"orcid,omitempty"`
+	Scope string `json:"scope"`
+	// LocalEvaluation is set when a saved-search scope was evaluated against
+	// the mirror because Zotero did not run it (see scopeResult).
+	LocalEvaluation string                     `json:"local_evaluation,omitempty"`
+	CreatorNames    int                        `json:"creator_names"`
+	ItemCount       int                        `json:"item_count"`
+	GroupsByTier    map[creatorVariantTier]int `json:"groups_by_tier"`
+	ORCID           *creatorsAuditORCIDSummary `json:"orcid,omitempty"`
 }
 
 type creatorsAuditORCIDSummary struct {
@@ -212,6 +215,7 @@ func runCreatorsAuditWithOptions(cmd *cobra.Command, ctx context.Context, flags 
 	}
 	groups = displayedCreatorVariantGroups(groups, includeAmbiguous)
 	summary := creatorAuditSummary(scope.Expr, occurrences, groups)
+	summary.LocalEvaluation = scope.LocalEvaluation
 	if withORCID {
 		summary.ORCID = &orcidSummary
 	}

@@ -129,6 +129,9 @@ supported.`,
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "creators.audit.fix", ops)
+			if scope.LocalEvaluation != "" {
+				env.Warnings = append(env.Warnings, scope.LocalEvaluation)
+			}
 			return renderMutationResult(cmd, flags, env, runErr, func(env mutation.Envelope) string {
 				action := "would fix"
 				if env.Mode == "apply" {

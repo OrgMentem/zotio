@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -1295,7 +1294,11 @@ func savedSearchLocalFallback(ctx context.Context, flags *rootFlags, db localQue
 	result.PreconditionDetail = ""
 	result.LocalEvaluation = fmt.Sprintf("saved search %s was evaluated against the local mirror (items synced %s) because %s", searchKey, synced, reason)
 	if flags != nil && !flags.quiet {
-		fmt.Fprintln(os.Stderr, "notice: "+result.LocalEvaluation)
+		// The command's own stderr writer, so an in-process caller (the MCP
+		// runner) captures the notice into its result instead of losing it to
+		// the server's stderr. The structured copy lives in each adopter's
+		// report (scopeResult.LocalEvaluation) and is not gated on --quiet.
+		fmt.Fprintln(flags.errOut(), "notice: "+result.LocalEvaluation)
 	}
 	return result
 }

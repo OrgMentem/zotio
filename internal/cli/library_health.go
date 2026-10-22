@@ -95,6 +95,10 @@ type healthScope struct {
 	// contradiction (dev/field-report-2026-08-08-library-hygiene.md #9).
 	ItemsLabel   string `json:"items_label"`
 	MirroredRows int    `json:"mirrored_rows,omitempty"`
+	// LocalEvaluation is set when a saved-search cohort was chosen by zotio's
+	// replay of the search against the mirror because Zotero did not run it:
+	// which search, how fresh the mirror was, and why live was skipped.
+	LocalEvaluation string `json:"local_evaluation,omitempty"`
 }
 
 type healthSummary struct {
@@ -722,9 +726,10 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		SchemaVersion: 1,
 		Preset:        preset,
 		Scope: healthScope{
-			Expr:     scope.Expr,
-			Source:   "local",
-			SyncedAt: ctx.src.SyncedAt,
+			Expr:            scope.Expr,
+			Source:          "local",
+			SyncedAt:        ctx.src.SyncedAt,
+			LocalEvaluation: scope.LocalEvaluation,
 		},
 	}
 	report.Scope.Items, report.Scope.ItemsLabel, report.Scope.MirroredRows = scopeItemStats(db, scope)

@@ -36,11 +36,14 @@ type importDiscoverSummary struct {
 // manifest at Out was replaced (only possible with --overwrite); under
 // --dry-run it says one would be, and nothing was written.
 type importDiscoverReport struct {
-	Scope    string                `json:"scope"`
-	Out      string                `json:"output"`
-	Replaced bool                  `json:"replaced"`
-	DryRun   bool                  `json:"dry_run,omitempty"`
-	Summary  importDiscoverSummary `json:"summary"`
+	Scope string `json:"scope"`
+	// LocalEvaluation is set when a saved-search scope was evaluated against
+	// the mirror because Zotero did not run it (see scopeResult).
+	LocalEvaluation string                `json:"local_evaluation,omitempty"`
+	Out             string                `json:"output"`
+	Replaced        bool                  `json:"replaced"`
+	DryRun          bool                  `json:"dry_run,omitempty"`
+	Summary         importDiscoverSummary `json:"summary"`
 }
 
 type referenceSourceItem struct {
@@ -277,8 +280,9 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 
 	manifest := importManifest{SchemaVersion: importManifestSchemaVersion, Entries: make([]importManifestEntry, 0, max(limit, 0))}
 	report := importDiscoverReport{
-		Scope: resolved.Expr,
-		Out:   outPath,
+		Scope:           resolved.Expr,
+		LocalEvaluation: resolved.LocalEvaluation,
+		Out:             outPath,
 		Summary: importDiscoverSummary{
 			ItemsScanned:    len(sourceItems),
 			ReferencesSeen:  agg.ReferencesSeen,
