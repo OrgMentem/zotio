@@ -6,6 +6,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// schemaNarrowHint follows a long schema table. The schema list commands define
+// no --limit or filter flags, so the only narrowing offered is the global
+// --select.
+const schemaNarrowHint = "\nShowing %d results. To narrow: add --json --select <fields>.\n"
+
 func newSchemaCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schema",
