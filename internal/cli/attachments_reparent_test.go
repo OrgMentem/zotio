@@ -2378,3 +2378,29 @@ func TestTempParentKeyAfterCreateErrorNeverReportsAnUnverifiedKey(t *testing.T) 
 		}
 	})
 }
+
+// Temporary parents written by earlier releases carry the old abstractNote.
+// Resume and the reaper must still recognise them after the text changed, and
+// the text written now must not equal the old one.
+func TestMarkerIdentifiesCurrentAndLegacyTemporaryParents(t *testing.T) {
+	const nonce = "0123456789abcdef"
+	current := connectorTempParentMarker(nonce, "TARGET01")
+	legacy := legacyConnectorTempParentMarker(nonce, "TARGET01")
+	if current == legacy {
+		t.Fatalf("the written marker must differ from the legacy one, which claimed the parent was safe to delete")
+	}
+	for name, abstract := range map[string]string{"current": current, "legacy": legacy} {
+		if !markerIdentifies("document", abstract, "TARGET01", nonce) {
+			t.Errorf("%s marker not recognised for its own nonce and target", name)
+		}
+		if !markerIdentifies("document", abstract, "TARGET01", "") {
+			t.Errorf("%s marker not recognised with a wildcard nonce", name)
+		}
+		if markerIdentifies("document", abstract, "OTHER001", nonce) {
+			t.Errorf("%s marker recognised for a different target", name)
+		}
+		if markerIdentifies("document", abstract, "TARGET01", "fedcba9876543210") {
+			t.Errorf("%s marker recognised for a different nonce", name)
+		}
+	}
+}

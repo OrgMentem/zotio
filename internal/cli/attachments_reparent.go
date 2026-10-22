@@ -143,8 +143,22 @@ func newConnectorReparentNonce() (string, error) {
 
 // connectorTempParentMarker is the abstractNote written to the temporary parent.
 // It carries the nonce (identity) and the target key (so a human reading an
-// orphan knows what it was for).
+// orphan knows what it was for). The text is written before the file is saved
+// under the item, so it must stay true at every stage: it forbids deleting the
+// parent while it holds an attachment, because until the move lands that child
+// can be the only library copy of the file.
 func connectorTempParentMarker(nonce, targetKey string) string {
+	return fmt.Sprintf("%s %s for item %s. Do not delete this item while it has attachments: "+
+		"zotio creates it to route attachment bytes through Zotero desktop, then moves the file to %s "+
+		"and trashes this item. If it still holds an attachment, retry the original command or move "+
+		"that file to %s first; delete this item only once it is empty.",
+		connectorTempParentPrefix, nonce, targetKey, targetKey, targetKey)
+}
+
+// legacyConnectorTempParentMarker is the abstractNote earlier releases wrote.
+// Markers already persisted in a library still carry it, so resume and the
+// reaper must keep recognising it.
+func legacyConnectorTempParentMarker(nonce, targetKey string) string {
 	return fmt.Sprintf("%s %s for item %s. Safe to delete: zotio creates this to route attachment "+
 		"bytes through Zotero desktop, then moves the file to %s and trashes this item.",
 		connectorTempParentPrefix, nonce, targetKey, targetKey)
@@ -698,7 +712,7 @@ func bodyIsTemporaryParentFor(body json.RawMessage, targetKey, nonce string) boo
 }
 
 // markerIdentifies requires the exact abstractNote connectorTempParentMarker
-// writes, carrying a well-formed run nonce and naming targetKey. Substrings
+// (or its legacy form) writes, carrying a well-formed run nonce and naming targetKey. Substrings
 // are not enough: an ordinary document can quote the prefix and "for item
 // <key>" in its abstract, and the reaper trashes what this accepts.
 func markerIdentifies(itemType, abstract, targetKey, nonce string) bool {
@@ -714,7 +728,8 @@ func markerIdentifies(itemType, abstract, targetKey, nonce string) bool {
 	if !ok || !isConnectorReparentNonce(written) || (nonce != "" && written != nonce) {
 		return false
 	}
-	return abstract == connectorTempParentMarker(written, targetKey)
+	return abstract == connectorTempParentMarker(written, targetKey) ||
+		abstract == legacyConnectorTempParentMarker(written, targetKey)
 }
 
 // isConnectorReparentNonce reports whether s has the shape
