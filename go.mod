@@ -17,7 +17,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // BSD-3-Clause; `desktop wait` sleeps on inotify/kqueue/ReadDirectoryChangesW instead of polling
 	github.com/gofrs/flock v0.13.1
 	golang.org/x/term v0.46.0 // no-echo API key prompt in `zotio init`
-	golang.org/x/text v0.42.0
+	golang.org/x/text v0.43.0
 )
 
 require (
