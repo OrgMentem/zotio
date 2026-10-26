@@ -38,12 +38,12 @@ func seedHealthStore(t *testing.T) localQueryStore {
 
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
-		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal X","DOI":"10/p2","abstractNote":"abs","tags":[{"tag":"x"}],"extra":"Citation Key: doe2020"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal X","DOI":"10.1234/p2","abstractNote":"abs","tags":[{"tag":"x"}],"extra":"Citation Key: doe2020"}}`),
 		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"P2","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`),
-		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"journalArticle","title":"Conflict One","creators":[{"lastName":"A"}],"date":"2021","publicationTitle":"J","DOI":"10/c1","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
-		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"journalArticle","title":"Conflict Two","creators":[{"lastName":"B"}],"date":"2021","publicationTitle":"J","DOI":"10/c2","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
-		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"Dup A","creators":[{"lastName":"C"}],"date":"2018","publicationTitle":"J","DOI":"10/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupa2018"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"Dup B","creators":[{"lastName":"D"}],"date":"2018","publicationTitle":"J","DOI":"10/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupb2018"}}`),
+		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"journalArticle","title":"Conflict One","creators":[{"lastName":"A"}],"date":"2021","publicationTitle":"J","DOI":"10.1234/c1","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
+		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"journalArticle","title":"Conflict Two","creators":[{"lastName":"B"}],"date":"2021","publicationTitle":"J","DOI":"10.1234/c2","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"Dup A","creators":[{"lastName":"C"}],"date":"2018","publicationTitle":"J","DOI":"10.1234/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupa2018"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"Dup B","creators":[{"lastName":"D"}],"date":"2018","publicationTitle":"J","DOI":"10.1234/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupb2018"}}`),
 		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Tag One","tags":[{"tag":"AI"}]}}`),
 		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Tag Two","tags":[{"tag":"ai"}]}}`),
 	}
@@ -184,7 +184,7 @@ func TestLibraryHealthCleanStorePassesGate(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal X","DOI":"10/p2","abstractNote":"abs","tags":[{"tag":"x"}],"extra":"Citation Key: doe2020"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal X","DOI":"10.1234/p2","abstractNote":"abs","tags":[{"tag":"x"}],"extra":"Citation Key: doe2020"}}`),
 		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"P2","contentType":"application/pdf"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {

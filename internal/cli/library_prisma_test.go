@@ -83,8 +83,8 @@ func TestLibraryPrismaCorpusExcludesNonCiteableItemsAndCountsSources(t *testing.
 
 func TestLibraryPrismaMergesOverlappingDuplicateDetectors(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Same paper","DOI":"10/example","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Same paper","DOI":"10/example","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Same paper","DOI":"10.1234/example","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Same paper","DOI":"10.1234/example","libraryCatalog":"PubMed"}}`),
 	)
 
 	report := prismaReportForTest(t, db, "library", "all")
@@ -98,9 +98,9 @@ func TestLibraryPrismaMergesOverlappingDuplicateDetectors(t *testing.T) {
 // re-rooting P2 while processing the title group used to sever the DOI link.
 func TestLibraryPrismaMergesPartiallyOverlappingClusters(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Distinct one","DOI":"10/chain","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Chain title","DOI":"10/chain","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"P3","version":1,"data":{"key":"P3","itemType":"journalArticle","title":"Chain title","DOI":"10/other","libraryCatalog":"Scopus"}}`),
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Distinct one","DOI":"10.1234/chain","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Chain title","DOI":"10.1234/chain","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"P3","version":1,"data":{"key":"P3","itemType":"journalArticle","title":"Chain title","DOI":"10.1234/other","libraryCatalog":"Scopus"}}`),
 	)
 
 	report := prismaReportForTest(t, db, "library", "all")
@@ -114,10 +114,10 @@ func TestLibraryPrismaMergesPartiallyOverlappingClusters(t *testing.T) {
 
 func TestLibraryPrismaSumsDisjointDuplicateClusters(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10/doi","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10/doi","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10/title-one","libraryCatalog":"Scopus"}}`),
-		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10/title-two","libraryCatalog":"Scopus"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-one","libraryCatalog":"Scopus"}}`),
+		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-two","libraryCatalog":"Scopus"}}`),
 	)
 
 	report := prismaReportForTest(t, db, "library", "all")
@@ -128,10 +128,10 @@ func TestLibraryPrismaSumsDisjointDuplicateClusters(t *testing.T) {
 
 func TestLibraryPrismaScopeRestrictsCorpusAndDuplicates(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"S1","version":1,"data":{"key":"S1","itemType":"journalArticle","title":"Scoped one","DOI":"10/scoped","collections":["C1"]}}`),
-		json.RawMessage(`{"key":"S2","version":1,"data":{"key":"S2","itemType":"journalArticle","title":"Scoped two","DOI":"10/scoped","collections":["C1"]}}`),
-		json.RawMessage(`{"key":"O1","version":1,"data":{"key":"O1","itemType":"journalArticle","title":"Outside pair","DOI":"10/outside"}}`),
-		json.RawMessage(`{"key":"O2","version":1,"data":{"key":"O2","itemType":"journalArticle","title":"Outside pair","DOI":"10/outside"}}`),
+		json.RawMessage(`{"key":"S1","version":1,"data":{"key":"S1","itemType":"journalArticle","title":"Scoped one","DOI":"10.1234/scoped","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"S2","version":1,"data":{"key":"S2","itemType":"journalArticle","title":"Scoped two","DOI":"10.1234/scoped","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"O1","version":1,"data":{"key":"O1","itemType":"journalArticle","title":"Outside pair","DOI":"10.1234/outside"}}`),
+		json.RawMessage(`{"key":"O2","version":1,"data":{"key":"O2","itemType":"journalArticle","title":"Outside pair","DOI":"10.1234/outside"}}`),
 	)
 
 	report := prismaReportForTest(t, db, "collection:C1", "all")
@@ -159,10 +159,10 @@ func TestLibraryPrismaZeroItemScopeIsAValidReport(t *testing.T) {
 
 func TestLibraryPrismaByDOIIgnoresTitleGroups(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10/doi"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10/doi"}}`),
-		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10/title-one"}}`),
-		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10/title-two"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10.1234/doi"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10.1234/doi"}}`),
+		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-one"}}`),
+		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-two"}}`),
 	)
 
 	report := prismaReportForTest(t, db, "library", "doi")

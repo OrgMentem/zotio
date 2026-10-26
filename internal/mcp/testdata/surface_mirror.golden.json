@@ -2013,7 +2013,7 @@
   },
   {
     "name": "items_duplicates_resolve",
-    "description": "Resolve duplicate items by merging metadata onto a master and trashing duplicates.\n\nBy default, resolve only matches duplicate DOI groups. Title matching can group\ndistinct items that share generic titles; pass --title only when you are ready to\nreview the preview carefully before applying.",
+    "description": "Resolve duplicate items by merging metadata onto a master and trashing duplicates.\n\nBy default, resolve only matches duplicate DOI groups. A DOI group forms only\nwhen the shared value has the DOI form 10.\u003cregistrant\u003e/\u003csuffix\u003e; other text\nrepeated in the DOI field, such as an item type or a date, never groups items.\nTitle matching can group distinct items that share generic titles; pass --title\nonly when you are ready to review the preview carefully before applying.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {

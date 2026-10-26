@@ -64,10 +64,10 @@ func dupTrashInMirror(t *testing.T, key string) {
 // live one leaves the library with no live copy of the item.
 func TestDupResolvePlanSetsTrashedCopiesAside(t *testing.T) {
 	const (
-		lean    = `{"key":"A","version":1,"data":{"key":"A","itemType":"journalArticle","title":"Same","DOI":"10/x"}}`
-		rich    = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1"}}`
-		richDel = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1","deleted":1}}`
-		medium  = `{"key":"C","version":3,"data":{"key":"C","itemType":"journalArticle","title":"Same","DOI":"10/x","abstractNote":"a"}}`
+		lean    = `{"key":"A","version":1,"data":{"key":"A","itemType":"journalArticle","title":"Same","DOI":"10.1234/x"}}`
+		rich    = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1"}}`
+		richDel = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1","deleted":1}}`
+		medium  = `{"key":"C","version":3,"data":{"key":"C","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a"}}`
 	)
 	for _, tc := range []struct {
 		name      string
@@ -115,12 +115,12 @@ func TestDupResolvePlanSetsTrashedCopiesAside(t *testing.T) {
 // anything is written, so the live copy is never trashed.
 func TestDupResolveApplyRefusesTrashedMergeTarget(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"A","version":10,"data":{"key":"A","itemType":"journalArticle","title":"Same","DOI":"10/x","collections":["C1"]}}`),
-		json.RawMessage(`{"key":"B","version":11,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10/x","abstractNote":"a","collections":["C2"]}}`),
+		json.RawMessage(`{"key":"A","version":10,"data":{"key":"A","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"B","version":11,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a","collections":["C2"]}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{"A": 10, "B": 12}, map[string]map[string]any{
-		"A": {"key": "A", "itemType": "journalArticle", "title": "Same", "DOI": "10/x", "collections": []any{"C1"}},
-		"B": {"key": "B", "itemType": "journalArticle", "title": "Same", "DOI": "10/x", "abstractNote": "a", "collections": []any{"C2"}, "deleted": 1},
+		"A": {"key": "A", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/x", "collections": []any{"C1"}},
+		"B": {"key": "B", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/x", "abstractNote": "a", "collections": []any{"C2"}, "deleted": 1},
 	})
 
 	env, _, err := dupExecResolve(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
