@@ -261,6 +261,50 @@ func TestKeylessItemNoOpAppliesAuthConfig(t *testing.T) {
 	}
 }
 
+// A keyless apply that would really change an item must refuse with the
+// missing-key precondition (exit 9), not report an ordinary failed item (exit 1).
+func TestKeylessItemChangeExitsPreconditionAuthConfig(t *testing.T) {
+	for _, action := range []string{"tags-add", "tags-remove", "move"} {
+		t.Run(action, func(t *testing.T) {
+			isolateAuthHome(t)
+			oldTransport := http.DefaultTransport
+			http.DefaultTransport = authConfigRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet {
+					t.Errorf("keyless apply dispatched %s %s", r.Method, r.URL)
+				}
+				body := `{"key":"ABCD2345","version":42,"data":{"tags":[{"tag":"existing","type":0}],"collections":["CDEF2345"]}}`
+				if r.URL.Path == "/api/users/0/items" {
+					body = "[" + body + "]"
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}, "Last-Modified-Version": []string{"42"}},
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    r,
+				}, nil
+			})
+			t.Cleanup(func() { http.DefaultTransport = oldTransport })
+			newCmd := newItemsTagsCmd
+			args := []string{"add", "--tag", "fresh", "ABCD2345"}
+			switch action {
+			case "tags-remove":
+				args = []string{"remove", "--tag", "existing", "ABCD2345"}
+			case "move":
+				newCmd = newItemsMoveCmd
+				args = []string{"--to", "EFGH2345", "ABCD2345"}
+			}
+			env, stderr, err := writePlaneTestRunMutationCmd(t, newCmd,
+				&rootFlags{asJSON: true, yes: true, maxChanges: -1}, args...)
+			if ExitCode(err) != 9 || !errors.Is(err, errMissingWriteKey) {
+				t.Fatalf("exit=%d, error=%v; stderr=%s", ExitCode(err), err, stderr)
+			}
+			if env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
+				t.Fatalf("envelope must still list the refused operation: %+v", env)
+			}
+		})
+	}
+}
+
 func keylessAcceptingLocalServer(t *testing.T) *atomic.Int64 {
 	t.Helper()
 	isolateAuthHome(t)

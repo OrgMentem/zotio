@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,6 +51,8 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 	for _, adjust := range tune {
 		adjust(&opts)
 	}
+	missingKey, restoreApply := watchMissingWriteKey(ops)
+	defer restoreApply()
 	var observe func(op mutation.Op, item mutation.ResultItem)
 	recordOutcomes := resolveMutationMode(flags).Apply && (mutationOutcomeRecorder != nil || mirrorPermanentDelete != nil)
 	if recordOutcomes {
@@ -89,7 +92,57 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 			env.Warnings = append(env.Warnings, fmt.Sprintf("applied but not journaled: %v (journal undo unavailable for this run)", journalErr))
 		}
 	}
+	if keyErr := missingKey(); keyErr != nil && (env.Result == nil || env.Result.Summary.Applied == 0) {
+		// Nothing reached the library because no Web API key exists: that is a
+		// setup precondition (exit 9 with credential guidance), not a per-item
+		// write failure. The envelope still lists the refused operation.
+		return env, keyErr
+	}
 	return env, classifyMutationErr(env, err)
+}
+
+// watchMissingWriteKey wraps each op's Apply, in place, to record the first
+// missing-Web-API-key refusal; restore puts the original Apply functions back.
+// In place because some Apply functions write back into the op the engine
+// holds (duplicate resolve marks a half-applied merge on its own op).
+// Selection clients defer the missing-key refusal to the first write so keyless
+// planning and no-op applies still work; without this, the refusal surfaced as
+// an ordinary failed item and exit 1.
+func watchMissingWriteKey(ops []mutation.Op) (missingKey func() error, restore func()) {
+	var (
+		mu    sync.Mutex
+		first error
+	)
+	originals := make([]func() (string, any, error), len(ops))
+	for i := range ops {
+		apply := ops[i].Apply
+		originals[i] = apply
+		if apply == nil {
+			continue
+		}
+		ops[i].Apply = func() (string, any, error) {
+			status, reason, err := apply()
+			if err != nil && errors.Is(err, errMissingWriteKey) {
+				mu.Lock()
+				if first == nil {
+					first = err
+				}
+				mu.Unlock()
+			}
+			return status, reason, err
+		}
+	}
+	missingKey = func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		return first
+	}
+	restore = func() {
+		for i := range ops {
+			ops[i].Apply = originals[i]
+		}
+	}
+	return missingKey, restore
 }
 
 // classifyMutationErr types the engine's errors for the exit-code contract. A
