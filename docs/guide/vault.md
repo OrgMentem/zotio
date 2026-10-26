@@ -32,6 +32,8 @@ zotio vault sync --dry-run    # preview would_create / would_update / unchanged
 zotio vault sync --yes        # write notes (uses [vault] config)
 ```
 
+JSON reports use `preview: true` for every preview mode. `dry_run: true` means you explicitly passed `--dry-run`.
+
 - **Identity from the citekey.** Filenames key off `data.citationKey` (native in Zotero 7+), falling back to a non-blank `Citation Key:` line in the item's Extra field, then to the item key (the result is sanitized for use as a filename) — lining up with your `[@citekey]` cites.
 - **Backlinks baked in.** Frontmatter carries `zotero://select/...`; each annotation links to `zotero://open-pdf/...?annotation=<key>`.
 - **Tags, venue, and related items.** Frontmatter also carries `zotero_tags` (the item's manual and automatic Zotero tags, de-duplicated and sorted), `venue` (`publicationTitle`, else `bookTitle`, else `proceedingsTitle`; the key is left out when the item has none), and `related` (the item's `dc:relation` neighbours in both directions, de-duplicated and sorted). A related item that has a note in the same sync run appears as a `[[note name]]` wikilink; any other related item appears as a `zotero://select/...` link, so a narrower `--scope` turns wikilinks into select links. In a Logseq vault the properties are `zotero-tags::`, `venue::`, and `related::`. The tool never writes `tags`: that key stays yours, and `zotero_tags` is separate so a hand-edited `tags` list is never overwritten.
@@ -54,6 +56,27 @@ zotio vault pull --yes        # fold edits made in the Zotero app back in
 
 !!! warning "Conflicts are never auto-merged"
     A note is pushed only when its `## Notes` region changed *and* the remote note hasn't diverged. If both sides changed, nothing is overwritten — a conflict file lands under `_vault-zotero-conflicts/` and is reported. A preview reports it as `would_conflict`; conflicts count as issues and exit 1 in preview and apply alike.
+
+## Audit before and after a round-trip
+
+`vault audit` checks managed notes without changing files or Zotero:
+
+```bash
+zotio library health --for vault
+zotio vault audit
+zotio vault audit --vault /path/to/vault/Zotero
+```
+
+The audit reports four finding kinds:
+
+- `orphaned`: the note's Zotero item no longer exists in the local store.
+- `stale`: the note has fallen behind the local store.
+- `needs_notes_boundary`: the note lacks the `## Notes` boundary.
+- `upgradeable`: the note uses the old Zotero selection-link format.
+
+Refresh the mirror with `zotio sync` before comparing notes with current Zotero data.
+Use `library health --for vault` to find missing or duplicate citekeys before they cause note identity problems.
+Run `vault audit` again after the round-trip.
 
 ## Recover from conflicts
 

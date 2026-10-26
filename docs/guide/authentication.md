@@ -26,6 +26,15 @@ Configure it once:
 printf %s "$ZOTERO_API_KEY" | zotio auth set-token --stdin     # or export ZOTERO_API_KEY=<key>
 ```
 
+`auth set-token` saves immediately unless you pass `--dry-run`; it does not require `--yes`.
+The key lives in `credentials.toml` in the data directory, separate from the config file.
+An agentcookie-managed store keeps the key in its config file instead.
+
+Without a key, an apply that needs a Web API mutation fails with a precondition error (exit 9).
+The error names `ZOTERO_API_KEY` and `zotio auth set-token`.
+Previews that read the local plane and applies that need no mutation can still succeed without a key.
+Commands that need Web API reads, including `vault push`, still require a key for those reads during preview.
+
 Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also required to read **group libraries** or to read live from the Web API while the desktop app is **closed**; reads from an already synced local mirror (`--data-source local`) need no key.
 
 !!! info "Why writes route to the cloud"
@@ -34,5 +43,20 @@ Generate a key at <https://www.zotero.org/settings/keys>. The first Web API writ
 ## Check writability
 
 ```bash
-zotio doctor      # reports a writes: line — available or read-only
+zotio auth status       # show the credential source; this does not verify the key
+zotio doctor           # report Web API writability and desktop connector reachability
+zotio auth logout      # preview removal of stored credentials
+zotio auth logout --yes # remove stored credentials
 ```
+
+`auth logout` clears stored credentials; it does not revoke the key at Zotero or unset an environment variable.
+Use Zotero's key settings to revoke a key.
+
+The `doctor` report uses these `writes:` values:
+
+- `available (auto-routed to Web API; reads stay local)`
+- `unavailable (local API is read-only; set ZOTERO_API_KEY to write via the Web API)`
+- `available (Web API)`
+- `needs ZOTERO_API_KEY (Web API)`
+
+These values describe Web API writes. The separate connector check describes desktop connector availability.

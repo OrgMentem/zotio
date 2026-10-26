@@ -65,15 +65,15 @@ ZOTIO_DEMO=1 zotio --data-source local items retract-check  # check every DOI ag
 
 ```console
 KEY         STATUS      TYPE        NOTICE DOI                     DATE        SOURCE            TITLE
-WAKEFLD98   correction  correction  10.1016/s0140-6736(04)15715-2  2004-03-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
-WAKEFLD98   retracted   retraction  10.1016/s0140-6736(10)60175-4  2010-02-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
-FAIR002016  correction  addendum    10.1038/s41597-019-0009-6      2019-03-19  publisher         The FAIR Guiding Principles for Scientific Da...
+WAKE2235   correction  correction  10.1016/s0140-6736(04)15715-2  2004-03-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
+WAKE2235   retracted   retraction  10.1016/s0140-6736(10)60175-4  2010-02-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
+FAIR222U  correction  addendum    10.1038/s41597-019-0009-6      2019-03-19  publisher         The FAIR Guiding Principles for Scientific Da...
 Checked 21 DOI-bearing items; 3 update notices flagged; 2 DOI(s) not registered with CrossRef.
 ```
 
 That is the bundled library catching the retracted Wakefield 1998 MMR paper,
 with no Zotero install and no API key (the check queries Crossref live).
-`zotio demo --reset` deletes and re-seeds the demo library, restoring it to its original state. To remove it, delete the `demo.db` file whose path the demo report prints as `db_path`.
+`zotio demo --reset` deletes and re-seeds the demo library, restoring it to its original state. To remove it, delete `demo.db` and its `-wal` and `-shm` siblings at the path the demo prints (`db_path` in JSON output).
 
 Zotero itself red-flags a retracted item when you open it, from the same
 Retraction Watch data. `zotio` adds what the desktop app does not: corrections
@@ -101,7 +101,7 @@ Zotero's GUI is great for reading and citing. It is painful the moment you need 
 
 `zotio` provides that glue with these properties:
 
-- **Reads are local.** Point `zotio` at your running desktop app: no API key and no cloud round-trip, and it works offline against a synced mirror.
+- **Most reads are local.** Point `zotio` at your running desktop app for keyless reads, or use a synced mirror offline. Web-only reads such as every `items bibliography` format need a Web API key.
 - **Writes are preview-first.** Every mutation shows a plan before it touches anything. Gates cap blast radius; irreversible ops require an explicit opt-in; an append-only journal lets you undo the reversible ones.
 - **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is, so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it assembles and budgets the context, then hands it to the model.
 
@@ -111,14 +111,14 @@ It is the tool you reach for when the GUI gets too manual: **find the problems t
 
 ## How it works
 
-Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update route to the Zotero Web API** and need a configured key. The connector path is a preference: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). For `attachments add` on an existing item, `--via connector` is an explicit desktop route that still needs a Web API key to move the file to its target. Writes are preview-first; item update reads its version from the Web write target at apply time. Supported applied changes update an existing local mirror so a follow-up read can see them without another sync.
+Most reads stay on your machine; Web-only reads such as `items bibliography` need a Web API key. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update route to the Zotero Web API** and need a configured key. `items new` always needs a key to fetch its Web-only template, even on the connector route. The connector path is a preference: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). For `attachments add` on an existing item, `--via connector` is an explicit desktop route that still needs a Web API key to move the file to its target. Writes are preview-first; item update reads its version from the Web write target at apply time. Supported applied changes update an existing local mirror so a follow-up read can see them without another sync.
 
 ![zotio hybrid routing architecture](docs/assets/architecture.svg)
 
 | Plane | Backend | Needs a key? |
 |---|---|---|
-| **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror | No |
-| **Write — new item** | Local desktop connector (`localhost:23119`) when personal + desktop up; else Web API. New items, attachments, PDFs. | No (connector path) |
+| **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror; Web API for Web-only reads such as `items bibliography` | No, except Web-only reads |
+| **Write — new item** | Local desktop connector (`localhost:23119`) when personal + desktop up; else Web API. New items, attachments, PDFs. | No on the connector path, except `items new`, which always needs a Web API key for its template |
 | **Write — other items and vault notes** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves, `collections` create/update, vault write-back | Yes — configured once |
 | **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |
 | **Local-only** | Files, desktop launch, vault file sync, introspection | No |
@@ -139,7 +139,7 @@ One command that answers a real question — *"is this library fit for the next 
 |---|---|---|
 | `quick` *(default)* | anything obviously broken | citekey conflicts, duplicates, broken attachments |
 | `citation` | a manuscript bibliography | missing/duplicate citekeys, citation-core fields, duplicates |
-| `systematic-review` | a PRISMA screening corpus | duplicates, screenable metadata (title/abstract), full-text PDFs |
+| `systematic-review` | a PRISMA screening corpus | duplicates, missing abstracts, missing full-text PDFs, broken attachment files (with `--verify-files` and a reachable desktop) |
 | `vault` | a trustworthy Obsidian/PKM vault sync | missing/duplicate citekeys (note filenames), citation-core fields |
 | `all` | a full sweep | every registered check |
 
@@ -194,7 +194,7 @@ Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates
 
 - **Preview is the default.** You get a plan/result envelope with zero changes. `--yes` applies; `--dry-run` always wins.
 - **A preview predicts the apply.** It runs the same reads and evaluates the same gates (`--max-changes`, `--allow-destructive`, local input checks) as `--yes`. A preview that apply would refuse prints `ok:false` with `error:{code,message}` and exits with the code apply would use. A destructive preview shows `ok:true` only with `--allow-destructive`; a conflict exits `1` in preview and apply alike.
-- **`--dry-run` writes nothing at all.** No Zotero write, no local file or `.lock` sibling, no config save, no mirror write-through. Reads still run, and `--deliver` still routes the command's output. `sync`, `watch`, and `init` cannot preview and reject `--dry-run` with exit 2.
+- **`--dry-run` suppresses command writes.** No Zotero write, command output file or its `.lock` sibling, config save, or mirror write-through. Reads still run. Delivery is separate: `--deliver file:<path>` still locks and writes its target, and webhook delivery still sends the output. `sync`, `watch`, and `init` cannot preview and reject `--dry-run` with exit 2.
 - **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, collection delete, `creators rename`, `creators audit fix`, `vault resolve --keep-vault|--keep-remote`) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** Supported mutation-envelope writes update an existing local mirror when they apply; a follow-up mirror read can see the change without another `sync`.
@@ -220,6 +220,11 @@ zotio import apply manifest.json --yes         # schema-valid creation via the W
 - **Scan** classifies a folder of PDFs against your existing library — extracting DOIs from filenames or the PDF bytes — so you never re-import what you already have.
 - **Resolve** turns findings into an editable JSON manifest, enriching create-entries from CrossRef. This is the human touchpoint.
 - **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file|stored` contract. `stored` uploads the file bytes: `--via connector` hands the item and its file to Zotero desktop in one session, while the direct Web API route is guarded by the file-storage precondition (`--allow-zotero-cloud` to override).
+  After an interrupted stored connector import, reconcile existing items and attachment markers before using `import apply --reimport` to permit another create.
+- **`import discover`** follows backward or forward citations from `--scope` into a reviewable manifest at `--output`. Use `--direction backward|forward|both` and `--min-count` to control selection.
+- **`import monitor`** queries OpenAlex with `--author` or `--query`, plus `--since`, and writes a manifest at `--output`. It excludes works already in the synced mirror by DOI or normalized title. It keeps no saved state: overlap date windows between runs. Publication-date filters can miss newly indexed or backdated works, and works without DOIs are omitted.
+
+Pass either discovery manifest through `import resolve`, review the result, then use `import apply`.
 
 `resolve` fetches metadata by DOI (CrossRef, with an arXiv-to-DOI lookup for preprint PDFs); it does not resolve PMIDs or ISBNs. The one-shot importers take those identifiers directly: `import doi|pmid|arxiv|isbn|url|file|pdf`. They take the destination collection key with `--to`.
 
@@ -285,7 +290,7 @@ format = "obsidian"      # or "logseq"
 
 ### Export & reproducibility
 
-- **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` (or a `.docx`/`.odt` written with the Zotero plugin) exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys. `--scope` accepts AND-joined cohorts such as `collection:KEY AND tag:NAME`.
+- **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. Every format needs a Web API key for server-side rendering at `api.zotero.org`. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto. `--manuscript paper.tex` (or a `.docx`/`.odt` written with the Zotero plugin) exports only the items a manuscript cites — in first-citation order for the export formats, while a CSL-rendered `bib` keeps its style's sort — and refuses (exit 11) on unknown or ambiguous citekeys. `--scope` accepts AND-joined cohorts such as `collection:KEY AND tag:NAME`.
 - **`collections export`** — a whole collection and all its subcollections as one BibTeX, RIS, or CSL-JSON file. Items from the subtree are included recursively; the file does not encode collection hierarchy.
 - **`export snapshot`** — a reproducible, resumable, fully paginated export (JSONL by default; `--format bibtex|ris|csljson`) with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
 
@@ -504,7 +509,7 @@ zotio desktop status    # is Zotero desktop running, and does its connector acce
 - **`doctor: connection refused`** — open Zotero desktop and enable **Settings → Advanced → "Allow other applications to communicate with Zotero."**
 - **`items missing-pdf` / analytics / any mirror reader fail with exit 9** — the local mirror is not synced. Run `zotio sync` first; the `synced_store` precondition envelope says so.
 - **`annotations export` outputs empty sections** — PDF annotations must be made in Zotero's built-in PDF reader, not an external app.
-- **`citekey-conflicts` finds no keys** — install the Better BibTeX extension; citation keys live in the `extra` field.
+- **`citekey-conflicts` finds no keys** — install the Better BibTeX extension. zotio reads its `citationKey` field through the local API, then falls back to pinned keys in `Citation Key:` lines in Extra.
 - **Authentication errors (exit 4)** — `zotio doctor` to check credentials; verify `echo $ZOTERO_API_KEY`.
 
 ---
@@ -512,6 +517,8 @@ zotio desktop status    # is Zotero desktop running, and does its connector acce
 ## Configuration
 
 Config file: `~/.config/zotio/config.toml`. Static request headers can be set under `[headers]`; per-command overrides take precedence.
+
+An explicit `--config` path must exist, or the command exits 10. Exceptions are `init`, `auth set-token`, `auth logout`, help, version, and completion.
 
 | Variable | Default | Description |
 |---|---|---|

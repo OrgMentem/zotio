@@ -87,8 +87,23 @@ func renderCommands(root *cobra.Command) []byte {
 	var b bytes.Buffer
 	b.WriteString(genHeader)
 	b.WriteString("# Command reference\n\n")
-	b.WriteString("Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.\n\n")
-	b.WriteString("Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. `analytics` is in this group too: every mode answers `results` rows carrying a `count`, so one jq works across `--group-by`, `--type`, and the no-flag resource breakdown. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, `items bibcheck`, `library health`, `library prisma`, and `creators audit` expose named report fields instead of `results`. `annotations export` is a partial raw-export exception: its `--format markdown` stdout is a consumable Markdown document, not an envelope (under `--json` or `--agent` it is wrapped as `{format, content}`). Its `--format json` stdout is the same `{meta, results}` read envelope as other reads, with `results` holding one group per owning item. With `--output FILE`, the file receives that same Markdown or JSON envelope, and stdout carries only a short result summary (a result object under `--json`, otherwise a message on stderr).\n\n")
+	b.WriteString("Every `zotio` command, generated directly from the binary. Add `--agent` for JSON output and non-interactive defaults. Commands that write to Zotero or the vault preview unless `--yes` is passed. Local-state writers `auth set-token`, `profile save`, and `feedback` apply directly; use `--dry-run` to preview them. `sync`, `watch`, and `init` also write local state directly, but reject `--dry-run`. See [Safe-by-default writes](../concepts/write-safety.md) for file-output and delivery rules.\n\n")
+	b.WriteString("Ordinary list and single-resource reads emit a `{meta, results}` envelope in JSON mode. `results` is always an array, including the one-element array from `items get`. `analytics` uses this envelope in every mode. `reading-list` also uses it, with sibling fields `queue_tag`, `count`, and `oldest`.\n\n")
+	b.WriteString("Do not assume that every JSON response has `results`. These commands use their own report or document shapes instead:\n\n")
+	b.WriteString("| Commands or modes | JSON shape |\n| --- | --- |\n")
+	b.WriteString("| `items audit`, `items bibcheck`, `items citekey-conflicts`, `items duplicates`, `items preprint-check`, `items retract-check`, `items enrich --validate`, `creators audit` | Check-specific reports and findings. |\n")
+	b.WriteString("| `library health`, `library prisma`, `library stats`, `library wrapped`, `collections stats` | Health, coverage, or statistics reports. |\n")
+	b.WriteString("| `items related`, `items similar`, `items summarize` | Relationship, similarity, or context-bundle reports. |\n")
+	b.WriteString("| `vault audit`, `vault conflicts` | Audit findings or conflict filenames. |\n")
+	b.WriteString("| `agent-context`, `auth status`, `doctor`, `desktop status`, `desktop wait`, `groups inspect`, `which`, `schema drift`, `capabilities drift`, `workflow status`, `journal show` | Command-specific context, status, discovery, drift, or journal objects. |\n")
+	b.WriteString("| `profile show`, `profile use`, `feedback list` | A profile object, or feedback entries (a bare array; corrupt-line reports use `entries`). |\n")
+	b.WriteString("| `items file`, `items open`, `items cite`, `items bibliography` | File/link metadata or citation content; bibliography CSL-JSON is a raw array. |\n")
+	b.WriteString("| `import resolve`, `import discover`, `import monitor`, `import translators` | An import manifest, manifest-generation report, or translator matches. |\n")
+	b.WriteString("| `collections bundle`, `collections export`, `export`, `export snapshot`, `export snapshot verify` | A bundle manifest, export data, file summary, or verification report. |\n")
+	b.WriteString("| `annotations export --format markdown`, `annotations export --output FILE` | `{format, content}` for Markdown under `--json`/`--agent`, or a file summary. |\n")
+	b.WriteString("| `auth set-token`, `auth logout`, `profile save`, `profile delete`, `feedback`, `demo`, `init`, `workflow run` | Local-state or workflow reports. |\n")
+	b.WriteString("| `sync`, `watch`, `tail`, `workflow archive` | Event streams rather than one read envelope; bare `tail --json` reports supported resources. |\n\n")
+	b.WriteString("`annotations export --format json` to stdout uses `{meta, results}`, with one group per owning item. With `--output FILE`, the file receives the selected Markdown document or JSON envelope, while stdout reports the file operation. `import scan`, `import targets`, and `collections gaps` have `results` arrays in their own report objects, without the ordinary provenance envelope. Error output, raw export formats, and commands that print help or shell code do not follow the read-envelope contract.\n\n")
 	b.WriteString("A read command may also emit sibling top-level keys beside its own payload, for advisory data it did NOT match. Three commands do this, and they share one naming convention so the grammar is learned once: the rows arrive under `near_<selector>_<thing>`, the outcome under `meta.<selector>_lookup`, and the truncation count under `meta.near_<selector>_total`. `items find --title` reports `near_title_matches` (rows `{key, title, score, year, item_type, trashed}`) with `meta.title_lookup`; `items find --citekey` reports `near_citekey_matches` (rows `{cite_key, item_key, title, score}`) with `meta.citekey_lookup`; `items duplicates --by title|all` reports `near_title_groups` (rows `{group, score, count, keys, titles, item_type, requires_review}`, where `group` is `title_near`) with `meta.title_lookup`. Rows are strongest first and the score is rounded to two decimals.\n\nWhat a perfect score means differs by command, so do not apply one rule to all three. On `items find --title` `1.00` is unreachable: an equal title is an exact hit, so a near row is always capped below it. On `items find --citekey` `1.00` is reachable and is the strongest suggestion there is \u2014 the library holds that key differing only in case or Unicode encoding. On `items duplicates` `1.00` is reachable and expected: a fold-equal pair is two stored titles that differ only in case, punctuation or Unicode form, which is exactly the duplicate the equality detector cannot see.\n\nThe lookup-state key also differs, and this is the one an agent gets wrong. On `items find` it describes a lookup a person asked for: `exact_hit` (a returned row matched on that selector, and `.results` holds it), `near_matches`, `no_near_matches`, or `near_lookup_failed`; it is ABSENT when the question stayed unanswered, because the selector was not given or another selector matched while this one did not \u2014 the selectors are OR-ed and one identifier hit suppresses the report. On `items duplicates` nothing is looked up, so `meta.title_lookup` describes ONLY the advisory near pass and can never be `exact_hit`. The exact answer is the report body in `.groups`, which is always complete: a run reporting `no_near_matches` can still hold exact duplicate groups, so read `.groups` and do not treat that state as a clean library. `--by doi` reports `not_requested`, because that detector never asks the title question at all.\n\n`items duplicates` adds `meta.near_title_scan`, which says whether the comparison was complete: `complete`, or `common_words_skipped` when some title words were carried by too many titles to pair on, so two titles whose only shared words were those were never compared. Read `no_near_matches` with `common_words_skipped` as \"not everything was compared\", never as \"nothing is close\". The key is absent after `near_lookup_failed` and for `--by doi`. A `meta.near_<selector>_total` key reports how many candidates were scored when more were scored than listed \u2014 for citekeys, how many distinct keys, since one key held by three items is one suggestion \u2014 and is absent when the list is complete, so \"not in these rows\" is never mistaken for \"not in the library\".\n\nA sibling key is never folded into the payload, so `.results` and `.groups` keep holding only what the command matched and every existing pipeline is unaffected; these rows are suggestions to confirm, never matches, and `items duplicates resolve` will not merge a near group. `--select` and `--compact` apply to the payload only and never drop a sibling key or `meta`. Machine formats with no column for a score (`--plain`, `--csv`) print a one-line stderr note naming the count and `--json`; on `items duplicates` a second note names the words too common to pair on, and unlike the rows note it prints even when no rows were found. `--quiet` is exempt on a terminal, where the exit code is the whole answer; piped, `items find` still emits its envelope including the near rows. Under `--group all` sibling keys are kept per library at `libraries[].extra` and never merged, because a similarity score only ranks candidates inside the library that produced it \u2014 and `items duplicates --group all` REQUIRES `--json` (or `--agent`), exiting 2 otherwise, because its near rows exist only in the JSON report and no other format could carry them into the aggregate.\n\n")
 
 	if gf := flagRows(root.PersistentFlags()); len(gf) > 0 {
@@ -108,6 +123,7 @@ func renderCommands(root *cobra.Command) []byte {
 func writeConfigurationReference(b *bytes.Buffer) {
 	b.WriteString("## Configuration\n\n")
 	b.WriteString("zotio loads its configuration from the platform configuration directory, or from the path supplied with `--config`. `zotio doctor` reports the active path.\n\n")
+	b.WriteString("An explicit `--config` path that does not exist fails with exit 10. `init`, `auth set-token`, and `auth logout` may create that file. Help, version, and shell completion do not require it.\n\n")
 	b.WriteString("### Update checks\n\n")
 	b.WriteString("Release discovery is off by default. To opt in to one anonymous GitHub releases request per day, add:\n\n")
 	b.WriteString("```toml\n[updates]\ncheck = true\n```\n\n")
@@ -196,12 +212,18 @@ func writeFlagTable(b *bytes.Buffer, rows []flagRow) {
 // ---- capabilities ---------------------------------------------------------
 
 type capEntry struct {
-	Path        string   `json:"path"`
-	Operation   string   `json:"operation"`
-	DataSources []string `json:"data_sources,omitempty"`
-	WriteTarget string   `json:"write_target,omitempty"`
-	Destructive bool     `json:"destructive,omitempty"`
-	Requires    []string `json:"requires,omitempty"`
+	Path        string     `json:"path"`
+	Operation   string     `json:"operation"`
+	DataSources []string   `json:"data_sources,omitempty"`
+	WriteTarget string     `json:"write_target,omitempty"`
+	Destructive bool       `json:"destructive,omitempty"`
+	Requires    []string   `json:"requires,omitempty"`
+	Routes      []capRoute `json:"routes,omitempty"`
+}
+
+type capRoute struct {
+	Via      string   `json:"via"`
+	Requires []string `json:"requires,omitempty"`
 }
 
 func renderCapabilities() ([]byte, error) {
@@ -218,16 +240,23 @@ func renderCapabilities() ([]byte, error) {
 	b := &bytes.Buffer{}
 	b.WriteString(genHeader)
 	b.WriteString("# Capabilities & trust model\n\n")
-	b.WriteString("The machine-readable registry every command is classified against — read vs. write, where writes land, whether they are destructive, and what they require. Emit it live with `zotio capabilities` or over MCP as `zotero://capabilities`.\n\n")
-	b.WriteString("| Command | Operation | Write target | Destructive | Requires |\n")
-	b.WriteString("| --- | --- | --- | --- | --- |\n")
+	b.WriteString("The machine-readable registry classifies each command by operation, write target, destructiveness, and requirements. Emit it live with `zotio capabilities` or over MCP as `zotero://capabilities`. Write target and Requires describe the default route. The Routes column lists each route and its own requirements.\n\n")
+	b.WriteString("| Command | Operation | Write target | Destructive | Requires | Routes |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	for _, e := range entries {
 		destructive := ""
 		if e.Destructive {
 			destructive = "yes"
 		}
-		fmt.Fprintf(b, "| `%s` | %s | %s | %s | %s |\n",
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s | %s | ",
 			e.Path, e.Operation, code(e.WriteTarget), destructive, codeList(e.Requires))
+		for i, route := range e.Routes {
+			if i > 0 {
+				b.WriteString("<br>")
+			}
+			fmt.Fprintf(b, "%s: %s", code(route.Via), codeList(route.Requires))
+		}
+		b.WriteString(" |\n")
 	}
 	return b.Bytes(), nil
 }

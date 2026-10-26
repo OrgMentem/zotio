@@ -182,6 +182,8 @@ auto-merged — they surface as a conflict.
   (discarding local edits). `--recreate` re-creates a note deleted in Zotero.
 - **Preview first.** `vault push --dry-run` reports would-create / would-update /
   would-conflict and writes nothing — to the vault or to Zotero.
+  Reports set `preview: true` for every preview, including omission of `--yes`.
+  The `dry_run` field is true only for an explicit `--dry-run`.
 - **`vault pull` (fast-forward).** The reverse direction: when the remote child
   note changed but the local region is unchanged since the last sync, `pull`
   converts the note HTML back to text (reversing the verbatim renderer; only

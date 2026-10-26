@@ -21,6 +21,54 @@ Beyond tools, the server serves live Zotero context as MCP **resources**:
 - `zotero://schema` — local SQLite cache DDL, for writing queries with the `sql` tool
 - `zotero://capabilities` — the read/write trust registry ([reference](../reference/capabilities.md))
 
+### Library resources
+
+These templates return library content as untrusted data:
+
+| URI template | Content |
+| --- | --- |
+| `zotero://collections/{key}` | Collection metadata and an item manifest from the local store. |
+| `zotero://items/{key}` | Item metadata and annotations from the local store. |
+| `zotero://health/{scope}` | Ranked library-health findings for `library`, `collection:KEY`, `tag:NAME`, `query:TEXT`, or `item:KEY`. |
+| `zotero://collections/{key}/tree` | The collection and nested subcollections, with depth and node limits. |
+| `zotero://items/{key}/children` | Child notes and attachments, with bounded results. |
+| `zotero://items/{key}/attachments` | Attachment keys, titles, content types, and link modes. |
+| `zotero://items/{key}/context` | The item, parent, collections, tags, and child/attachment counts. |
+| `zotero://items/{key}/related` | Incoming and outgoing related-item edges from the local store. |
+
+### Prompts
+
+- `inspect-library`: survey sync status, collections, counts, and gaps.
+- `export-reading-notes`: prepare an annotation digest; optional arguments are `collection` and `item`.
+- `prepare-citation-export`: prepare a bibliography; optional arguments are `collection` and `format`.
+- `synthesize`: summarize a bounded context bundle; optional arguments are `item` and `collection`.
+- `prepare-library-health`: assess findings and preview fixes; accepts an optional `scope`.
+- `prepare-import`: review the scan → resolve → apply pipeline; accepts an optional `dir`.
+- `sync-vault-safely`: audit the vault, sync notes, and review write-back conflicts.
+
+## Transport
+
+The server uses stdio by default. Select HTTP with `--transport http` or `ZOTIO_MCP_TRANSPORT=http`; the flag takes precedence.
+`--addr` sets the bind address, which defaults to `127.0.0.1:7777`. The HTTP endpoint is `/mcp`.
+
+```bash
+zotio-mcp --transport http --addr 127.0.0.1:7777 --mcp-auth-token-file /path/to/private-token
+```
+
+HTTP clients must send `Authorization: Bearer <token>`. The server selects the token in this order:
+
+1. The file named by `--mcp-auth-token-file`.
+2. The `ZOTIO_MCP_TOKEN` environment variable.
+3. A new token for this run, saved in a mode-0600 file in the zotio state directory.
+
+For a generated token, stderr reports the file path, not the token.
+Each start replaces the generated token file for that bind address.
+Use an explicit token file or environment variable when clients need a stable token.
+The server refuses token values passed through `--mcp-auth-token`.
+
+`--allow-unauthenticated` disables HTTP bearer authentication. Avoid it: loopback does not isolate users, and reachable clients can invoke read and write tools.
+This transport token is separate from the Zotero API key.
+
 ## Authentication
 
 The `ZOTERO_API_KEY` env var is optional for read-only local-desktop use (the local API needs no key). Set it to enable writes and reach group libraries — see [Authentication](authentication.md).
@@ -32,6 +80,8 @@ claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ## Concurrent access
 
 Only one zotio writer may update an installation or independent output at a time. Installation writers use the host-user lock `~/.zotio/.writer.lock`: `--config`, `ZOTERO_CONFIG`, and `ZOTERO_DATA_DIR` do not make concurrent writer scopes because profiles remain shared at `~/.zotio/profiles.json`. A concurrent write fails immediately with exit code 9 and is safe to retry after the active writer finishes; read-only commands and dry-run previews remain available.
+
+`watch` and `tail` take the installation writer lock for each cycle or poll, then release it between cycles.
 
 ## Library content is data, never instruction
 

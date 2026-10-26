@@ -9,10 +9,11 @@
 
 `zotio` targets Zotero's **local API** for reads and mirrors synced data into a local SQLite store so `--data-source local` (and `auto` fallback) work offline. The promise of offline mode is **parity**: a command that returns a key set live returns the same key set locally after sync, with the same scoping — not an accidental whole-library dump.
 
-That parity is not free. The store is a generic `resource_type → JSON` cache; reproducing a live endpoint's semantics locally means replaying its filters/sort/pagination against JSON columns. This began as a Zotero-aware **item** query planner (`store.ItemQuery` + `QueryItems`, curated FTS via `buildSearchDocument`/`SearchByType`). Since then the layer has quietly accreted:
+That parity is not free. The store is a generic `resource_type → JSON` cache; reproducing a live endpoint's semantics locally means replaying its filters/sort/pagination against JSON columns. This began as a Zotero-aware **item** query planner (`store.ItemQuery` + `QueryItemsContext`, curated FTS via `buildSearchDocument`/`SearchByTypeContext`). The current subsystem includes:
 
-- `internal/store/query.go` is **~375 lines** of Zotero-specific read logic (item scoping, sort-field mapping, FTS document construction, FTS5 query normalization).
-- **`QueryItems`/`ItemQuery` now has 8+ consumers** beyond the offline read path: `collections_bundle.go`, `import_scan.go`, `items_summarize.go`, `vault_sync.go`, `internal/mcp/resources.go`, plus `Search`/`SearchByType` used by `scope.go`, `search.go`, and `internal/mcp/tools.go`.
+- `internal/store/query.go` provides Zotero-specific item scoping, sort-field mapping, and FTS document construction.
+- `QueryItemsContext` consumers include `collections_bundle.go`, `import_scan.go`, `items_summarize.go`, `vault_sync.go`, and `internal/mcp/resources.go`. CLI and MCP search use `SearchContext`; they do not call `SearchByTypeContext`.
+- `data_source.go` dispatches item, tag-list/tag-get, subcollection, and trash planners. `savedsearch_local.go` evaluates the supported saved-search subset for scope resolution and `searches run`.
 
 The proposal that triggered this ADR promoted `ItemQuery` into a **broad generic query-planner layer with per-resource planner interfaces** for collections, tags, searches, children, saved-search results, and export scopes — routing *all* local reads through planner interfaces with provenance flags.
 
@@ -27,9 +28,9 @@ Two facts make the framing, not just the priority, wrong:
 
 Concretely:
 
-1. **`internal/store/query.go` is the owned local read model.** New scoped local reads add a typed query (fields + one SQL builder) here, mirroring `ItemQuery`/`QueryItems`. This is a hand-written Zotero read model, not a generated artifact — it is a subsystem, documented by this ADR.
+1. **`internal/store/query.go` is the owned local read model.** New scoped local reads add a typed query (fields + one SQL builder) here, mirroring `ItemQuery`/`QueryItemsContext`. This is a hand-written Zotero read model, not a generated artifact — it is a subsystem, documented by this ADR.
 
-2. **`resolveLocal` dispatches by path to per-resource planners.** The dispatch pattern is fixed: `resolveLocalItemList` returns `(data, handled, err)`; `handled=false` falls through to the generic dump. New resources add a sibling `resolveLocal<Resource>` with the same tri-state contract. The generic dump remains the honest fallback — it applies reproducible params (`limit`/`start` via `paginateLocalRows`) and warns only for genuinely unreproducible filters (`hasUnreproducibleParams`).
+2. **`resolveLocal` dispatches by path to per-resource planners.** Each planner returns `(data, handled, err)`. `handled=false` means the path belongs to another planner or the generic fallback. Recognized item-list paths with unsupported `--since-version` or `--format` return `handled=true` and an exit-9 precondition requiring the live API. They never fall through to an unscoped dump. Item, tag, subcollection, and trash planners preserve their resource-specific scope; saved-search evaluation uses its own bounded evaluator. The generic fallback applies pagination and warns about unreproducible filters on remaining paths. Top-level collections return an explicit unsupported-scope error.
 
 3. **Provenance carries a scoped flag.** A planner-served read sets `prov.Scoped = true`; a generic-dump read does not. Callers and agents can distinguish "this local result reproduced the live scope" from "this is a best-effort dump." This is the requested *provenance flag* — kept, but as a boolean on the existing envelope, not a new interface layer.
 
@@ -61,7 +62,7 @@ Concretely:
 
 ## Validation
 
-- Consumer census (grep): `QueryItems`/`ItemQuery` in `collections_bundle.go`, `import_scan.go`, `items_summarize.go`, `vault_sync.go`, `mcp/resources.go`; `Search`/`SearchByType` in `scope.go`, `search.go`, `mcp/tools.go`.
+- Consumer examples: `QueryItemsContext` in `collections_bundle.go`, `import_scan.go`, `items_summarize.go`, `vault_sync.go`, and `mcp/resources.go`; `SearchContext` in `search.go` and `mcp/tools.go`. `SearchByTypeContext` remains a store API, not a CLI/MCP consumer path.
 - Slices A (item children) and B (generic pagination + warning scoping) implemented under this pattern, each with fixture-backed parity tests and mutation checks; `go build ./...` and `go test ./internal/cli/ ./internal/store/` green.
 
 ## References

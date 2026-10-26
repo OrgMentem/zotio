@@ -23,7 +23,7 @@ zotio capabilities               # read/write classification + preconditions
 zotio <command> --help           # per-command help
 ```
 
-Add `--agent` to any command for agent-friendly defaults — JSON output, compact fields, no color, and non-interactive prompts. Mutating commands still preview unless you pass `--yes`:
+Add `--agent` to any command for agent-friendly defaults — JSON output, compact fields, no color, and non-interactive prompts. Commands that write to Zotero or the vault preview unless you pass `--yes`:
 
 ```bash
 zotio items audit --agent
@@ -32,8 +32,9 @@ zotio tags audit fix --agent --yes   # apply the merge
 
 ## Safety for automated callers
 
-- Reads from the local desktop or mirror are safe and keyless; a few commands, such as `items bibliography`, read the Zotero Web API and need a key. Writes preview by default; `--agent` does **not** auto-apply them.
-- `--max-changes` caps how many operations a single mutation may apply (lower under `--agent`).
+- Reads from the local desktop or mirror are safe and keyless; a few commands, such as `items bibliography`, read the Zotero Web API and need a key. Zotero and vault writes preview by default; `--agent` does **not** auto-apply them.
+- Local-state writers `auth set-token`, `profile save`, and `feedback` apply directly; use `--dry-run` to preview them. `sync`, `watch`, and `init` also write local state directly, but reject `--dry-run`.
+- `--max-changes` caps how many operations a single mutation may apply (lower under `--agent`). Values below `-1` are usage errors (exit 2). Negative `--max-failures` values also exit 2.
 - `--dry-run` suppresses every write the command itself performs (no Zotero write, local file, config save, or journal entry); read requests still run. Output you request with `--deliver` is still published, including to a file or webhook sink.
 
 See [Safe-by-default writes](../concepts/write-safety.md) for the full mutation contract and the [command reference](../reference/commands.md) for every flag.

@@ -18,6 +18,21 @@ zotio search 'automation trust' --data-source local --json
 zotio watch                                  # keep the mirror fresh
 ```
 
+`sync --full` walks items in `dateAdded` order. If the API cannot provide stable ordering, sync skips the deletion sweep and reports `sweep_skipped_unstable_order`.
+
+## Supported local scopes
+
+The synced mirror supports these resource-specific reads:
+
+- Item lists across the library, within a collection, for a parent's children, or restricted to top-level items. Filters include item type, tag, quick search, sorting, and pagination.
+- Tag lists, including collection tags, with name search and pagination; individual tags by name.
+- A collection's direct subcollections, with pagination.
+- Trash lists, with pagination.
+- Saved-search results through `searches run` and `--scope saved-search:KEY`, within the supported condition subset. This includes text fields, creators, tags, collections, item types, dates, and selected parent/child flags. Unsupported conditions refuse the whole search.
+
+Top-level collection lists have no local planner and return an unsupported-scope error. Local item lists refuse `--since-version` and `--format` with an exit-9 precondition requiring the live API; they never fall back to an unfiltered dump.
+
+
 ## A deliberate, per-resource subsystem
 
 Local read parity is Zotero-aware and grown **on demand, per resource** (`internal/store/query.go` and the `resolveLocal*` path) — it is *not* a generic query-planner layer. A local scope is added for a resource only where users actually pass filters against it, keeping the surface small and the behavior faithful to the live API rather than a lowest-common-denominator abstraction.

@@ -4,7 +4,7 @@ zotio records its non-trivial design decisions as **ADRs** (Architecture Decisio
 
 ## MCP command surface
 
-The MCP server does **not** expose one tool per Zotero endpoint. Instead it presents a small **command-orchestration facade** — `command_search` and `command_run` — so an agent discovers and drives the CLI the same way a person would: find the right command, then run it. This keeps the tool list small, keeps the trust model identical to the CLI, and means new CLI commands are available over MCP with no extra wiring. The one hand-written exception is `workflow_submit`, which accepts an inline multi-step [workflow](../guide/workflows.md) validated against the same per-command allowlist as `command_run`.
+The MCP server presents a small **command-orchestration facade** — `command_search` and `command_run` — so an agent can discover and run CLI commands. The default surface also includes three framework tools: `context`, `search`, and `sql`. The hand-written `workflow_submit` tool accepts an inline multi-step [workflow](../guide/workflows.md), validated against the same per-command allowlist as `command_run`.
 
 **What this means for you:** the default MCP surface is the facade. If you want the one-tool-per-command mirror instead (one tool for each MCP-eligible CLI command, not for each API endpoint), set `ZOTIO_MCP_SURFACE=mirror` (see the [MCP server guide](../guide/mcp-server.md) and the [MCP tools reference](../reference/mcp-tools.md)).
 
@@ -22,7 +22,7 @@ Full record: [ADR 0003 — Retire typed MCP endpoint tools](https://github.com/O
 
 Offline reads from the synced SQLite mirror are a **deliberate, per-resource subsystem** — not a generic query planner. Support for `--data-source local` filters is added intentionally, one resource at a time, only where people actually filter, so local behavior stays faithful to the live API rather than degrading to a lowest-common-denominator abstraction.
 
-**What this means for you:** `--data-source local` works for the scopes that have been built out. Under `auto`, the generic read resolver goes **live first** and uses the mirror only when the live call fails with a network error or the desktop API lacks the endpoint. Local reads come in three kinds: a supported local planner (the result is scoped like the live one), an explicit unsupported-scope error (for example top-level collections), and the generic fallback, which warns on stderr and can return **unfiltered** mirror rows when the request carries filters it cannot reproduce (for example the `since` version filter on item lists). Treat a warning as a signal that the scope was not honored. See [Local read parity](../concepts/local-read-parity.md).
+**What this means for you:** `--data-source local` supports the implemented local scopes. Under `auto`, the generic read resolver tries the live API first and uses the mirror for eligible failures. Local item reads refuse `--since-version` and `--format` with a precondition error because the mirror cannot reproduce them. Other unsupported scopes may fail explicitly or use the generic fallback, which warns when it cannot honor filters. See [Local read parity](../concepts/local-read-parity.md).
 
 Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0002-local-read-parity-subsystem.md).
 
@@ -33,3 +33,19 @@ zotio is **multi-reader, single-writer**. Any number of reads, `--dry-run` previ
 **What this means for you:** serialize applies and parallelize reads. Scheduled jobs and agent hosts that fire overlapping writes should treat exit 9 as "retry shortly", not as a failure. Selecting a different config file or data directory (`--config`, `ZOTERO_CONFIG`, `ZOTERO_DATA_DIR`) does **not** buy you a second writer, because the profile store remains shared per user home.
 
 Full record: [ADR 0005 — Single-writer concurrency contract](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0005-single-writer-concurrency-contract.md).
+
+## Permanent-delete tombstones
+
+A permanent delete removes the mirrored item and records a deletion marker in the same transaction. Sync reconciliation suppresses stale desktop rows with that marker while Zotero sync catches up.
+
+**What this means for you:** a sync during the desktop's delay does not restore a permanently deleted item to the local mirror. If the desktop continues to list it, check that Zotero is running and syncing.
+
+Full record: [ADR 0007 — Permanent-delete tombstones](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0007-permanent-delete-tombstones.md).
+
+## Opt-in batched item writes
+
+`items tags add` and `items tags remove` accept `--batch` to write up to 50 items per request. Each item retains its own outcome and version-conflict check.
+
+**What this means for you:** batching reduces requests, but cannot stop at the first failure within a batch. It continues after failures and rejects `--max-failures` and explicit `--continue-on-error=false`. Leave out `--batch` when you need fail-fast writes.
+
+Full record: [ADR 0008 — Batched item writes](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0008-batched-item-writes.md).
