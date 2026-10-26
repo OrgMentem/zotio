@@ -297,12 +297,19 @@ func duplicateReportPayload(report, siblings map[string]any, flags *rootFlags) (
 	return json.Marshal(merged)
 }
 
+// queryDuplicateDOIs groups items whose DOI field holds the same DOI. A
+// repeated value only forms a group when it has the DOI form: imports that put
+// the item type ("Article") or a date ("10/10/2020") in the DOI column repeat
+// that text across unrelated works, and every consumer of these rows (resolve,
+// which trashes; the PRISMA flow, which publishes a removed-records count; the
+// duplicate_candidates health finding, which is autofixable) would otherwise
+// treat those works as one.
 func queryDuplicateDOIs(db localQueryStore, scopes ...map[string]struct{}) ([]map[string]any, error) {
 	clause, args, err := duplicateQueryScopeClause(scopes)
 	if err != nil {
 		return nil, err
 	}
-	return db.QueryRaw(fmt.Sprintf(`
+	rows, err := db.QueryRaw(fmt.Sprintf(`
 SELECT
 	'doi' AS "group",
 	value,
@@ -317,6 +324,23 @@ FROM (
 GROUP BY value
 HAVING COUNT(*) > 1
 ORDER BY count DESC, value`, clause), args...)
+	if err != nil {
+		return nil, err
+	}
+	groups := rows[:0]
+	for _, row := range rows {
+		if isDOIValue(sqlStringValue(row["value"])) {
+			groups = append(groups, row)
+		}
+	}
+	return groups, nil
+}
+
+// isDOIValue reports whether a stored DOI field value has the DOI form.
+// doiArgPattern already answers that for `import doi` input, so the duplicate
+// detector asks it rather than growing a second definition.
+func isDOIValue(value string) bool {
+	return doiArgPattern.MatchString(normalizeDOI(value))
 }
 
 // queryDuplicateTitles groups citeable items sharing a normalized title.

@@ -131,12 +131,12 @@ func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateReso
 
 func TestItemsDuplicatesResolvePreviewWritesNothing(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
-		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
+		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
+		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{"K1": 10, "K2": 11}, map[string]map[string]any{
-		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
-		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
+		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
+		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 
 	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
@@ -156,12 +156,12 @@ func TestItemsDuplicatesResolvePreviewWritesNothing(t *testing.T) {
 
 func TestItemsDuplicatesResolveApplyMergesCollectionsAndTrashesDuplicate(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","abstractNote":"present","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
-		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
+		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","abstractNote":"present","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
+		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{"K1": 10, "K2": 11}, map[string]map[string]any{
-		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "abstractNote": "present", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
-		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
+		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "abstractNote": "present", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
+		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 
 	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
@@ -199,8 +199,8 @@ func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			seedDuplicateResolveStore(t, []json.RawMessage{
-				json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Shared DOI A","DOI":"10/example","collections":["C1"]}}`),
-				json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Shared DOI B","DOI":"10/example","collections":["C2"]}}`),
+				json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Shared DOI A","DOI":"10.1234/example","collections":["C1"]}}`),
+				json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Shared DOI B","DOI":"10.1234/example","collections":["C2"]}}`),
 				json.RawMessage(`{"key":"T1","version":20,"data":{"key":"T1","itemType":"journalArticle","title":"Week 3","collections":["C3"]}}`),
 				json.RawMessage(`{"key":"T2","version":21,"data":{"key":"T2","itemType":"journalArticle","title":"Week 3","collections":["C4"]}}`),
 			})
@@ -223,14 +223,41 @@ func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
 
 func TestItemsDuplicatesResolveNoDuplicatesEmptyPlan(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"One","DOI":"10/one"}}`),
-		json.RawMessage(`{"key":"K2","version":2,"data":{"key":"K2","itemType":"journalArticle","title":"Two","DOI":"10/two"}}`),
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"One","DOI":"10.1234/one"}}`),
+		json.RawMessage(`{"key":"K2","version":2,"data":{"key":"K2","itemType":"journalArticle","title":"Two","DOI":"10.1234/two"}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{}, map[string]map[string]any{})
 
 	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "resolve")
 	if !env.OK || env.Mode != "preview" || env.Plan.Summary.Selected != 0 || env.Plan.Summary.Planned != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want empty preview plan", env)
+	}
+}
+
+// A repeated DOI-field value is only a duplicate signal when it is a DOI. An
+// import that writes the item type or a date into that column repeats the same
+// text across unrelated works; resolve must not plan to trash any of them,
+// while a real DOI shared in bare or URL form still merges (issue #61).
+func TestItemsDuplicatesResolveIgnoresDOIFieldValuesThatAreNotDOIs(t *testing.T) {
+	seedDuplicateResolveStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"journalArticle","title":"Reading Atmospheres","DOI":"Article"}}`),
+		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"journalArticle","title":"space-dis-place","DOI":"Article"}}`),
+		json.RawMessage(`{"key":"A3","version":1,"data":{"key":"A3","itemType":"journalArticle","title":"Philosophy and Revolution","DOI":"article"}}`),
+		json.RawMessage(`{"key":"W1","version":1,"data":{"key":"W1","itemType":"webpage","title":"Page one","DOI":"10/10/2020"}}`),
+		json.RawMessage(`{"key":"W2","version":1,"data":{"key":"W2","itemType":"webpage","title":"Page two","DOI":"10/10/2020"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"Same","DOI":"10.1093/isle/isr079"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"Same","DOI":"10.1093/ISLE/isr079"}}`),
+		json.RawMessage(`{"key":"U1","version":1,"data":{"key":"U1","itemType":"journalArticle","title":"Sound","DOI":"https://doi.org/10.1162/lmj.2006.16.20"}}`),
+		json.RawMessage(`{"key":"U2","version":1,"data":{"key":"U2","itemType":"journalArticle","title":"Sound","DOI":"https://doi.org/10.1162/lmj.2006.16.20"}}`),
+	})
+	srv := newDuplicateResolveTestServer(t, map[string]int{}, map[string]map[string]any{})
+
+	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
+	if !env.OK || env.Mode != "preview" {
+		t.Fatalf("env = %+v, want preview", env)
+	}
+	if got := duplicateResolvePlanKeys(env.Plan.Operations); fmt.Sprint(got) != fmt.Sprint([]string{"D2", "U2"}) {
+		t.Fatalf("plan keys = %v, want [D2 U2] (only the real DOI groups); ops=%+v", got, env.Plan.Operations)
 	}
 }
 
@@ -318,12 +345,12 @@ func duplicateResolveBodyHasTag(body map[string]any, want string) bool {
 // automation cannot read a duplicate that is still live as a finished merge.
 func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
-		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
+		json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
+		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{"K1": 10, "K2": 11}, map[string]map[string]any{
-		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
-		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
+		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
+		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 	// K1 is the merge target (most complete/DOI-bearing candidate stays master
 	// deterministically here since both share a DOI and K1 sorts first); its
@@ -433,12 +460,12 @@ func TestDuplicateResolveApplyFailsClosedOnZeroVersion(t *testing.T) {
 	// without dispatching it, and the mutation framework should surface the
 	// failure with zero PATCHes sent for the zero-version key.
 	seedDuplicateResolveStore(t, []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":0,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
-		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
+		json.RawMessage(`{"key":"K1","version":0,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
+		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10.1234/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
 	})
 	srv := newDuplicateResolveTestServer(t, map[string]int{"K1": 0, "K2": 11}, map[string]map[string]any{
-		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
-		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
+		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
+		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10.1234/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
 	if env.Result == nil || len(env.Result.Items) != 1 {

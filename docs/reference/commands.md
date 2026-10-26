@@ -1939,9 +1939,11 @@ Resolve duplicate items by merging metadata onto a master and trashing duplicate
 
 Resolve duplicate items by merging metadata onto a master and trashing duplicates.
 
-By default, resolve only matches duplicate DOI groups. Title matching can group
-distinct items that share generic titles; pass --title only when you are ready to
-review the preview carefully before applying.
+By default, resolve only matches duplicate DOI groups. A DOI group forms only
+when the shared value has the DOI form 10.<registrant>/<suffix>; other text
+repeated in the DOI field, such as an item type or a date, never groups items.
+Title matching can group distinct items that share generic titles; pass --title
+only when you are ready to review the preview carefully before applying.
 
 ```
 zotio items duplicates resolve [flags]

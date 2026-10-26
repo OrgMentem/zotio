@@ -27,6 +27,22 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   and each delete leaves the ADR-0007 deletion marker. `--keys-from` limits it
   to listed keys; a key not in the trash is a usage error.
 
+### Changed — breaking
+
+- **Duplicate detection no longer groups items on DOI-field text that is not a
+  DOI.** Items whose DOI field held the same non-DOI text, such as an item type
+  (`Article`) written there by an import, or a date (`10/10/2020`), formed a
+  "duplicate DOI" group. `items duplicates resolve` then planned to trash all
+  but one of those unrelated works, `library health` reported them as an
+  autofixable `duplicate_candidates` finding, and `library prisma` counted them
+  as removed duplicates. A DOI group now forms only when the shared value has
+  the form `10.<registrant>/<suffix>`, the same check `import doi` applies to
+  its argument. Breaking for scripted consumers of affected libraries: `items
+  duplicates` returns fewer groups, `library health` reports fewer
+  `duplicate_candidates` findings (a gate on them can now pass), and `library
+  prisma` reports fewer duplicate records removed. Reported by @prismatic7
+  (#61).
+
 ### Changed
 
 - **`items delete` and `items restore` take many keys.** Both accept
