@@ -72,16 +72,16 @@ const connectorTempParentPrefix = "[zotio] temporary attachment parent"
 // item to appear on a plane that can see it.
 //
 // The desktop commits immediately, but api.zotero.org has been observed lagging
-// 15-20s behind it. items_delete.go carries the scar: key SDLDFA9W was reported
-// deleted inside that window, then materialised on the write plane untrashed.
+// 15-20s behind it. dev/field-report-2026-08-08-walktest-4.md records key
+// SDLDFA9W reported deleted in that window, then appearing untrashed (ADR-0007).
 // So this polls for real visibility instead of assuming it, and fails honestly
 // when the window closes without the item appearing.
 const connectorReparentVisibilityTimeout = 90 * time.Second
 
 // connectorReparentRouteTimeout caps the WHOLE route, connector I/O included.
-// Four sequential polling loops would otherwise be able to add up to four
-// visibility windows, and a hung request under `--timeout 0` would never return
-// at all. Every loop derives its deadline from this budget via pollDeadline, so
+// Sequential polling loops would otherwise accumulate multiple visibility
+// windows, and a hung request under `--timeout 0` would never return at all.
+// Every loop derives its deadline from this budget via pollDeadline, so
 // the route cannot outlive it however the waits fall.
 const connectorReparentRouteTimeout = 5 * time.Minute
 
@@ -123,6 +123,8 @@ type connectorReparentResult struct {
 	// desktop had already committed the child, so this run adopted that child
 	// instead of reporting a failure it would have posted the bytes again to fix.
 	SaveReplyLost bool
+	// CreateCommitted remains true even if resolving the permanent key fails.
+	CreateCommitted bool
 	// CreateUnresolved records that the temporary parent's SaveItems errored
 	// and nothing settled whether it landed. Session and ConnKey are the only
 	// evidence of that possible create, so they reach the result and journal.
@@ -172,8 +174,8 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		return "failed", nil, fmt.Errorf("missing write client")
 	}
 
-	// One deadline for the whole route. Without it, four visibility loops plus a
-	// client configured with `--timeout 0` could hang indefinitely.
+	// One deadline bounds every visibility loop and connector request, including
+	// a client configured with `--timeout 0`.
 	routeCtx, cancel := context.WithTimeout(ctx, connectorReparentRouteTimeout)
 	defer cancel()
 	// A client carries its own base context, so the budget above bounds nothing
@@ -212,6 +214,18 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 	if err != nil {
 		return "failed", nil, err
 	}
+	// Every attempt reaps earlier empty parents, including failed uploads.
+	// The age guard excludes concurrent live runs and this run's new parent.
+	reap := func() []string {
+		reaped, reapErr := reapAbandonedTemporaryParents(routeCtx, flags, webClient, req.ParentKey, time.Now())
+		if reapErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: an abandoned temporary parent for %s could not be cleaned up: %v\n"+
+					"         search Zotero for %q and delete any such item that has no file\n",
+				req.ParentKey, reapErr, connectorTempParentPrefix)
+		}
+		return reaped
+	}
 	if existing != "" {
 		detail := map[string]any{
 			"attachment_key": existing,
@@ -220,26 +234,18 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 			"via":            "connector",
 			"note":           "an attachment with identical content is already on this item",
 		}
-		// A run killed between its move and its trash leaves exactly this
-		// state: the file on the target and an empty temporary parent. The
-		// retry lands here, so this is where that parent is cleaned up.
-		reaped, reapErr := reapAbandonedTemporaryParents(routeCtx, flags, webClient, req.ParentKey, time.Now())
-		if len(reaped) > 0 {
+		// Cleanup also applies when identical content already reached the target.
+		if reaped := reap(); len(reaped) > 0 {
 			detail["temp_parents_trashed"] = reaped
-		}
-		if reapErr != nil {
-			// The requested content is already on the target, so a cleanup
-			// failure is litter to report, not a reason to fail the command.
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"warning: %s already holds this content, but an abandoned temporary parent could not be cleaned up: %v\n"+
-					"         search Zotero for %q and delete any such item that has no file\n",
-				req.ParentKey, reapErr, connectorTempParentPrefix)
 		}
 		return "no_op", detail, nil
 	}
 
 	out, err := runConnectorReparent(routeCtx, cmd, flags, webClient, req)
 	detail := map[string]any{"via": "connector"}
+	if reaped := reap(); len(reaped) > 0 {
+		detail["temp_parents_trashed"] = reaped
+	}
 	if out.TempParentKey != "" {
 		detail["temp_parent_key"] = out.TempParentKey
 		detail["temp_parent_trashed"] = out.TempTrashed
@@ -270,11 +276,9 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 			detail["temp_parent_marker"] = connectorTempParentPrefix + " " + out.Nonce
 		}
 		detail["message"] = err.Error()
-		if out.CreateUnresolved {
-			// SaveItems may have committed the temporary parent. Same convention
-			// as every other unresolved connector create: a committed conflict
-			// keeps the session evidence in the journal, so neither a rerun nor
-			// journal undo treats the write as never having happened.
+		if out.CreateUnresolved || out.CreateCommitted || out.TempParentKey != "" {
+			// A committed parent is a write even when no file landed. Preserve
+			// its identity in the journal for recovery and undo.
 			detail["committed"] = true
 			detail["session"] = out.Session
 			detail["connector_key"] = out.ConnKey
@@ -350,6 +354,8 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 	}
 
 	res, createErr := routeCreateItemVia(ctx, flags, "connector", webClient, tempItem, localFileURL(req.Path), false)
+	out.Session, out.ConnKey, out.ConnectorError = res.Session, res.ConnKey, res.ConnectorError
+	out.CreateCommitted = createErr == nil || (res.Session != "" && res.ConnectorError == "")
 	if createErr != nil {
 		// routeCreateItemVia can report a post-commit failure with an EMPTY
 		// result, so the item may exist with nothing naming it. Look for the
@@ -397,7 +403,7 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 			return out, errors.Join(saveErr, adoptErr)
 		}
 		if adopted == "" {
-			// Nothing was committed, so the save error is the whole truth.
+			// No attachment landed, but the temporary parent is committed.
 			return out, saveErr
 		}
 		out.SaveReplyLost = true
@@ -905,6 +911,7 @@ func saveConnectorAttachment(ctx context.Context, flags *rootFlags, res itemCrea
 	// Zotero's importFromNetworkStream hard-rejects an empty url with an opaque
 	// HTTP 500 AFTER the parent exists, so a local file always sends its own URI
 	// — the same provenance import pdf records for standalone attachments.
+	defer invalidateAfterConnectorWrite(flags)
 	if err := conn.SaveAttachment(ctx, res.Session, res.ConnKey, req.Title, localFileURL(req.Path), req.ContentType, source, req.Size); err != nil {
 		return fmt.Errorf("temporary parent %s was created but its file did not attach: %w", res.WebKey, err)
 	}
@@ -1226,7 +1233,7 @@ const connectorReparentConflictRetries = 2
 // finish inside the retry window - replaying without re-checking would put a
 // second identical attachment on the operator's item.
 //
-// It returns errReparentRaceLost when the target gained the content, so the
+// It returns *reparentRaceLostError when the target gained the content, so the
 // caller runs its race-loss cleanup rather than reporting a conflict.
 func reparentAttachment(c *client.Client, attachKey, newParentKey, tempParentKey, md5hex string, version int) error {
 	if version <= 0 {

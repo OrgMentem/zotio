@@ -94,6 +94,7 @@ func TestCollectionsCreateFailClosedOnBadBatchResponse(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			setupCreateRouteJournal(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(tc.body))
@@ -117,13 +118,18 @@ func TestCollectionsCreateFailClosedOnBadBatchResponse(t *testing.T) {
 					t.Fatalf("collections create error = %q, want %q", err, want)
 				}
 			}
-			// The failure is rendered as the envelope, with the collection failed.
+			// Explicit rejections fail; an unproven response preserves unknown evidence.
 			var env mutation.Envelope
 			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 				t.Fatalf("decode failure output %q: %v", out.String(), err)
 			}
-			if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
+			if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 {
 				t.Fatalf("envelope = %+v, must not report a failed batch as successful", env)
+			}
+			if tc.name == "non_envelope_body" {
+				assertCreateRouteUnknown(t, env)
+			} else if env.Result.Summary.Failed != 1 {
+				t.Fatalf("explicit rejection must fail: %+v", env.Result)
 			}
 		})
 	}

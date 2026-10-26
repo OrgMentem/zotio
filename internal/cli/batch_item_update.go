@@ -114,11 +114,14 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 		b.send(start)
 	}
 	if transportErr := b.transport[start]; transportErr != nil {
+		if client.IsAmbiguousWriteError(transportErr) {
+			return "failed", unknownWriteOutcome(transportErr.Error(), b.objects[index]), transportErr
+		}
 		return "failed", transportErr.Error(), transportErr
 	}
 	if failure, ok := b.failed[index]; ok {
 		if failure.Malformed {
-			return "failed", "batch response carried a malformed failure entry for this item; its outcome is unknown", nil
+			return "failed", unknownWriteOutcome("batch response carried a malformed failure entry for this item; its outcome is unknown", b.objects[index]), nil
 		}
 		detail := map[string]any{"code": failure.Code, "message": failure.Message}
 		// 412 is a lost precondition and 428 a missing one; both are the
@@ -133,7 +136,7 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 		// The response named an index this request cannot own, so the absence
 		// of a failure for this object proves nothing. Reporting "applied"
 		// here would turn an unparseable response into a success envelope.
-		return "failed", "batch response could not be attributed; this item's outcome is unknown", nil
+		return "failed", unknownWriteOutcome("batch response could not be attributed; this item's outcome is unknown", b.objects[index]), nil
 	}
 	return "applied", nil, nil
 }

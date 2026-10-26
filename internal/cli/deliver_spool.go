@@ -8,8 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"zotio/internal/cliutil"
+
+	"github.com/spf13/cobra"
 )
 
 // deliverSpool streams captured command output to a file instead of holding it
@@ -38,6 +41,30 @@ type deliverSpool struct {
 	// held through the rename so a concurrent writer to the same path is
 	// refused up front instead of racing the delivery.
 	lock *cliutil.WriterLock
+}
+
+// Delivery outlives RunE and does not yet share its ownership chain. Refuse
+// overlapping output roles before either lock is acquired, not as contention.
+func validateDeliverOutputTarget(cmd *cobra.Command, flags *rootFlags) error {
+	if flags == nil || !strings.HasPrefix(flags.deliverSpec, "file:") || cmd.Flags().Lookup("output") == nil {
+		return nil
+	}
+	output, err := cmd.Flags().GetString("output")
+	if err != nil || strings.TrimSpace(output) == "" {
+		return nil
+	}
+	outputLock, _, err := outputWriterLockPath(output)
+	if err != nil {
+		return usageErr(err)
+	}
+	deliverLock, _, err := outputWriterLockPath(strings.TrimSpace(strings.TrimPrefix(flags.deliverSpec, "file:")))
+	if err != nil {
+		return usageErr(err)
+	}
+	if outputLock == deliverLock {
+		return usageErr(fmt.Errorf("--output and --deliver file: must name different files"))
+	}
+	return nil
 }
 
 // acquireDeliverLock takes the output collision lock for a file sink. A busy

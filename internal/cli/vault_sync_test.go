@@ -345,14 +345,15 @@ func TestVaultSyncPreviewsWithoutWriting(t *testing.T) {
 			flags := tc.flags
 			out := runVaultSync(t, &flags, []string{"--vault", vault})
 			var report struct {
-				Counts map[string]int `json:"counts"`
-				DryRun bool           `json:"dry_run"`
+				Counts  map[string]int `json:"counts"`
+				DryRun  bool           `json:"dry_run"`
+				Preview bool           `json:"preview"`
 			}
 			if err := json.Unmarshal([]byte(out), &report); err != nil {
 				t.Fatalf("decode report %q: %v", out, err)
 			}
-			if !report.DryRun || report.Counts["would_create"] != 1 {
-				t.Errorf("%s report = %+v, want dry_run + would_create=1", tc.name, report)
+			if !report.Preview || report.DryRun || report.Counts["would_create"] != 1 {
+				t.Errorf("%s report = %+v, want preview + dry_run=false + would_create=1", tc.name, report)
 			}
 			if _, err := os.Stat(vault); !os.IsNotExist(err) {
 				t.Errorf("%s: preview created the vault directory", tc.name)
@@ -598,11 +599,16 @@ func TestVaultSyncReportFailsForIssues(t *testing.T) {
 
 func TestSanitizeVaultFilename(t *testing.T) {
 	cases := map[string]string{
-		"vaswani2017": "vaswani2017",
-		"a/b:c*d?":    "a-b-c-d",
-		"  spaced  ":  "spaced",
-		"":            "untitled",
-		"...":         "untitled",
+		"vaswani2017":     "vaswani2017",
+		"a/b:c*d?":        "a-b-c-d",
+		"  spaced  ":      "spaced",
+		"":                "untitled",
+		"...":             "untitled",
+		`..\..\evil`:      "evil",
+		`a\b`:             "a-b",
+		`a<b>c|d"e`:       "a-b-c-d-e",
+		"a\x01b\x1fc":     "a-b-c",
+		"../../etc/hosts": "etc-hosts",
 	}
 	for in, want := range cases {
 		if got := sanitizeVaultFilename(in); got != want {

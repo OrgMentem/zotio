@@ -186,7 +186,8 @@ func recordMutationJournal(env *mutation.Envelope) error {
 	if env == nil || env.Result == nil {
 		return nil
 	}
-	if env.Result.Summary.Applied == 0 && !resultHasCommittedWrite(env.Result) {
+	hasWrite := env.Result.Summary.Applied > 0 || resultHasCommittedWrite(env.Result)
+	if !hasWrite && env.Undoes == "" {
 		// Nothing was written, so there is no run to record — but leave a journal
 		// object rather than null so one extraction path (`.journal.run_id`) works
 		// across every outcome of a command instead of throwing on no-ops.
@@ -196,6 +197,13 @@ func recordMutationJournal(env *mutation.Envelope) error {
 	entry, ok := mutation.BuildJournalEntry(*env, time.Now())
 	if !ok {
 		return nil
+	}
+	if !hasWrite {
+		// A completed undo with no landed or uncertain writes releases its
+		// reservation. Keep the final record so folding suppresses the partial
+		// reservation, but do not claim that it reversed the original run.
+		entry.Undoes = ""
+		env.Undoes = ""
 	}
 	entry.WorkflowRunID = activeWorkflowRunID
 	entry.Library = currentJournalLibrary()
@@ -207,6 +215,9 @@ func recordMutationJournal(env *mutation.Envelope) error {
 		return err
 	}
 	journal := map[string]any{"run_id": entry.RunID}
+	if entry.Undoes != "" {
+		journal["undoes"] = entry.Undoes
+	}
 	if entry.WorkflowRunID != "" {
 		journal["workflow_run_id"] = entry.WorkflowRunID
 	}
@@ -393,9 +404,42 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
-// newJournalUndoCmd reverses the reversible changes of a recorded run. Only
-// tag/collection membership toggles are reversed; non-reversible ops (merges,
-// deletions, field overwrites, renames) are reported and skipped, never guessed.
+// refuseRecordedUndo checks the whole journal, including interrupted undo runs.
+// The installation writer lock keeps the check and the reservation serialized.
+func refuseRecordedUndo(runID string) error {
+	dir, err := journalDir()
+	if err != nil {
+		return err
+	}
+	entries, err := mutation.ListEntries(dir)
+	if err != nil {
+		return journalEntryLookupErr(err)
+	}
+	for _, entry := range entries {
+		if entry.Undoes == runID {
+			return preconditionErr(fmt.Errorf("run %s already has recorded undo run %s; inspect that run before recovery", runID, entry.RunID))
+		}
+	}
+	return nil
+}
+
+// reserveJournalUndo writes the link before the first inverse request. Even a
+// crash before its outcome arrives must prevent a later replay over new edits.
+func reserveJournalUndo(runID, undoes string) error {
+	dir, err := journalDir()
+	if err != nil {
+		return err
+	}
+	return mutation.WriteEntry(dir, mutation.JournalEntry{
+		SchemaVersion: mutation.JournalSchemaVersion,
+		RunID:         runID, Undoes: undoes, Operation: "journal.undo",
+		Library: currentJournalLibrary(), Mode: "apply", Timestamp: time.Now().UTC(),
+		Partial: true,
+	})
+}
+
+// newJournalUndoCmd reverses recorded membership changes, captured fields and
+// reversible item lifecycle changes. It refuses a run with an earlier undo.
 // Preview-first like every mutation: pass --yes to apply.
 func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
@@ -403,6 +447,8 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 		Short: "Reverse a recorded run's reversible changes (tags, collections, captured fields, created items)",
 		Long: `Reverses what one journal entry recorded, as one new run that is itself journaled.
 Without --yes it only previews the reversal; add --yes to apply it.
+A run with an earlier recorded undo cannot be undone again. This also protects
+interrupted undo runs: inspect the earlier undo before you recover its writes.
 
 What it reverses:
   - tag and collection additions and removals: each one is inverted
@@ -434,6 +480,9 @@ entry it lists.`,
 			if err := ensureJournalLibraryMatches(entry); err != nil {
 				return err
 			}
+			if err := refuseRecordedUndo(entry.RunID); err != nil {
+				return err
+			}
 			inverse, refused := mutation.InverseOps(entry)
 
 			var writeClient *client.Client
@@ -444,11 +493,13 @@ entry it lists.`,
 				}
 			}
 
+			undoRunID := mutation.NewRunID(time.Now())
+			reserved := false
 			ops := make([]mutation.Op, 0, len(inverse))
 			for _, inv := range inverse {
 				path := replacePathParam("/items/{itemKey}", "itemKey", inv.Key)
 				changes := inv.Changes
-				op := mutation.Op{ID: inv.ID, Key: inv.Key, Kind: inv.Kind, Changes: changes, Reconciles: true}
+				op := mutation.Op{ID: inv.ID, Key: inv.Key, Kind: inv.Kind, Changes: changes, Reconciles: true, Undoes: entry.RunID}
 				// An inverse skips whatever the live item no longer holds, so
 				// the mirror must replay and record only what the PATCH sent.
 				var effective []mutation.Change
@@ -456,6 +507,12 @@ entry it lists.`,
 				op.Apply = func() (string, any, error) {
 					if writeClient == nil {
 						return "failed", "no write client", errors.New("no write client")
+					}
+					if !reserved && mutationJournalRecorder != nil {
+						if err := reserveJournalUndo(undoRunID, entry.RunID); err != nil {
+							return "failed", err.Error(), preconditionErr(err)
+						}
+						reserved = true
 					}
 					switch inv.Kind {
 					case "undo.item_create", "undo.item_restore":
@@ -470,7 +527,9 @@ entry it lists.`,
 				ops = append(ops, op)
 			}
 
-			env, runErr := runMutation(cmd.Context(), flags, "journal.undo", ops)
+			env, runErr := runMutation(cmd.Context(), flags, "journal.undo", ops, func(o *mutation.Options) {
+				o.RunID = undoRunID
+			})
 			attachUndoRefusals(&env, refused)
 			if !env.OK && runErr == nil {
 				// attachUndoRefusals forced ok=false because nothing in this run was

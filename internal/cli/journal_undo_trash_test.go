@@ -128,12 +128,17 @@ func TestJournalUndoReversesItemsDelete(t *testing.T) {
 		t.Fatal("mirror should no longer list K in items-trash after undo")
 	}
 
-	again := mustUndoJournalRun(t, runID)
-	if again.Result == nil || again.Result.Summary.Applied != 0 || len(again.Result.Items) != 1 || again.Result.Items[0].Status != "no_op" {
-		t.Fatalf("second undo = %+v, want no_op", again.Result)
+	undoJournal, _ := env.Journal.(map[string]any)
+	earlierUndo, _ := undoJournal["run_id"].(string)
+	if earlierUndo == "" {
+		t.Fatalf("undo journal = %#v, want recorded run ID", env.Journal)
 	}
-	if b, _ := json.Marshal(again.Result.Items[0].Reason); !bytes.Contains(b, []byte("already restored")) {
-		t.Fatalf("reason = %s, want already restored", b)
+	again := newJournalCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	again.SetArgs([]string{"undo", runID})
+	again.SetOut(&bytes.Buffer{})
+	again.SetErr(&bytes.Buffer{})
+	if err := again.Execute(); ExitCode(err) != 9 || !bytes.Contains([]byte(err.Error()), []byte(earlierUndo)) {
+		t.Fatalf("second undo error = %v, want exit 9 naming %s", err, earlierUndo)
 	}
 	if len(p.patches) != 2 {
 		t.Fatalf("second undo sent a PATCH: %v", p.patches)

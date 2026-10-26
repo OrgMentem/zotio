@@ -36,17 +36,9 @@ after each sync (or run 'zotio workflow run refresh.json --yes').`,
 		Annotations: map[string]string{
 			"mcp:read-only": "false",
 		},
-		Args: cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
+		PreRunE: validateSearchesMaterializeUsage,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if toCollection == "" {
-				return usageErr(fmt.Errorf("required flag %q not set", "to"))
-			}
-			if err := validateKeyArg("collection", toCollection); err != nil {
-				return err
-			}
-			if err := validateKeyArg("search", args[0]); err != nil {
-				return err
-			}
 			return runSearchesMaterializeMutation(cmd, flags, args[0], toCollection, prune)
 		},
 	}

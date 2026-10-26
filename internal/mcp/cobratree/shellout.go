@@ -80,6 +80,22 @@ func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) s
 // --agent/--json and the other global formatting/confirmation flags. Shared by
 // the command mirror (inProcessHandler) and the orchestration facade (command_run).
 func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) (result *mcplib.CallToolResult) {
+	var positionals []string
+	if rawArgs, exists := args["args"]; exists && rawArgs != nil {
+		text, ok := rawArgs.(string)
+		if !ok {
+			return mcplib.NewToolResultError(mirrorArgsTypeError(rawArgs).Error())
+		}
+		if strings.TrimSpace(text) != "" {
+			positionals = splitShellArgs(text)
+		}
+	}
+	return runMirroredWithPositionals(ctx, rootFactory, commandPath, args, positionals)
+}
+
+// runMirroredWithPositionals preserves internally generated positional arguments
+// as argv elements instead of interpreting filesystem paths as shell input.
+func runMirroredWithPositionals(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any, positionals []string) (result *mcplib.CallToolResult) {
 	// CLI package state (notably the group-selected local DB/API prefix) is still
 	// process-global. Serialize the
 	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
@@ -109,15 +125,7 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 		finalArgs = append(finalArgs, "--agent")
 	}
 	finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
-	if rawArgs, exists := args["args"]; exists && rawArgs != nil {
-		text, ok := rawArgs.(string)
-		if !ok {
-			return mcplib.NewToolResultError(mirrorArgsTypeError(rawArgs).Error())
-		}
-		if strings.TrimSpace(text) != "" {
-			finalArgs = append(finalArgs, splitShellArgs(text)...)
-		}
-	}
+	finalArgs = append(finalArgs, positionals...)
 	root.SetOut(&buf)
 	root.SetErr(&buf)
 	// Bind input as well as output. Cobra's InOrStdin falls back to os.Stdin,

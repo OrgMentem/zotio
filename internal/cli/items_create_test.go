@@ -1572,14 +1572,19 @@ func TestConnectorCreateAmbiguousRecovery(t *testing.T) {
 	if err == nil {
 		t.Fatal("routeCreateItemVia succeeded, want ambiguous recovery error")
 	}
-	if !strings.Contains(err.Error(), "2 recently added items share this title") {
-		t.Fatalf("error = %q, want ambiguous recovery message", err)
+	if !strings.Contains(err.Error(), "outcome is unresolved (2 matching items)") || !strings.Contains(err.Error(), "check the library before retrying") {
+		t.Fatalf("error = %q, want unresolved recovery message and retry guidance", err)
 	}
 	if strings.Contains(err.Error(), "STALE1") || strings.Contains(err.Error(), "STALE2") {
 		t.Fatalf("error = %q, must not report a guessed key", err)
 	}
 	if res.WebKey != "" {
 		t.Fatalf("recovered key = %q, want empty for ambiguous recovery", res.WebKey)
+	}
+	status, detail, _ := singleItemCreateApplyResult(res, err, "")
+	reason, _ := detail.(map[string]any)
+	if status != "conflict" || reason["committed"] != true || reason["outcome"] != "unknown" || res.Session == "" || res.ConnKey == "" {
+		t.Fatalf("ambiguous recovery lost committed/unknown evidence: status=%s reason=%v result=%+v", status, reason, res)
 	}
 	if attachmentResolverCalls != 0 {
 		t.Fatalf("attachment resolver calls = %d, want none after ambiguous recovery", attachmentResolverCalls)
@@ -1591,6 +1596,7 @@ func TestConnectorCreateAmbiguousRecovery(t *testing.T) {
 // applied with an empty key. Fails before the fix, which decoded only Failed
 // and read the error page as zero failures.
 func TestItemsCreateNonEnvelopeBodyFailsClosed(t *testing.T) {
+	setupCreateRouteJournal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"error":"proxy error"}`))
@@ -1605,8 +1611,8 @@ func TestItemsCreateNonEnvelopeBodyFailsClosed(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
 	err := cmd.Execute()
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("items create error = %v, exit=%d; want unresolved conflict", err, ExitCode(err))
 	}
 	for _, want := range []string{"items create", "not a batch envelope", "outcome of the 1 item(s) in that request is unknown"} {
 		if !strings.Contains(err.Error(), want) {
@@ -1617,9 +1623,10 @@ func TestItemsCreateNonEnvelopeBodyFailsClosed(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
 	}
-	if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
-		t.Fatalf("result = %s, want 0 applied and 1 failed", out.String())
+	if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Conflicts != 1 {
+		t.Fatalf("result = %s, want 0 applied and 1 conflict", out.String())
 	}
+	assertCreateRouteUnknown(t, env)
 	if key := env.Result.Items[0].Key; key != "" {
 		t.Fatalf("result item key = %q, want empty: a non-envelope body proves no key", key)
 	}
@@ -1660,6 +1667,7 @@ func TestItemsCreateAcceptsSuccessSuccessfulOverlap(t *testing.T) {
 // response says the object was both created and rejected. The gate must
 // refuse it rather than report the item applied.
 func TestItemsCreateRejectsConflictingClaim(t *testing.T) {
+	setupCreateRouteJournal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"bad"}}}`))
@@ -1674,8 +1682,8 @@ func TestItemsCreateRejectsConflictingClaim(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
 	err := cmd.Execute()
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("items create error = %v, exit=%d; want unresolved conflict", err, ExitCode(err))
 	}
 	if !strings.Contains(err.Error(), `attributed index "0" twice`) {
 		t.Fatalf("items create error = %q, want the double-claim detail", err)
@@ -1687,6 +1695,7 @@ func TestItemsCreateRejectsConflictingClaim(t *testing.T) {
 	if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 {
 		t.Fatalf("result = %s, want no applied item for a conflicting claim", out.String())
 	}
+	assertCreateRouteUnknown(t, env)
 }
 
 // stubItemPoster answers every create POST with one canned batch envelope and

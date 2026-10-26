@@ -19,9 +19,9 @@ import (
 )
 
 func TestResolveWebWriteBase(t *testing.T) {
-	// No key -> no routing (writes hit the local read-only guard).
-	if base, err := resolveWebWriteBase(context.Background(), &config.Config{}, "", time.Second); err != nil || base != "" {
-		t.Errorf("no key: got (%q, %v), want (\"\", nil)", base, err)
+	// A missing key is an actionable precondition failure for an apply.
+	if base, err := resolveWebWriteBase(context.Background(), &config.Config{}, "", time.Second); ExitCode(err) != 9 || base != "" {
+		t.Errorf("no key: got (%q, %v), want empty route and exit 9", base, err)
 	}
 	got, err := resolveWebWriteBase(context.Background(), &config.Config{ZoteroApiKey: "k", UserID: "99999"}, "", time.Second)
 	if err != nil || got != zoteroWebAPIBase+"/users/99999" {

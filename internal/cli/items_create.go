@@ -240,13 +240,19 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 		// applied, so the envelope must be verified first.
 		if envErr := checkBatchEnvelope(data, len(ops)); envErr != nil {
 			envelope = fmt.Errorf("items create: %w; the outcome of the %d item(s) in that request is unknown", envErr, len(ops))
-			b.err = degradedErr(envelope)
+			b.err = envelope
 			return
 		}
 		failed = decodeBatchWriteResponse(data).Failed
 		keys = itemsCreateKeysByIndex(data)
 		if bwErr := batchWriteFailuresError("items create", failed); bwErr != nil {
-			b.err = degradedErr(bwErr)
+			b.err = bwErr
+			for _, failure := range failed {
+				if !failure.Malformed {
+					b.err = degradedErr(bwErr)
+					break
+				}
+			}
 		}
 	}
 	for i := range ops {
@@ -262,13 +268,21 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 				return "failed", nil, transport
 			}
 			if ambiguous != nil {
-				return "conflict", map[string]any{"committed": true, "message": ambiguous.Error()}, ambiguous
+				return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": ambiguous.Error()}, ambiguous
 			}
 			if envelope != nil {
-				return "failed", envelope.Error(), envelope
+				return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": envelope.Error()}, envelope
 			}
 			if failure, ok := failed[strconv.Itoa(index)]; ok {
+				if failure.Malformed {
+					err := ambiguousCreateRefusal("items create", "item", fmt.Errorf("%s", failure.detail(strconv.Itoa(index))))
+					return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
+				}
 				return "failed", failure.detail(strconv.Itoa(index)), nil
+			}
+			if keys[strconv.Itoa(index)] == "" {
+				err := ambiguousCreateRefusal("items create", "item", fmt.Errorf("could not read created item key from /items response"))
+				return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
 			}
 			return "applied", itemCreateAppliedReason("web", keys[strconv.Itoa(index)]), nil
 		}
@@ -333,6 +347,7 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 		}
 		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
 		sent = true
+		defer invalidateAfterConnectorWrite(flags)
 		if err := conn.SaveItems(ctx, sessionID, "", payload); err != nil {
 			// Zotero's connector can return an error AFTER having already
 			// created the items (observed: HTTP 500 with the item present at

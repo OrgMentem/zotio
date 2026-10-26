@@ -145,6 +145,9 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 		Args:        cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.Join(args, " ")
+			if strings.TrimSpace(query) == "" {
+				return usageErr(fmt.Errorf("search query is empty; pass a word or phrase, e.g. zotio search \"attention\""))
+			}
 			if err := validateLimitFlag("--limit", limit); err != nil {
 				return err
 			}
@@ -299,6 +302,18 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)
+			}
+			if len(results) == 0 && fulltextOnly && (fulltextSearch.ParentKeys == nil || len(fulltextSearch.ParentKeys) > 0) {
+				ready, readyErr := db.FulltextSearchReadyContext(cmd.Context())
+				if readyErr != nil {
+					return fmt.Errorf("checking fulltext index readiness: %w", readyErr)
+				}
+				if !ready {
+					if liveErr != nil {
+						return preconditionErr(fmt.Errorf("Zotero API unreachable and no synced full text was indexed to search. Run 'zotio sync --fulltext' to index PDF text for offline search.\n\nOriginal error: %w", liveErr))
+					}
+					return preconditionErr(fmt.Errorf("no synced full text to search. Run 'zotio sync --fulltext' to index PDF text for offline search"))
+				}
 			}
 			// An empty answer from a mirror file that never completed an items
 			// sync (created by a write-through, or by syncing another

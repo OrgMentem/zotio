@@ -182,7 +182,7 @@ func healthBadgeForReport(report healthReport, label string) healthBadge {
 		badge.Color = "lightgrey"
 		return badge
 	}
-	if report.Gate != nil && report.Gate.Status == "indeterminate" {
+	if report.Gate != nil && report.Gate.Status == "indeterminate" || healthSkippedGate(report, report.baselineGate) {
 		badge.Message = "setup required"
 		badge.Color = "orange"
 		return badge
@@ -754,16 +754,16 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		if err != nil {
 			return report, fmt.Errorf("health check %s: %w", chk.kind, err)
 		}
+		findings = filterFindingsByScope(findings, scopeSet)
 		if skip != nil {
 			report.Skipped = append(report.Skipped, *skip)
-			report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Skipped: true})
+			report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Skipped: true, Count: len(findings)})
 			if failOn != "" && severityRank(chk.severity) >= failOnRank(failOn) {
 				gateBlockedBySkip = true
 			}
-			continue
+		} else {
+			report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
 		}
-		findings = filterFindingsByScope(findings, scopeSet)
-		report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
 		// baseline writes use the complete finding identity set, not the display limit.
 		report.Summary.add(chk.severity, len(findings))
 		report.allFindings = append(report.allFindings, findings...)
@@ -870,10 +870,28 @@ func healthGateExitError(report healthReport) error {
 	}
 }
 
+// healthSkippedGate applies the same skipped-check threshold to either gate.
+func healthSkippedGate(report healthReport, threshold string) bool {
+	if threshold == "" {
+		return false
+	}
+	for _, skip := range report.Skipped {
+		for _, chk := range healthCheckRegistry() {
+			if chk.kind == skip.Kind && severityRank(chk.severity) >= failOnRank(threshold) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // map --fail-on-new to the same quality-gate exit constructor as --fail-on.
 func healthNewGateExitError(report healthReport) error {
 	if report.Baseline == nil || report.baselineGate == "" {
 		return nil
+	}
+	if healthSkippedGate(report, report.baselineGate) {
+		return preconditionErr(fmt.Errorf("library health: a baseline gate-relevant check was skipped; cannot certify health"))
 	}
 	newSummary := healthSummaryForFindings(report.Baseline.New)
 	if !gateCrossed(newSummary, report.baselineGate) {
@@ -1395,7 +1413,7 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 		return nil, nil, err
 	}
 	if report.Summary.Errors > 0 {
-		return nil, &healthSkip{
+		return retractionHealthFindings(report.Findings, ctx.src), &healthSkip{
 			Kind:         "retracted_item",
 			Precondition: "external_crossref",
 			Detail:       fmt.Sprintf("CrossRef retraction checking encountered %d lookup error(s); cannot certify retractions.", report.Summary.Errors),

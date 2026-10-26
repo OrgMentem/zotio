@@ -128,3 +128,14 @@ dishonest.
   `TestItemsTagsBatchSplitsAtZoteroCeiling` pin these counts. The roughly 3x
   figure in Consequences is the historical measurement of batched writes with
   snapshot reuse, taken while planning was still per item.
+
+- **2026-10-26 — cancellation preserves decoded outcomes and uncertain writes.**
+  This supersedes the blanket unknown-outcome statement in Decision 2's
+  cancellation paragraph. Each batch op exposes `Dispatched`, so the engine
+  collects the chunk's decoded outcomes before checkpointing and final
+  journaling. Cancellation never relabels a known applied or rejected result
+  as unknown. An ambiguous transport failure or unattributable response keeps
+  `committed: true` and `outcome: "unknown"` evidence, including the requested
+  fields, in the journal. Undo explicitly refuses these uncertain writes rather
+  than silently omitting them. Guarded single-item writes reconcile through a
+  bounded context that survives cancellation of the write request.

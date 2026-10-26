@@ -1,10 +1,10 @@
 {
 	"collections": [
 		{
-			"key": "CTRANSFRM",
+			"key": "CTRA2222",
 			"version": 1,
 			"data": {
-				"key": "CTRANSFRM",
+				"key": "CTRA2222",
 				"version": 1,
 				"name": "Transformers & Attention"
 			}
@@ -19,10 +19,10 @@
 			}
 		},
 		{
-			"key": "CMETHODS",
+			"key": "CMET2223",
 			"version": 1,
 			"data": {
-				"key": "CMETHODS",
+				"key": "CMET2223",
 				"version": 1,
 				"name": "Research Methods"
 			}
@@ -30,10 +30,10 @@
 	],
 	"items": [
 		{
-			"key": "ALEXNET01",
+			"key": "ALEX2224",
 			"version": 1,
 			"data": {
-				"key": "ALEXNET01",
+				"key": "ALEX2224",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "ImageNet Classification with Deep Convolutional Neural Networks",
@@ -74,10 +74,10 @@
 			}
 		},
 		{
-			"key": "IMAGENET09",
+			"key": "IMAG2225",
 			"version": 1,
 			"data": {
-				"key": "IMAGENET09",
+				"key": "IMAG2225",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "ImageNet: A Large-Scale Hierarchical Image Database",
@@ -115,10 +115,10 @@
 			}
 		},
 		{
-			"key": "LSTM000097",
+			"key": "LSTM2226",
 			"version": 1,
 			"data": {
-				"key": "LSTM000097",
+				"key": "LSTM2226",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Long Short-Term Memory",
@@ -151,10 +151,10 @@
 			}
 		},
 		{
-			"key": "PAGERANK99",
+			"key": "PAGE2227",
 			"version": 1,
 			"data": {
-				"key": "PAGERANK99",
+				"key": "PAGE2227",
 				"version": 1,
 				"itemType": "report",
 				"title": "The PageRank Citation Ranking: Bringing Order to the Web",
@@ -193,10 +193,10 @@
 			}
 		},
 		{
-			"key": "BITCOIN008",
+			"key": "BITC2228",
 			"version": 1,
 			"data": {
-				"key": "BITCOIN008",
+				"key": "BITC2228",
 				"version": 1,
 				"itemType": "report",
 				"title": "Bitcoin: A Peer-to-Peer Electronic Cash System",
@@ -223,10 +223,10 @@
 			}
 		},
 		{
-			"key": "MAPREDUCE4",
+			"key": "MAPR2229",
 			"version": 1,
 			"data": {
-				"key": "MAPREDUCE4",
+				"key": "MAPR2229",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "MapReduce: Simplified Data Processing on Large Clusters",
@@ -259,10 +259,10 @@
 			}
 		},
 		{
-			"key": "ATTENTION1",
+			"key": "ATTE222A",
 			"version": 1,
 			"data": {
-				"key": "ATTENTION1",
+				"key": "ATTE222A",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Attention Is All You Need",
@@ -305,16 +305,16 @@
 				],
 				"extra": "Citation Key: vaswani2017attention\narXiv: 1706.03762",
 				"collections": [
-					"CTRANSFRM"
+					"CTRA2222"
 				],
 				"dateAdded": "2024-01-12T13:30:00Z"
 			}
 		},
 		{
-			"key": "BERT000019",
+			"key": "BERT222B",
 			"version": 1,
 			"data": {
-				"key": "BERT000019",
+				"key": "BERT222B",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
@@ -357,16 +357,16 @@
 				],
 				"extra": "Citation Key: devlin2019bert",
 				"collections": [
-					"CTRANSFRM"
+					"CTRA2222"
 				],
 				"dateAdded": "2024-02-03T09:00:00Z"
 			}
 		},
 		{
-			"key": "RESNET0016",
+			"key": "RESN222C",
 			"version": 1,
 			"data": {
-				"key": "RESNET0016",
+				"key": "RESN222C",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Deep Residual Learning for Image Recognition",
@@ -412,10 +412,10 @@
 			}
 		},
 		{
-			"key": "TRANSXL019",
+			"key": "TRAN222D",
 			"version": 1,
 			"data": {
-				"key": "TRANSXL019",
+				"key": "TRAN222D",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Transformer-XL: Attentive Language Models beyond a Fixed-Length Context",
@@ -450,16 +450,16 @@
 				],
 				"extra": "Citation Key: dai2019transformerxl",
 				"collections": [
-					"CTRANSFRM"
+					"CTRA2222"
 				],
 				"dateAdded": "2024-04-15T12:00:00Z"
 			}
 		},
 		{
-			"key": "WORD2VEC13",
+			"key": "W2RD222E",
 			"version": 1,
 			"data": {
-				"key": "WORD2VEC13",
+				"key": "W2RD222E",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Efficient Estimation of Word Representations in Vector Space",
@@ -502,10 +502,10 @@
 			}
 		},
 		{
-			"key": "GLOVE00014",
+			"key": "GL2V222F",
 			"version": 1,
 			"data": {
-				"key": "GLOVE00014",
+				"key": "GL2V222F",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "GloVe: Global Vectors for Word Representation",
@@ -539,10 +539,10 @@
 			}
 		},
 		{
-			"key": "DROPOUT014",
+			"key": "DR2P222G",
 			"version": 1,
 			"data": {
-				"key": "DROPOUT014",
+				"key": "DR2P222G",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Dropout: A Simple Way to Prevent Neural Networks from Overfitting",
@@ -579,10 +579,10 @@
 			}
 		},
 		{
-			"key": "BATCHNORM5",
+			"key": "BATC222H",
 			"version": 1,
 			"data": {
-				"key": "BATCHNORM5",
+				"key": "BATC222H",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift",
@@ -615,10 +615,10 @@
 			}
 		},
 		{
-			"key": "GANORIG014",
+			"key": "GANR222I",
 			"version": 1,
 			"data": {
-				"key": "GANORIG014",
+				"key": "GANR222I",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Generative Adversarial Networks",
@@ -657,10 +657,10 @@
 			}
 		},
 		{
-			"key": "GANDUP0014",
+			"key": "GAND222J",
 			"version": 1,
 			"data": {
-				"key": "GANDUP0014",
+				"key": "GAND222J",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Generative Adversarial Networks",
@@ -689,10 +689,10 @@
 			}
 		},
 		{
-			"key": "DQNATARI13",
+			"key": "DQNA222K",
 			"version": 1,
 			"data": {
-				"key": "DQNATARI13",
+				"key": "DQNA222K",
 				"version": 1,
 				"itemType": "preprint",
 				"title": "Playing Atari with Deep Reinforcement Learning",
@@ -733,10 +733,10 @@
 			}
 		},
 		{
-			"key": "DDPM002020",
+			"key": "DDPM222L",
 			"version": 1,
 			"data": {
-				"key": "DDPM002020",
+				"key": "DDPM222L",
 				"version": 1,
 				"itemType": "preprint",
 				"title": "Denoising Diffusion Probabilistic Models",
@@ -777,10 +777,10 @@
 			}
 		},
 		{
-			"key": "GPT3002020",
+			"key": "GPT3222M",
 			"version": 1,
 			"data": {
-				"key": "GPT3002020",
+				"key": "GPT3222M",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Language Models are Few-Shot Learners",
@@ -815,16 +815,16 @@
 				],
 				"extra": "Citation Key: brown2020gpt3\narXiv: 2005.14165",
 				"collections": [
-					"CTRANSFRM"
+					"CTRA2222"
 				],
 				"dateAdded": "2025-06-08T15:45:00Z"
 			}
 		},
 		{
-			"key": "ADAM002015",
+			"key": "ADAM222N",
 			"version": 1,
 			"data": {
-				"key": "ADAM002015",
+				"key": "ADAM222N",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Adam: A Method for Stochastic Optimization",
@@ -857,16 +857,16 @@
 				],
 				"extra": "Citation Key: kingma2015adam\narXiv: 1412.6980",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2025-08-22T11:00:00Z"
 			}
 		},
 		{
-			"key": "ALPHAGO016",
+			"key": "ALPH222P",
 			"version": 1,
 			"data": {
-				"key": "ALPHAGO016",
+				"key": "ALPH222P",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Mastering the Game of Go with Deep Neural Networks and Tree Search",
@@ -903,10 +903,10 @@
 			}
 		},
 		{
-			"key": "HUMANRL015",
+			"key": "HUMA222Q",
 			"version": 1,
 			"data": {
-				"key": "HUMANRL015",
+				"key": "HUMA222Q",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Human-Level Control through Deep Reinforcement Learning",
@@ -940,10 +940,10 @@
 			}
 		},
 		{
-			"key": "CRISPRJ012",
+			"key": "CRIS222R",
 			"version": 1,
 			"data": {
-				"key": "CRISPRJ012",
+				"key": "CRIS222R",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "A Programmable Dual-RNA–Guided DNA Endonuclease in Adaptive Bacterial Immunity",
@@ -981,16 +981,16 @@
 				],
 				"extra": "Citation Key: jinek2012crispr",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2026-01-09T09:00:00Z"
 			}
 		},
 		{
-			"key": "CRISPRC013",
+			"key": "CRIS222S",
 			"version": 1,
 			"data": {
-				"key": "CRISPRC013",
+				"key": "CRIS222S",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Multiplex Genome Engineering Using CRISPR/Cas Systems",
@@ -1025,16 +1025,16 @@
 				],
 				"extra": "Citation Key: cong2013crispr",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2026-02-14T11:30:00Z"
 			}
 		},
 		{
-			"key": "DLNATURE15",
+			"key": "DLNA222T",
 			"version": 1,
 			"data": {
-				"key": "DLNATURE15",
+				"key": "DLNA222T",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Deep Learning",
@@ -1075,10 +1075,10 @@
 			}
 		},
 		{
-			"key": "FAIR002016",
+			"key": "FAIR222U",
 			"version": 1,
 			"data": {
-				"key": "FAIR002016",
+				"key": "FAIR222U",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "The FAIR Guiding Principles for Scientific Data Management and Stewardship",
@@ -1113,16 +1113,16 @@
 				],
 				"extra": "Citation Key: smith2020data",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2026-03-17T10:15:00Z"
 			}
 		},
 		{
-			"key": "TIDYDATA14",
+			"key": "TIDY222V",
 			"version": 1,
 			"data": {
-				"key": "TIDYDATA14",
+				"key": "TIDY222V",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Tidy Data",
@@ -1147,16 +1147,16 @@
 				],
 				"extra": "Citation Key: smith2020data",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2026-06-27T09:45:00Z"
 			}
 		},
 		{
-			"key": "ILSVRC0015",
+			"key": "ILSV222W",
 			"version": 1,
 			"data": {
-				"key": "ILSVRC0015",
+				"key": "ILSV222W",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "ImageNet Large Scale Visual Recognition Challenge",
@@ -1193,10 +1193,10 @@
 			}
 		},
 		{
-			"key": "DOMINGOS12",
+			"key": "D2MI222X",
 			"version": 1,
 			"data": {
-				"key": "DOMINGOS12",
+				"key": "D2MI222X",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "A Few Useful Things to Know about Machine Learning",
@@ -1226,10 +1226,10 @@
 			}
 		},
 		{
-			"key": "ELEMSTAT09",
+			"key": "ELEM222Y",
 			"version": 1,
 			"data": {
-				"key": "ELEMSTAT09",
+				"key": "ELEM222Y",
 				"version": 1,
 				"itemType": "book",
 				"title": "The Elements of Statistical Learning: Data Mining, Inference, and Prediction",
@@ -1267,16 +1267,16 @@
 				],
 				"extra": "Citation Key: hastie2009elements",
 				"collections": [
-					"CMETHODS"
+					"CMET2223"
 				],
 				"dateAdded": "2026-06-29T16:00:00Z"
 			}
 		},
 		{
-			"key": "DLBOOK0016",
+			"key": "DLB22232",
 			"version": 1,
 			"data": {
-				"key": "DLBOOK0016",
+				"key": "DLB22232",
 				"version": 1,
 				"itemType": "book",
 				"title": "Deep Learning",
@@ -1315,10 +1315,10 @@
 			}
 		},
 		{
-			"key": "DISTILL015",
+			"key": "DIST2233",
 			"version": 1,
 			"data": {
-				"key": "DISTILL015",
+				"key": "DIST2233",
 				"version": 1,
 				"itemType": "conferencePaper",
 				"title": "Distilling the Knowledge in a Neural Network",
@@ -1353,10 +1353,10 @@
 			}
 		},
 		{
-			"key": "GPT2002019",
+			"key": "GPT22234",
 			"version": 1,
 			"data": {
-				"key": "GPT2002019",
+				"key": "GPT22234",
 				"version": 1,
 				"itemType": "report",
 				"title": "Language Models are Unsupervised Multitask Learners",
@@ -1390,10 +1390,10 @@
 			}
 		},
 		{
-			"key": "WAKEFLD98",
+			"key": "WAKE2235",
 			"version": 1,
 			"data": {
-				"key": "WAKEFLD98",
+				"key": "WAKE2235",
 				"version": 1,
 				"itemType": "journalArticle",
 				"title": "Ileal-Lymphoid-Nodular Hyperplasia, Non-Specific Colitis, and Pervasive Developmental Disorder in Children",
@@ -1428,13 +1428,13 @@
 			}
 		},
 		{
-			"key": "PDFATTN01",
+			"key": "PDFA2236",
 			"version": 1,
 			"data": {
-				"key": "PDFATTN01",
+				"key": "PDFA2236",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "ATTENTION1",
+				"parentItem": "ATTE222A",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1443,13 +1443,13 @@
 			}
 		},
 		{
-			"key": "PDFBERT01",
+			"key": "PDFB2237",
 			"version": 1,
 			"data": {
-				"key": "PDFBERT01",
+				"key": "PDFB2237",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "BERT000019",
+				"parentItem": "BERT222B",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1458,13 +1458,13 @@
 			}
 		},
 		{
-			"key": "PDFRESN01",
+			"key": "PDFR2238",
 			"version": 1,
 			"data": {
-				"key": "PDFRESN01",
+				"key": "PDFR2238",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "RESNET0016",
+				"parentItem": "RESN222C",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1473,13 +1473,13 @@
 			}
 		},
 		{
-			"key": "PDFCRIS01",
+			"key": "PDFC2239",
 			"version": 1,
 			"data": {
-				"key": "PDFCRIS01",
+				"key": "PDFC2239",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "CRISPRJ012",
+				"parentItem": "CRIS222R",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1488,13 +1488,13 @@
 			}
 		},
 		{
-			"key": "PDFWAKE01",
+			"key": "PDFW223A",
 			"version": 1,
 			"data": {
-				"key": "PDFWAKE01",
+				"key": "PDFW223A",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "WAKEFLD98",
+				"parentItem": "WAKE2235",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1503,13 +1503,13 @@
 			}
 		},
 		{
-			"key": "PDFDLNA01",
+			"key": "PDFD223B",
 			"version": 1,
 			"data": {
-				"key": "PDFDLNA01",
+				"key": "PDFD223B",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "DLNATURE15",
+				"parentItem": "DLNA222T",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1518,13 +1518,13 @@
 			}
 		},
 		{
-			"key": "PDFALPH01",
+			"key": "PDFA223C",
 			"version": 1,
 			"data": {
-				"key": "PDFALPH01",
+				"key": "PDFA223C",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "ALPHAGO016",
+				"parentItem": "ALPH222P",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1533,13 +1533,13 @@
 			}
 		},
 		{
-			"key": "PDFMAPR01",
+			"key": "PDFM223D",
 			"version": 1,
 			"data": {
-				"key": "PDFMAPR01",
+				"key": "PDFM223D",
 				"version": 1,
 				"itemType": "attachment",
-				"parentItem": "MAPREDUCE4",
+				"parentItem": "MAPR2229",
 				"title": "Full Text PDF",
 				"contentType": "application/pdf",
 				"linkMode": "imported_file",
@@ -1548,13 +1548,13 @@
 			}
 		},
 		{
-			"key": "ANNOATT1",
+			"key": "ANN2223E",
 			"version": 1,
 			"data": {
-				"key": "ANNOATT1",
+				"key": "ANN2223E",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFATTN01",
+				"parentItem": "PDFA2236",
 				"annotationType": "highlight",
 				"annotationText": "The Transformer allows for significantly more parallelization than recurrent models.",
 				"annotationColor": "#ffd400",
@@ -1564,13 +1564,13 @@
 			}
 		},
 		{
-			"key": "ANNOATT2",
+			"key": "ANN2223F",
 			"version": 1,
 			"data": {
-				"key": "ANNOATT2",
+				"key": "ANN2223F",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFATTN01",
+				"parentItem": "PDFA2236",
 				"annotationType": "highlight",
 				"annotationText": "Self-attention connects all positions with a constant number of operations.",
 				"annotationColor": "#ffd400",
@@ -1579,13 +1579,13 @@
 			}
 		},
 		{
-			"key": "ANNOATT3",
+			"key": "ANN2223G",
 			"version": 1,
 			"data": {
-				"key": "ANNOATT3",
+				"key": "ANN2223G",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFATTN01",
+				"parentItem": "PDFA2236",
 				"annotationType": "highlight",
 				"annotationText": "We propose multi-head attention to jointly attend to information from different representation subspaces.",
 				"annotationColor": "#a28ae5",
@@ -1594,13 +1594,13 @@
 			}
 		},
 		{
-			"key": "ANNOBERT1",
+			"key": "ANN2223H",
 			"version": 1,
 			"data": {
-				"key": "ANNOBERT1",
+				"key": "ANN2223H",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFBERT01",
+				"parentItem": "PDFB2237",
 				"annotationType": "highlight",
 				"annotationText": "BERT is designed to pre-train deep bidirectional representations from unlabeled text.",
 				"annotationColor": "#ffd400",
@@ -1610,13 +1610,13 @@
 			}
 		},
 		{
-			"key": "ANNOBERT2",
+			"key": "ANN2223I",
 			"version": 1,
 			"data": {
-				"key": "ANNOBERT2",
+				"key": "ANN2223I",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFBERT01",
+				"parentItem": "PDFB2237",
 				"annotationType": "highlight",
 				"annotationText": "The masked language model randomly masks tokens and predicts the original vocabulary id.",
 				"annotationColor": "#5fb236",
@@ -1625,13 +1625,13 @@
 			}
 		},
 		{
-			"key": "ANNORESN1",
+			"key": "ANN2223J",
 			"version": 1,
 			"data": {
-				"key": "ANNORESN1",
+				"key": "ANN2223J",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFRESN01",
+				"parentItem": "PDFR2238",
 				"annotationType": "highlight",
 				"annotationText": "We explicitly reformulate the layers as learning residual functions with reference to the layer inputs.",
 				"annotationColor": "#ffd400",
@@ -1640,13 +1640,13 @@
 			}
 		},
 		{
-			"key": "ANNORESN2",
+			"key": "ANN2223K",
 			"version": 1,
 			"data": {
-				"key": "ANNORESN2",
+				"key": "ANN2223K",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFRESN01",
+				"parentItem": "PDFR2238",
 				"annotationType": "highlight",
 				"annotationText": "Deep residual nets are easy to optimize, but plain nets exhibit higher training error when depth increases.",
 				"annotationColor": "#ff6666",
@@ -1655,13 +1655,13 @@
 			}
 		},
 		{
-			"key": "ANNOCRIS1",
+			"key": "ANN2223L",
 			"version": 1,
 			"data": {
-				"key": "ANNOCRIS1",
+				"key": "ANN2223L",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFCRIS01",
+				"parentItem": "PDFC2239",
 				"annotationType": "highlight",
 				"annotationText": "Cas9 can be programmed with a single guide RNA to introduce site-specific double-stranded breaks.",
 				"annotationColor": "#ffd400",
@@ -1671,13 +1671,13 @@
 			}
 		},
 		{
-			"key": "ANNOCRIS2",
+			"key": "ANN2223M",
 			"version": 1,
 			"data": {
-				"key": "ANNOCRIS2",
+				"key": "ANN2223M",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFCRIS01",
+				"parentItem": "PDFC2239",
 				"annotationType": "highlight",
 				"annotationText": "Dual-tracrRNA:crRNA can be engineered as a single guide RNA.",
 				"annotationColor": "#2ea8e5",
@@ -1686,13 +1686,13 @@
 			}
 		},
 		{
-			"key": "ANNOWAKE1",
+			"key": "ANN2223N",
 			"version": 1,
 			"data": {
-				"key": "ANNOWAKE1",
+				"key": "ANN2223N",
 				"version": 1,
 				"itemType": "annotation",
-				"parentItem": "PDFWAKE01",
+				"parentItem": "PDFW223A",
 				"annotationType": "highlight",
 				"annotationText": "The paper's conclusions were later found to be fraudulent and the article was fully retracted.",
 				"annotationColor": "#ffd400",

@@ -37,6 +37,7 @@ type importPDFResult struct {
 	File          string `json:"file"`
 	Session       string `json:"session,omitempty"`
 	Status        string `json:"status"`
+	ImportedAfter string `json:"imported_after,omitempty"`
 	CanRecognize  bool   `json:"can_recognize"`
 	Title         string `json:"title,omitempty"`
 	ItemType      string `json:"item_type,omitempty"`
@@ -53,6 +54,9 @@ type importPDFResult struct {
 	// did about it (skipped, attached, or created anyway).
 	DuplicateOf   string `json:"duplicate_of,omitempty"`
 	DuplicateNote string `json:"duplicate_note,omitempty"`
+	// pendingPath stays private: only this process can retire its own guard,
+	// after the command journals and renders this successful outcome.
+	pendingPath string
 }
 
 // zoteroCollectionKeyRE matches Zotero's real key format (8 uppercase
@@ -83,6 +87,11 @@ Before importing, each PDF is classified against your synced library the same wa
 --on-duplicate (skip, attach, or create) instead of always minting a second item; a
 synced library is required for that check, and its absence only disables the check,
 never the import.
+
+Each connector save keeps a replay guard for these exact PDF bytes until the
+completed run is journaled and rendered. An interrupted or uncertain import
+refuses another save. Check the library and reconcile the earlier session
+before removing the guard file named in the refusal.
 
 --to <key> files the created item into the collection with that key after import.
 --collection-name <name> does the same by exact name, creating the collection
@@ -179,13 +188,39 @@ does not pace connector calls.`,
 			if runErr == nil && env.Result != nil && env.Result.Summary.Applied > 0 {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return renderMutationResult(cmd, flags, env, runErr, nil)
+			return renderImportPDFMutationResult(cmd, flags, env, runErr)
 		},
 	}
 	cmd.Flags().StringVar(&toFlag, "to", "", "Destination collection key to file the created item into")
 	cmd.Flags().StringVar(&collectionNameFlag, "collection-name", "", "Exact collection name to file the created item into (created if absent)")
 	cmd.Flags().StringVar(&onDuplicateFlag, "on-duplicate", "skip", "How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create")
 	return cmd
+}
+
+// renderImportPDFMutationResult completes both standalone and manifest PDF
+// imports. The operation cannot retire its guard: recognition, filing, mirror
+// refresh, journaling and output all happen after the desktop saves the PDF.
+func renderImportPDFMutationResult(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, runErr error) error {
+	renderErr := renderMutationResult(cmd, flags, env, runErr, nil)
+	if renderErr != nil || cmd.Context().Err() != nil || env.Result == nil {
+		return renderErr
+	}
+	journal, _ := env.Journal.(map[string]any)
+	runID, _ := journal["run_id"].(string)
+	if runID == "" {
+		return renderErr
+	}
+	for _, item := range env.Result.Items {
+		result, ok := item.Reason.(importPDFResult)
+		if !ok || item.Status != "applied" || result.pendingPath == "" ||
+			(result.ItemKey == "" && result.AttachmentKey == "") {
+			continue
+		}
+		if err := os.Remove(result.pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove completed PDF import intent %s: %v\n", result.pendingPath, err)
+		}
+	}
+	return renderErr
 }
 
 // importPDFOptions configures behavior beyond bare recognition. The standalone
@@ -312,18 +347,32 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 			// item exists. Zotero sets dateAdded at import time, so anything
 			// older than this cannot be what this op created.
 			importedAfter := time.Now().UTC().Add(-importPDFClockSkew)
-			canRecognize, err := activeConn.SaveStandaloneAttachment(cmd.Context(), sessionID, filepath.Base(path), localFileURL(path), "application/pdf", data)
+			pendingPath, identity, err := importFilePendingPath(data, "pdf")
 			if err != nil {
-				if errors.Is(err, connector.ErrCommitted) {
-					// Zotero answered 201 but the body was unusable: the
-					// attachment exists, so a clean failure would invite a
-					// second import of the same PDF.
-					result := importPDFResult{File: path, Session: sessionID, Status: "recognition_unknown"}
-					return importPDFCommittedConflict(flags, result, filepath.Base(path), importedAfter, opts, err)
-				}
 				return "failed", nil, err
 			}
-			result := importPDFResult{File: path, Session: sessionID, Status: "standalone", CanRecognize: canRecognize}
+			if prior, err := readImportFilePending(pendingPath); err != nil {
+				return "failed", nil, err
+			} else if prior != nil {
+				return "failed", nil, preconditionErr(fmt.Errorf("an earlier save of this exact PDF (session %s, started %s) may already have committed; check the library and reconcile that session before removing %s and retrying", prior.Session, prior.StartedAt, pendingPath))
+			}
+			if err := writeImportFilePending(pendingPath, newImportFilePending(sessionID, identity, "pdf", 1, sessionTarget)); err != nil {
+				return "failed", nil, fmt.Errorf("recording PDF import intent before dispatch: %w", err)
+			}
+			defer invalidateAfterConnectorWrite(flags)
+			canRecognize, err := activeConn.SaveStandaloneAttachment(cmd.Context(), sessionID, filepath.Base(path), localFileURL(path), "application/pdf", data)
+			if err != nil {
+				if errors.Is(err, connector.ErrCommitted) || errors.Is(err, connector.ErrOutcomeUnknown) {
+					// The desktop may have saved the PDF before losing its
+					// reply. Keep the guard and journal the unknown outcome.
+					result := importPDFResult{File: path, Session: sessionID, Status: "recognition_unknown", ImportedAfter: importedAfter.Format(time.RFC3339)}
+					return importPDFCommittedConflict(flags, result, filepath.Base(path), importedAfter, opts, err)
+				}
+				_ = os.Remove(pendingPath)
+				return "failed", nil, err
+			}
+			result := importPDFResult{File: path, Session: sessionID, Status: "standalone", CanRecognize: canRecognize,
+				ImportedAfter: importedAfter.Format(time.RFC3339), pendingPath: pendingPath}
 			if canRecognize {
 				item, recognized, err := activeConn.GetRecognizedItem(cmd.Context(), sessionID)
 				if err != nil {
@@ -390,13 +439,12 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 	return op
 }
 
-// importPDFCommittedConflict reports a PDF that Zotero already saved but whose
-// later steps failed. It resolves the item keys where it can and returns a
-// conflict whose reason carries `committed: true`, which is what makes the
-// run journal the write and tells the operator not to import the file again.
+// importPDFCommittedConflict reports a PDF that Zotero saved or may have saved
+// before a failure. It resolves keys where possible and returns a conflict with
+// committed evidence, so the journal retains the session for reconciliation.
 func importPDFCommittedConflict(flags *rootFlags, result importPDFResult, filename string, importedAfter time.Time, opts importPDFOptions, cause error) (string, any, error) {
 	if opts.Collection != "" || opts.SessionCollection != "" {
-		result.CollectionNote = "not filed: the saved PDF's later steps failed, so the item was left where the desktop put it"
+		result.CollectionNote = "not filed: the PDF save or a later step could not be confirmed"
 	}
 	resolveImportPDFKeys(flags, &result, filename, importedAfter)
 	return "conflict", importPDFCommittedDetail(result, cause), cause
@@ -415,7 +463,7 @@ func importPDFCommittedDetail(result importPDFResult, cause error) map[string]an
 	}
 	detail["via"] = "connector"
 	detail["committed"] = true
-	detail["message"] = fmt.Sprintf("Zotero already saved %s (session %s) but a later step failed: %v. Do not import it again; check the library for the saved item.", filepath.Base(result.File), result.Session, cause)
+	detail["message"] = fmt.Sprintf("Zotero saved or may have saved %s (session %s), but the outcome could not be confirmed: %v. Do not import it again; check the library for the saved item.", filepath.Base(result.File), result.Session, cause)
 	return detail
 }
 

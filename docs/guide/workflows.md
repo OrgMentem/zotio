@@ -70,7 +70,13 @@ zotio workflow run workflow.json          # preview: write steps run --dry-run, 
 zotio workflow run workflow.json --yes    # apply the whole workflow on a single approval
 ```
 
-Without `--yes`, the runner injects `--dry-run` into every step that writes to Zotero, writes a local file, or declares its own `--dry-run`, while read-only steps run normally, so the plan reflects real data and a preview never rewrites an export, report, or baseline. A step that cannot preview, such as `sync`, is skipped with the reason `not previewable; runs only on apply`. A single `--yes` applies every step. Each mutation gets its own journal `run_id`, and all of them share one `workflow_run_id`. There is no rollback: if a later step fails, earlier successful writes stay applied.
+Without `--yes`, the runner injects `--dry-run` into every step that writes to Zotero, writes a local file, or declares its own `--dry-run`, while read-only steps run normally, so the plan reflects real data and a preview never rewrites an export, report, or baseline. A step that cannot preview, such as `sync`, is skipped with the reason `not previewable; runs only on apply`. `--yes` approves the workflow; destructive steps also require invocation-level consent. Each mutation gets its own journal `run_id`, and all of them share one `workflow_run_id`. There is no rollback: if a later step fails, earlier successful writes stay applied.
+
+A step may declare `--allow-destructive`, but that declaration does not approve the workflow. Apply also requires `zotio workflow run workflow.json --yes --allow-destructive`. Without that invocation flag, the runner exits 9 before any step runs and names the steps that require consent. The human preview marks destructive steps and shows their plans, even when a step suppresses its normal output. MCP `workflow_submit` uses the same rule: set its top-level `allow-destructive` to `true`, along with `yes`, to approve destructive steps. A step's flag alone cannot approve them.
+
+Invocation-level consent does not add `--allow-destructive` to every step. Declare it only on steps that need it, so read-only steps retain their normal flags. For triggered workflows, pass `--yes --allow-destructive` to `watch --workflow` or `tail --workflow`. `tail` rejects `--allow-destructive` without `--workflow`.
+
+The runner syncs each checkpoint file and its containing directory before executing the next step. Windows skips the directory sync because the platform does not support it.
 
 ```bash
 zotio journal list --workflow <id>    # the entries that run created
@@ -83,6 +89,7 @@ The workflow ID is not an undo handle: `journal undo` and `journal show` take th
 !!! note "Rules the runner enforces"
     - `--dry-run` always wins — even alongside `--yes`, the run previews.
     - The workflow owns approval: steps that embed their own `--yes`/`--dry-run` are rejected.
+    - A step's `--allow-destructive` declaration requires `--allow-destructive` on `workflow run` itself before apply.
     - A `${...}` placeholder is *data* — it fills a flag's value but can't build a flag name or redirect a step to another command.
 
 ## How it works

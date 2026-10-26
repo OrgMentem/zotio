@@ -142,6 +142,22 @@ outright. That cannot be undone by 'items restore' and requires --allow-destruct
 					}
 				default:
 					op.ExpectedVersion = version
+					if permanent {
+						var item struct {
+							Data struct {
+								Title string `json:"title"`
+							} `json:"data"`
+							Meta struct {
+								NumChildren int `json:"numChildren"`
+							} `json:"meta"`
+						}
+						if err := json.Unmarshal(body, &item); err != nil {
+							return op, apiErr(fmt.Errorf("decoding item %s: %w", key, err))
+						}
+						op.Changes = append(op.Changes,
+							mutation.Change{Field: "title", Remove: item.Data.Title},
+							mutation.Change{Field: "children", Remove: item.Meta.NumChildren})
+					}
 				}
 
 				op.Apply = func() (string, any, error) {
@@ -190,6 +206,18 @@ outright. That cannot be undone by 'items restore' and requires --allow-destruct
 			env, runErr := runMutation(cmd.Context(), flags, "items.delete", ops)
 			if runErr != nil && applyErr != nil {
 				runErr = classifyAPIError(applyErr, flags)
+			}
+			if permanent && env.Mode == "preview" && !flags.quiet && wantsHumanTable(cmd.OutOrStdout(), flags) {
+				for _, op := range ops {
+					for _, change := range op.Changes {
+						switch change.Field {
+						case "title":
+							fmt.Fprintf(cmd.OutOrStdout(), "Delete item %s: %q\n", op.Key, change.Remove)
+						case "children":
+							fmt.Fprintf(cmd.OutOrStdout(), "Child items destroyed: %v\n", change.Remove)
+						}
+					}
+				}
 			}
 			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},

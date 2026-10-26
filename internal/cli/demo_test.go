@@ -257,7 +257,7 @@ func TestDemoFixtureContainsRequiredResearchIntegrityData(t *testing.T) {
 			}
 		}
 		sort.Strings(keys)
-		want := []string{"FAIR002016", "TIDYDATA14"}
+		want := []string{"FAIR222U", "TIDY222V"}
 		if !reflect.DeepEqual(keys, want) {
 			t.Errorf("items sharing citekey smith2020data = %v, want %v (a genuine conflict pair)", keys, want)
 		}
@@ -275,9 +275,9 @@ func TestDemoFixtureContainsRequiredResearchIntegrityData(t *testing.T) {
 			}
 		}
 		for citekey, wantKey := range map[string]string{
-			"vaswani2017attention": "ATTENTION1",
-			"devlin2019bert":       "BERT000019",
-			"he2016resnet":         "RESNET0016",
+			"vaswani2017attention": "ATTE222A",
+			"devlin2019bert":       "BERT222B",
+			"he2016resnet":         "RESN222C",
 		} {
 			if got := byCiteKey[citekey]; got != wantKey {
 				t.Errorf("citekey %q resolved to item %q, want %q", citekey, got, wantKey)
@@ -293,7 +293,7 @@ func TestDemoFixtureContainsRequiredResearchIntegrityData(t *testing.T) {
 		// queryDuplicateDOIs lower-cases the DOI for grouping.
 		got := doiDupKeys(t, rows, "10.48550/arxiv.1406.2661")
 		sort.Strings(got)
-		want := []string{"GANDUP0014", "GANORIG014"}
+		want := []string{"GAND222J", "GANR222I"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("duplicate-DOI group keys = %v, want %v", got, want)
 		}
@@ -406,8 +406,8 @@ func TestDemoCommandsReadSeededSandboxEndToEnd(t *testing.T) {
 		if len(env.Results) == 0 {
 			t.Fatalf("search 'attention' --data-source local returned no results")
 		}
-		if !anyResultContains(env.Results, "ATTENTION1") {
-			t.Errorf("search 'attention' did not surface the ATTENTION1 paper; %d results", len(env.Results))
+		if !anyResultContains(env.Results, "ATTE222A") {
+			t.Errorf("search 'attention' did not surface the ATTE222A paper; %d results", len(env.Results))
 		}
 	})
 
@@ -543,7 +543,7 @@ func runReadingListLocal(t *testing.T) readingListResult {
 }
 
 // assertToReadQueue pins the fixture's to-read queue: five papers, tagged
-// "to-read", oldest-first (ATTENTION1, added 2024-01-12).
+// "to-read", oldest-first (ATTE222A, added 2024-01-12).
 func assertToReadQueue(t *testing.T, res readingListResult) {
 	t.Helper()
 	if res.QueueTag != "to-read" {

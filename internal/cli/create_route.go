@@ -6,6 +6,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -257,15 +258,35 @@ func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey st
 			// rerun nor journal undo treats the write as never having happened.
 			return "conflict", map[string]any{
 				"via": "connector", "committed": true,
+				"outcome":         "unknown",
 				"session":         res.Session,
 				"connector_key":   res.ConnKey,
 				"connector_error": res.ConnectorError,
 				"message":         fmt.Sprintf("connector SaveItems reported an error in session %s and whether the item was created could not be confirmed: %v; inspect Zotero before retrying, do not blindly re-create", res.Session, err),
 			}, err
 		}
+		if res.Via == "web" && isCommittedCreateConflict(err) {
+			return "conflict", map[string]any{
+				"via": "web", "committed": true, "outcome": "unknown",
+				"message": ambiguousCreateRefusal("item create", "item", err).Error(),
+			}, err
+		}
 		return "failed", nil, err
 	}
 	return "applied", itemCreateAppliedReason(res.Via, createdItemKeyOf(res)), nil
+}
+
+// invalidateAfterConnectorWrite shares API cache invalidation with desktop
+// writers. Call after dispatch, including unknown outcomes, because a missing
+// response does not prove that Zotero left the library unchanged.
+func invalidateAfterConnectorWrite(flags *rootFlags) {
+	c, err := flags.newClient()
+	if err == nil {
+		err = c.InvalidateCacheFor("/items")
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalidating response cache after connector write: %v\n", err)
+	}
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -279,13 +300,24 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 		if webClient == nil {
 			return itemCreateResult{}, fmt.Errorf("missing Web API write client")
 		}
-		data, _, err := webClient.Post("/items", []map[string]any{item})
+		data, _, err := webClient.PostWithHeaders("/items", []map[string]any{item}, map[string]string{
+			"Zotero-Write-Token": createBatchWriteToken("item.create", "", item),
+		})
 		if err != nil {
-			return itemCreateResult{}, classifyAPIError(err, flags)
+			return itemCreateResult{Via: "web"}, classifyAPIError(err, flags)
+		}
+		if envErr := checkBatchEnvelope(data, 1); envErr != nil {
+			return itemCreateResult{Via: "web"}, &client.AmbiguousWriteError{Method: http.MethodPost, Path: "/items", Attempts: 1, Err: envErr}
+		}
+		if failure, rejected := decodeBatchWriteResponse(data).Failed["0"]; rejected && !failure.Malformed {
+			return itemCreateResult{Via: "web"}, fmt.Errorf("%s", failure.detail("0"))
 		}
 		createdKey, ok := createdItemKey(data)
 		if !ok {
-			return itemCreateResult{}, fmt.Errorf("could not read created item key from /items response")
+			return itemCreateResult{Via: "web"}, &client.AmbiguousWriteError{
+				Method: http.MethodPost, Path: "/items", Attempts: 1,
+				Err: fmt.Errorf("could not read created item key from /items response"),
+			}
 		}
 		return itemCreateResult{Via: "web", WebKey: createdKey, WebData: data}, nil
 	case "connector":
@@ -301,15 +333,7 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 			if webClient == nil {
 				return itemCreateResult{}, err
 			}
-			data, _, err := webClient.Post("/items", []map[string]any{item})
-			if err != nil {
-				return itemCreateResult{}, classifyAPIError(err, flags)
-			}
-			createdKey, ok := createdItemKey(data)
-			if !ok {
-				return itemCreateResult{}, fmt.Errorf("could not read created item key from /items response")
-			}
-			return itemCreateResult{Via: "web", WebKey: createdKey, WebData: data}, nil
+			return routeCreateItemViaWithOptions(ctx, flags, "web", webClient, item, sourceURI, collectionRequested, opt)
 		}
 		sessionID, err := connector.NewID()
 		if err != nil {
@@ -333,7 +357,12 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 		// retrying caller mint a duplicate on every attempt while appearing to
 		// make no progress, so confirm against the library before believing it.
 		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
-		if saveErr := conn.SaveItems(ctx, sessionID, sourceURI, []map[string]any{item}); saveErr != nil {
+		defer invalidateAfterConnectorWrite(flags)
+		saveErr := conn.SaveItems(ctx, sessionID, sourceURI, []map[string]any{item})
+		if saveErr != nil {
+			if !errors.Is(saveErr, connector.ErrCommitted) && !errors.Is(saveErr, connector.ErrOutcomeUnknown) {
+				return itemCreateResult{}, saveErr
+			}
 			if opt.preserveUnresolvedConnectorWrite {
 				return itemCreateResult{
 					Via: "connector", Session: sessionID, ConnKey: connectorKey,
@@ -352,10 +381,10 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 				}, fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w (confirming the create failed: %s)", saveErr, lookupErr.Error())
 			}
 			if recovered == "" {
-				if matched > 1 {
-					return itemCreateResult{}, fmt.Errorf("connector reported %w, and %d recently added items share this title, so whether it was created is unresolved; check the library before retrying", saveErr, matched)
-				}
-				return itemCreateResult{}, saveErr
+				return itemCreateResult{
+					Via: "connector", Session: sessionID, ConnKey: connectorKey,
+					CreatedAfter: createdAfter, ConnectorError: saveErr.Error(),
+				}, fmt.Errorf("connector save outcome is unresolved (%d matching items); check the library before retrying: %w", matched, saveErr)
 			}
 			return itemCreateResult{
 				Via:            "connector",
@@ -409,7 +438,7 @@ func confirmConnectorCreate(ctx context.Context, flags *rootFlags, item map[stri
 	title, _ := item["title"].(string)
 	itemType, _ := item["itemType"].(string)
 	if title == "" || itemType == "" {
-		return "", 0, nil
+		return "", 0, fmt.Errorf("cannot confirm connector create without title and itemType")
 	}
 	c, err := flags.newClient()
 	if err != nil {
@@ -486,6 +515,7 @@ func attachResolverPDF(ctx context.Context, flags *rootFlags, res *itemCreateRes
 		res.OAPDFStatus = "none"
 		return resolverPDFNoOp, nil
 	}
+	defer invalidateAfterConnectorWrite(flags)
 	title, err := conn.SaveAttachmentFromResolver(ctx, res.Session, res.ConnKey)
 	if err != nil {
 		return fail(fmt.Errorf("saving the resolver PDF: %w", err))

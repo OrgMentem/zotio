@@ -151,11 +151,7 @@ func Load(configPath string) (*Config, error) {
 			}
 			parsed := *cfg
 			if err := parseConfigData(data, &parsed, sourcePath, owner); err != nil {
-				if sourcePath == legacyPath {
-					fmt.Fprintf(os.Stderr, "warning: legacy config parse skipped for %s: %v\n", sourcePath, err)
-				} else {
-					return nil, err
-				}
+				return nil, err
 			} else {
 				*cfg = parsed
 				if sourcePath == legacyPath {
@@ -404,15 +400,15 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
-// SaveCredential persists a single API credential to the field that
-// AuthHeader() consults for api_key auth. Writing to AccessToken (the
-// bearer slot) would silently no-op since AuthHeader() reads the env-var-
-// derived field, not AccessToken, when Auth.Type == "api_key".
-//
-// The clears precede the assignment so a canonical env-var whose placeholder
-// collides with a builtin tag (e.g. an env var named XXX_ACCESS_TOKEN
-// resolving to the AccessToken field) ends up holding the new token.
+// SaveCredential persists the API key returned by AuthHeader. Clear legacy
+// credential slots so legacy readers cannot resurrect an old credential.
+// A changed key invalidates the cached Web API account, including env overrides.
 func (c *Config) SaveCredential(token string) error {
+	if token != c.ZoteroApiKey || (c.fileConfig != nil && token != c.fileConfig.ZoteroApiKey) {
+		c.UserID = ""
+		delete(c.envOverrides, "UserID")
+		c.updateFileConfigField("UserID")
+	}
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	// Pair each builtin-field zeroing with an envOverrides delete, like
@@ -433,12 +429,11 @@ func (c *Config) SaveCredential(token string) error {
 }
 
 func (c *Config) ClearTokens() error {
-	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
-	// and AccessToken are empty, so dropping the working credential requires
-	// zeroing every emitted credential field, not just the OAuth trio. Nothing
-	// writes ClientID/ClientSecret any more, but Load() still reads them out of
-	// legacy config files, so logout must wipe them too; otherwise a stale
-	// on-disk pair survives a logout.
+	// AuthHeader returns only ZoteroApiKey. Clear every legacy credential slot
+	// so hasCredentialFields and legacy readers cannot resurrect stale values.
+	c.UserID = ""
+	delete(c.envOverrides, "UserID")
+	c.updateFileConfigField("UserID")
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""

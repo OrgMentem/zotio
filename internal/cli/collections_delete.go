@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,7 +16,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "delete <collectionKey>",
-		Short:   "Delete a collection (does not delete items)",
+		Short:   "Permanently delete a collection and its subcollections (items stay in the library)",
 		Example: "  zotio collections delete ABCD2345",
 		Annotations: map[string]string{
 			"zotio:endpoint": "collections.delete",
@@ -55,7 +57,12 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				Changes:     []mutation.Change{{Field: "collection", Add: true}},
 				Destructive: true,
 			}
-			version, err := readCollectionVersion(c, flags, args[0])
+			body, version, err := c.GetWithVersion(path, nil)
+			if err != nil {
+				err = classifyAPIError(err, flags)
+			} else if version <= 0 {
+				return apiErr(fmt.Errorf("reading collection version for %s: response did not include a version", args[0]))
+			}
 			if err != nil {
 				if !flags.ignoreMissing || !strings.Contains(err.Error(), "HTTP 404") {
 					return err
@@ -66,6 +73,24 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 					"code":    "already_deleted",
 					"message": "collection does not exist on the write plane; --ignore-missing treats this as already done",
 				}
+			}
+			if err == nil {
+				var collection struct {
+					Data struct {
+						Name string `json:"name"`
+					} `json:"data"`
+					Meta struct {
+						NumItems       int `json:"numItems"`
+						NumCollections int `json:"numCollections"`
+					} `json:"meta"`
+				}
+				if decodeErr := json.Unmarshal(body, &collection); decodeErr != nil {
+					return apiErr(fmt.Errorf("decoding collection: %w", decodeErr))
+				}
+				op.Changes = append(op.Changes,
+					mutation.Change{Field: "name", Remove: collection.Data.Name},
+					mutation.Change{Field: "items", Remove: collection.Meta.NumItems},
+					mutation.Change{Field: "subcollections", Remove: collection.Meta.NumCollections})
 			}
 			op.ExpectedVersion = version
 			var applyErr error

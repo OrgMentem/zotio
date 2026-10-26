@@ -133,6 +133,10 @@ func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
 			http.Error(w, "write token already used", http.StatusPreconditionFailed)
 		case r.Method == http.MethodGet && r.URL.Path == "/items/"+parentKey+"/children":
 			childReads++
+			if posts == 0 {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"key": noteKey,
 				"data": map[string]any{
@@ -163,8 +167,8 @@ func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
 	if result.Status != "converged" || result.NoteKey != noteKey {
 		t.Fatalf("push result = %+v, want the committed child adopted", result)
 	}
-	if posts != 2 || childReads != 1 {
-		t.Fatalf("writes=%d child reads=%d, want one lost POST, one replay, and one reconciliation read", posts, childReads)
+	if posts != 2 || childReads != 2 {
+		t.Fatalf("writes=%d child reads=%d, want one lost POST, one replay, a preflight read, and a reconciliation read", posts, childReads)
 	}
 	if n.state.NoteKey != noteKey || n.state.NoteVersion != 7 {
 		t.Fatalf("persisted state = %+v, want recovered note key and version", n.state)
@@ -216,13 +220,13 @@ func TestCreateChildNoteRefusesUnresolvedOrAmbiguousReplay(t *testing.T) {
 			c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
 			c.NoCache = true
 
-			_, err := createChildNote(c, parentKey, noteHTML, "")
+			_, err := reconcileChildNoteCreate(c, parentKey, noteHTML, &client.APIError{StatusCode: http.StatusPreconditionFailed})
 			var conflict *childNoteCreateConflict
 			if !errors.As(err, &conflict) {
 				t.Fatalf("error = %v, want structured committed-create conflict", err)
 			}
-			if posts != 1 || childReads != 1 {
-				t.Fatalf("posts=%d child reads=%d, want one refused create and one reconciliation read", posts, childReads)
+			if posts != 0 || childReads != 1 {
+				t.Fatalf("posts=%d child reads=%d, want one reconciliation read without another create", posts, childReads)
 			}
 			if got := conflict.Evidence.CandidateKeys; strings.Join(got, ",") != strings.Join(tc.keys, ",") {
 				t.Fatalf("candidate keys = %v, want %v", got, tc.keys)
@@ -445,7 +449,7 @@ func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
 // push/pull preview gates: it serves each fixture response at its URL path
 // while recording any non-GET request as a write violation, runs one vault
 // direction's command in preview, and asserts the shared safety invariant —
-// no Zotero write request, a dry_run report counting one countsKey note, the
+// no Zotero write request, a preview report counting one countsKey note, the
 // vault file left byte-for-byte unchanged, and no conflict artifact written.
 func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags rootFlags, newCmd func(*rootFlags) *cobra.Command, responses map[string][]byte, writeFixture func(t *testing.T, outDir string) (notePath string, before []byte), countsKey string) {
 	t.Helper()
@@ -488,8 +492,8 @@ func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode report %q: %v", out.String(), err)
 	}
-	if !report.DryRun || report.Counts[countsKey] != 1 {
-		t.Errorf("%s report = %+v, want dry_run + 1 %q note", tcName, report, countsKey)
+	if !report.Preview || report.DryRun != flags.dryRun || report.Counts[countsKey] != 1 {
+		t.Errorf("%s report = %+v, want preview + dry_run=%v + 1 %q note", tcName, report, flags.dryRun, countsKey)
 	}
 
 	after, err := os.ReadFile(notePath)
@@ -942,8 +946,10 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 			t.Fatalf("error must not create conflict dir: %v", err)
 		}
 		after, _ := os.ReadFile(n.path)
-		if !bytes.Equal(before, after) {
-			t.Fatalf("error must not rewrite vault state")
+		pending := baselineState
+		pending.PendingSourceHash, pending.PendingRemoteHash = srcHash, sha256hex(desiredHTML)
+		if string(after) != replaceOrInsertStateComment(string(before), pending) {
+			t.Fatalf("error must preserve the baseline and region, with only the pending intent added")
 		}
 	})
 
@@ -1042,8 +1048,10 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 			t.Fatalf("status = %q (%s), want failed: a failed retry is a failed write", res.Status, res.Note)
 		}
 		after, _ := os.ReadFile(n.path)
-		if !bytes.Equal(before, after) {
-			t.Fatal("a failed retry must not rewrite the vault baseline; a poisoned baseline is never retried")
+		pending := baselineState
+		pending.PendingSourceHash, pending.PendingRemoteHash = srcHash, sha256hex(desiredHTML)
+		if string(after) != replaceOrInsertStateComment(string(before), pending) {
+			t.Fatal("a failed retry must preserve the baseline and region, with only the pending intent added")
 		}
 	})
 
@@ -1138,7 +1146,7 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 			t.Errorf("conflict Note %q should name vault resolve", res.Note)
 		}
 
-		// Vault note must not be overwritten; no fast-forward baseline.
+		// The confirmed rejection clears intent without changing the baseline or text.
 		after, _ := os.ReadFile(n.path)
 		if !bytes.Equal(before, after) {
 			t.Fatalf("conflict must not rewrite vault state")

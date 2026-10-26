@@ -60,6 +60,7 @@ type fakeImportPDFAPI struct {
 
 func newFakeImportPDFAPI(t *testing.T) *fakeImportPDFAPI {
 	t.Helper()
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
 	f := &fakeImportPDFAPI{
 		t:               t,
 		children:        map[string][]map[string]any{},

@@ -273,18 +273,22 @@ func TestImportFilePreservesNonNumericBatchWriteFailureIndexes(t *testing.T) {
 	filePath := writeImportFixture(t, content.String())
 
 	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("import error = %v, exit=%d; want unresolved conflict", err, ExitCode(err))
 	}
 	if requestCount != 2 {
 		t.Fatalf("import requests = %d, want 2 batches", requestCount)
 	}
-	if env.Result == nil || env.Result.Summary.Failed != 1 || env.Result.Summary.Applied != importFileBatchSize {
-		t.Fatalf("result = %s, want %d applied and 1 failed", raw, importFileBatchSize)
+	if env.Result == nil || env.Result.Summary.Conflicts != 1 || env.Result.Summary.Applied != importFileBatchSize {
+		t.Fatalf("result = %s, want %d applied and 1 conflict", raw, importFileBatchSize)
 	}
 	// A non-numeric element index cannot name a record, so the envelope gate
 	// rejects the window: no record in it has a proven outcome.
-	reason, _ := env.Result.Items[importFileBatchSize].Reason.(string)
+	detail, _ := env.Result.Items[importFileBatchSize].Reason.(map[string]any)
+	reason, _ := detail["message"].(string)
+	if detail["committed"] != true || detail["outcome"] != "unknown" {
+		t.Fatalf("unattributable response lost committed evidence: %v", detail)
+	}
 	for _, want := range []string{`unattributable index "unexpected"`, "outcome of the 1 record(s) in that request is unknown"} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("failure reason = %q, want %q", reason, want)
@@ -318,6 +322,7 @@ func TestImportFileReportsSuccessfulBatch(t *testing.T) {
 // applied. Fails before the fix, which decoded only Failed and read the
 // error page as zero failures.
 func TestImportFileNonEnvelopeBodyFailsClosed(t *testing.T) {
+	setupCreateRouteJournal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"error":"proxy error"}`))
@@ -327,13 +332,17 @@ func TestImportFileNonEnvelopeBodyFailsClosed(t *testing.T) {
 
 	filePath := writeImportFixture(t, "@article{example,\n  title = {Example}\n}\n")
 	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("import error = %v, exit=%d; want unresolved conflict", err, ExitCode(err))
 	}
-	if env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
-		t.Fatalf("result = %s, want 0 applied and 1 failed", raw)
+	if env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Conflicts != 1 {
+		t.Fatalf("result = %s, want 0 applied and 1 conflict", raw)
 	}
-	reason, _ := env.Result.Items[0].Reason.(string)
+	detail, _ := env.Result.Items[0].Reason.(map[string]any)
+	reason, _ := detail["message"].(string)
+	if detail["committed"] != true || detail["outcome"] != "unknown" || env.Journal["run_id"] == nil {
+		t.Fatalf("unknown response lost journal evidence: reason=%v journal=%v", detail, env.Journal)
+	}
 	for _, want := range []string{"import file", "not a batch envelope", "outcome of the 1 record(s) in that request is unknown"} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("failure reason = %q, want %q", reason, want)

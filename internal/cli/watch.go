@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -41,6 +42,7 @@ exits 2 before the first cycle.
 
 When --workflow <spec.json> is set, watch runs the workflow after every
 successful sync cycle. It previews unless this watch invocation carries --yes.
+Destructive steps also require --allow-destructive on this watch invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 
@@ -134,22 +136,27 @@ preprint-check fix.`,
 			// --workflow-on-change it is also persisted (watch_workflow_owed.go), so
 			// a --once run or a restart inherits it instead of reading "library
 			// unchanged".
-			var pending watchWorkflowOwed
 			var owedPath string
 			if workflowOnChange {
 				var pathErr error
 				if owedPath, pathErr = watchWorkflowOwedPath(workflowPath); pathErr != nil {
 					return pathErr
 				}
-				var loadErr error
-				if pending, loadErr = loadWatchWorkflowOwed(owedPath); loadErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] workflow marker unusable, treating the workflow as owed: %v\n", loadErr)
-				}
-				if pending.Unknown {
-					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] a previous watch stopped before its changes ran the workflow; it runs after the next complete cycle\n")
-				}
 			}
-			runCycle := func(ctx context.Context) error {
+			cycle := func(ctx context.Context) error {
+				var pending watchWorkflowOwed
+				if workflowOnChange {
+					// Another watcher can publish or clear this marker while we
+					// sleep. Read it only after acquiring this cycle's lock.
+					var loadErr error
+					pending, loadErr = loadWatchWorkflowOwed(owedPath)
+					if loadErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] workflow marker unusable, treating the workflow as owed: %v\n", loadErr)
+					}
+					if pending.Unknown {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] a previous watch stopped before its changes ran the workflow; it runs after the next complete cycle\n")
+					}
+				}
 				var summary *syncChangeSummary
 				if workflowOnChange {
 					summary = &syncChangeSummary{}
@@ -169,14 +176,10 @@ preprint-check fix.`,
 				if summary != nil {
 					pending.add(summary)
 					if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: recording the workflow marker: %v\n", now.Format(time.RFC3339), saveErr)
-						if err == nil {
-							err = saveErr
-						}
+						err = errors.Join(err, fmt.Errorf("recording the workflow marker: %w", saveErr))
 					}
 				}
 				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: %v\n", now.Format(time.RFC3339), err)
 					return err
 				}
 				healthMonitor.run(ctx, cmd, now)
@@ -189,24 +192,35 @@ preprint-check fix.`,
 								now.Format(time.RFC3339), pending.Upserted, pending.Deleted)
 						}
 						if werr := runTriggeredWorkflowE(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
-							Yes:     flags.yes,
-							Agent:   flags.agent,
-							NoInput: flags.noInput,
+							Yes:              flags.yes,
+							AllowDestructive: flags.allowDestructive,
+							Agent:            flags.agent,
+							NoInput:          flags.noInput,
 						}); werr != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: triggered workflow failed: %v\n", now.Format(time.RFC3339), werr)
-							return werr
+							return fmt.Errorf("triggered workflow failed: %w", werr)
 						}
 						pending = watchWorkflowOwed{}
 						if owedPath != "" {
 							if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
-								fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: clearing the workflow marker: %v\n", now.Format(time.RFC3339), saveErr)
-								return saveErr
+								return fmt.Errorf("clearing the workflow marker: %w", saveErr)
 							}
 						}
 					}
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
 				return nil
+			}
+			runCycle := func(ctx context.Context) error {
+				previous := cmd.Context()
+				cmd.SetContext(ctx)
+				defer cmd.SetContext(previous)
+				err := withInstallationWriterLock(cmd, flags, "watch cycle", func() error {
+					return cycle(cmd.Context())
+				})
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: %v\n", time.Now().UTC().Format(time.RFC3339), err)
+				}
+				return err
 			}
 
 			if once {
@@ -229,7 +243,6 @@ preprint-check fix.`,
 			}()
 
 			lastCycleErr := runCycle(ctx)
-			hadSuccessfulCycle := lastCycleErr == nil
 
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -237,13 +250,12 @@ preprint-check fix.`,
 			for {
 				select {
 				case <-ctx.Done():
-					if !hadSuccessfulCycle && lastCycleErr != nil {
-						return fmt.Errorf("watch stopped without a successful sync cycle: %w", lastCycleErr)
+					if lastCycleErr != nil {
+						return fmt.Errorf("watch stopped after a failed sync cycle: %w", lastCycleErr)
 					}
 					return nil
 				case <-ticker.C:
 					lastCycleErr = runCycle(ctx)
-					hadSuccessfulCycle = hadSuccessfulCycle || lastCycleErr == nil
 				}
 			}
 		},

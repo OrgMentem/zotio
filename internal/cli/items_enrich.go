@@ -227,6 +227,9 @@ Applied field changes record provenance in the item's Extra field.`,
 				strings.TrimSpace(flagScope) == "" && strings.TrimSpace(flagCollection) == "" {
 				return usageErr(fmt.Errorf("--repair-pdf requires --keys, --keys-from, --scope, or --collection: a broken attachment file is a live fact this command cannot detect, so it repairs only the items you name (pipe `zotio library health --verify-files --json` findings in)"))
 			}
+			if wantsPDF && strings.TrimSpace(flagEmail) == "" && enrichUnpaywallEmail() == "" {
+				return usageErr(fmt.Errorf("--missing-pdf/--repair-pdf requires a contact email: pass --email you@example.org or set UNPAYWALL_EMAIL"))
+			}
 
 			pdfDir := ""
 			if wantsPDF && attachMode == "linked-file" {

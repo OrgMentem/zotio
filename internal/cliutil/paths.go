@@ -155,6 +155,12 @@ func atomicWrite(path string, data []byte, fileMode, dirMode os.FileMode, durabl
 	return nil
 }
 
+// SyncDir makes a directory's entry changes durable where directory syncing is
+// supported. It returns storage errors; Windows has no directory sync barrier.
+func SyncDir(dir string) error {
+	return syncDir(dir)
+}
+
 // syncDir flushes directory entry changes (a rename or an unlink) in dir to
 // stable storage. Windows cannot open a directory for syncing and journals
 // metadata itself, so it is a no-op there; a filesystem that reports it cannot

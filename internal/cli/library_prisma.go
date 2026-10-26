@@ -57,7 +57,8 @@ are a projection over the corpus as it is now, not a record of past
 deduplication. Screening
 itself is deliberately out of scope: use Rayyan, ASReview, or another screening tool
 for that stage. Run 'zotio items duplicates resolve' to actually remove duplicates
-first; the projected removals fall to zero once the clusters are resolved.`,
+first; the projected removals fall to zero once the clusters are resolved.
+The items mirror must have a completed sync pass before this command reports counts.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
@@ -81,6 +82,14 @@ first; the projected removals fall to zero once the clusters are resolved.`,
 				return errUnsyncedStoreFor(cmd, flags)
 			}
 			defer rawDB.Close()
+			ready, _, err := importItemsMirrorReady(cmd.Context(), rawDB)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "library prisma", preconditionSyncedStore,
+					"the items mirror has no completed sync pass; PRISMA counts require a complete items mirror", importItemsMirrorRemediation())
+			}
 			db := localQueryStore{Store: rawDB}
 
 			scope := scopeResult{All: true, Expr: "library"}

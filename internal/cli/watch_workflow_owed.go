@@ -47,8 +47,8 @@ func (o *watchWorkflowOwed) add(summary *syncChangeSummary) {
 }
 
 // watchWorkflowOwedFile is the on-disk form. InFlight is set before a cycle
-// starts and cleared when the cycle's counts are recorded, so finding it set at
-// startup proves a process died inside a cycle.
+// starts and cleared when the cycle's counts are recorded, so finding it set
+// under the next cycle's lock proves a process stopped inside a cycle.
 type watchWorkflowOwedFile struct {
 	Upserted int  `json:"upserted"`
 	Deleted  int  `json:"deleted"`

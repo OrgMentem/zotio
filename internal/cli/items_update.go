@@ -94,12 +94,26 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, readVersion, err := writeClient.GetFromWriteBaseWithVersionContext(cmd.Context(), path, nil)
+			currentBody, readVersion, err := writeClient.GetFromWriteBaseWithVersionContext(cmd.Context(), path, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
 			if readVersion <= 0 {
 				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+			}
+			var current map[string]any
+			if err := json.Unmarshal(currentBody, &current); err != nil {
+				return apiErr(fmt.Errorf("decoding current item: %w", err))
+			}
+			currentData, _ := current["data"].(map[string]any)
+			changes := itemsUpdateChanges(body)
+			for i := range changes {
+				switch changes[i].Field {
+				case "tags_set":
+					changes[i].Remove = currentData["tags"]
+				case "collections_set":
+					changes[i].Remove = currentData["collections"]
+				}
 			}
 			expectedVersion := readVersion
 			if v, hasVersion := body["version"]; hasVersion {
@@ -115,7 +129,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				Key:             args[0],
 				Kind:            "item_update",
 				ExpectedVersion: expectedVersion,
-				Changes:         itemsUpdateChanges(body),
+				Changes:         changes,
 				Apply: func() (string, any, error) {
 					return applyItemsUpdateWithContext(cmd.Context(), writeClient, pathCopy, bodyCopy, &applyErr)
 				},
@@ -124,13 +138,20 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if runErr != nil && applyErr != nil {
 				runErr = applyErr
 			}
+			if env.Mode == "preview" && !flags.quiet && wantsHumanTable(cmd.OutOrStdout(), flags) {
+				for _, change := range changes {
+					if change.Field == "tags_set" || change.Field == "collections_set" {
+						fmt.Fprintln(cmd.OutOrStdout(), SanitizeForTerminal(fmt.Sprintf("%s: remove %v; replace with %v", change.Field, change.Remove, change.Add)))
+					}
+				}
+			}
 			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 	cmd.Flags().StringVar(&bodyTitle, "title", "", "Item title (an empty value clears it)")
 	cmd.Flags().StringVar(&bodyAbstractNote, "abstract-note", "", "Abstract or summary (an empty value clears it)")
-	cmd.Flags().StringVar(&bodyTags, "tags", "", "Tags to apply (array of {tag: string} objects)")
-	cmd.Flags().StringVar(&bodyCollections, "collections", "", "Collection keys to assign this item to")
+	cmd.Flags().StringVar(&bodyTags, "tags", "", "JSON array of {tag: string} objects that REPLACES the whole tag list; use items tags add/remove for individual tags")
+	cmd.Flags().StringVar(&bodyCollections, "collections", "", "JSON array of collection keys that REPLACES all collection memberships; use items move for individual memberships")
 	cmd.Flags().StringVar(&bodyExtra, "extra", "", "Extra notes field, also stores Better BibTeX citation key (an empty value clears it)")
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 

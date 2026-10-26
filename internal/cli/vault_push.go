@@ -47,6 +47,9 @@ type pushState struct {
 	SourceHash  string `json:"source_hash"`
 	RemoteHash  string `json:"remote_hash"`
 	Renderer    string `json:"renderer"`
+	// Persist intent before PATCH so a lost baseline can recognize our own write.
+	PendingSourceHash string `json:"pending_source_hash,omitempty"`
+	PendingRemoteHash string `json:"pending_remote_hash,omitempty"`
 }
 
 type pushNote struct {
@@ -208,6 +211,10 @@ func vaultLibraryMismatch(n *pushNote, targetLib string) string {
 // most one create or one PATCH (plus follow-up reads); writes are skipped when
 // preview is true (the default, or under --dry-run).
 func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions map[string]int, flags *rootFlags, preview bool) pushResult {
+	if preview {
+		copy := *n
+		n = &copy // Planning must not consume recovery state before the apply pass.
+	}
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
 	if n.itemKey == "" {
@@ -261,9 +268,17 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 				CandidateKeys: []string{created.Key},
 			}
 		}
+		if created.SourceHash != "" {
+			srcHash = created.SourceHash
+		}
 		if err := finalizeState(n, created.Key, srcHash, c); err != nil {
 			res.Status = "failed"
 			res.Note = err.Error()
+			return res
+		}
+		if created.SourceHash != "" {
+			res.Status = "reconciled"
+			res.Note = "existing managed child bound; local notes remain unchanged; run vault push --yes to send local edits"
 			return res
 		}
 		if created.Reconciled {
@@ -284,6 +299,26 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 		return res
 	}
 	localChanged := srcHash != n.state.SourceHash
+	if localChanged || n.state.PendingRemoteHash != "" {
+		ver, liveHTML, err := getNote(c, n.state.NoteKey, n.itemKey, n.library)
+		if err != nil {
+			res.Status = "failed"
+			res.Note = pushErr(err, flags)
+			return res
+		}
+		liveVer = ver
+		if recoveredSource, ok := recoveredPushSource(n, liveHTML); ok {
+			if preview {
+				res.Status = "would_update"
+				return res
+			}
+			recovered := convergeNote(n, res, liveVer, liveHTML, recoveredSource)
+			if recovered.Status == "failed" || srcHash == recoveredSource {
+				return recovered
+			}
+		}
+		localChanged = srcHash != n.state.SourceHash
+	}
 
 	if !localChanged {
 		if liveVer != n.state.NoteVersion {
@@ -292,16 +327,6 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 		} else {
 			res.Status = "unchanged"
 		}
-		return res
-	}
-
-	// The state comment names the note this PATCH overwrites. Confirm Zotero
-	// still files that key as a child note of this item before planning or
-	// sending the write, so a copied or stale binding never overwrites a note
-	// that belongs to another item.
-	if _, _, err := getNote(c, n.state.NoteKey, n.itemKey, n.library); err != nil {
-		res.Status = "failed"
-		res.Note = pushErr(err, flags)
 		return res
 	}
 
@@ -323,7 +348,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, desiredHTML string, flags *rootFlags) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
-	reconciled, err := patchNote(c, n.state.NoteKey, desiredHTML, n.state.NoteVersion)
+	reconciled, err := patchPendingNote(c, n, srcHash, desiredHTML, n.state.NoteVersion)
 	if err == nil {
 		if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 			res.Status = "failed"
@@ -353,7 +378,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	switch {
 	case sha256hex(liveHTML) == n.state.RemoteHash:
 		// Remote body unchanged; only item version moved (metadata). Retry once.
-		reconciled, rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer)
+		reconciled, rerr := patchPendingNote(c, n, srcHash, desiredHTML, liveVer)
 		if rerr == nil {
 			if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 				res.Status = "failed"
@@ -396,15 +421,16 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	}
 }
 
-// convergeNote fast-forwards the recorded baseline onto a remote that already
-// holds the desired content, then reports the push as converged. Callers MUST
-// establish that sha256hex(liveHTML) equals the hash of the desired body:
-// recording this baseline against any other remote body tells every later push
-// that the vault file is already synced, so the divergence is never retried.
+// convergeNote records a proven source/remote pair without replacing local text.
+// Callers must establish that liveHTML matches either today's desired body or
+// the persisted pending body, and pass that body's source hash. Later local
+// edits then remain dirty rather than being mistaken for already-pushed text.
 func convergeNote(n *pushNote, res pushResult, liveVer int, liveHTML, srcHash string) pushResult {
 	n.state.NoteVersion = liveVer
 	n.state.RemoteHash = sha256hex(liveHTML)
 	n.state.SourceHash = srcHash
+	n.state.PendingSourceHash = ""
+	n.state.PendingRemoteHash = ""
 	if werr := writeNoteState(n.path, n.state); werr != nil {
 		res.Status = "failed"
 		res.Note = werr.Error()
@@ -412,6 +438,53 @@ func convergeNote(n *pushNote, res pushResult, liveVer int, liveHTML, srcHash st
 	}
 	res.Status = "converged"
 	return res
+}
+
+// recoveredPushSource recognizes a landed write even if its baseline did not
+// reach disk. Matching today's desired content also recovers older state files
+// that predate the pending intent fields.
+func recoveredPushSource(n *pushNote, liveHTML string) (string, bool) {
+	remoteHash := sha256hex(liveHTML)
+	if n.state.PendingSourceHash != "" && remoteHash == n.state.PendingRemoteHash {
+		return n.state.PendingSourceHash, true
+	}
+	region := strings.TrimSpace(n.region)
+	if remoteHash == sha256hex(markdownToNoteHTML(n.citekey, region)) {
+		return sha256hex(region), true
+	}
+	return "", false
+}
+
+func recordPendingPush(n *pushNote, srcHash, desiredHTML string) error {
+	st := n.state
+	st.PendingSourceHash = srcHash
+	st.PendingRemoteHash = sha256hex(desiredHTML)
+	if err := writeNoteState(n.path, st); err != nil {
+		return fmt.Errorf("saving pending note write: %w", err)
+	}
+	n.state = st
+	return nil
+}
+
+// patchPendingNote keeps intent only while a write might have landed. A definite
+// rejection clears it before classification or retry; every retry records its
+// own intent immediately before dispatch.
+func patchPendingNote(c *client.Client, n *pushNote, srcHash, desiredHTML string, version int) (bool, error) {
+	if err := recordPendingPush(n, srcHash, desiredHTML); err != nil {
+		return false, err
+	}
+	reconciled, err := patchNote(c, n.state.NoteKey, desiredHTML, version)
+	status := apiStatus(err)
+	if err != nil && status >= 400 && status < 500 && status != 408 && !client.IsAmbiguousWriteError(err) {
+		st := n.state
+		st.PendingSourceHash = ""
+		st.PendingRemoteHash = ""
+		if clearErr := writeNoteState(n.path, st); clearErr != nil {
+			return false, fmt.Errorf("PATCH rejected (%w), but clearing its pending intent failed: %w", err, clearErr)
+		}
+		n.state = st
+	}
+	return reconciled, err
 }
 
 // finalizeState fetches the just-written note to capture the sanitized remote
@@ -584,7 +657,8 @@ against --max-changes.`,
 					if flags.asJSON {
 						data, merr := json.Marshal(vaultWriteReport{
 							Out:     outDir,
-							DryRun:  preview,
+							DryRun:  flags.dryRun,
+							Preview: preview,
 							Counts:  map[string]int{status: 1},
 							Results: []pushResult{row},
 						})
@@ -644,6 +718,9 @@ against --max-changes.`,
 					if cerr != nil {
 						return classifyAPIError(cerr, flags)
 					}
+					if created.SourceHash != "" {
+						srcHash = created.SourceHash
+					}
 					if ferr := finalizeState(n, created.Key, srcHash, c); ferr != nil {
 						return ferr
 					}
@@ -652,6 +729,9 @@ against --max-changes.`,
 					verb, status := "Recreated", "recreated"
 					if created.Reconciled {
 						verb, status = "Reconciled", "reconciled"
+					}
+					if created.SourceHash != "" {
+						return emit(status, fmt.Sprintf("Bound existing child note %s for %s; local notes remain unchanged; run vault push --yes to send local edits", created.Key, n.citekey))
 					}
 					return emit(status, fmt.Sprintf("%s child note %s for %s", verb, created.Key, n.citekey))
 				}
@@ -667,7 +747,7 @@ against --max-changes.`,
 				if preview {
 					return emit("would_resolve", fmt.Sprintf("Would resolve %s: vault copy would be written to Zotero note %s", n.citekey, n.state.NoteKey))
 				}
-				if _, perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
+				if _, perr := patchPendingNote(c, n, srcHash, desiredHTML, liveVer); perr != nil {
 					return classifyAPIError(perr, flags)
 				}
 				if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
@@ -737,7 +817,7 @@ func keepRemoteResolve(outDir string, n *pushNote, liveVer int, liveHTML string)
 		RemoteHash:  sha256hex(liveHTML),
 		Renderer:    vaultRenderer,
 	}
-	if err := applyPulledRegion(n.path, newRegion, st); err != nil {
+	if err := applyPulledRegion(n.path, newRegion, sha256hex(strings.TrimSpace(n.region)), st); err != nil {
 		return err
 	}
 	removeConflictArtifacts(outDir, n)
@@ -947,6 +1027,7 @@ func removeConflictArtifacts(outDir string, n *pushNote) {
 type childNoteCreateResult struct {
 	Key        string
 	Reconciled bool
+	SourceHash string // Baseline of an adopted child, not necessarily today's vault text.
 }
 
 type childNoteCreateConflict struct {
@@ -978,7 +1059,13 @@ func (e *childNoteCreateConflict) Unwrap() error {
 // the note was deleted must not reuse the original token: replaces names the
 // deleted note's key, and binds the token to that intent. Retrying the same
 // re-create reuses the same key and so the same token.
+// Before a fresh POST, discover any existing managed child independently of its
+// content: a previous create may have landed before its local binding was saved.
 func createChildNote(c *client.Client, parentKey, noteHTML, replaces string) (childNoteCreateResult, error) {
+	existing, err := findChildNoteCreate(c, parentKey, noteHTML, nil, false)
+	if err != nil || existing.Key != "" {
+		return existing, err
+	}
 	body := []map[string]any{{
 		"itemType":   "note",
 		"parentItem": parentKey,
@@ -1014,12 +1101,17 @@ func createChildNote(c *client.Client, parentKey, noteHTML, replaces string) (ch
 }
 
 func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr error) (childNoteCreateResult, error) {
+	return findChildNoteCreate(c, parentKey, noteHTML, createErr, true)
+}
+
+func findChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr error, exact bool) (childNoteCreateResult, error) {
 	if err := validateKeyArg("item", parentKey); err != nil {
 		return childNoteCreateResult{}, errors.Join(createErr, err)
 	}
 	const pageSize = 100
 	desiredHash := sha256hex(noteHTML)
 	var matches []string
+	var adoptedSource string
 	for start := 0; ; start += pageSize {
 		data, _, err := c.GetFromWriteBaseWithVersion(
 			"/items/"+url.PathEscape(parentKey)+"/children",
@@ -1048,13 +1140,19 @@ func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, crea
 			if row.Data.ItemType != "note" || row.Data.Deleted != 0 || row.Data.ParentItem != parentKey {
 				continue
 			}
-			if !isManagedNoteHTML(row.Data.Note) || sha256hex(row.Data.Note) != desiredHash {
+			if !isManagedNoteHTML(row.Data.Note) {
+				continue
+			}
+			if exact && sha256hex(row.Data.Note) != desiredHash {
 				continue
 			}
 			if err := validateKeyArg("item", row.Key); err != nil {
 				continue
 			}
 			matches = append(matches, row.Key)
+			if !exact && sha256hex(row.Data.Note) != desiredHash {
+				adoptedSource = sha256hex(strings.TrimSpace(htmlNoteToMarkdown(row.Data.Note)))
+			}
 		}
 		if len(rows) < pageSize {
 			break
@@ -1062,7 +1160,10 @@ func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, crea
 	}
 	sort.Strings(matches)
 	if len(matches) == 1 {
-		return childNoteCreateResult{Key: matches[0], Reconciled: true}, nil
+		return childNoteCreateResult{Key: matches[0], Reconciled: true, SourceHash: adoptedSource}, nil
+	}
+	if !exact && len(matches) == 0 {
+		return childNoteCreateResult{}, nil
 	}
 	return childNoteCreateResult{}, &childNoteCreateConflict{
 		Evidence: pushRecoveryEvidence{
@@ -1339,6 +1440,7 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 type vaultWriteReport struct {
 	Out      string         `json:"out"`
 	DryRun   bool           `json:"dry_run"`
+	Preview  bool           `json:"preview"`
 	Counts   map[string]int `json:"counts"`
 	Results  []pushResult   `json:"results"`
 	Warnings []string       `json:"warnings,omitempty"`
@@ -1356,7 +1458,8 @@ func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir stri
 	if flags.asJSON {
 		data, err := json.Marshal(vaultWriteReport{
 			Out:      outDir,
-			DryRun:   preview,
+			DryRun:   flags.dryRun,
+			Preview:  preview,
 			Counts:   counts,
 			Results:  results,
 			Warnings: warnings,

@@ -49,6 +49,7 @@ type JournalEntry struct {
 	SchemaVersion int           `json:"schema_version"`
 	RunID         string        `json:"run_id"`
 	WorkflowRunID string        `json:"workflow_run_id,omitempty"`
+	Undoes        string        `json:"undoes,omitempty"`
 	Operation     string        `json:"operation"`
 	Library       string        `json:"library"`
 	Mode          string        `json:"mode"`
@@ -112,6 +113,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	return JournalEntry{
 		SchemaVersion: JournalSchemaVersion,
 		RunID:         runID,
+		Undoes:        env.Undoes,
 		Library:       "user",
 		Operation:     env.Operation,
 		Mode:          env.Mode,
@@ -158,8 +160,8 @@ func journalOp(op Op, item ResultItem) JournalOp {
 	}
 }
 
-// OpLanded reports whether an op outcome left a write behind that a journal
-// must keep: an applied op, or a conflict the engine knows was committed.
+// OpLanded reports whether an outcome requires a journal record: an applied op,
+// or a committed or uncertain write that recovery must not silently discard.
 func OpLanded(item ResultItem) bool {
 	if item.Status == "applied" {
 		return true
@@ -178,6 +180,7 @@ func BuildJournalCheckpoint(runID, operation, mode string, op Op, item ResultIte
 	return JournalEntry{
 		SchemaVersion: JournalSchemaVersion,
 		RunID:         runID,
+		Undoes:        op.Undoes,
 		Library:       "user",
 		Operation:     operation,
 		Mode:          mode,
@@ -456,6 +459,8 @@ func foldPartialRuns(entries []JournalEntry) []JournalEntry {
 					recount.Summary.Applied++
 				case "conflict":
 					recount.Summary.Conflicts++
+				case "failed":
+					recount.Summary.Failed++
 				}
 			}
 		}

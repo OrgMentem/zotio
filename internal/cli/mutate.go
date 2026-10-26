@@ -58,7 +58,7 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		// line and the permanent-delete marker of every write that already
 		// reached the library, because both used to be produced once from the
 		// final envelope.
-		if mutationOutcomeRecorder != nil {
+		if mutationOutcomeRecorder != nil && opts.RunID == "" {
 			opts.RunID = mutation.NewRunID(time.Now())
 		}
 		mode := mutation.ResolveMode(opts).Mode
@@ -74,6 +74,9 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		}
 	}
 	env, err := mutation.RunObserved(opts, operation, ops, observe)
+	if len(ops) > 0 {
+		env.Undoes = ops[0].Undoes
+	}
 	recordWorkflowRunMutation(ctx, &env)
 	if mirrorWriteThrough != nil {
 		mirrorWriteThrough(&env)

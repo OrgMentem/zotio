@@ -15,8 +15,8 @@ package mutation
 
 import "fmt"
 
-// reversibleFields are the only change fields a recorded op may touch to be
-// undoable: set-membership toggles whose inverse is unambiguous and lossless.
+// reversibleFields lists membership changes whose planned Changes invert on
+// their own. Captured Revert changes, creates, trash and restore use other paths.
 var reversibleFields = map[string]bool{"tags": true, "collections": true}
 
 // InvertChange returns the inverse of a membership change (Add<->Remove) and
@@ -82,6 +82,13 @@ func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 		}
 		if op.Status != "applied" {
 			if detail, ok := op.Reason.(map[string]any); ok && detail["committed"] == true {
+				if detail["outcome"] == "unknown" {
+					refused = append(refused, ReversalRefusal{
+						OpID: op.ID, Key: op.Key, Kind: op.Kind,
+						Reason: fmt.Sprintf("write outcome is unknown; inspect item %s before recovery: %v; requested fields=%v", op.Key, detail["message"], detail["requested_fields"]),
+					})
+					continue
+				}
 				refused = append(refused, ReversalRefusal{
 					OpID: op.ID, Key: op.Key, Kind: op.Kind,
 					Reason: fmt.Sprintf("write committed but cannot be undone without confirmed keys; title=%v session=%v connector_key=%v attachment_marker=%v: %v",

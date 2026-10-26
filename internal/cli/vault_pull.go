@@ -10,6 +10,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"path/filepath"
@@ -190,6 +191,16 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 			rs.html = liveHTML
 		}
 	}
+	if liveVer != n.state.NoteVersion || n.state.PendingRemoteHash != "" {
+		if srcHash, ok := recoveredPushSource(n, liveHTML); ok {
+			if preview {
+				res.Status = "would_pull"
+				res.Note = "recover the baseline of an earlier push; keep local notes"
+				return res
+			}
+			return convergeNote(n, res, liveVer, liveHTML, srcHash)
+		}
+	}
 	if liveVer == n.state.NoteVersion {
 		res.Status = "unchanged"
 		return res
@@ -231,9 +242,13 @@ func pullOne(c *client.Client, outDir, targetLib string, n *pushNote, flags *roo
 		RemoteHash:  sha256hex(liveHTML),
 		Renderer:    vaultRenderer,
 	}
-	if aerr := applyPulledRegion(n.path, newRegion, st); aerr != nil {
+	if aerr := applyPulledRegion(n.path, newRegion, n.state.SourceHash, st); aerr != nil {
 		res.Status = "failed"
 		res.Note = aerr.Error()
+		if errors.Is(aerr, errVaultFileBusy) {
+			res.Status = "conflict"
+			res.Note = "vault notes changed during pull; nothing overwritten; retry vault pull after saving local edits"
+		}
 		return res
 	}
 	res.Status = "pulled"
@@ -247,11 +262,19 @@ func isManagedNoteHTML(noteHTML string) bool {
 }
 
 // applyPulledRegion replaces the user notes region with newRegion and updates the
-// hidden state, in a single atomic compare-before-replace write.
-func applyPulledRegion(path, newRegion string, st pushState) error {
+// hidden state, in a single atomic compare-before-replace write. The fresh
+// region must still match the source hash that authorized this replacement.
+func applyPulledRegion(path, newRegion, sourceHash string, st pushState) error {
 	data, err := readVaultFile(path)
 	if err != nil || data == nil {
 		return fmt.Errorf("reading note for pull: %w", err)
+	}
+	region, ok := extractNotesRegion(string(data))
+	if !ok {
+		return fmt.Errorf("notes region markers not found")
+	}
+	if sha256hex(strings.TrimSpace(region)) != sourceHash {
+		return errVaultFileBusy
 	}
 	body, ok := replaceNotesRegion(string(data), newRegion)
 	if !ok {

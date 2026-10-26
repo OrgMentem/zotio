@@ -80,7 +80,11 @@ func ClassifyHTTPError(msg string) HTTPErrorKind {
 // or echoed key is redacted even though it carries no sk-/Bearer prefix.
 // Match common API key forms and keep the regexp at package scope so it
 // compiles once.
-var credPatterns = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|(?:zotero-api-)?key\s*[:=]\s*[a-zA-Z0-9._\-]+|zotero-api-key\s+[a-zA-Z0-9]{16,})`)
+var credPatterns = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|\b(?:zotero-api-|api_)?key\s*[:=]\s*[a-zA-Z0-9._\-]+|zotero-api-key\s+[a-zA-Z0-9]{16,})`)
+
+// Query parameter names may be percent-encoded. Match the entire name at
+// its parameter boundary, not a suffix such as the Key in itemKey.
+var credentialQueryPattern = regexp.MustCompile(`(?i)([?&])(?:(?:a|%61|%41)(?:p|%70|%50)(?:i|%69|%49)(?:_|%5f))?(?:k|%6b|%4b)(?:e|%65|%45)(?:y|%79|%59)=[^&#\s"]*`)
 
 // SanitizeErrorBodyWithSecrets redacts credential-shaped substrings and any
 // literal secret supplied (e.g. the configured Zotero API key), then truncates.
@@ -96,6 +100,7 @@ func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
 			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
 		}
 	}
+	msg = credentialQueryPattern.ReplaceAllString(msg, "${1}[REDACTED]")
 	msg = credPatterns.ReplaceAllString(msg, "[REDACTED]")
 	return truncateRunes(msg, 200)
 }

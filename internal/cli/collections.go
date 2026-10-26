@@ -137,6 +137,18 @@ func collectionWriteLine(wouldVerb, doneVerb string) func(mutation.Envelope) str
 		key := ""
 		if len(env.Plan.Operations) == 1 {
 			key = env.Plan.Operations[0].Key
+			if env.Plan.Operations[0].Kind == "collection_delete" {
+				for _, change := range env.Plan.Operations[0].Changes {
+					switch change.Field {
+					case "name":
+						key += fmt.Sprintf(" %q", change.Remove)
+					case "items":
+						key += fmt.Sprintf(" (%v items)", change.Remove)
+					case "subcollections":
+						key += fmt.Sprintf(" (%v subcollections)", change.Remove)
+					}
+				}
+			}
 		}
 		if env.Mode == "apply" && env.Result != nil && len(env.Result.Items) == 1 {
 			item := env.Result.Items[0]

@@ -148,13 +148,7 @@ no creator ORCID field.`,
 			if err != nil {
 				return err
 			}
-			if flags.quiet {
-				return nil
-			}
-			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
-				return printCommandJSON(cmd.OutOrStdout(), report, flags)
-			}
-			return printCreatorsAuditReport(cmd, report)
+			return renderCreatorsAuditResult(cmd, flags, report)
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
@@ -162,6 +156,28 @@ no creator ORCID field.`,
 	cmd.Flags().BoolVar(&flagIncludeAmbiguous, "include-ambiguous", false, "Include unsafe same-surname groups as review-only evidence; no rename commands are emitted")
 	cmd.AddCommand(newCreatorsAuditFixCmd(flags))
 	return cmd
+}
+
+func renderCreatorsAuditResult(cmd *cobra.Command, flags *rootFlags, report creatorsAuditReport) error {
+	if !flags.quiet {
+		var err error
+		if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+			err = printCommandJSON(cmd.OutOrStdout(), report, flags)
+		} else {
+			err = printCreatorsAuditReport(cmd, report)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if report.Summary.ORCID != nil && report.Summary.ORCID.Failed > 0 {
+		err := degradedErr(fmt.Errorf("creators audit: %d CrossRef lookup(s) failed; results incomplete", report.Summary.ORCID.Failed))
+		if !flags.quiet {
+			return markRendered(err)
+		}
+		return err
+	}
+	return nil
 }
 
 func runCreatorsAuditWithOptions(cmd *cobra.Command, ctx context.Context, flags *rootFlags, scopeExpr string, withORCID, includeAmbiguous bool) (creatorsAuditReport, error) {
@@ -905,12 +921,18 @@ func captureCreatorAuditORCIDs(ctx context.Context, db localQueryStore, occurren
 	httpClient := &http.Client{Timeout: timeout}
 	capturedAt := time.Now().UTC()
 	for _, itemKey := range itemKeys {
+		if err := ctx.Err(); err != nil {
+			return summary, err
+		}
 		doi := doiByItem[itemKey]
 		if doi == "" {
 			continue
 		}
 		summary.Lookups++
 		work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi)
+		if err := ctx.Err(); err != nil {
+			return summary, err
+		}
 		if !ok {
 			summary.Failed++
 			continue

@@ -214,6 +214,27 @@ claim distributed locking across machines, NFS, or iCloud-backed paths.
   A collision still costs no item traffic, and publication stays inside the
   output lock. Tests must assert the error identity, not only exit 9.
 
+- **2026-10-26 — polling writers lock each cycle, not their lifetime.**
+  `watch` and `tail` acquire the installation lock before each cycle's first
+  mutable-state read and release it after publication, before sleeping. A busy
+  lock skips that cycle with a diagnostic; follow mode retries after its
+  interval. Other writers can run between cycles. `watch --workflow-on-change`
+  reloads the owed marker inside every cycle's lock; it never republishes an
+  in-memory copy from an earlier cycle. The lock covers marker publication,
+  sync, and the triggered workflow. Tail covers store initialization, cursor
+  loading, delivery, workflow, and cursor publication in one poll transaction.
+  File delivery also takes the output lock within that transaction. It syncs
+  each appended batch before publishing the cursor and rolls failed appends
+  back to the original file size. Follow mode logs failed polls and waits a
+  full interval before retrying the held cursor.
+- **2026-10-26 — overlapping output and delivery roles are usage errors.**
+  The post-command delivery spool still owns its lock outside the command's
+  ownership chain, as an exception to Decision 2's shared-set/LIFO rule.
+  Until that ownership moves into the shared chain, `--output` and
+  `--deliver file:` must resolve to different canonical files. Matching targets
+  fail with usage exit 2 before lock acquisition, not misleading contention
+  exit 9. This includes aliases through symlinked ancestors.
+
 ## References
 
 - ADR-0001 — MCP command surface: this adds no MCP surface; its in-process

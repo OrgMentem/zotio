@@ -820,8 +820,8 @@ func TestConnectorReparentGuardsThePatchWithAVersion(t *testing.T) {
 
 // TestConnectorReparentWaitsForWritePlaneVisibility covers the lag this repo has
 // already been bitten by: a connector-created key 404s on api.zotero.org for
-// 15-20s. items_delete.go:78 records key SDLDFA9W being reported deleted inside
-// that window and then materialising untrashed. The route must poll, not assume.
+// 15-20s. dev/field-report-2026-08-08-walktest-4.md records key SDLDFA9W
+// reported deleted in that window, then appearing untrashed; see ADR-0007.
 func TestConnectorReparentWaitsForWritePlaneVisibility(t *testing.T) {
 	fake := &reparentFake{
 		tempParentKey:   "TEMP0001",
@@ -857,8 +857,8 @@ func TestConnectorReparentRefusesAmbiguousAttachment(t *testing.T) {
 	if err == nil {
 		t.Fatal("route succeeded with two candidate attachments, want a refusal")
 	}
-	if status != "failed" {
-		t.Fatalf("status = %q, want failed", status)
+	if status != "conflict" {
+		t.Fatalf("status = %q, want committed conflict", status)
 	}
 	if !strings.Contains(err.Error(), "refusing to guess") {
 		t.Errorf("error = %q, want it to refuse to guess", err)
@@ -1705,8 +1705,8 @@ func TestConnectorReparentResumesByMarkerAfterSaveReturnsNoCandidate(t *testing.
 	if m["temp_parent_key"] != "TEMP0001" {
 		t.Fatalf("detail = %v, want the nonce-marked parent TEMP0001", detail)
 	}
-	if gets := fake.topItemsGets.Load(); gets != 4 {
-		t.Fatalf("/items/top calls = %d, want 4: resume, empty title recovery, empty marker probe, match", gets)
+	if gets := fake.topItemsGets.Load(); gets != 5 {
+		t.Fatalf("/items/top calls = %d, want 5: resume, empty title recovery, empty marker probe, match, abandoned-parent cleanup", gets)
 	}
 	var saveItems, saveAttachments int
 	for _, call := range fake.sequence() {
@@ -1741,11 +1741,11 @@ func TestConnectorReparentRefusesAmbiguousMarkerAfterSaveReturnsNoCandidate(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	t.Cleanup(cancel)
 	status, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
-	if err == nil || status != "failed" || !strings.Contains(err.Error(), "refusing to guess") {
+	if err == nil || status != "conflict" || !strings.Contains(err.Error(), "refusing to guess") {
 		t.Fatalf("status=%q error=%v, want an ambiguity refusal", status, err)
 	}
-	if gets := fake.topItemsGets.Load(); gets != 3 {
-		t.Fatalf("/items/top calls = %d, want 3: resume, empty title recovery, ambiguous marker probe", gets)
+	if gets := fake.topItemsGets.Load(); gets != 4 {
+		t.Fatalf("/items/top calls = %d, want 4: resume, empty title recovery, ambiguous marker probe, abandoned-parent cleanup", gets)
 	}
 	var saveItems, saveAttachments int
 	for _, call := range fake.sequence() {
@@ -1809,7 +1809,7 @@ func TestConnectorReparentCancelsMarkerPollingAfterSaveReturnsNoCandidate(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("marker polling did not stop after cancellation")
 	}
-	if got.status != "failed" || !errors.Is(got.err, context.Canceled) {
+	if got.status != "conflict" || !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("status=%q error=%v, want context cancellation", got.status, got.err)
 	}
 	if gets := fake.topItemsGets.Load(); gets != 3 {
@@ -1847,7 +1847,7 @@ func TestConnectorReparentDeadlineStopsMarkerPollingAfterSaveReturnsNoCandidate(
 	t.Cleanup(cancel)
 
 	status, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
-	if status != "failed" || !errors.Is(err, context.DeadlineExceeded) {
+	if status != "conflict" || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("status=%q error=%v, want deadline termination", status, err)
 	}
 	if gets := fake.topItemsGets.Load(); gets != 3 {
@@ -2114,9 +2114,8 @@ func TestConnectorReparentAdoptsAChildAfterALostSaveReply(t *testing.T) {
 	}
 }
 
-// TestConnectorReparentReportsAGenuinelyFailedSave pins the other half: when
-// nothing was committed, the original save error is the whole truth and must
-// not be replaced by a reconcile error or masked as success.
+// TestConnectorReparentReportsAGenuinelyFailedSave preserves the save error
+// when no file landed, while recording the already committed temporary parent.
 func TestConnectorReparentReportsAGenuinelyFailedSave(t *testing.T) {
 	// Reply fails and NO child exists — the save really did not land.
 	fake := &reparentFake{
@@ -2135,8 +2134,8 @@ func TestConnectorReparentReportsAGenuinelyFailedSave(t *testing.T) {
 	if err == nil {
 		t.Fatalf("route succeeded with no file attached (status %q, detail %v)", status, detail)
 	}
-	if status != "failed" {
-		t.Fatalf("status = %q, want failed", status)
+	if status != "conflict" {
+		t.Fatalf("status = %q, want committed conflict", status)
 	}
 	// The operator needs the real cause, not the reconcile's own wording.
 	if !strings.Contains(err.Error(), "did not attach") {
@@ -2158,6 +2157,9 @@ func TestConnectorReparentReportsAGenuinelyFailedSave(t *testing.T) {
 	// The temporary parent must still be named so the litter is findable.
 	if d["temp_parent_key"] != "TEMP0001" {
 		t.Errorf("temp_parent_key = %v, want TEMP0001", d["temp_parent_key"])
+	}
+	if d["committed"] != true {
+		t.Fatal("the temporary parent is committed even though no file landed")
 	}
 	if d["save_reply_lost"] == true {
 		t.Error("save_reply_lost = true, but nothing was adopted")
@@ -2236,8 +2238,8 @@ func TestAbandonFailsWhenTheWinnerLeftTheTarget(t *testing.T) {
 	if err == nil {
 		t.Fatalf("route reported success though the target lost the content (status %q, detail %v)", status, detail)
 	}
-	if status != "failed" {
-		t.Fatalf("status = %q, want failed: the target holds no copy and this run did not put one there", status)
+	if status != "conflict" {
+		t.Fatalf("status = %q, want committed conflict: the file survives under the temporary parent", status)
 	}
 
 	// Our own copy must survive: it is the only copy of the operator's file.
@@ -2280,8 +2282,8 @@ func TestAbandonFailsWhenTheWinnerIsTrashed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("route reported success though the winner was trashed (status %q)", status)
 	}
-	if status != "failed" {
-		t.Errorf("status = %q, want failed", status)
+	if status != "conflict" {
+		t.Errorf("status = %q, want committed conflict", status)
 	}
 	for _, call := range fake.sequence() {
 		if strings.HasPrefix(call, "web.trash") {

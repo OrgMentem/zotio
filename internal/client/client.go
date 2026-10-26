@@ -346,9 +346,8 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 //
 // The base URL runs through the same trusted-base validation as New: a base the
 // original client never validated falls back to the default instead of
-// receiving the API key and configured headers. Both in-tree callers derive the
-// clone base from the already-validated BaseURL, so the validation passes
-// through unchanged for them.
+// receiving the API key and configured headers. Callers that derive the clone
+// base from the already-validated BaseURL pass validation unchanged.
 func (c *Client) CloneForRead(baseURL string) *Client {
 	clone := &Client{
 		BaseURL:    sanitizeClientBaseURL(baseURL),
@@ -912,6 +911,12 @@ func isEmptyJSONList(data json.RawMessage) bool {
 		return false
 	}
 	return len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0 && trimmed[len(trimmed)-1] == ']'
+}
+
+// InvalidateCacheFor clears cached reads affected by an external write to path,
+// including dependent resources such as collections and tags for item writes.
+func (c *Client) InvalidateCacheFor(path string) error {
+	return c.invalidateCache(path)
 }
 
 // invalidateCache drops the cached reads that a mutation of path can have

@@ -111,7 +111,7 @@ func TestSyncResumePreservesFirstResponseVersion(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Run 2 resumes at offset 100 and reads its suffix at version 101.
+	// Run 2 rejects offset 100 at version 101 and restarts with watermark 100.
 	if res := syncResource(context.Background(), c, db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("resumed run: %v", res.Err)
 	}

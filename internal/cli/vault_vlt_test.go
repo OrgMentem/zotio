@@ -19,7 +19,7 @@ import (
 
 const (
 	vltCitekey = "cite1"
-	vltItemKey = "ITEMKEY1"
+	vltItemKey = "ITEMKEY2"
 	vltNoteKey = "NTKEYAB2"
 )
 
@@ -334,17 +334,17 @@ func TestVltVaultPushDivergedNoteWaitsForResolve(t *testing.T) {
 }
 
 // TestVltVaultResolveJSONReport: under --json (which --agent implies) vault
-// resolve reports the same {dry_run, out, counts, results[]} shape as push and
+// resolve reports the same {dry_run, preview, out, counts, results[]} shape as push and
 // pull, with one result row, for previews and applied resolutions alike.
 func TestVltVaultResolveJSONReport(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		flags      rootFlags
-		dir        string
-		wantDryRun bool
-		wantStatus string
+		name        string
+		flags       rootFlags
+		dir         string
+		wantPreview bool
+		wantStatus  string
 	}{
-		{name: "keep-vault preview", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-vault", wantDryRun: true, wantStatus: "would_resolve"},
+		{name: "keep-vault preview", flags: rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-vault", wantPreview: true, wantStatus: "would_resolve"},
 		{name: "keep-vault applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-vault", wantStatus: "resolved"},
 		{name: "keep-remote applied", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, dir: "--keep-remote", wantStatus: "resolved"},
 	} {
@@ -362,8 +362,8 @@ func TestVltVaultResolveJSONReport(t *testing.T) {
 			if err := json.Unmarshal([]byte(out), &got); err != nil {
 				t.Fatalf("stdout is not a JSON report: %q (%v)", out, err)
 			}
-			if got.DryRun != tc.wantDryRun || got.Out != outDir || got.Counts[tc.wantStatus] != 1 || len(got.Results) != 1 {
-				t.Fatalf("report = %+v, want dry_run=%v out=%q counts[%s]=1 and one result", got, tc.wantDryRun, outDir, tc.wantStatus)
+			if got.Preview != tc.wantPreview || got.DryRun != tc.flags.dryRun || got.Out != outDir || got.Counts[tc.wantStatus] != 1 || len(got.Results) != 1 {
+				t.Fatalf("report = %+v, want preview=%v dry_run=%v out=%q counts[%s]=1 and one result", got, tc.wantPreview, tc.flags.dryRun, outDir, tc.wantStatus)
 			}
 			row := got.Results[0]
 			if row.Status != tc.wantStatus || row.ItemKey != vltItemKey || row.NoteKey != vltNoteKey {

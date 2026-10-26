@@ -115,7 +115,7 @@ func TestValidBearerToken(t *testing.T) {
 		{name: "lowercase bearer prefix", header: "bearer " + expectedToken, expectedToken: expectedToken, want: true},
 		{name: "token whitespace is trimmed", header: "Bearer \t " + expectedToken + " \n", expectedToken: expectedToken, want: true},
 		{name: "present token shorter than expected", header: "Bearer abc", expectedToken: expectedToken, want: false},
-		{name: "empty expected token accepts trimmed empty credential", header: "Bearer    ", want: true},
+		{name: "empty expected token rejects trimmed empty credential", header: "Bearer    ", want: false},
 	}
 
 	for _, tt := range tests {

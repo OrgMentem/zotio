@@ -96,7 +96,7 @@ func dbPath() (string, error) {
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
 	query, ok := args["query"].(string)
-	if !ok || query == "" {
+	if !ok || strings.TrimSpace(query) == "" {
 		return mcplib.NewToolResultError("query is required"), nil
 	}
 
@@ -139,9 +139,22 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		if scopeErr != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("resolving search scope: %v", scopeErr)), nil
 		}
-		matches, searchErr := db.SearchFulltextContext(ctx, store.FulltextSearch{Query: query, Limit: limit, ParentKeys: parentKeys})
-		if searchErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("full-text search failed: %v", searchErr)), nil
+		var matches []store.FulltextSearchResult
+		if parentKeys == nil || len(parentKeys) > 0 {
+			var searchErr error
+			matches, searchErr = db.SearchFulltextContext(ctx, store.FulltextSearch{Query: query, Limit: limit, ParentKeys: parentKeys})
+			if searchErr != nil {
+				return mcplib.NewToolResultError(fmt.Sprintf("full-text search failed: %v", searchErr)), nil
+			}
+		}
+		if len(matches) == 0 && (parentKeys == nil || len(parentKeys) > 0) {
+			ready, readyErr := db.FulltextSearchReadyContext(ctx)
+			if readyErr != nil {
+				return mcplib.NewToolResultError(fmt.Sprintf("checking fulltext index readiness: %v", readyErr)), nil
+			}
+			if !ready {
+				return mcplib.NewToolResultError("no synced full text to search: full text was never synced or indexed; run `zotio sync --fulltext` to index PDF text"), nil
+			}
 		}
 		results = make([]json.RawMessage, 0, len(matches))
 		for _, match := range matches {
@@ -333,12 +346,13 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	truncated := false
 	for rows.Next() {
 		if len(results) >= sqlRowLimit {
-			// Keep stepping past the limit instead of breaking. Stepping is
-			// deliberate: rows.Err() below must observe a failure that SQLite
-			// only raises on a later row, so truncation never masks a broken
-			// query (see TestHandleSQLSurfacesIteratorErrorAfterRowLimit).
-			// Only Next() runs here -- no Scan, no allocation -- so the cost is
-			// bounded by sqlQueryTimeout rather than by result-set size.
+			// The iterator keeps stepping past the row limit (see
+			// TestHandleSQLSurfacesIteratorErrorAfterRowLimit) so rows.Err()
+			// below still observes a failure SQLite raises on a later row;
+			// breaking here would mask a broken query behind a successful
+			// truncated envelope. Only Next() runs past the limit -- no Scan,
+			// no allocation -- so the cost stays bounded by sqlQueryTimeout
+			// rather than result-set size.
 			truncated = true
 			continue
 		}

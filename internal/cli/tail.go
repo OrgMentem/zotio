@@ -49,6 +49,7 @@ Gracefully shuts down on SIGTERM/SIGINT.
 
 When --workflow <spec.json> is set, tail runs the workflow once after a poll
 cycle that emits events. It previews unless this tail invocation carries --yes.
+Destructive steps also require --allow-destructive on this tail invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 The cursor advances only after the triggered invocation returns, so a crash
@@ -78,6 +79,9 @@ native streaming instead of polling.`,
   # Pipe to jq for filtering
   zotio tail items --interval 30s | jq 'select(.event == "upsert")'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("allow-destructive") && workflowPath == "" {
+				return usageErr(fmt.Errorf("--allow-destructive requires --workflow"))
+			}
 			// --interval feeds time.NewTicker below, which panics on a
 			// non-positive duration, so reject it as usage input rather
 			// than crash with a Go runtime stack. Same shape as watch's
@@ -131,11 +135,6 @@ native streaming instead of polling.`,
 			if err != nil {
 				return err
 			}
-			db, err := store.OpenWithContext(cmd.Context(), dbPath)
-			if err != nil {
-				return fmt.Errorf("opening local database: %w", err)
-			}
-			defer db.Close()
 
 			// Tail streams live and owns delivery per cycle; drop the spool so
 			// root.go's post-run flush never fires (it would spool the whole
@@ -162,10 +161,11 @@ native streaming instead of polling.`,
 						return nil
 					}
 					inv := workflowRunInvocation{
-						Yes:     flags.yes,
-						DryRun:  flags.dryRun,
-						Agent:   flags.agent,
-						NoInput: flags.noInput,
+						Yes:              flags.yes,
+						AllowDestructive: flags.allowDestructive,
+						DryRun:           flags.dryRun,
+						Agent:            flags.agent,
+						NoInput:          flags.noInput,
 					}
 					// A spec that cannot be read is reported by the run
 					// itself. Only a spec that reads trigger values gets the
@@ -182,9 +182,35 @@ native streaming instead of polling.`,
 				}
 			}
 
-			// Initial poll
-			if _, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery); err != nil {
-				return fmt.Errorf("initial tail poll: %w", err)
+			poll := func() error {
+				return withInstallationWriterLock(cmd, flags, "tail poll", func() error {
+					// Opening may initialize or migrate the store. It belongs
+					// to the same transaction as cursor load and publication.
+					db, err := store.OpenWithContext(cmd.Context(), dbPath)
+					if err != nil {
+						return fmt.Errorf("opening local database: %w", err)
+					}
+					defer db.Close()
+					emit := func() error {
+						_, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery)
+						return err
+					}
+					if sink.Scheme == "file" {
+						lockPath, _, err := outputWriterLockPath(sink.Target)
+						if err != nil {
+							return err
+						}
+						return withPathWriterLock(cmd, lockPath, "tail delivery", emit)
+					}
+					return emit()
+				})
+			}
+			pollErr := poll()
+			if pollErr != nil {
+				if !follow {
+					return fmt.Errorf("initial tail poll: %w", pollErr)
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "[tail] poll error: %v; holding the cursor for retry\n", pollErr)
 			}
 
 			// Honor --follow=false as a single poll.
@@ -192,23 +218,23 @@ native streaming instead of polling.`,
 				return nil
 			}
 
-			// The ticker exists only for the follow loop, so it is built
-			// after the one-shot exit: no path can hand an unvalidated
-			// interval to time.NewTicker.
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
+			// Wait a full interval after each poll, including failed polls.
+			// This backs off retries even when a request outlasts the interval.
+			timer := time.NewTimer(interval)
+			defer timer.Stop()
 
 			for {
 				select {
 				case <-cmd.Context().Done():
 					return cmd.Context().Err()
 				case <-sig:
-					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
+					fmt.Fprintln(cmd.ErrOrStderr(), "\nShutting down gracefully...")
 					return nil
-				case <-ticker.C:
-					if _, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery); err != nil {
-						return fmt.Errorf("tail poll: %w", err)
+				case <-timer.C:
+					if err := poll(); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[tail] poll error: %v; holding the cursor for retry\n", err)
 					}
+					timer.Reset(interval)
 				}
 			}
 		},
@@ -220,6 +246,7 @@ native streaming instead of polling.`,
 	// Cursor persistence location.
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
+	cmd.Flags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow destructive steps in --workflow (requires --workflow)")
 
 	return cmd
 }
@@ -518,13 +545,12 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	// Delivery is all-or-nothing per batch from the cursor's perspective.
 	// The cursor below advances only after the stdout write, every
 	// configured sink acknowledgment (a 2xx webhook response, a completed
-	// file write+close), the post-delivery trigger (when set), and the
+	// file write+sync+close), the post-delivery trigger (when set), and the
 	// cursor save itself all succeed. Any failure returns before the save,
 	// so the next poll re-fetches the same window via since and redelivers
 	// the whole batch: duplicates are possible (at-least-once; webhook
-	// receivers must be idempotent, and a file append that fails mid-write
-	// can leave a trailing partial batch ahead of the retried full one),
-	// but a batch is never half-acknowledged and events are never skipped.
+	// receivers must be idempotent). A failed file append rolls back to
+	// its original size, preserving line boundaries for the retried batch.
 	// There is deliberately no per-event checkpoint and no durable
 	// pending-batch state: the held cursor IS the retry state. This
 	// per-cycle delivery bypasses the shared deliver_spool path on purpose
@@ -553,7 +579,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 			if err != nil {
 				return emitted, fmt.Errorf("tail %s: opening delivery file: %w", resource, err)
 			}
-			if _, err := f.Write(out); err != nil {
+			if err := appendTailBatch(f, out); err != nil {
 				_ = f.Close()
 				return emitted, fmt.Errorf("tail %s: writing delivery file: %w", resource, err)
 			}
@@ -575,4 +601,37 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		}
 	}
 	return emitted, nil
+}
+
+// tailAppendFile keeps the durable append operation testable with short writes
+// and sync failures, without replacing process-wide filesystem functions.
+type tailAppendFile interface {
+	Stat() (os.FileInfo, error)
+	Write([]byte) (int, error)
+	Truncate(int64) error
+	Sync() error
+}
+
+func appendTailBatch(f tailAppendFile, batch []byte) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	n, err := f.Write(batch)
+	if err == nil && n != len(batch) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if err == nil {
+		return nil
+	}
+	if truncateErr := f.Truncate(info.Size()); truncateErr != nil {
+		return errors.Join(err, fmt.Errorf("rolling back delivery append: %w", truncateErr))
+	}
+	if syncErr := f.Sync(); syncErr != nil {
+		return errors.Join(err, fmt.Errorf("syncing delivery rollback: %w", syncErr))
+	}
+	return err
 }

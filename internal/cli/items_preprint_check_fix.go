@@ -162,7 +162,11 @@ func preprintCheckFixProposalForItem(item map[string]any, match crossrefMatch) (
 // neither empty nor an arXiv self DOI: that value is a published DOI (or the
 // operator's own) and is never replaced. Extra is a wholesale replace, so
 // extra must be the value the write will race against.
+// An already-remediated snapshot returns no fields and becomes an explicit no-op.
 func preprintCheckFixFields(data map[string]any, extra string, match crossrefMatch) (fields map[string]any, ok bool) {
+	if watchPreprintRemediated(data, watchPreprintEntry{DOI: match.DOI}) {
+		return nil, true
+	}
 	fields = map[string]any{}
 	if _, supportsDOI := data["DOI"]; supportsDOI {
 		currentDOI := normalizeDOI(stringFromMap(data, "DOI"))
@@ -177,6 +181,9 @@ func preprintCheckFixFields(data map[string]any, extra string, match crossrefMat
 
 // appendPreprintCheckFixProvenance preserves existing Extra content while adding a dated publication provenance line.
 func appendPreprintCheckFixProvenance(existing string, match crossrefMatch) string {
+	if watchPreprintRemediated(map[string]any{"extra": existing}, watchPreprintEntry{DOI: match.DOI}) {
+		return existing
+	}
 	line := fmt.Sprintf("zotio preprint-check: published as doi:%s%s on %s", match.DOI, preprintCheckPublicationSuffix(match), time.Now().UTC().Format("2006-01-02"))
 	existing = strings.TrimRight(existing, "\n")
 	if existing == "" {
@@ -216,6 +223,13 @@ func preprintCheckFixPlannedOps(ctx context.Context, proposals []preprintCheckFi
 	ops := make([]mutation.Op, 0, len(proposals))
 	for i := range proposals {
 		proposal := proposals[i]
+		if len(proposal.Fields) == 0 {
+			ops = append(ops, mutation.Op{
+				ID: "preprint_check_fix:" + proposal.Key, Key: proposal.Key, Kind: "preprint_check_fix",
+				NoOpReason: map[string]any{"reason": "already_fixed"},
+			})
+			continue
+		}
 		ops = append(ops, mutation.Op{
 			ID:              "preprint_check_fix:" + proposal.Key,
 			Key:             proposal.Key,
@@ -289,6 +303,9 @@ func applyPreprintCheckFixProposal(ctx context.Context, c apiMutator, proposal *
 		// wholesale replace would erase it.
 		err := fmt.Errorf("write-plane item %s has no data object; refusing to rewrite Extra without it", path)
 		return "failed", err.Error(), err
+	}
+	if watchPreprintRemediated(liveData, watchPreprintEntry{DOI: proposal.match.DOI}) {
+		return "no_op", map[string]any{"reason": "already_fixed"}, nil
 	}
 	fields, ok := preprintCheckFixFields(liveData, stringFromMap(liveData, "extra"), proposal.match)
 	if !ok {

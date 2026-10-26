@@ -100,9 +100,13 @@
   },
   {
     "name": "workflow_submit",
-    "description": "Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; one approval, one journal run id; steps apply in order and a failed step does not roll back earlier writes; steps validated per-command exactly like command_run.",
+    "description": "Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; each mutation has its own run_id and shares a workflow_run_id; steps apply in order without rollback; steps validated per-command exactly like command_run.",
     "inputSchema": {
       "properties": {
+        "allow-destructive": {
+          "description": "Allow destructive workflow steps; required together with yes even when a step declares allow-destructive.",
+          "type": "boolean"
+        },
         "continue_on_error": {
           "description": "Continue executing later steps after a step fails.",
           "type": "boolean"

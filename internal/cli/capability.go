@@ -298,7 +298,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 		Requires:    []string{preconditionWebAPIKey, preconditionZoteroFileStorage},
 		Routes: []capabilityRoute{
 			{Via: "default", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
-			{Via: "connector", Requires: []string{preconditionDesktopConnector}},
+			{Via: "connector", Requires: []string{preconditionWebAPIKey, preconditionDesktopConnector}},
 		},
 	},
 	// vault push writes to Zotero; pull and sync write the local vault.

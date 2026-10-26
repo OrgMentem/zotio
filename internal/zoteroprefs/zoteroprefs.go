@@ -371,10 +371,10 @@ func (f FileStorage) WebDAVHost() string {
 //
 // When several profiles exist and none is pinned by ProfileDirEnv, Zotero's -P
 // switch means the profile marked default in profiles.ini may not be the
-// running one. Rather than guess, Load reads them all: the default profile
-// supplies the reported detail, but any profile using WebDAV promotes the mode
-// to WebDAV and sets Ambiguous. That keeps the dangerous direction — assuming
-// Zotero's cloud when the running profile actually uses WebDAV — closed.
+// running one. Rather than guess, Load reads them all. The strictly riskiest
+// profile supplies the complete reported detail; the preferred profile wins
+// ties. Safety-relevant hazards are unioned across profiles independently.
+// Ambiguous is set whenever more than one profile exists.
 func Load() (FileStorage, error) {
 	override, pinned, err := pinnedProfileDir()
 	if err != nil {

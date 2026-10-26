@@ -143,14 +143,16 @@ func (f *rootFlags) resolveCreateRoute(ctx context.Context, collectionRequested 
 	}
 }
 
-// resolveWebWriteBase returns the Web API base URL writes should target, or "" when
-// no key is configured (writes then hit the read-only local API and its guard). For
-// a group the path needs only the group ID; for a personal library it needs the
+var errMissingWriteKey = errors.New("writes require a Zotero Web API key: the local API is read-only; run zotio auth set-token --stdin or set ZOTERO_API_KEY")
+
+// resolveWebWriteBase returns the Web API base URL writes should target.
+// A missing key is a precondition failure with credential setup guidance.
+// For a group the path needs only the group ID; for a personal library it needs the
 // numeric user ID, taken from config/ZOTERO_USER_ID or a one-time keys/current
 // lookup that is persisted to config.
 func resolveWebWriteBase(ctx context.Context, cfg *config.Config, group string, timeout time.Duration) (string, error) {
 	if cfg == nil || cfg.AuthHeader() == "" {
-		return "", nil
+		return "", preconditionErr(errMissingWriteKey)
 	}
 	if group != "" {
 		return zoteroWebAPIBase + "/groups/" + group, nil
@@ -208,6 +210,10 @@ func (e *keyMetadataStatusError) Error() string {
 // 401/403 from keys/current is an auth failure (exit 4); any other failure
 // (transport, 429, 5xx) is a precondition (exit 9) with a recovery hint.
 func routeResolutionErr(err error) error {
+	var coded *cliError
+	if errors.As(err, &coded) {
+		return err
+	}
 	wrapped := fmt.Errorf("could not resolve Zotero Web API write route: %w", err)
 	var statusErr *keyMetadataStatusError
 	if errors.As(err, &statusErr) && (statusErr.status == http.StatusUnauthorized || statusErr.status == http.StatusForbidden) {

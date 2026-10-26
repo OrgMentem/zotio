@@ -110,21 +110,27 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					return "failed", nil, batchTransport
 				}
 				if batchAmbiguous != nil {
-					return "conflict", map[string]any{"committed": true, "message": batchAmbiguous.Error()}, batchAmbiguous
+					return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": batchAmbiguous.Error()}, batchAmbiguous
 				}
 				if batchEnvelope != nil {
-					return "failed", batchEnvelope.Error(), batchEnvelope
+					return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": batchEnvelope.Error()}, batchEnvelope
 				}
 				if failure, ok := batchFailed[strconv.Itoa(index)]; ok {
+					if failure.Malformed {
+						err := ambiguousCreateRefusal("collections create", "collection", fmt.Errorf("%s", failure.detail(strconv.Itoa(index))))
+						return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
+					}
 					return "failed", failure.detail(strconv.Itoa(index)), nil
 				}
 				if key := batchKeys[strconv.Itoa(index)]; key != "" {
 					return "applied", map[string]any{"key": key}, nil
 				}
-				return "applied", nil, nil
+				err := ambiguousCreateRefusal("collections create", "collection", fmt.Errorf("could not read created collection key from /collections response"))
+				return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
 			}
 			for i := range ops {
 				index := i
+				ops[i].Dispatched = func() bool { return batchExecuted }
 				ops[i].Apply = func() (string, any, error) {
 					return applyCollection(index)
 				}

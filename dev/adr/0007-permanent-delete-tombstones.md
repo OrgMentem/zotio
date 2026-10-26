@@ -39,8 +39,9 @@ present in `items-trash` — and nothing else. The store's own comment said so.
 transaction as the reap, and the sync reconciliation drops any read-plane row
 whose key carries one.**
 
-1. **`pending_writes` gains a `deleted` flag, and `StoreSchemaVersion` goes to
-   8.** `deleted = 1` reclassifies the row from "these changes are applied but
+1. **`pending_writes` gains a `deleted` flag; the initial schema migration is
+   7-to-8.** The current stamp is 9, as recorded in the amendment below.
+   `deleted = 1` reclassifies the row from "these changes are applied but
    unconfirmed" to "this key is gone but unconfirmed"; `changes` stays `'[]'`,
    because a deletion is not expressible as a field change. Adding the column is
    mechanically additive (`INTEGER NOT NULL DEFAULT 0`, applied to existing
@@ -102,29 +103,28 @@ whose key carries one.**
    swept resource whose key is absent from the pass's seen-set, in the same
    transaction as its reaps, and nothing else confirms.
 
-6. **The sweep is gated on total observation, not on the `--full` flag, and
-   total observation has two halves.** `full` names the user's intent; the sweep
-   needs the property. The two came apart the moment `--full --since-version N` became
-   expressible: `full` stays true while every request carries a since filter, so
-   the plane omits every unchanged object. `syncResource` therefore requires
-   both of:
+6. **The sweep requires total observation, verified counts, and an order that
+   edits cannot change.** `--full` states the user's intent but does not prove
+   those properties. `syncResource` requires all four conditions:
 
-   - **the requests observed every object** —
-     `syncRequestObservesEveryObject` allowlists the two pagination params,
-     which choose which *slice* of the whole set returns and which a completed
-     pass walks in full, and treats every other param as narrowing,
-     **including params that do not exist yet**. A future filter disables the
-     sweep by default instead of silently invalidating it, and a genuinely
-     non-narrowing param must be added next to that reasoning; and
-   - **pagination reached the end** (`completedNaturally`) — truncation is not
-     a request param, so the param check cannot see it: `--full --max-pages 1`
-     over a multi-page resource issues perfectly unfiltered requests and still
-     observes only a prefix. This half was already enforced, by the block that
-     encloses the sweep and by the `full && !completedNaturally` error return
-     that follows it, so `--full --max-pages 1` never reached the sweep even at
-     HEAD. It is restated in the gate's own conjunction because a reviewer read
-     the nesting as absent, and a rule spread 35 lines apart reads as two
-     accidents.
+   - **The requests do not exclude objects.**
+     `syncRequestObservesEveryObject` allows pagination (`limit`, `start`) and
+     ordering (`sort`, `direction`). All other parameters disable the sweep,
+     including future parameters and `since`.
+   - **Pagination reaches the end** (`completedNaturally`). An unfiltered pass
+     stopped by `--max-pages` still observes only a prefix, so it cannot sweep.
+   - **Server counts agree with the walk** (`countsVerified`).
+     `pageTotals` in `internal/cli/sync_total.go` requires `Total-Results` on
+     every page, a constant total, and a final offset equal to that total.
+     Global schema resources return one unpaginated response without this
+     header, so they are exempt.
+   - **Edits cannot move unseen objects into an already-read prefix**
+     (`orderVerified`). Full item walks request `sort=dateAdded&direction=asc`
+     on both planes. Edits change `dateModified` and version, but not
+     `dateAdded`. Other resources need a complete one-page listing or the
+     unpaginated schema response. If an API rejects the item sort, sync retries
+     without it but does not sweep. The count check remains necessary because
+     additions and deletions can still move offsets.
 
 7. **`--full --since-version N` runs without sweeping, and says so.** It is not refused.
    The sweep is the only part of `--full` that requires a total observation;
@@ -136,6 +136,20 @@ whose key carries one.**
    silence was the actual defect: a filtered pass masqueraded as a complete one.
    So a skipped sweep prints a warning naming the resource, why it was skipped,
    and the command that does reap (`zotio sync --full` without `--since-version`).
+
+   Other skipped sweeps also name the missing evidence:
+
+   - `sweep_skipped_unverified_total` means the API omitted `Total-Results`.
+     Run `zotio sync --full` against an API that supplies it on every page.
+     `TestFullSyncSkipsSweepWithoutTotalResults` pins this behavior.
+   - `sweep_skipped_unstable_order` means the API rejected the stable item
+     sort, or another resource required multiple pages without a stable order.
+     Use an API that supports the stable item sort, or a complete one-page
+     listing for other resources.
+
+   `TestFullSyncKeepsItemEditedDuringWalk` proves that an edit in the unread
+   suffix preserves both the live mirror row and its pending-write marker.
+   `TestFullSyncSkipsSweepWhenStableOrderUnsupported` pins the fallback.
 
 8. **A deletion marker retires on confirmation, or on a confirmed create of the
    same key, and on nothing else. There is no TTL backstop.** The marker is
@@ -308,7 +322,7 @@ classified against the mirror, and the report agrees with the mirror state.**
    object.
 2. **A live mirror row with no marker is the inverse window, and it stays a
    failure.** The item is alive on the read plane, so reporting success would be
-   the false success `SDLDFA9W` produced. The mirror keeps its row and gets no
+   the false success `SDLDFA9W` produced (`dev/field-report-2026-08-08-walktest-4.md`). The mirror keeps its row and gets no
    marker: a marker asserts the write plane no longer has the key, and no write
    ever established that here. The error names the state and stderr carries the
    remedy (wait for Zotero to sync and retry; if it has already synced, the row
@@ -361,16 +375,22 @@ An inverse-window key never reaches that code — the version GET fails first.
 - `reconcilePendingWrites` may now return a **shorter** page than it received.
   Its caller (`upsertResourceBatch`) reports the stored count from that page, so
   a suppressed row is honestly counted as not stored.
+- Live reads that cache their rows into the mirror (`writeThroughCacheForPath`
+  in `internal/cli/data_source.go`, the default `auto` data source) consult the
+  same markers through `suppressPendingDeletions` before storing `items` or
+  `items-trash` rows, so a lagging desktop's listing cannot resurrect a
+  permanently deleted item between syncs either. A marker lookup error skips the
+  cache write rather than storing an unchecked page.
 - The atomicity guarantee is now two-sided: the rows and the marker commit or
   roll back together, so no observer sees the live row gone with no marker
   written.
-- **Mixed-version installations are refused, not degraded.** A database written
-  by this binary is at version 8, so an older zotio on the same machine fails to
-  open it — read-write and read-only alike — with the existing "newer than
-  supported version; upgrade the CLI binary" error, instead of resurrecting
-  purged items behind the operator's back. A 7-to-8 upgrade in the other
-  direction is transparent: `backfillColumns` adds the column and the open
-  stamps 8.
+- **Mixed-version installations refuse unsupported schema stamps.** The
+  initial tombstone migration raises the stamp from 7 to 8. Current binaries
+  write 9 after the FTS repair described below. A binary that supports a lower
+  version refuses both read-write and read-only opens with the existing
+  "newer than supported version; upgrade the CLI binary" error.
+  `backfillColumns` still adds the deletion-marker column during an upgrade
+  from version 7; the open completes the later repair and stamps version 9.
 
 ## Alternatives considered
 
@@ -445,6 +465,29 @@ An inverse-window key never reaches that code — the version GET fails first.
 
 ## Amendments
 
+- **2026-10-26 — current schema stamp:** `StoreSchemaVersion` is 9.
+  Version 9 reaps orphaned `resources_fts` rows from superseded `ftsRowID`
+  schemes when the store opens. Those rows otherwise duplicate search results.
+  The 7-to-8 column migration and the refusal of unsupported newer databases
+  remain unchanged.
+- **2026-10-26 — pass safety:** resume provenance includes the listing's
+  `Total-Results` and first `Last-Modified-Version` header, separate from the
+  checkpoint watermark. A resumed pass restarts at `start=0` if either value
+  changes or cannot be confirmed, while keeping its original `since` and
+  watermark. Equal totals alone do not prove unchanged offsets: deleting a
+  prefix item and adding a suffix item can preserve the count.
+  A rejected pass retains cursor `0` rather than clearing its cursor, so
+  readiness checks still recognize an unfinished initial pass.
+  Only completion clears that state; restarting changes no freshness timestamp.
+  A completed, unfiltered full pass replaces the library-version checkpoint,
+  including a lower version after a desktop restore at the same URL.
+  An incremental pass that detects a lower version restarts as a full pass.
+  For an empty desktop response without a version header, sync checks the
+  complete, unfiltered `format=versions` snapshot before deciding whether to
+  reset. That snapshot can trigger a reset but never advances the checkpoint.
+  `TestSyncResumeRestartsUnverifiedOffsets`,
+  `TestSyncTotalShiftDiscardsSavedOffset`, and
+  `TestSyncVersionRegressionResetsCheckpoint` cover these cases.
 - **2026-10-22:** `sync` registers the version filter as `--since-version`, not
   `--since` (commit `70c88db`). Command references in the active decisions above
   name the current flag. `since` still names the Web API query parameter that

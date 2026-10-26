@@ -148,6 +148,12 @@ releases feed at most once a day.`,
 					authConfigured = true
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
+					if cfg.CredentialSource == "credentials file" {
+						report["auth_source"] = cfg.CredentialSource
+						if path, _, err := cfg.CredentialDestination(); err == nil {
+							report["credentials_path"] = path
+						}
+					}
 				}
 			}
 
@@ -192,6 +198,9 @@ releases feed at most once a day.`,
 				authSource, _ := report["auth_source"].(string)
 				if authSource == "" {
 					authSource = "config"
+				}
+				if path, ok := report["credentials_path"].(string); ok {
+					authSource += " (" + path + ")"
 				}
 				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
 			} else if !localAPI {

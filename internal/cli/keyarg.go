@@ -25,7 +25,7 @@ func validateKeyArg(kind, value string) error {
 	if len(value) == zoteroKeyLength && strings.Trim(value, zoteroKeyAlphabet) == "" {
 		return nil
 	}
-	msg := fmt.Sprintf("invalid Zotero %s key %q", kind, value)
+	msg := fmt.Sprintf("invalid Zotero %s key %q: keys are exactly 8 characters from 2-9 and A-Z (no 0, 1 or O)", kind, value)
 	if len(value) > zoteroKeyLength || strings.ContainsAny(value, "abcdefghijklmnopqrstuvwxyz") {
 		msg += fmt.Sprintf("; to look up a citation key, run: zotio items find --citekey %s", value)
 	}

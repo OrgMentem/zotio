@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
 	"zotio/internal/store"
@@ -35,6 +36,7 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 	var attachMode string
 	var fetchPDF bool
 	var flagCollection string
+	var reimport bool
 
 	cmd := &cobra.Command{
 		Use:   "apply <manifest>",
@@ -68,6 +70,10 @@ a canceled run still reports every entry the session already saved, and
 --max-failures or an explicit --continue-on-error=false is refused. Prefer one
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
+
+A durable intent record protects stored connector creates before dispatch.
+An interrupted run refuses to recreate the same batch. Check the existing items
+and attachment markers first; use --reimport only after reconciling the library.
 
 --to KEY files every created item into that collection. It overrides
 the manifest's "collection" default for this run; an entry's own "collection"
@@ -223,6 +229,8 @@ refused before any item is created; apply it in a separate run.`,
 				}
 			}
 
+			intents := &importApplyIntentScope{}
+			cmd.SetContext(context.WithValue(cmd.Context(), importApplyIntentScopeKey{}, intents))
 			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF, defaultCollection)
 			// A shared connector session commits every batch-mate in one
 			// SaveItems call, so stopping at the first failed entry would report
@@ -235,15 +243,25 @@ refused before any item is created; apply it in a separate run.`,
 				runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops, runOptions...)
+			// Keep uncertain or incompletely journaled sessions guarded. Only a
+			// successful journaled run can retire its pre-dispatch evidence.
+			if runErr == nil && env.Journal != nil {
+				for _, path := range intents.paths {
+					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove completed import intent %s: %v\n", path, err)
+					}
+				}
+			}
 			if (attachMode == "stored" || fetchPDF) && env.Result != nil && env.Result.Summary.Applied > 0 {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return renderMutationResult(cmd, flags, env, runErr, nil)
+			return renderImportPDFMutationResult(cmd, flags, env, runErr)
 		},
 	}
 	cmd.Flags().StringVar(&attachMode, "attach-mode", "none", "Attachment handling: none, linked-file, or stored")
 	cmd.Flags().BoolVar(&fetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 	cmd.Flags().StringVar(&flagCollection, "to", "", "Destination collection key to file created items into (overrides the manifest default; attach entries are not re-filed)")
+	cmd.Flags().BoolVar(&reimport, "reimport", false, "Permit stored connector import replay after manually reconciling an earlier run")
 
 	return cmd
 }
@@ -594,7 +612,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Cl
 	ops := make([]mutation.Op, 0, len(m.Entries))
 	var session *importApplyConnectorSession
 	if attachMode == "stored" {
-		session = &importApplyConnectorSession{cmd: cmd, flags: flags, collectionKey: defaultCollection}
+		session = &importApplyConnectorSession{cmd: cmd, flags: flags, collectionKey: defaultCollection, manifest: m}
 	}
 	for i := range m.Entries {
 		entry := m.Entries[i]
@@ -623,8 +641,14 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Cl
 			if sessionCollection == "" {
 				sessionCollection = connectorCollectionKeyFromItem(item)
 			}
+			entrySession := session
 			if session != nil && (sessionCollection == "" || sessionCollection == session.collectionKey || strings.TrimSpace(flags.connectorTarget) != "") {
 				session.entries = append(session.entries, storedEntry)
+			} else if session != nil {
+				// An entry with its own collection needs its own session, but
+				// still needs the same durable replay guard as the shared batch.
+				entrySession = &importApplyConnectorSession{cmd: cmd, flags: flags, collectionKey: sessionCollection, manifest: m}
+				entrySession.entries = append(entrySession.entries, storedEntry)
 			} else {
 				storedEntry = nil
 			}
@@ -652,7 +676,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Cl
 						// changes nothing that was committed, so the outcome is
 						// read before the file preflight the fallback needs.
 						if storedEntry != nil {
-							if status, detail, err, shared := session.apply(storedEntry); shared {
+							if status, detail, err, shared := entrySession.apply(storedEntry); shared {
 								return status, detail, err
 							}
 						}
@@ -722,9 +746,6 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Cl
 							req := attachmentReq
 							bindStoredUploadParent(&req, res.WebKey)
 							status, reason, err := applyStoredUpload(cmd.Context(), storedClient, req, flags)
-							if err != nil {
-								return "failed", orphanedWebParentDetail(res.WebKey, entryTitle, err), orphanedParentError(entryTitle, err)
-							}
 							detail := map[string]any{
 								"via":               "web",
 								"key":               res.WebKey,
@@ -735,16 +756,24 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient *client.Cl
 								detail["attachment_key"] = upload["item_key"]
 							}
 							if status == "conflict" || status == "failed" {
-								// The parent is committed and the file did not
-								// land. This returns nil error by design (the
-								// outcome is a status, not a transport
-								// failure), so the engine's human renderer has
-								// only this map - and it prints just the
-								// "message" key. Without it the operator sees a
-								// bare Go map and no way to find the item.
 								detail["title"] = entryTitle
-								detail["message"] = orphanedParentError(entryTitle,
-									fmt.Errorf("attachment upload %s: %v", status, reason)).Error()
+								detail["committed"] = true // the parent exists independently of the file outcome
+								if upload, ok := reason.(map[string]any); ok {
+									for _, key := range []string{"registered", "upload"} {
+										if value, present := upload[key]; present {
+											detail[key] = value
+										}
+									}
+								}
+								cause := err
+								if cause == nil {
+									cause = fmt.Errorf("attachment upload %s: %v", status, reason)
+								}
+								recovery := fmt.Errorf("item %q was created, but the file upload did not finish with a confirmed outcome: %w; resume with zotio attachments add %s %q --attach-mode stored --via web --yes; do not delete the parent and rerun the manifest", entryTitle, cause, res.WebKey, req.Path)
+								detail["message"] = recovery.Error()
+								if err != nil {
+									return status, detail, recovery
+								}
 								return status, detail, nil
 							}
 							return "applied", detail, nil
@@ -945,11 +974,13 @@ func prepareStoredCreate(entryNumber int, entryPath string) (storedUploadRequest
 // importApplyStoredEntry is one stored create manifest entry and, once the
 // shared connector session has run, that entry's own outcome.
 type importApplyStoredEntry struct {
-	number    int
-	title     string
-	path      string
-	sourceURL string
-	item      map[string]any
+	number         int
+	title          string
+	path           string
+	sourceURL      string
+	item           map[string]any
+	intentPath     string
+	intentIdentity string
 
 	status string
 	detail any
@@ -985,10 +1016,93 @@ type importApplyConnectorSession struct {
 	// collectionKey is the run's destination; it becomes the session target
 	// unless --connector-target already names one.
 	collectionKey string
+	manifest      importManifest
+	pendingPaths  []string
 
 	done     bool
 	via      string
 	routeErr error
+}
+
+// The command owns cleanup only after runMutation has journaled every outcome.
+type importApplyIntentScopeKey struct{}
+type importApplyIntentScope struct {
+	paths []string
+}
+
+type importApplyPending struct {
+	importFilePending
+	ConnectorKeys []string `json:"connector_keys"`
+	FileMD5       string   `json:"file_md5"`
+	EntryNumber   int      `json:"entry_number"`
+}
+
+// checkIntents checks every entry before file preflight can shrink the batch.
+// A removed or edited source file cannot change the manifest/position identity;
+// the hash belongs in the evidence, not in the replay guard's identity.
+func (s *importApplyConnectorSession) checkIntents() error {
+	content, err := json.Marshal(map[string]any{
+		"manifest": s.manifest, "collection": s.collectionKey,
+		"target": strings.TrimSpace(s.flags.connectorTarget),
+	})
+	if err != nil {
+		return err
+	}
+	_, manifestIdentity, err := importFilePendingPath(content, "import.apply.stored.manifest")
+	if err != nil {
+		return err
+	}
+	reimport, _ := s.cmd.Flags().GetBool("reimport")
+	for _, entry := range s.entries {
+		path, identity, err := importFilePendingPath([]byte(manifestIdentity+":"+strconv.Itoa(entry.number)), "import.apply.stored.entry")
+		if err != nil {
+			return err
+		}
+		entry.intentPath, entry.intentIdentity = path, identity
+		prior, err := readImportFilePending(path)
+		if err != nil {
+			return err
+		}
+		if prior != nil && !reimport {
+			return preconditionErr(fmt.Errorf("an earlier stored import (session %s, started %s) may already have created manifest entry %d; refusing automatic replay: reconcile its item and attachment marker using %s, then use --reimport only if another create is intended", prior.Session, prior.StartedAt, entry.number, path))
+		}
+	}
+	return nil
+}
+
+// recordIntent persists each dispatched entry's evidence before SaveItems.
+func (s *importApplyConnectorSession) recordIntent(batch []*importApplyStoredEntry, requests []storedUploadRequest, results []itemCreateResult, target string) error {
+	for i, entry := range batch {
+		record := importApplyPending{
+			importFilePending: newImportFilePending(results[i].Session, entry.intentIdentity, "import.apply.stored.entry", 1, target),
+			ConnectorKeys:     []string{results[i].ConnKey},
+			FileMD5:           requests[i].MD5, EntryNumber: entry.number,
+		}
+		raw, err := json.Marshal(record)
+		if err == nil {
+			err = cliutil.AtomicWriteDurableFile(entry.intentPath, raw, 0o600, 0o700)
+		}
+		if err != nil {
+			return errors.Join(fmt.Errorf("recording stored import intent before dispatch: %w", err), s.clearIntents())
+		}
+		s.pendingPaths = append(s.pendingPaths, entry.intentPath)
+	}
+	if scope, ok := s.cmd.Context().Value(importApplyIntentScopeKey{}).(*importApplyIntentScope); ok {
+		scope.paths = append(scope.paths, s.pendingPaths...)
+	}
+	return nil
+}
+
+// clearIntents is safe only when the connector confirms that nothing committed,
+// or when intent publication failed before dispatch.
+func (s *importApplyConnectorSession) clearIntents() error {
+	var errs []error
+	for _, path := range s.pendingPaths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("removing uncommitted import intent %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // apply reports entry's outcome from the shared session. shared is false when
@@ -1018,6 +1132,10 @@ func (s *importApplyConnectorSession) run() {
 	}
 	s.via = via
 	if via != "connector" {
+		return
+	}
+	if err := s.checkIntents(); err != nil {
+		s.routeErr = err
 		return
 	}
 
@@ -1098,10 +1216,24 @@ func (s *importApplyConnectorSession) run() {
 		failAll(err)
 		return
 	}
+	if err := s.recordIntent(batch, requests, results, target); err != nil {
+		failAll(err)
+		return
+	}
 	for _, entry := range batch {
 		entry.dispatched = true
 	}
+	defer invalidateAfterConnectorWrite(flags)
 	if saveErr := conn.SaveItems(ctx, sessionID, "", payload); saveErr != nil {
+		if !errors.Is(saveErr, connector.ErrCommitted) && !errors.Is(saveErr, connector.ErrOutcomeUnknown) {
+			// A rejected request did not create any parent. Do not strand a
+			// replay guard or describe this known non-commit as uncertain.
+			for _, entry := range batch {
+				entry.dispatched = false
+			}
+			failAll(errors.Join(saveErr, s.clearIntents()))
+			return
+		}
 		// The connector can report an error after committing the items, so
 		// no entry may report a clean failure that invites a re-create.
 		cause := fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w", saveErr)
@@ -1148,6 +1280,7 @@ func saveStoredConnectorAttachment(ctx context.Context, flags *rootFlags, conn *
 	if err != nil {
 		return "conflict", orphanedConnectorParentDetail(res, entry.title, err), err
 	}
+	defer invalidateAfterConnectorWrite(flags)
 	if err := conn.SaveAttachment(ctx, res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", source, req.Size); err != nil {
 		cause := orphanedParentError(entry.title, err)
 		detail := storedConnectorCommittedDetail(res, entry.title, marker,
@@ -1232,10 +1365,10 @@ func orphanedParentDetail(res itemCreateResult, entryTitle string, cause error) 
 	return orphanedConnectorParentDetail(res, entryTitle, cause)
 }
 
-// orphanedParentError states plainly that the parent item already exists
-// unattached, and gives a deterministic next step.
+// orphanedParentError does not confuse an unconfirmed upload with absent bytes.
+// Connector failures need reconciliation before any new attachment is created.
 func orphanedParentError(entryTitle string, cause error) error {
-	return fmt.Errorf("item %q was created but the file was not attached: %w; find it by title in Zotero, then either attach the file directly (right-click the item -> Add Attachment -> Attach Stored Copy of File) or delete the item and re-run", entryTitle, cause)
+	return fmt.Errorf("item %q was created, but the file upload did not finish with a confirmed outcome: %w; find the item in Zotero and reconcile its attachments before retrying; do not delete the item and rerun the manifest", entryTitle, cause)
 }
 
 // Isolate manifest item maps before closure capture.

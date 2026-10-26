@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"zotio/internal/cliutil"
 	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
@@ -80,38 +81,43 @@ type workflowRunStepWhen struct {
 }
 
 type workflowRunReport struct {
-	Steps []workflowRunStepReport `json:"steps"`
-	OK    bool                    `json:"ok"`
-	Mode  string                  `json:"mode"`
-	RunID string                  `json:"run_id,omitempty"`
+	Steps            []workflowRunStepReport `json:"steps"`
+	OK               bool                    `json:"ok"`
+	Mode             string                  `json:"mode"`
+	RunID            string                  `json:"run_id,omitempty"`
+	DestructiveSteps []string                `json:"destructive_steps,omitempty"`
 }
 
 // workflowRunInvocation carries the caller-owned approval and resume knobs.
 type workflowRunInvocation struct {
-	Yes          bool
-	DryRun       bool
-	Resume       bool
-	Agent        bool
-	NoInput      bool
-	VarOverrides []string // NAME=value, same syntax as --var
+	Yes              bool
+	DryRun           bool
+	Resume           bool
+	AllowDestructive bool
+	Agent            bool
+	NoInput          bool
+	VarOverrides     []string // NAME=value, same syntax as --var
 	// Trigger is the change batch that started this run. It is read-only
 	// data for the steps and never approves a write: only Yes applies.
 	Trigger *workflowRunTrigger
 }
 
 type workflowRunStepReport struct {
-	Index  int      `json:"index"`
-	Name   string   `json:"name,omitempty"`
-	Args   []string `json:"args"`
-	OK     bool     `json:"ok"`
-	Status string   `json:"status"`
-	Reason string   `json:"reason,omitempty"`
-	Error  string   `json:"error,omitempty"`
-	Output string   `json:"output"`
+	Index       int           `json:"index"`
+	Name        string        `json:"name,omitempty"`
+	Args        []string      `json:"args"`
+	OK          bool          `json:"ok"`
+	Status      string        `json:"status"`
+	Reason      string        `json:"reason,omitempty"`
+	Error       string        `json:"error,omitempty"`
+	Output      string        `json:"output"`
+	Destructive bool          `json:"destructive,omitempty"`
+	Plan        []mutation.Op `json:"plan,omitempty"`
 }
 
 func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 	var resume bool
+	var allowDestructive bool
 	var varOverrides []string
 
 	cmd := &cobra.Command{
@@ -139,10 +145,13 @@ ${trigger.json:PATH} and "stdin_trigger": "PATH" select from
 "upsert_keys", "delete_keys"}. "stdin_trigger": "upsert_keys" feeds
 --keys-from -. The batch is data; it never approves a write.
 
-Pass --yes once to apply the whole workflow. Steps apply in order, and every
-mutation from that run shares one journal run ID (zotio journal list --workflow
-<run-id>). There is no rollback: if a step fails, writes from earlier steps
-stay applied. The run stops at the first failed step unless the spec sets
+Pass --yes once to apply the whole workflow. A step may declare
+--allow-destructive, but apply also requires --allow-destructive on workflow run.
+The preview marks destructive steps and shows their plans.
+Each mutation gets its own journal run_id. All mutations share a workflow_run_id
+(zotio journal list --workflow <workflow-run-id>); undo each entry by its run_id.
+Steps apply in order. There is no rollback: if a step fails, earlier writes stay
+applied. The run stops at the first failed step unless the spec sets
 "continue_on_error". A failed or interrupted applied run keeps its checkpoint
 sidecar; continue it with --yes --resume, which skips the completed steps.`,
 		Example: `  zotio workflow run workflow.json
@@ -160,12 +169,13 @@ sidecar; continue it with --yes --resume, which skips the completed steps.`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runWorkflowRunFile(cmd.Context(), args[0], workflowRunInvocation{
-				Yes:          flags.yes,
-				DryRun:       flags.dryRun,
-				Resume:       resume,
-				Agent:        flags.agent,
-				NoInput:      flags.noInput,
-				VarOverrides: varOverrides,
+				Yes:              flags.yes,
+				DryRun:           flags.dryRun,
+				Resume:           resume,
+				AllowDestructive: allowDestructive,
+				Agent:            flags.agent,
+				NoInput:          flags.noInput,
+				VarOverrides:     varOverrides,
 			})
 			if len(report.Steps) > 0 {
 				if renderErr := renderWorkflowRunReport(cmd, flags, report); renderErr != nil {
@@ -176,6 +186,7 @@ sidecar; continue it with --yes --resume, which skips the completed steps.`,
 		},
 	}
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted applied workflow from its checkpoint sidecar")
+	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow destructive workflow steps (also required when a step declares --allow-destructive)")
 	cmd.Flags().StringArrayVar(&varOverrides, "var", nil, "Override a declared workflow variable (NAME=value)")
 	return cmd
 }
@@ -205,11 +216,15 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 	}
 
 	execution := workflowRunExecution{
-		Mode:    workflowRunModePreview,
-		Vars:    resolvedVars,
-		Trigger: trigger,
+		Mode:             workflowRunModePreview,
+		Vars:             resolvedVars,
+		Trigger:          trigger,
+		AllowDestructive: inv.AllowDestructive,
 	}
 	if inv.Yes && !inv.DryRun {
+		if err := workflowRunDestructiveConsent(spec, inv.AllowDestructive); err != nil {
+			return workflowRunReport{}, err
+		}
 		checkpointPath := workflowRunCheckpointPath(specPath)
 		specSHA256 := workflowRunSpecSHA256(rawSpec)
 		checkpoint := workflowRunCheckpoint{
@@ -255,15 +270,16 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 		}
 
 		execution = workflowRunExecution{
-			Mode:           workflowRunModeApply,
-			RunID:          checkpoint.RunID,
-			Vars:           resolvedVars,
-			Agent:          inv.Agent,
-			NoInput:        inv.NoInput,
-			Completed:      execution.Completed,
-			Checkpoint:     &checkpoint,
-			CheckpointPath: checkpointPath,
-			Trigger:        trigger,
+			Mode:             workflowRunModeApply,
+			RunID:            checkpoint.RunID,
+			Vars:             resolvedVars,
+			Agent:            inv.Agent,
+			NoInput:          inv.NoInput,
+			AllowDestructive: inv.AllowDestructive,
+			Completed:        execution.Completed,
+			Checkpoint:       &checkpoint,
+			CheckpointPath:   checkpointPath,
+			Trigger:          trigger,
 		}
 	}
 
@@ -510,6 +526,42 @@ func workflowRunStepOwnsFlag(arg string) bool {
 	return false
 }
 
+// A declaration with a dynamic value also requires caller consent. This check
+// runs before any step, so earlier writes cannot precede the refusal.
+func workflowRunStepDeclaresDestructive(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--allow-destructive" {
+			return true
+		}
+		if value, ok := strings.CutPrefix(arg, "--allow-destructive="); ok {
+			enabled, err := strconv.ParseBool(value)
+			if err != nil || enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowRunDestructiveConsent(spec workflowRunSpec, allowed bool) error {
+	if allowed {
+		return nil
+	}
+	var steps []string
+	for i, step := range spec.Steps {
+		if workflowRunStepDeclaresDestructive(step.Args) {
+			steps = append(steps, fmt.Sprintf("%d (%s)", i+1, step.Name))
+		}
+	}
+	if len(steps) != 0 {
+		return preconditionErr(fmt.Errorf("destructive workflow steps %s require --allow-destructive on workflow run itself", strings.Join(steps, ", ")))
+	}
+	return nil
+}
+
 func workflowRunStepInvokesWorkflow(args []string) bool {
 	positionals := workflowRunStepPositionals(args)
 	return len(positionals) > 0 && positionals[0] == "workflow"
@@ -667,15 +719,16 @@ type workflowRunCheckpointStep struct {
 }
 
 type workflowRunExecution struct {
-	Mode           string
-	RunID          string
-	Vars           map[string]string
-	Agent          bool
-	NoInput        bool
-	Completed      []workflowRunCheckpointStep
-	Checkpoint     *workflowRunCheckpoint
-	CheckpointPath string
-	Trigger        *workflowRunTrigger
+	Mode             string
+	RunID            string
+	Vars             map[string]string
+	Agent            bool
+	NoInput          bool
+	AllowDestructive bool
+	Completed        []workflowRunCheckpointStep
+	Checkpoint       *workflowRunCheckpoint
+	CheckpointPath   string
+	Trigger          *workflowRunTrigger
 }
 
 func workflowRunCheckpointPath(specPath string) string {
@@ -719,6 +772,8 @@ func readWorkflowRunCheckpoint(path string) (workflowRunCheckpoint, error) {
 	return checkpoint, nil
 }
 
+var workflowRunSyncDir = cliutil.SyncDir
+
 func writeWorkflowRunCheckpoint(path string, checkpoint workflowRunCheckpoint) error {
 	if checkpoint.Completed == nil {
 		checkpoint.Completed = make([]workflowRunCheckpointStep, 0)
@@ -755,6 +810,9 @@ func writeWorkflowRunCheckpoint(path string, checkpoint workflowRunCheckpoint) e
 	closed = true
 	if err := os.Rename(temp.Name(), path); err != nil {
 		return fmt.Errorf("replace workflow checkpoint %q: %w", path, err)
+	}
+	if err := workflowRunSyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync workflow checkpoint directory %q: %w", filepath.Dir(path), err)
 	}
 	return nil
 }
@@ -829,6 +887,12 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 		Mode:  execution.Mode,
 		RunID: execution.RunID,
 	}
+	if execution.Mode == workflowRunModeApply {
+		if err := workflowRunDestructiveConsent(spec, execution.AllowDestructive); err != nil {
+			report.OK = false
+			return report, err
+		}
+	}
 	resolvedVars := execution.Vars
 	if resolvedVars == nil {
 		resolvedVars = cloneWorkflowRunVars(spec.Vars)
@@ -887,10 +951,11 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 	}
 	for i, step := range spec.Steps {
 		stepReport := workflowRunStepReport{
-			Index:  i + 1,
-			Name:   step.Name,
-			Args:   append([]string(nil), step.Args...),
-			Status: "not_attempted",
+			Index:       i + 1,
+			Name:        step.Name,
+			Args:        append([]string(nil), step.Args...),
+			Status:      "not_attempted",
+			Destructive: workflowRunStepDeclaresDestructive(step.Args),
 		}
 		if stopped {
 			report.OK = false
@@ -1005,6 +1070,15 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 		stepCtx, evidence := withWorkflowRunCreateEvidence(ctx)
 		output, stderr, err := executeWorkflowRunStepWithRoot(stepCtx, root, args, stdin)
 		stepReport.Output = capWorkflowRunOutput(output)
+		stepReport.Plan = evidence.destructivePlan()
+		stepReport.Destructive = stepReport.Destructive || len(stepReport.Plan) > 0
+		if stepReport.Destructive {
+			label := step.Name
+			if label == "" {
+				label = strconv.Itoa(stepReport.Index)
+			}
+			report.DestructiveSteps = append(report.DestructiveSteps, label)
+		}
 		if err != nil {
 			stepReport.Status = "failed"
 			stepReport.Error = workflowRunStepExecutionError(err, stderr)
@@ -1076,6 +1150,7 @@ type workflowRunEvidenceKey struct{}
 type workflowRunCreateEvidence struct {
 	mu      sync.Mutex
 	applied map[string]int
+	plan    []mutation.Op
 }
 
 // withWorkflowRunCreateEvidence returns a context that makes runMutation report
@@ -1091,7 +1166,7 @@ func withWorkflowRunCreateEvidence(ctx context.Context) (context.Context, *workf
 // recordWorkflowRunMutation reports an engine result to the workflow step
 // collector carried by ctx, if any. runMutation calls it for every run.
 func recordWorkflowRunMutation(ctx context.Context, env *mutation.Envelope) {
-	if ctx == nil || env == nil || env.Result == nil {
+	if ctx == nil || env == nil {
 		return
 	}
 	evidence, _ := ctx.Value(workflowRunEvidenceKey{}).(*workflowRunCreateEvidence)
@@ -1099,8 +1174,19 @@ func recordWorkflowRunMutation(ctx context.Context, env *mutation.Envelope) {
 		return
 	}
 	evidence.mu.Lock()
-	evidence.applied[env.Operation] += env.Result.Summary.Applied
+	if env.Plan.Summary.Destructive > 0 {
+		evidence.plan = append(evidence.plan, env.Plan.Operations...)
+	}
+	if env.Result != nil {
+		evidence.applied[env.Operation] += env.Result.Summary.Applied
+	}
 	evidence.mu.Unlock()
+}
+
+func (e *workflowRunCreateEvidence) destructivePlan() []mutation.Op {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.plan
 }
 
 // confirmedCreateOutcomes names the creates a failed step already committed:
@@ -1850,6 +1936,18 @@ func renderWorkflowRunReport(cmd *cobra.Command, flags *rootFlags, report workfl
 			fmt.Fprintf(out, "%d\t%s\t%s: %s\n", step.Index, label, step.Status, step.Error)
 		} else {
 			fmt.Fprintf(out, "%d\t%s\t%s\n", step.Index, label, step.Status)
+		}
+		if report.Mode == workflowRunModePreview && step.Destructive {
+			fmt.Fprintln(out, "  destructive: requires --allow-destructive on workflow run")
+			if len(step.Plan) > 0 {
+				plan, err := json.MarshalIndent(step.Plan, "  ", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "  plan: %s\n", plan)
+			} else if step.Output != "" {
+				fmt.Fprintln(out, step.Output)
+			}
 		}
 	}
 	return nil

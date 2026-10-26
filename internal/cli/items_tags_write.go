@@ -180,7 +180,6 @@ func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kin
 
 	var updater *batchItemUpdater
 	runOptions := []func(*mutation.Options){}
-	opObjectIndex := make(map[int]int, len(batchObjects))
 	if batch {
 		updater = newBatchItemUpdater(c, "/items", operation, batchObjects)
 		slot := 0
@@ -192,10 +191,10 @@ func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kin
 			}
 			index := slot
 			slot++
-			opObjectIndex[i] = index
 			ops[i].Apply = func() (string, any, error) {
 				return updater.outcome(index)
 			}
+			ops[i].Dispatched = func() bool { return updater.dispatched(index) }
 		}
 		// A rejected object travelled to Zotero alongside its batch-mates and
 		// cannot un-send them, so stopping early would report applied items as
@@ -204,9 +203,6 @@ func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kin
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, operation, ops, runOptions...)
-	if updater != nil {
-		correctDispatchedNotAttempted(&env, ops, opObjectIndex, updater)
-	}
 	// A request-level failure carries information the engine's generic error
 	// cannot express. It must win over runErr, because the same request failure
 	// also marks its items failed and therefore always makes runErr non-nil.
@@ -225,43 +221,6 @@ func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kin
 		}
 	}
 	return renderMutationResult(cmd, flags, env, runErr, itemTagsSingleLine(add, tagNames))
-}
-
-// correctDispatchedNotAttempted rewrites the engine's not_attempted verdict for
-// any item whose request had already been sent.
-//
-// The engine stops between operations when the context is cancelled, but in
-// batch mode the first op of a chunk dispatches all 50 objects. Everything
-// after the cancellation point in that chunk already reached Zotero and may
-// well have been applied, so reporting it as never attempted is false and
-// invites the duplicating retry --batch exists to avoid.
-func correctDispatchedNotAttempted(env *mutation.Envelope, ops []mutation.Op, opObjectIndex map[int]int, updater *batchItemUpdater) {
-	if env.Result == nil {
-		return
-	}
-	byOpID := make(map[string]int, len(ops))
-	for i := range ops {
-		byOpID[ops[i].ID] = i
-	}
-	for i := range env.Result.Items {
-		item := &env.Result.Items[i]
-		if item.Status != "not_attempted" {
-			continue
-		}
-		opIndex, ok := byOpID[item.OpID]
-		if !ok {
-			continue
-		}
-		objectIndex, ok := opObjectIndex[opIndex]
-		if !ok || !updater.dispatched(objectIndex) {
-			continue
-		}
-		item.Status = "failed"
-		item.Reason = "the request carrying this item was already sent when the run stopped; its outcome is unknown, so verify before retrying"
-		env.Result.Summary.NotAttempted--
-		env.Result.Summary.Failed++
-		env.OK = false
-	}
 }
 
 func normalizeTagNames(rawTags []string) ([]string, error) {

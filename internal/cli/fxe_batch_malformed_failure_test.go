@@ -17,10 +17,8 @@ import (
 
 // TestFxeCreateMalformedFailureEntryIsNotApplied pins the create commands to
 // the shared per-entry failure decoder: a 2xx batch response whose `failed`
-// entry is not a {code, message} object with a non-zero code means Zotero
-// rejected that object without saying how. Decoding the map in one call
-// dropped every failure, so the rejected object was reported applied and the
-// run exited 0.
+// entry is not a {code, message} object with a non-zero code leaves the outcome
+// unknown. Preserve committed evidence instead of inviting a duplicating retry.
 func TestFxeCreateMalformedFailureEntryIsNotApplied(t *testing.T) {
 	commands := []struct {
 		name   string
@@ -55,7 +53,7 @@ func TestFxeCreateMalformedFailureEntryIsNotApplied(t *testing.T) {
 				mutationJournalRecorder = recordMutationJournal
 				t.Cleanup(func() { mutationJournalRecorder = nil })
 
-				body := `{"success":{"0":"KEY00001"},"successful":{},"unchanged":{},"failed":{"1":` + entry.entry + `}}`
+				body := `{"success":{"0":"ABCD2345"},"successful":{},"unchanged":{},"failed":{"1":` + entry.entry + `}}`
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write([]byte(body))
@@ -72,8 +70,8 @@ func TestFxeCreateMalformedFailureEntryIsNotApplied(t *testing.T) {
 				}
 				cmd.SetArgs(command.args)
 				err := cmd.Execute()
-				if err == nil || ExitCode(err) != 13 {
-					t.Fatalf("error = %v, exit=%d; want degraded failure for a malformed failed entry", err, ExitCode(err))
+				if err == nil || ExitCode(err) != 1 {
+					t.Fatalf("error = %v, exit=%d; want conflict for a malformed failed entry", err, ExitCode(err))
 				}
 				for _, want := range []string{"index 1", "malformed failure entry", "outcome is unknown"} {
 					if !strings.Contains(err.Error(), want) {
@@ -88,8 +86,12 @@ func TestFxeCreateMalformedFailureEntryIsNotApplied(t *testing.T) {
 				if len(journal) != 1 {
 					t.Fatalf("journal entries = %d, want 1", len(journal))
 				}
-				if got := journal[0].Summary; got.Applied != 1 || got.Failed != 1 {
-					t.Fatalf("journaled summary = %+v, want 1 applied and 1 failed: the malformed entry must not be applied", got)
+				if got := journal[0].Summary; got.Applied != 1 || got.Conflicts != 1 || got.Failed != 0 {
+					t.Fatalf("journaled summary = %+v, want 1 applied and 1 conflict", got)
+				}
+				reason, _ := journal[0].Ops[1].Reason.(map[string]any)
+				if reason["committed"] != true || reason["outcome"] != "unknown" {
+					t.Fatalf("malformed entry lost unknown evidence: %v", reason)
 				}
 			})
 		}

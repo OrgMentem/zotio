@@ -261,21 +261,22 @@ func TestAttachmentsAddCarriesConnectorRoute(t *testing.T) {
 		if connector == nil {
 			t.Fatalf("attachments add routes = %v, want a connector route", entry.Routes)
 		}
-		for _, banned := range []string{preconditionZoteroFileStorage, preconditionWebAPIKey} {
-			for _, r := range connector.Requires {
-				if r == banned {
-					t.Errorf("attachments add connector route requires %q; the route exists to avoid Zotero cloud storage and never touches the Web API uploader", banned)
-				}
-			}
-		}
-		hasConnector := false
+		hasConnector, hasWebAPIKey := false, false
 		for _, r := range connector.Requires {
-			if r == preconditionDesktopConnector {
+			switch r {
+			case preconditionDesktopConnector:
 				hasConnector = true
+			case preconditionWebAPIKey:
+				hasWebAPIKey = true
+			case preconditionZoteroFileStorage:
+				t.Errorf("attachments add connector route requires %q; it uploads through the desktop connector, not the Web API file uploader", r)
 			}
 		}
 		if !hasConnector {
-			t.Errorf("attachments add connector route requires %v, want desktop_connector", connector.Requires)
+			t.Errorf("attachments add connector route requires %v, want %s", connector.Requires, preconditionDesktopConnector)
+		}
+		if !hasWebAPIKey {
+			t.Errorf("attachments add connector route requires %v, want %s for the parentItem PATCH", connector.Requires, preconditionWebAPIKey)
 		}
 		return
 	}

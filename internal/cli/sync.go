@@ -366,8 +366,8 @@ Exit codes & warnings:
 			// a complete pass reaches its terminal page.
 			if full {
 				for _, resource := range resources {
-					if err := db.ClearSyncCursorContext(cmd.Context(), resource); err != nil {
-						return fmt.Errorf("clearing sync cursor for %s (--full): %w", resource, err)
+					if err := db.RestartSyncCursorContext(cmd.Context(), resource, ""); err != nil {
+						return fmt.Errorf("restarting sync cursor for %s (--full): %w", resource, err)
 					}
 				}
 			}
@@ -383,7 +383,7 @@ Exit codes & warnings:
 				if sinceVersion == 0 {
 					headRefresh = true
 					maxPages = 1
-					// Clear the cursor so we start from the head each time;
+					// Reset the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
 					// "resume from wherever I left off".
 					for _, resource := range resources {
@@ -392,8 +392,8 @@ Exit codes & warnings:
 							return fmt.Errorf("reading sync cursor for %s (--latest-only): %w", resource, gerr)
 						}
 						if existing != "" {
-							if err := db.ClearSyncCursorContext(cmd.Context(), resource); err != nil {
-								return fmt.Errorf("clearing sync cursor for %s (--latest-only): %w", resource, err)
+							if err := db.RestartSyncCursorContext(cmd.Context(), resource, ""); err != nil {
+								return fmt.Errorf("restarting sync cursor for %s (--latest-only): %w", resource, err)
 							}
 						}
 					}
@@ -641,7 +641,7 @@ Exit codes & warnings:
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event, saves the resume cursor, and exits 13)")
-	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins).")
+	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; resets resume offset and caps pages at 1. Mutually exclusive with --since-version (--since-version wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13).")
 	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
 
@@ -1145,49 +1145,54 @@ type syncCursorProvenance struct {
 	// stand in for it. nil marks a cursor written before the watermark was
 	// persisted, whose pass version is unknown.
 	Watermark *int `json:"watermark,omitempty"`
+	// Total is the listing size that gave the cursor its offset. A missing
+	// total cannot establish that a resumed suffix still follows its prefix.
+	Total *int `json:"total_results,omitempty"`
+	// ListingVersion is the first response's Last-Modified-Version header.
+	// Object versions cannot establish an unchanged listing, and a restart
+	// can observe a newer listing while retaining the original watermark.
+	ListingVersion int `json:"listing_version,omitempty"`
 }
 
-// syncCursorScope is the provenance saved next to a resume cursor: the exact
-// request (plane, mode, since) the cursor's offsets belong to, plus the
-// library version of the pass that produced them.
-func syncCursorScope(plane string, full bool, since, watermark int) string {
+// syncCursorScope records the request, checkpoint watermark, and listing
+// identity that produced a resume offset.
+func syncCursorScope(plane string, full bool, since, watermark, listingVersion int, totals pageTotals) string {
 	mode := "incremental"
 	if full {
 		mode = "full"
 	}
-	data, _ := json.Marshal(syncCursorProvenance{Plane: plane, Mode: mode, Since: since, Watermark: &watermark})
+	scope := syncCursorProvenance{Plane: plane, Mode: mode, Since: since, Watermark: &watermark, ListingVersion: listingVersion}
+	if totals.verified() {
+		scope.Total = &totals.total
+	}
+	data, _ := json.Marshal(scope)
 	return string(data)
 }
 
-// resumableSyncWatermark decodes a saved cursor scope. ok is true only when
-// the cursor was written for exactly this request and carries its pass's
-// watermark; anything else must restart from the committed checkpoint,
-// because resuming it would checkpoint a version the skipped prefix was
-// never read at.
-func resumableSyncWatermark(saved, plane string, full bool, since int) (watermark int, ok bool) {
+// resumableSyncProvenance accepts only a matching request with a known pass
+// watermark and listing total. Older cursors restart from the checkpoint.
+func resumableSyncProvenance(saved, plane string, full bool, since int) (syncCursorProvenance, bool) {
 	var got syncCursorProvenance
-	if json.Unmarshal([]byte(saved), &got) != nil || got.Watermark == nil {
-		return 0, false
+	if json.Unmarshal([]byte(saved), &got) != nil || got.Watermark == nil || got.Total == nil || *got.Total < 0 {
+		return syncCursorProvenance{}, false
 	}
-	var want syncCursorProvenance
-	if json.Unmarshal([]byte(syncCursorScope(plane, full, since, 0)), &want) != nil {
-		return 0, false
+	mode := "incremental"
+	if full {
+		mode = "full"
 	}
-	if got.Plane != want.Plane || got.Mode != want.Mode || got.Since != want.Since {
-		return 0, false
+	if got.Plane != plane || got.Mode != mode || got.Since != since {
+		return syncCursorProvenance{}, false
 	}
-	return *got.Watermark, true
+	return got, true
 }
 
 // syncRequestObservesEveryObject reports whether one page request could witness
 // every object of its resource, i.e. whether the response's absences mean
 // "deleted" rather than "filtered out".
 //
-// Default-deny by design. Pagination params choose WHICH SLICE of the whole set
-// comes back, one page at a time, and a completed pass walks every slice; any
-// other param chooses WHICH OBJECTS QUALIFY, and no amount of paging recovers
-// the ones it excluded. So the two pagination params are allowlisted and
-// everything else counts as narrowing, including params that do not exist yet.
+// Default-deny by design. Pagination selects slices and ordering selects their
+// order; neither excludes objects. Other parameters can narrow the listing,
+// so they disable the sweep, including parameters that do not exist yet.
 //
 // That inversion is deliberate. The predicate this replaced was the `full`
 // flag, which names the user's intent and stopped tracking reality the moment
@@ -1200,6 +1205,8 @@ func syncRequestObservesEveryObject(params map[string]string, limitParam, cursor
 		switch key {
 		case limitParam, cursorParam:
 			// Pagination only: a completed pass covers every page.
+		case "sort", "direction":
+			// Ordering moves no object out of the result set.
 		default:
 			return false
 		}
@@ -1237,11 +1244,6 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// The effective filter must be known before a saved cursor can be trusted.
 	// A cursor from another plane, mode, or since checkpoint starts at page zero.
 	existingCursor := ""
-	if full {
-		if clearErr := db.ClearSyncCursorContext(ctx, resource); clearErr != nil {
-			return syncResult{Resource: resource, Err: fmt.Errorf("clearing full-sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
-		}
-	}
 
 	// Determine the since value: an explicit --since version wins; otherwise use
 	// the stored Last-Modified-Version checkpoint for incremental sync (skipped
@@ -1281,19 +1283,28 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// watermark: no response of the resumed suffix may replace it.
 	libraryVersion := 0
 	versionFixed := false
+	var resumeTotal *int
+	listingVersion := 0
+	listingVersionFixed := false
 	if !full {
 		savedCursor, savedScope, _, _, stateErr := db.GetSyncResumeState(resource)
 		if stateErr != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("reading sync cursor for %s: %w", resource, stateErr), Duration: time.Since(started)}
 		}
-		if watermark, ok := resumableSyncWatermark(savedScope, c.Plane(), full, effectiveSince); savedCursor != "" && ok {
+		if provenance, ok := resumableSyncProvenance(savedScope, c.Plane(), full, effectiveSince); savedCursor != "" && ok {
 			existingCursor = savedCursor
-			libraryVersion = watermark
-			versionFixed = true
-		} else if savedCursor != "" {
-			if clearErr := db.ClearSyncCursorContext(ctx, resource); clearErr != nil {
-				return syncResult{Resource: resource, Err: fmt.Errorf("discarding mismatched sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
+			libraryVersion = *provenance.Watermark
+			if savedCursor != "0" {
+				resumeTotal = provenance.Total
+				listingVersion = provenance.ListingVersion
+				listingVersionFixed = true
 			}
+			versionFixed = true
+		}
+	}
+	if existingCursor == "" {
+		if restartErr := db.RestartSyncCursorContext(ctx, resource, ""); restartErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("starting sync pass for %s: %w", resource, restartErr), Duration: time.Since(started)}
 		}
 	}
 	zoteroSchemaVersion := ""
@@ -1356,7 +1367,19 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// short page counts as the end of the listing only when the server
 	// agrees. See pageTotals.
 	var totals pageTotals
+	// Item edits change dateModified/version but not dateAdded. Both Zotero
+	// planes support this ordering; other resources need a one-page snapshot
+	// before their walk can justify a sweep.
+	stableOrder := full && (canonicalStoreResource(resource) == "items" || resource == "items-trash")
+	stableOrderSupported := true
 	failPass := func(err error) syncResult {
+		// Any rejected count leaves an unfinished pass. Discard the offset
+		// without clearing that fact: the first pass may have stored only a
+		// prefix, which import, health, and PRISMA must not treat as complete.
+		scope := syncCursorScope(c.Plane(), full, effectiveSince, libraryVersion, listingVersion, totals)
+		if restartErr := db.RestartSyncCursorContext(ctx, resource, scope); restartErr != nil {
+			err = errors.Join(err, fmt.Errorf("restarting rejected sync pass: %w", restartErr))
+		}
 		if !humanFriendly {
 			emitSyncEvent(ctx, struct {
 				Event    string `json:"event"`
@@ -1387,6 +1410,10 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if effectiveSince > 0 {
 			params[sinceParam] = strconv.Itoa(effectiveSince)
 		}
+		if stableOrder {
+			params["sort"] = "dateAdded"
+			params["direction"] = "asc"
+		}
 
 		// Evaluate the request as SENT, not the flags that produced it: the
 		// sweep's correctness depends on what the plane was actually asked for.
@@ -1413,12 +1440,15 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		} else {
 			data, respVersion, err = requestClient.GetWithVersionContext(ctx, path, params)
 		}
-		// Capture the library version from the first response that reports one;
-		// using the earliest avoids missing objects changed mid-sync.
-		if !versionFixed && libraryVersion == 0 && respVersion > 0 {
-			libraryVersion = respVersion
-		}
 		if err != nil {
+			var apiErr *client.APIError
+			if stableOrder && pagesFetched == 0 && errors.As(err, &apiErr) && apiErr.StatusCode == 400 {
+				// An older plane may reject the stable sort. Re-fetch without
+				// it, but never use that walk as deletion evidence.
+				stableOrder = false
+				stableOrderSupported = false
+				continue
+			}
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
 					emitSyncEvent(ctx, struct {
@@ -1450,6 +1480,32 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
+		// Pin the pass to its first response, including after a resume offset
+		// is discarded: restarting must not advance beyond its original prefix.
+		if !versionFixed && libraryVersion == 0 && respVersion > 0 {
+			libraryVersion = respVersion
+		}
+		if resumeTotal != nil {
+			total, present, totalErr := parseTotalResults(totalHeader)
+			expected := *resumeTotal
+			resumeTotal = nil
+			if totalErr != nil || !present || total != expected || listingVersion <= 0 || respVersion <= 0 || respVersion != listingVersion {
+				scope := syncCursorScope(c.Plane(), full, effectiveSince, libraryVersion, listingVersion, pageTotals{total: expected, known: true})
+				if restartErr := db.RestartSyncCursorContext(ctx, resource, scope); restartErr != nil {
+					return failPass(fmt.Errorf("discarding unverified resume cursor for %s: %w", resource, restartErr))
+				}
+				cursor = ""
+				listingVersion = 0
+				listingVersionFixed = false
+				// Keep effectiveSince and the original watermark. No rows
+				// from this unverified suffix have reached the mirror.
+				continue
+			}
+		}
+		if !listingVersionFixed {
+			listingVersion = respVersion
+			listingVersionFixed = true
+		}
 
 		// Decode pages before deciding whether a response is a singleton record.
 		items, nextCursor, hasMore, isPage, extractErr := extractPageItemsWithError(data, pageSize.cursorParam)
@@ -1468,16 +1524,6 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: err, Duration: time.Since(started)}
 		}
-		if !versionFixed && isPage && libraryVersion == 0 && respVersion == 0 {
-			// The local desktop API omits Last-Modified-Version on list
-			// responses. This body value is a real Zotero library version
-			// from the same plane, so it remains comparable with the stored
-			// checkpoint that PlaneChanged guards.
-			if pageVersion := pageMaxObjectVersion(data); pageVersion > 0 {
-				libraryVersion = pageVersion
-			}
-		}
-
 		// Check the page against Total-Results before it is stored or the pass
 		// can end on it. A contradiction means the response is not the
 		// listing it claims to be: refuse the pass without sweeping or
@@ -1487,6 +1533,43 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			if terr := totals.observe(totalHeader, pageStart, len(items)); terr != nil {
 				return failPass(fmt.Errorf("fetching %s: %w", resource, terr))
 			}
+		}
+		checkRegression := !full && sinceVersion == 0 && effectiveSince > 0 && pagesFetched == 0
+		pageVersion := respVersion
+		if isPage && pageVersion == 0 && ((!versionFixed && libraryVersion == 0) || checkRegression) {
+			// The desktop omits Last-Modified-Version on list responses.
+			pageVersion = pageMaxObjectVersion(data)
+		}
+		comparisonVersion := pageVersion
+		versionKnown := pageVersion > 0
+		if checkRegression && !versionKnown && isPage && len(items) == 0 && totals.verified() && totals.total == 0 {
+			// An empty desktop response has no version to compare with since.
+			// Its unfiltered versions snapshot distinguishes a quiet library
+			// from a restored library whose changes all fall below our cursor.
+			var versionErr error
+			comparisonVersion, versionErr = syncCurrentResourceVersion(ctx, requestClient, path)
+			if versionErr != nil {
+				return failPass(fmt.Errorf("checking %s library version: %w", resource, versionErr))
+			}
+			versionKnown = true
+		}
+		if checkRegression && versionKnown && comparisonVersion < effectiveSince {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "warning: %s library version went backwards from %d to %d; restarting a full pass\n", resource, effectiveSince, comparisonVersion)
+			} else {
+				emitSyncEvent(ctx, struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+				}{"sync_anomaly", resource, "library_version_regressed"})
+			}
+			// A restored desktop can reuse the same URL with lower versions.
+			// Full sync also clears row versions, so old rows cannot reject
+			// the restored plane's authoritative values.
+			return syncResource(ctx, c, db, resource, 0, true, maxPages, inlineProgress)
+		}
+		if !versionFixed && libraryVersion == 0 && pageVersion > 0 {
+			libraryVersion = pageVersion
 		}
 
 		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
@@ -1675,11 +1758,15 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 		}
 
-		// Incremental passes can resume only against this exact request.
-		// Full passes never persist partial cursors: the seen-key sweep also
-		// requires every prior page, so another process cannot resume it safely.
+		// Keep the pass explicitly unfinished until its terminal checks and
+		// sweep succeed. Full passes keep the initial zero cursor rather than
+		// a suffix offset because their sweep also needs every prior key.
 		if !full {
-			if err := db.SaveSyncResumeStateContext(ctx, resource, nextCursor, syncCursorScope(c.Plane(), full, effectiveSince, libraryVersion), totalCount); err != nil {
+			resumeCursor := nextCursor
+			if resumeCursor == "" {
+				resumeCursor = "0"
+			}
+			if err := db.SaveSyncResumeStateContext(ctx, resource, resumeCursor, syncCursorScope(c.Plane(), full, effectiveSince, libraryVersion, listingVersion, totals), totalCount); err != nil {
 				fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 			}
 		}
@@ -1754,13 +1841,13 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// failed sweep leaves stale rows and unconfirmed markers behind a cursor
 	// that never revisits them (finding zotio-a7e373e8cbd6a1aa). Incremental
 	// defensive exits keep their scoped resume cursor instead; full defensive
-	// exits keep no cursor because they also lack the earlier seen-key set.
+	// exits keep a zero cursor because they also lack the earlier seen-key set.
 	if completedNaturally {
 		// Reap rows for objects that no longer exist upstream, and retire the
 		// deletion markers this pass confirmed (store.SweepMissing does both).
 		// The whole rule, in one predicate, because it is one rule: absence is
-		// evidence of deletion only when presence was possible, and that takes
-		// BOTH halves of a total observation.
+		// evidence of deletion only when presence was possible. The pass must
+		// be complete, unfiltered, count-verified, and safe from edit reordering.
 		//
 		//   completedNaturally  — pagination reached the end. Truncation is not
 		//     a request param, so the param check below cannot see it:
@@ -1796,7 +1883,8 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// Total-Results, so they are exempt.
 		countsVerified := isSchemaSyncResource(resource) || totals.verified()
 		shouldSweep := full || resource == "schema"
-		if shouldSweep && observedEverything && countsVerified && canonicalStoreResource(resource) == resource {
+		orderVerified := stableOrderSupported && (stableOrder || pagesFetched <= 1 || isSchemaSyncResource(resource))
+		if shouldSweep && observedEverything && countsVerified && orderVerified && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
 			// type. A top-level alias fetches a strict subset, so the storage
 			// alias is correct for upserts but wrong for reaps. A sweep failure
@@ -1838,7 +1926,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Message:  "--full combined with a narrowing filter (--since-version): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
 				})
 			}
-		} else if full && canonicalStoreResource(resource) == resource {
+		} else if full && !countsVerified && canonicalStoreResource(resource) == resource {
 			// Unfiltered and complete by the page walk, but the API did not
 			// report Total-Results on every page, so completeness cannot be
 			// confirmed. Skip the sweep and say so, like the filtered case.
@@ -1859,6 +1947,22 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Message:  "the API did not report Total-Results on every page, so the listing cannot be confirmed complete: no rows were reaped and no deletion markers were confirmed",
 				})
 			}
+		} else if full && !orderVerified && canonicalStoreResource(resource) == resource {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "warning: skipped reaping deleted %s rows because this API listing has no edit-stable order; use an API with sort=dateAdded support or a complete one-page listing\n", resource)
+			} else {
+				emitSyncEvent(ctx, struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+					Message  string `json:"message"`
+				}{
+					Event:    "sync_anomaly",
+					Resource: resource,
+					Reason:   "sweep_skipped_unstable_order",
+					Message:  "the API listing has no edit-stable order: no rows were reaped and no deletion markers were confirmed",
+				})
+			}
 		}
 		// Clear the resume cursor before advancing the version. If the version
 		// write then fails, the next run can safely repeat this pass; advancing
@@ -1876,7 +1980,13 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// of doing it once — permanently voiding the version-monotonic guard
 		// and rewriting the whole table each run. library_version legitimately
 		// stays 0 here; only the plane converges.
-		if serr := db.SaveLibraryVersionContext(ctx, resource, c.Plane(), libraryVersion); serr != nil {
+		saveVersion := db.SaveLibraryVersionContext
+		if full && observedEverything {
+			// A completed authoritative pass can repair a checkpoint from a
+			// restored library, even when the plane URL did not change.
+			saveVersion = db.ResetLibraryVersionContext
+		}
+		if serr := saveVersion(ctx, resource, c.Plane(), libraryVersion); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		if resource == "schema" && zoteroSchemaVersion != "" && observedEverything {
@@ -1969,6 +2079,47 @@ func determinePaginationDefaults() paginationDefaults {
 // determineSinceParam returns the query parameter name for incremental sync filtering.
 func determineSinceParam() string {
 	return "since"
+}
+
+// syncCurrentResourceVersion reads the complete, unfiltered versions snapshot
+// when a quiet desktop response carries no version. The maximum is enough to
+// detect a cursor above every current object; it never advances that cursor.
+func syncCurrentResourceVersion(ctx context.Context, c syncHTTPClient, path string) (int, error) {
+	headerClient, ok := c.(syncVersionHeaderHTTPClient)
+	if !ok {
+		return 0, fmt.Errorf("version snapshot requires Total-Results support")
+	}
+	data, version, totalHeader, err := headerClient.GetWithVersionAndHeaderContext(ctx, path, map[string]string{"format": "versions"}, "Total-Results")
+	if err != nil {
+		return 0, err
+	}
+	if version > 0 {
+		return version, nil
+	}
+	var versions map[string]int
+	if err := json.Unmarshal(data, &versions); err != nil {
+		return 0, fmt.Errorf("decoding version snapshot: %w", err)
+	}
+	if versions == nil {
+		return 0, fmt.Errorf("version snapshot is null")
+	}
+	var totals pageTotals
+	if err := totals.observe(totalHeader, 0, len(versions)); err != nil {
+		return 0, err
+	}
+	if !totals.verified() {
+		return 0, fmt.Errorf("version snapshot has no Total-Results")
+	}
+	if err := totals.finish(len(versions)); err != nil {
+		return 0, err
+	}
+	for _, objectVersion := range versions {
+		if objectVersion < 0 {
+			return 0, fmt.Errorf("version snapshot contains a negative version")
+		}
+		version = max(version, objectVersion)
+	}
+	return version, nil
 }
 
 // pageMaxObjectVersion returns the highest Zotero object version in a list

@@ -131,7 +131,7 @@ func TestApplyPulledRegion(t *testing.T) {
 	writeFile(t, p, "---\nzotero_key: K1\n---\n\n## Notes\n"+vaultNotesBegin+"\nold local\n"+vaultNotesEnd+"\n")
 	st := pushState{Schema: 1, NoteKey: "N1", NoteVersion: 7, SourceHash: "s", RemoteHash: "r", Renderer: vaultRenderer}
 
-	if err := applyPulledRegion(p, "new pulled\ncontent", st); err != nil {
+	if err := applyPulledRegion(p, "new pulled\ncontent", sha256hex("old local"), st); err != nil {
 		t.Fatalf("applyPulledRegion: %v", err)
 	}
 	s := readNote(t, p)

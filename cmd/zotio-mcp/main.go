@@ -355,6 +355,9 @@ func isLoopbackHTTPAddr(addr string) bool {
 // validBearerToken reports whether r carries the expected bearer token, using a
 // constant-time comparison.
 func validBearerToken(r *http.Request, token string) bool {
+	if token == "" {
+		return false
+	}
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {

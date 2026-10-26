@@ -253,6 +253,9 @@ func TestInstallationWriterLockIgnoresConfigAndDataDirSelection(t *testing.T) {
 func TestAuthAndProfileWritersShareInstallationLockScope(t *testing.T) {
 	useWriterLockTestHome(t)
 	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	holder := &cobra.Command{Use: "holder"}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -642,8 +645,20 @@ func TestInstallationWriterLockCandidatesResolve(t *testing.T) {
 	flags := &rootFlags{}
 	root := newRootCmd(flags)
 	modes := installationWriterLockModes(root)
+	// Polling writers acquire inside each cycle rather than around RunE.
+	// Their idle-lock behavior is covered by
+	// TestWatchIdleUnlockAndMarkerReloadWatchtail and
+	// TestTailFollowRetriesHeldCursorAndUnlocksWatchtail.
+	for _, path := range []string{"watch", "tail"} {
+		if _, ok := modes[path]; ok {
+			t.Errorf("polling writer %q must not hold a command-wide lock", path)
+		}
+	}
 	for _, entry := range buildCapabilityRegistry(root) {
 		if entry.Operation != "write" && entry.Operation != "sync" {
+			continue
+		}
+		if entry.Path == "watch" || entry.Path == "tail" {
 			continue
 		}
 		mode, ok := modes[entry.Path]

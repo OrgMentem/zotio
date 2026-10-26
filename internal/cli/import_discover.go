@@ -22,14 +22,22 @@ const (
 )
 
 type importDiscoverSummary struct {
-	ItemsScanned            int                      `json:"items_scanned"`
-	ReferencesSeen          int                      `json:"references_seen"`
-	UniqueCitedDOIs         int                      `json:"unique_cited_dois"`
-	Candidates              int                      `json:"candidates"`
-	Entries                 int                      `json:"entries"`
-	SkippedAlreadyInLibrary int                      `json:"skipped_already_in_library"`
-	SkippedTitleDuplicate   int                      `json:"skipped_title_duplicate"`
-	Sources                 []referenceSourceSummary `json:"sources"`
+	// ItemsScanned counts distinct source items with no failed direction.
+	ItemsScanned            int `json:"items_scanned"`
+	ReferencesSeen          int `json:"references_seen"`
+	UniqueCitedDOIs         int `json:"unique_cited_dois"`
+	Candidates              int `json:"candidates"`
+	Entries                 int `json:"entries"`
+	SkippedAlreadyInLibrary int `json:"skipped_already_in_library"`
+	SkippedTitleDuplicate   int `json:"skipped_title_duplicate"`
+	// ItemsFailed counts distinct source keys with any failed direction.
+	// Missing references make the candidate counts a lower bound.
+	ItemsFailed int `json:"items_failed,omitempty"`
+	// SourcesTruncated counts source items whose reference list hit a
+	// provider cap, so some of their references are not in this report.
+	SourcesTruncated int                      `json:"sources_truncated,omitempty"`
+	Incomplete       bool                     `json:"incomplete,omitempty"`
+	Sources          []referenceSourceSummary `json:"sources"`
 }
 
 // importDiscoverReport is the command result. Replaced says an existing
@@ -44,6 +52,13 @@ type importDiscoverReport struct {
 	Replaced        bool                  `json:"replaced"`
 	DryRun          bool                  `json:"dry_run,omitempty"`
 	Summary         importDiscoverSummary `json:"summary"`
+}
+
+// Incomplete reports whether any source item failed: the manifest counts are
+// then a lower bound, not the scope's coverage. Truncated sources are
+// reported in the summary but do not drive this flag.
+func (r importDiscoverReport) Incomplete() bool {
+	return r.Summary.Incomplete
 }
 
 type referenceSourceItem struct {
@@ -170,26 +185,46 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if flags.asJSON {
-					return printCommandJSON(cmd.OutOrStdout(), report, flags)
+					if err := printCommandJSON(cmd.OutOrStdout(), report, flags); err != nil {
+						return err
+					}
+				} else {
+					switch {
+					case flags.dryRun && exists:
+						fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s, replacing the existing manifest and any review edits in it; nothing was written\n", report.Summary.Entries, flagOut)
+					case flags.dryRun:
+						fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s; nothing was written\n", report.Summary.Entries, flagOut)
+					case exists:
+						fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s (replaced the existing manifest)\n", report.Summary.Entries, flagOut)
+					default:
+						fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Summary: items scanned=%d; references seen=%d; unique cited DOIs=%d; candidates=%d; already in library=%d; title duplicates=%d; failed=%d; truncated=%d\n",
+						report.Summary.ItemsScanned,
+						report.Summary.ReferencesSeen,
+						report.Summary.UniqueCitedDOIs,
+						report.Summary.Candidates,
+						report.Summary.SkippedAlreadyInLibrary,
+						report.Summary.SkippedTitleDuplicate,
+						report.Summary.ItemsFailed,
+						report.Summary.SourcesTruncated,
+					)
+					if report.Summary.ItemsFailed > 0 {
+						for _, source := range report.Summary.Sources {
+							if source.Error == "" {
+								continue
+							}
+							fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s): %s\n", advisoryCell(source.Key), advisoryCell(source.DOI), advisoryCell(source.Error))
+						}
+					}
 				}
-				switch {
-				case flags.dryRun && exists:
-					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s, replacing the existing manifest and any review edits in it; nothing was written\n", report.Summary.Entries, flagOut)
-				case flags.dryRun:
-					fmt.Fprintf(cmd.OutOrStdout(), "Dry run: would write %d manifest entries to %s; nothing was written\n", report.Summary.Entries, flagOut)
-				case exists:
-					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s (replaced the existing manifest)\n", report.Summary.Entries, flagOut)
-				default:
-					fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
+				if report.Incomplete() {
+					// The report above already lists every failed source, so the
+					// central printer must not duplicate it as a second JSON
+					// error document.
+					return markRendered(degradedErr(fmt.Errorf("import discover: %d of %d source item(s) failed; the manifest is a lower bound, results incomplete",
+						report.Summary.ItemsFailed, report.Summary.ItemsScanned+report.Summary.ItemsFailed)))
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Summary: items scanned=%d; references seen=%d; unique cited DOIs=%d; candidates=%d; already in library=%d; title duplicates=%d\n",
-					report.Summary.ItemsScanned,
-					report.Summary.ReferencesSeen,
-					report.Summary.UniqueCitedDOIs,
-					report.Summary.Candidates,
-					report.Summary.SkippedAlreadyInLibrary,
-					report.Summary.SkippedTitleDuplicate,
-				)
 				return nil
 			}
 			// --dry-run creates nothing, not even the <out>.lock sibling.
@@ -375,6 +410,23 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 		manifest.Entries = append(manifest.Entries, entry)
 	}
 	report.Summary.Entries = len(manifest.Entries)
+	failedKeys := make(map[string]struct{})
+	truncated := 0
+	for _, source := range agg.Sources {
+		switch {
+		case source.Error != "":
+			failedKeys[source.Key] = struct{}{}
+		case source.Truncated:
+			truncated++
+		}
+	}
+	failed := len(failedKeys)
+	report.Summary.ItemsScanned = len(sourceItems) - failed
+	report.Summary.ItemsFailed = failed
+	report.Summary.SourcesTruncated = truncated
+	// Truncation stays visible in the summary; only failed sources degrade
+	// the command's exit.
+	report.Summary.Incomplete = failed > 0
 	return manifest, report, nil
 }
 
@@ -586,6 +638,12 @@ func fetchOutgoingReferences(ctx context.Context, httpClient *http.Client, doi s
 		if s2Err != nil {
 			return referenceFetchResult{}, s2Err
 		}
+		// A COCI outage followed by an empty fallback answer is not a clean
+		// scan: the fallback found nothing because it had nothing to say,
+		// while the primary answer is still missing.
+		if err != nil {
+			return referenceFetchResult{}, err
+		}
 		return referenceFetchResult{Provider: providerSemanticScholar, DOIs: s2Refs, Titles: s2Titles, Truncated: truncated}, nil
 	}
 
@@ -593,11 +651,18 @@ func fetchOutgoingReferences(ctx context.Context, httpClient *http.Client, doi s
 	if crErr == nil && len(crRefs) > 0 {
 		return referenceFetchResult{Provider: providerCrossRef, DOIs: crRefs, Titles: map[string]string{}}, nil
 	}
+	// An empty answer from every consulted provider is final only when every
+	// provider answered without error. A non-empty survivor still wins above;
+	// here nothing resolved, so the first provider error marks the source
+	// failed and the report incomplete.
 	if s2Err != nil {
 		return referenceFetchResult{}, s2Err
 	}
-	if crErr != nil && err != nil {
+	if crErr != nil {
 		return referenceFetchResult{}, crErr
+	}
+	if err != nil {
+		return referenceFetchResult{}, err
 	}
 	return referenceFetchResult{Provider: providerSemanticScholar, DOIs: s2Refs, Titles: s2Titles, Truncated: truncated}, nil
 }
@@ -610,6 +675,14 @@ func fetchIncomingReferences(ctx context.Context, httpClient *http.Client, doi s
 
 	oaRefs, truncated, oaErr := fetchOpenAlexCitationDOIs(ctx, httpClient, doi, opts.Cache)
 	if oaErr == nil {
+		if len(oaRefs) > 0 {
+			return referenceFetchResult{Provider: providerOpenAlex, DOIs: oaRefs, Titles: map[string]string{}, Truncated: truncated}, nil
+		}
+		// The OpenAlex answer is empty: it stands only when COCI also
+		// answered empty. A COCI outage must still mark the source failed.
+		if err != nil {
+			return referenceFetchResult{}, err
+		}
 		return referenceFetchResult{Provider: providerOpenAlex, DOIs: oaRefs, Titles: map[string]string{}, Truncated: truncated}, nil
 	}
 	return referenceFetchResult{}, oaErr

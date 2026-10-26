@@ -349,7 +349,7 @@ func writeThroughCacheForPath(ctx context.Context, resourceType, path string, da
 	if len(rows) == 0 {
 		return
 	}
-	if _, _, err := db.UpsertBatch(target, rows); err != nil {
+	if err := db.UpsertReadCacheContext(ctx, target, rows); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", target, err)
 	}
 }
@@ -464,14 +464,6 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		childProv := localProvenanceContext(ctx, db, "collections", reason)
 		childProv.Scoped = true
 		return data, childProv, nil
-	}
-	// An item-list path can intentionally fall through when its scope cannot
-	// be reproduced. Preserve its list classification for the generic dump:
-	// collection-items commands otherwise look like keyed collection reads.
-	if _, _, _, itemList := parseItemListPath(path); itemList {
-		resourceType = "items"
-		isList = true
-		prov = localProvenanceContext(ctx, db, resourceType, reason)
 	}
 
 	if data, handled, qErr := resolveLocalTrashList(ctx, db, resourceType, isList, path, params); handled {
@@ -802,7 +794,7 @@ func requireLocalResourceHydrated(ctx context.Context, db *store.Store, resource
 		return fmt.Errorf("querying local %s sync state: %w", resourceType, err)
 	}
 	if lastSynced.IsZero() {
-		return fmt.Errorf("no local data for %q. Run 'zotio sync --resources %s' first", resourceType, resourceType)
+		return preconditionErr(fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType))
 	}
 	return nil
 }
@@ -834,7 +826,7 @@ func resolveLocalTrashList(ctx context.Context, db *store.Store, resourceType st
 				return nil, true, fmt.Errorf("querying local trash sync state: %w", stateErr)
 			}
 			if lastSynced.IsZero() {
-				return nil, true, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
+				return nil, true, preconditionErr(fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType))
 			}
 		}
 		return json.RawMessage("[]"), true, nil
@@ -849,8 +841,8 @@ func resolveLocalTrashList(ctx context.Context, db *store.Store, resourceType st
 
 // resolveLocalItemList runs the Zotero-aware item query planner when the path
 // is an item-list endpoint and its requested scope is locally reproducible.
-// It returns (nil, false, nil) for non-item-list paths or unreproducible
-// scopes so the caller falls back to its honest generic get/list handling.
+// It returns (nil, false, nil) for non-item-list paths. Unsupported item scopes
+// return a precondition error rather than falling through to an unscoped dump.
 // An empty match yields a JSON empty array, which mirrors a live list that
 // matched nothing.
 func resolveLocalItemList(ctx context.Context, db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
@@ -859,11 +851,15 @@ func resolveLocalItemList(ctx context.Context, db *store.Store, path string, par
 		return nil, false, nil
 	}
 
-	// The local item planner cannot reproduce incremental version scopes or
-	// rendered bibliography output. Fall through so the generic path warns
-	// rather than presenting an unscoped JSON dump as a scoped result.
-	if params["since"] != "" || params["format"] != "" {
-		return nil, false, nil
+	// The mirror cannot reproduce version scopes or rendered bibliography output.
+	for _, param := range []string{"since", "format"} {
+		if params[param] != "" {
+			flag := param
+			if param == "since" {
+				flag = "since-version"
+			}
+			return nil, true, preconditionErr(fmt.Errorf("--%s requires the live API; local item reads cannot reproduce this request", flag))
+		}
 	}
 	q := store.ItemQuery{
 		ItemType:   params["itemType"],

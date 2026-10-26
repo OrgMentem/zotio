@@ -249,7 +249,6 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"profile delete":   writerLockOnApply,
 	"init":             writerLockAlways,
 	"demo":             writerLockOnNotDryRun,
-	"tail":             writerLockAlways,
 	"workflow archive": writerLockAlways,
 	"workflow run":     writerLockOnApply,
 	// Every command that writes on the user's behalf routes through the shared
@@ -299,6 +298,9 @@ func installationWriterLockModes(rootCmd *cobra.Command) map[string]writerLockMo
 	for path, mode := range explicitInstallationWriterCommands {
 		modes[path] = mode
 	}
+	// Polling commands own their transactions per cycle, never while idle.
+	delete(modes, "watch")
+	delete(modes, "tail")
 	return modes
 }
 
@@ -353,6 +355,9 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 	}
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) (err error) {
 		if err := applySelectedProfile(cmd, flags); err != nil {
+			return err
+		}
+		if err := validateDeliverOutputTarget(cmd, flags); err != nil {
 			return err
 		}
 		// A command that cannot preview rejects --dry-run before any lock is

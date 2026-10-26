@@ -2220,8 +2220,8 @@ func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, 
 }
 
 // ClearSyncCursorContext invalidates pagination state without claiming that a
-// sync pass ran, honouring cancellation while waiting on the SQLite write. It
-// is used for scope changes, --full, and --latest-only.
+// sync pass ran, honouring cancellation while waiting on the SQLite write.
+// Call RestartSyncCursorContext instead when the pass remains incomplete.
 func (s *Store) ClearSyncCursorContext(ctx context.Context, resourceType string) error {
 	release, err := s.acquireWrite(ctx)
 	if err != nil {
@@ -2231,6 +2231,26 @@ func (s *Store) ClearSyncCursorContext(ctx context.Context, resourceType string)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE sync_state SET last_cursor = NULL, cursor_scope = NULL WHERE resource_type = ?`,
 		resourceType,
+	)
+	return err
+}
+
+// RestartSyncCursorContext discards an unsafe offset without marking its pass
+// complete or refreshing any timestamp. Cursor "0" is an explicit unfinished
+// pass: readiness checks must not trust an initial prefix as a complete mirror.
+// scope may retain the original watermark, or be empty when provenance is lost.
+func (s *Store) RestartSyncCursorContext(ctx context.Context, resourceType, scope string) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO sync_state (resource_type, last_cursor, cursor_scope)
+		 VALUES (?, '0', ?)
+		 ON CONFLICT(resource_type) DO UPDATE SET
+			last_cursor = excluded.last_cursor, cursor_scope = excluded.cursor_scope`,
+		resourceType, scope,
 	)
 	return err
 }
@@ -2865,9 +2885,9 @@ func (s *Store) SaveLibraryVersionContext(ctx context.Context, resourceType, sou
 		return err
 	}
 	defer release()
-	// Monotonic checkpoint WITHIN one plane: a slower concurrent sync/tail run
-	// completing with an older Last-Modified-Version must not regress the stored
-	// checkpoint, or the next incremental pass would replay already-seen changes.
+	// Incremental passes preserve the checkpoint within a plane, including
+	// empty local responses that carry no usable version. An authoritative
+	// full pass uses ResetLibraryVersionContext to allow a restored library.
 	// Across planes the guard must NOT apply — a web-API version (12689) would
 	// otherwise outrank every local version (71) forever and freeze incremental
 	// sync, because `?since=12689` against the local plane matches nothing.
@@ -2880,6 +2900,27 @@ func (s *Store) SaveLibraryVersionContext(ctx context.Context, resourceType, sou
 				THEN MAX(COALESCE(sync_state.library_version, 0), excluded.library_version)
 				ELSE excluded.library_version
 			END,
+			cursor_source = excluded.cursor_source`,
+		resourceType, version, source,
+	)
+	return err
+}
+
+// ResetLibraryVersionContext replaces the checkpoint after an authoritative
+// full pass, even when a restored library at the same URL has lower versions.
+// The caller must hold the installation writer lock and complete the pass
+// before replacing the checkpoint; an interrupted pass must keep the old one.
+func (s *Store) ResetLibraryVersionContext(ctx context.Context, resourceType, source string, version int) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO sync_state (resource_type, library_version, cursor_source)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(resource_type) DO UPDATE SET
+			library_version = excluded.library_version,
 			cursor_source = excluded.cursor_source`,
 		resourceType, version, source,
 	)

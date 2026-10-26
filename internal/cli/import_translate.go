@@ -194,8 +194,17 @@ func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi strin
 func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) (pageContent, bool, error) {
 	// URL imports may fetch
 	// arbitrary user input, so metadata scraping is limited to public HTTP(S)
-	// endpoints and never probes loopback/private/link-local services.
-	if err := validateExternalHTTPURL(rawURL, false); err != nil {
+	// endpoints and never probes loopback/private/link-local services. The
+	// caller's context bounds the DNS preflight so a stalled lookup cannot
+	// outlive cancellation; a preflight timeout proves nothing about the
+	// page, so it is a failed lookup rather than metadata absence.
+	if err := validateExternalHTTPURLWithContext(ctx, rawURL, false); err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return pageContent{}, false, fmt.Errorf("page fetch: %w", ctx.Err())
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return pageContent{}, false, fmt.Errorf("page fetch: %w", err)
+		}
 		return pageContent{}, false, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -209,7 +218,12 @@ func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) 
 		return pageContent{}, false, fmt.Errorf("page fetch: %w", err)
 	}
 	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "html") {
+	ct := resp.Header.Get("Content-Type")
+	isHTML := ct == "" || strings.Contains(strings.ToLower(ct), "html")
+	if !isHTML {
+		if pageStatusIsFailure(resp.StatusCode) {
+			return pageContent{}, false, fmt.Errorf("page fetch: HTTP %d", resp.StatusCode)
+		}
 		return pageContent{}, false, nil
 	}
 	body, err := readCappedExternalBody(resp.Body, 1<<20)
@@ -221,7 +235,8 @@ func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Bot walls often answer 403/429/503 with the interstitial as the
 		// body. Hand a challenge back so the caller refuses it; any other
-		// non-2xx page carries no metadata worth trusting.
+		// outage, throttle, or block carries no metadata worth trusting, in
+		// any content type.
 		if challengeReason(page) != "" {
 			return page, true, nil
 		}

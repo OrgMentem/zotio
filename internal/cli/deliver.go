@@ -90,17 +90,16 @@ func parseDeliverSink(ctx context.Context, spec string) (DeliverSink, error) {
 }
 
 // Deliver routes spooled command output to the configured sink. stdout is a
-// no-op because the output already went there through the MultiWriter set up
+// no-op because the output already went there through the deliverTee set up
 // in root.go. Nothing is read back into memory: a file sink renames the spool
 // into place, a webhook streams it as the request body.
 //
-// A file sink joins the output collision namespace (ADR-0005): it takes the
-// same <canonical target>.lock every primary writer to that path takes. The
-// lock is acquired directly rather than through withPathWriterLock because
-// delivery runs after Execute returns, when the command's ownership stack is
-// already unwound. It is held only across the rename — delivery has no load
-// phase on the target — and a busy lock is returned to the caller, whose
-// warn-only channel turns it into the documented skip-with-warning.
+// A file sink shares the output collision namespace (ADR-0005). RootCmd
+// normally acquires <canonical target>.lock before execution; spool.lock
+// retains it through this rename. A busy target refuses execution with exit 9.
+// Delivery errors fail an otherwise successful command, without replacing an
+// earlier command error. The direct acquisition below is only the fallback
+// for callers without a pre-held spool lock; it returns contention unchanged.
 func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) error {
 	if ctx == nil {
 		ctx = context.Background()

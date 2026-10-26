@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -46,7 +47,6 @@ type rootFlags struct {
 	agent            bool
 	selectFields     string
 	configPath       string
-	configMustExist  bool
 	profileName      string
 	deliverSpec      string
 	// profileApplied prevents PersistentPreRun wrappers and the root handler
@@ -431,11 +431,11 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
-	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent)")
+	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid)")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowZoteroCloud, "allow-zotero-cloud", false, "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV)")
 	rootCmd.PersistentFlags().BoolVar(&flags.continueOnError, "continue-on-error", false, "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first")
-	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited)")
+	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win)")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate")
@@ -454,9 +454,6 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Capture the command context so newClient can propagate per-command
 		// deadlines and MCP request cancellation into client HTTP work.
 		flags.ctx = cmd.Context()
-		// An explicit --config must name an existing file, except for init,
-		// which creates it.
-		flags.configMustExist = cmd.Flags().Changed("config") && cmd.Name() != "init"
 		// Hand this state to the enclosing ExecuteRootInProcess before anything
 		// below can fail: from the deliver spool onwards this hook allocates
 		// resources that only the wrapper closes, and every return path from
@@ -468,6 +465,30 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// outlive the desktop configuration it described.
 		resetZoteroFileStorageCache()
 		if err := applySelectedProfile(cmd, flags); err != nil {
+			return err
+		}
+		// Readers must honor an explicit config path, including diagnostics and
+		// commands that do not otherwise load configuration.
+		switch path := commandRegistryPath(cmd); {
+		case path == "help", path == "version", path == "completion",
+			strings.HasPrefix(path, "completion "), path == "__complete", path == "__completeNoDesc":
+			// Help, version and shell completion do not need configuration.
+		case path == "init", path == "auth set-token", path == "auth logout":
+			// Configuration writers can create the explicitly named file.
+		default:
+			if cmd.Flags().Changed("config") && strings.TrimSpace(flags.configPath) != "" {
+				if _, err := os.Stat(filepath.Clean(flags.configPath)); os.IsNotExist(err) { //nolint:gosec // G703: --config is the operator's own path
+					return configErr(fmt.Errorf("config file %s does not exist", flags.configPath))
+				}
+			}
+		}
+		if flags.maxChanges < -1 {
+			return usageErr(fmt.Errorf("invalid --max-changes value %d: must be -1 (default), 0 (refuse all writes), or greater", flags.maxChanges))
+		}
+		if flags.maxFailures < 0 {
+			return usageErr(fmt.Errorf("invalid --max-failures value %d: must be 0 (unlimited) or greater", flags.maxFailures))
+		}
+		if err := validateCommandUsage(cmd, args); err != nil {
 			return err
 		}
 		if !cmd.Flags().Changed("group") {
@@ -675,14 +696,17 @@ func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
 // legacyArgs is what makes an unknown subcommand of the root an error.
 func installPositionalArgUsage(cmd *cobra.Command) {
 	validate := cmd.Args
-	if validate == nil && cmd.HasParent() && cmd.Runnable() && len(positionalSpecs(cmd)) == 0 {
+	// Replace only Cobra's bare NoArgs validator; custom validators can redact
+	// sensitive positionals (for example auth set-token) and must stay intact.
+	if cmd.HasParent() && cmd.Runnable() && len(positionalSpecs(cmd)) == 0 &&
+		(validate == nil || reflect.ValueOf(validate).Pointer() == reflect.ValueOf(cobra.NoArgs).Pointer()) {
 		// A runnable command whose Use names no positional takes none: a stray
 		// word is a usage error, not silently ignored. A runnable parent reads
 		// the word as a mistyped subcommand.
 		if cmd.HasSubCommands() {
 			validate = noPositionalArgs
 		} else {
-			validate = cobra.NoArgs
+			validate = leafNoPositionalArgs
 		}
 	}
 	if validate == nil && hasKeyPositional(cmd) {
@@ -712,15 +736,9 @@ func hasKeyPositional(cmd *cobra.Command) bool {
 	return false
 }
 
-// loadConfig loads the config, and refuses (exit 10) a config file named with
-// an explicit --config that does not exist: that is a typo or a missing mount.
-// ZOTERO_CONFIG and the default location may be absent (first run).
+// loadConfig loads the config. The root pre-run validates explicit paths for
+// every command; ZOTERO_CONFIG and the default location may be absent (first run).
 func (f *rootFlags) loadConfig() (*config.Config, error) {
-	if f.configMustExist && strings.TrimSpace(f.configPath) != "" && !demoActive() {
-		if _, err := os.Stat(filepath.Clean(f.configPath)); os.IsNotExist(err) { //nolint:gosec // G703: --config is the operator's own path
-			return nil, configErr(fmt.Errorf("config file %s does not exist", f.configPath))
-		}
-	}
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
 		return nil, configErr(err)
@@ -820,6 +838,11 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 			ctx = context.Background()
 		}
 		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
+			// Planning can discover a no-op without credentials. Keep the
+			// resolver installed so an actual write still refuses the missing key.
+			if errors.Is(rerr, errMissingWriteKey) {
+				return c, nil
+			}
 			return nil, routeResolutionErr(rerr)
 		} else if base != "" {
 			c.BaseURL = base
@@ -844,8 +867,8 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 // previewing first, the careful workflow, was what broke the apply.
 //
 // Unlike newWriteClient this prints no write-route notice (it performs no write).
-// A failed resolution is an error, not an empty selection: only an unconfigured
-// route (no key, so both planes are the same) degrades to the read plane.
+// A failed resolution is an error, not an empty selection. Without a key, selection
+// reads use the local plane; the pending resolver refuses any subsequent write.
 func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 	c, err := f.newClient()
 	if err != nil {
@@ -860,6 +883,9 @@ func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 			ctx = context.Background()
 		}
 		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
+			if errors.Is(rerr, errMissingWriteKey) {
+				return c, nil
+			}
 			return nil, routeResolutionErr(rerr)
 		} else if base != "" {
 			c.BaseURL = base
@@ -885,6 +911,7 @@ func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error
 		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	c.SetContext(ctx)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	if isLocalZoteroAPI(cfg.BaseURL) {

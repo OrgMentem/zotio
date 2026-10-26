@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"time"
 
 	"zotio/internal/client"
 )
@@ -54,7 +55,7 @@ func patchWithVersionGuard(c *client.Client, path string, body map[string]any, v
 	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
 	if _, _, err := c.PatchWithHeaders(path, body, headers); err != nil {
 		if client.IsAmbiguousWriteError(err) {
-			current, observedVersion, readErr := c.GetFromWriteBaseWithVersion(path, nil)
+			current, observedVersion, readErr := readForWriteReconciliation(c.Context(), c, path)
 			return classifyReconciledPatch(path, body, current, observedVersion, err, readErr)
 		}
 		return classifyWriteError(err)
@@ -87,7 +88,7 @@ func patchWithWritePlaneVersion(ctx context.Context, m apiMutator, path string, 
 	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
 	if _, _, err := m.PatchWithHeaders(path, body, headers); err != nil {
 		if client.IsAmbiguousWriteError(err) {
-			current, observedVersion, readErr := reader.GetFromWriteBaseWithVersionContext(ctx, path, nil)
+			current, observedVersion, readErr := readForWriteReconciliation(ctx, reader, path)
 			return classifyReconciledPatch(path, body, current, observedVersion, err, readErr)
 		}
 		return classifyWriteError(err)
@@ -113,7 +114,7 @@ func putWithVersionGuard(c *client.Client, path string, body map[string]any, ver
 		status, detail, classified := classifyWriteError(err)
 		return nil, statusCode, status, detail, classified
 	}
-	current, observedVersion, readErr := c.GetFromWriteBaseWithVersion(path, nil)
+	current, observedVersion, readErr := readForWriteReconciliation(c.Context(), c, path)
 	status, detail, reconciledErr := classifyReconciledPatch(path, body, current, observedVersion, err, readErr)
 	if reconciledErr == nil {
 		return current, http.StatusOK, status, detail, nil
@@ -139,28 +140,49 @@ func deleteWithVersionGuard(c *client.Client, path string, version int) (json.Ra
 		status, detail, classified := classifyWriteError(err)
 		return nil, statusCode, status, detail, classified
 	}
-	_, _, readErr := c.GetFromWriteBaseWithVersion(path, nil)
+	_, _, readErr := readForWriteReconciliation(c.Context(), c, path)
 	var apiErr *client.APIError
 	if errors.As(readErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 		return nil, http.StatusNoContent, "applied", map[string]any{"reconciled": true, "deleted": true}, nil
 	}
 	if readErr != nil {
 		combined := fmt.Errorf("delete outcome for %s is ambiguous and reconciliation failed: %w", path, errors.Join(err, readErr))
-		return nil, statusCode, "failed", combined.Error(), combined
+		return nil, statusCode, "failed", unknownWriteOutcome(combined.Error(), nil), combined
 	}
 	status, detail, classified := classifyWriteError(err)
 	return nil, statusCode, status, detail, classified
 }
 
+// Reconciliation must outlive cancellation of the write, but remains bounded.
+func readForWriteReconciliation(ctx context.Context, reader writePlaneReader, path string) (json.RawMessage, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return reader.GetFromWriteBaseWithVersionContext(reconcileCtx, path, nil)
+}
+
+// committed keeps an uncertain write in the journal; outcome distinguishes it
+// from confirmed writes so undo cannot silently discard it.
+func unknownWriteOutcome(message string, fields map[string]any) map[string]any {
+	return map[string]any{
+		"committed":        true,
+		"outcome":          "unknown",
+		"message":          message,
+		"requested_fields": fields,
+	}
+}
+
 func classifyReconciledPatch(path string, body map[string]any, current json.RawMessage, observedVersion int, writeErr, readErr error) (string, any, error) {
 	if readErr != nil {
 		err := fmt.Errorf("write outcome for %s is ambiguous and reconciliation failed: %w", path, errors.Join(writeErr, readErr))
-		return "failed", err.Error(), err
+		return "failed", unknownWriteOutcome(err.Error(), body), err
 	}
 	matched, err := requestedPatchFieldsMatch(current, body)
 	if err != nil {
 		err = fmt.Errorf("write outcome for %s is ambiguous and its current value cannot be compared: %w", path, errors.Join(writeErr, err))
-		return "failed", err.Error(), err
+		return "failed", unknownWriteOutcome(err.Error(), body), err
 	}
 	if matched {
 		return "applied", map[string]any{
@@ -171,6 +193,10 @@ func classifyReconciledPatch(path string, body map[string]any, current json.RawM
 	conflictErr := fmt.Errorf("write outcome for %s is ambiguous and the current value differs from the requested fields: %w", path, writeErr)
 	return "conflict", map[string]any{
 		"reconciled":       false,
+		"committed":        true,
+		"outcome":          "unknown",
+		"message":          conflictErr.Error(),
+		"requested_fields": body,
 		"observed_version": observedVersion,
 	}, conflictErr
 }

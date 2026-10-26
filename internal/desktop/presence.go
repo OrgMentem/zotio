@@ -50,9 +50,10 @@
 //   - "connector_off": nothing listens on the connector port. The connector
 //     is disabled (Settings -> Advanced -> "Allow other applications to
 //     communicate with Zotero") or on another port. A hung Zotero's listener
-//     can also refuse some connects, so a one-shot Probe reports it only
-//     when every address refuses repeated dials, and Wait only when that
-//     held on every check of a sustained stall.
+//     can also refuse some connects. With Prober.Listening set to ListeningOn
+//     (as in the CLI), a one-shot Probe reports it only when every address
+//     refuses repeated dials. With nil Listening, Probe uses the ping error
+//     alone. Wait requires connector refusal on every check of a sustained stall.
 package desktop
 
 import (

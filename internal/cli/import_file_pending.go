@@ -16,10 +16,12 @@ import (
 	"zotio/internal/cliutil"
 )
 
-// importFilePending is written before a connector file import is dispatched
-// and removed once the outcome is known. Zotero's /connector/import has no way
-// to ask "did session X commit?", so a record left behind is the only evidence
-// that an earlier run of the same bytes may already have created every record.
+// importFilePending is written before a connector import is dispatched and
+// removed only after a confirmed outcome reaches the caller's safe completion
+// point. File and PDF imports retain it through journal publication and
+// rendering, and keep it after interrupted or uncertain outcomes. The connector
+// cannot reliably answer "did session X commit?", so a surviving record prevents a
+// blind replay of bytes that an earlier run may already have imported.
 type importFilePending struct {
 	Session       string `json:"session"`
 	StartedAt     string `json:"started_at"`

@@ -38,8 +38,9 @@ type workflowSubmitStepWhen struct {
 // nested argv has no equivalent per-command safety guard.
 func RegisterWorkflowSubmit(s *server.MCPServer, rootFactory func() *cobra.Command) {
 	s.AddTool(mcplib.NewTool("workflow_submit",
-		mcplib.WithDescription("Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; one approval, one journal run id; steps apply in order and a failed step does not roll back earlier writes; steps validated per-command exactly like command_run."),
+		mcplib.WithDescription("Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; each mutation has its own run_id and shares a workflow_run_id; steps apply in order without rollback; steps validated per-command exactly like command_run."),
 		mcplib.WithBoolean("yes", mcplib.Description("Apply the full workflow once instead of previewing it.")),
+		mcplib.WithBoolean("allow-destructive", mcplib.Description("Allow destructive workflow steps; required together with yes even when a step declares allow-destructive.")),
 		mcplib.WithBoolean("continue_on_error", mcplib.Description("Continue executing later steps after a step fails.")),
 		mcplib.WithObject("vars", mcplib.Description("Workflow variable values."), mcplib.AdditionalProperties(map[string]any{"type": "string"})),
 		mcplib.WithArray("steps", mcplib.Required(), mcplib.Description("Validated workflow steps."), mcplib.Items(map[string]any{
@@ -72,6 +73,10 @@ func workflowSubmitHandler(rootFactory func() *cobra.Command) server.ToolHandler
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		args := req.GetArguments()
 		yes, err := workflowSubmitBool(args, "yes")
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		allowDestructive, err := workflowSubmitBool(args, "allow-destructive")
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
@@ -111,14 +116,16 @@ func workflowSubmitHandler(rootFactory func() *cobra.Command) server.ToolHandler
 		}
 
 		execArgs := map[string]any{
-			"args":     specPath,
 			"agent":    true,
 			"no-input": true,
 		}
 		if yes {
 			execArgs["yes"] = true
 		}
-		return runMirroredInProcess(ctx, rootFactory, []string{"workflow", "run"}, execArgs), nil
+		if allowDestructive {
+			execArgs["allow-destructive"] = true
+		}
+		return runMirroredWithPositionals(ctx, rootFactory, []string{"workflow", "run"}, execArgs, []string{specPath}), nil
 	}
 }
 

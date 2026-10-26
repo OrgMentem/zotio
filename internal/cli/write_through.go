@@ -835,11 +835,31 @@ func applyCollectionChangeToData(data map[string]any, c mutation.Change) bool {
 // just removed. Validation is fail-closed -- any malformed element returns
 // false and the row is left for the next `sync`, exactly like any other
 // unreplayable change. A nil Add is not a valid replacement (an empty clear
-// arrives as an empty array), and a non-nil Remove alongside a set is a shape
-// no producer emits, so both return false rather than guessing.
+// arrives as an empty array). Remove records the previous list for the preview
+// and journal; replay uses Add alone as the complete replacement.
 func applyTagsSetChangeToData(data map[string]any, c mutation.Change) bool {
-	if c.Add == nil || c.Remove != nil {
+	if c.Add == nil {
 		return false
+	}
+	if c.Remove != nil {
+		raw, err := json.Marshal(c.Remove)
+		if err != nil {
+			return false
+		}
+		var previous []map[string]any
+		if err := json.Unmarshal(raw, &previous); err != nil {
+			return false
+		}
+		for _, tag := range previous {
+			if name, ok := tag["tag"].(string); !ok || strings.TrimSpace(name) == "" {
+				return false
+			}
+			if rawType := tag["type"]; rawType != nil {
+				if _, ok := mirrorTagTypeNumber(rawType); !ok {
+					return false
+				}
+			}
+		}
 	}
 	raw, err := json.Marshal(c.Add)
 	if err != nil {
@@ -920,10 +940,26 @@ func mirrorTagTypeNumber(v any) (int, bool) {
 // mirror. Same contract as applyTagsSetChangeToData: the Add value is the
 // full key list the PATCH assigned, it overwrites rather than merges, and any
 // malformed element returns false for the next `sync` to reconcile
-// authoritatively.
+// authoritatively. Remove is the informational previous list, not a separate
+// membership removal to apply.
 func applyCollectionsSetChangeToData(data map[string]any, c mutation.Change) bool {
-	if c.Add == nil || c.Remove != nil {
+	if c.Add == nil {
 		return false
+	}
+	if c.Remove != nil {
+		raw, err := json.Marshal(c.Remove)
+		if err != nil {
+			return false
+		}
+		var previous []string
+		if err := json.Unmarshal(raw, &previous); err != nil {
+			return false
+		}
+		for _, key := range previous {
+			if strings.TrimSpace(key) == "" {
+				return false
+			}
+		}
 	}
 	raw, err := json.Marshal(c.Add)
 	if err != nil {

@@ -635,8 +635,8 @@ func TestItemsTagsBatchCancellationPreservesDispatchedSiblingStatus(t *testing.T
 	}
 	for _, key := range []string{batchTestKey(1), batchTestKey(49)} {
 		item := byKey[key]
-		if item.Status != "failed" || !strings.Contains(fmt.Sprint(item.Reason), "already sent") ||
-			!strings.Contains(fmt.Sprint(item.Reason), "verify before retrying") {
+		detail, ok := item.Reason.(map[string]any)
+		if item.Status != "failed" || !ok || detail["committed"] != true || detail["outcome"] != "unknown" {
 			t.Errorf("%s = %+v, want failed unknown outcome for a dispatched sibling", key, item)
 		}
 	}
@@ -670,12 +670,12 @@ func TestItemsTagsBatchCancellationBeforeTransportKeepsSiblingsNotAttempted(t *t
 				cancel()
 				return updater.outcome(index)
 			},
+			Dispatched: func() bool { return updater.dispatched(index) },
 		})
 	}
 	env, err := mutation.Run(mutation.Options{
 		Context: ctx, Yes: true, MaxChanges: -1, ContinueOnError: true,
 	}, "items.tags.add", ops)
-	correctDispatchedNotAttempted(&env, ops, map[int]int{0: 0, 1: 1}, updater)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}

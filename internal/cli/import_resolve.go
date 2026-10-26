@@ -22,7 +22,12 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resolve <dir-or-manifest>",
 		Short: "Resolve PDFs into an editable import manifest",
-		Args:  cobra.ExactArgs(1),
+		Long: "Scan a directory of PDFs (or re-read an existing manifest) and write the reviewable import manifest to stdout; redirect it to a file: `zotio import resolve ~/papers > manifest.json`. " +
+			"For each new DOI it fetches metadata from CrossRef, then DataCite (network). " +
+			"Re-running on a manifest refreshes its unresolved create entries and keeps your edits.",
+		Example: "  zotio import resolve ~/papers > manifest.json\n" +
+			"  zotio import resolve manifest.json > refreshed.json",
+		Args: cobra.ExactArgs(1),
 		// The capability registry declares synced_store for the directory
 		// route, but central preflight cannot tell a directory from a
 		// manifest path, and a manifest refresh needs no mirror. The

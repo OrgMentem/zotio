@@ -17,6 +17,9 @@ import (
 func TestFxaAuthProfileDryRunTakesNoWriterLock(t *testing.T) {
 	home := useWriterLockTestHome(t)
 	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	saveWriterLockTestProfile(t, map[string]string{"limit": "5"})
 	lockPath := filepath.Join(home, ".zotio", ".writer.lock")
 

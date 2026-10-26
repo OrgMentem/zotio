@@ -165,8 +165,8 @@ func TestSyncResourceDoesNotResumePartialFullPassAsIncremental(t *testing.T) {
 	if first.Err == nil || !strings.Contains(first.Err.Error(), "full sync incomplete") {
 		t.Fatalf("partial full result = %+v, want a hard incomplete error", first)
 	}
-	if cursor, _, _, err := db.GetSyncState("items"); err != nil || cursor != "" {
-		t.Fatalf("cursor after partial full pass = %q, %v; want none", cursor, err)
+	if cursor, _, _, err := db.GetSyncState("items"); err != nil || cursor != "0" {
+		t.Fatalf("cursor after partial full pass = %q, %v; want an unfinished pass restarting at zero", cursor, err)
 	}
 
 	if second := syncResource(context.Background(), client, db, "items", 0, false, 0, false); second.Err != nil {

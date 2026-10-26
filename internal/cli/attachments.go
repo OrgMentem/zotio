@@ -93,9 +93,9 @@ All routes are retry-safe. Stored files reconcile by filename and registered
 MD5, and linked files by absolute path. The connector route reconciles on
 content hash alone, because Zotero names the stored file after the parent item
 rather than after your file: an identical retry no-ops, a run interrupted
-before the move is resumed rather than duplicated, and an empty temporary parent
-left by a run interrupted after the move is trashed by an identical retry once
-it is more than seven minutes old. Two limits are worth knowing:
+before the move is resumed rather than duplicated. Every connector retry cleans
+up empty temporary parents left by earlier runs once they are more than seven
+minutes old, even if the new upload fails. Two limits are worth knowing:
 a retry issued before Zotero has registered the hash can still add a second
 copy, and two simultaneous runs against one item can both add one.
 
@@ -107,6 +107,9 @@ By default this previews the planned attachment; apply with --yes.`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("mode") {
+				if !flags.quiet {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Flag --mode has been deprecated, use --attach-mode")
+				}
 				if cmd.Flags().Changed("attach-mode") {
 					return usageErr(fmt.Errorf("--mode is the deprecated name of --attach-mode; pass only --attach-mode"))
 				}
@@ -196,7 +199,7 @@ By default this previews the planned attachment; apply with --yes.`,
 	// deprecation note, until papio's floor reaches the release that added
 	// --attach-mode.
 	cmd.Flags().StringVar(&legacyMode, "mode", "stored", "Deprecated: use --attach-mode")
-	_ = cmd.Flags().MarkDeprecated("mode", "use --attach-mode")
+	_ = cmd.Flags().MarkHidden("mode")
 	cmd.Flags().StringVar(&title, "title", "", "Attachment title (default: the file name)")
 	return cmd
 }

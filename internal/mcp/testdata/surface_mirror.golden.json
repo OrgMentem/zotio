@@ -137,7 +137,7 @@
   },
   {
     "name": "attachments_add",
-    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, a run interrupted\nbefore the move is resumed rather than duplicated, and an empty temporary parent\nleft by a run interrupted after the move is trashed by an identical retry once\nit is more than seven minutes old. Two limits are worth knowing:\na retry issued before Zotero has registered the hash can still add a second\ncopy, and two simultaneous runs against one item can both add one.\n\nBy default this previews the planned attachment; apply with --yes.",
+    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, a run interrupted\nbefore the move is resumed rather than duplicated. Every connector retry cleans\nup empty temporary parents left by earlier runs once they are more than seven\nminutes old, even if the new upload fails. Two limits are worth knowing:\na retry issued before Zotero has registered the hash can still add a second\ncopy, and two simultaneous runs against one item can both add one.\n\nBy default this previews the planned attachment; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -169,11 +169,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "title": {
@@ -253,11 +253,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "name": {
@@ -283,7 +283,7 @@
   },
   {
     "name": "collections_delete",
-    "description": "Delete a collection (does not delete items)",
+    "description": "Permanently delete a collection and its subcollections (items stay in the library)",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -307,11 +307,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -463,11 +463,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -585,11 +585,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "name": {
@@ -677,11 +677,11 @@
           "type": "array"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "scope": {
@@ -727,11 +727,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "scope": {
@@ -812,11 +812,11 @@
           "type": "number"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "output": {
@@ -913,7 +913,7 @@
   },
   {
     "name": "import",
-    "description": "Import data from a JSONL file by issuing one POST request per record.\nEach line must be a valid JSON object. Failed records are logged to stderr\nbut do not stop processing the import.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.",
+    "description": "Import data from a JSONL file by issuing one POST request per record.\nEach line must be a valid JSON object. Failed records are logged to stderr\nbut do not stop processing the import.\nSupported resources: items, collections, and searches.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -941,11 +941,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -961,7 +961,7 @@
   },
   {
     "name": "import_apply",
-    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. One invocation\ntherefore saves every connector-bound stored create in one session, as import\nfile --via connector and items create do; in a run with no destination, an\nentry whose item names its own collection still gets its own session. Because\nthe batch commits together, a failed entry does not stop the entries after it,\na canceled run still reports every entry the session already saved, and\n--max-failures or an explicit --continue-on-error=false is refused. Prefer one\ninvocation with many records. --rate-limit governs only Web API requests and\ndoes not pace connector calls; pace your own invocations.\n\n--to KEY files every created item into that collection. It overrides\nthe manifest's \"collection\" default for this run; an entry's own \"collection\"\nstill wins over both. The destination applies to created items, including the\nitem Zotero's recognizer makes from a \"recognize\" entry, which its own save\nsession files once recognition finishes. Attach entries add a file to an item\nthat already exists and do not re-file it. The key must exist in the synced\nlocal store, or the run is refused before any write. A connector save session\nhas one target, so on the connector route an entry whose own collection differs\nfrom the run's destination, or whose item already lists another collection, is\nrefused before any item is created; apply it in a separate run.",
+    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. One invocation\ntherefore saves every connector-bound stored create in one session, as import\nfile --via connector and items create do; in a run with no destination, an\nentry whose item names its own collection still gets its own session. Because\nthe batch commits together, a failed entry does not stop the entries after it,\na canceled run still reports every entry the session already saved, and\n--max-failures or an explicit --continue-on-error=false is refused. Prefer one\ninvocation with many records. --rate-limit governs only Web API requests and\ndoes not pace connector calls; pace your own invocations.\n\nA durable intent record protects stored connector creates before dispatch.\nAn interrupted run refuses to recreate the same batch. Check the existing items\nand attachment markers first; use --reimport only after reconciling the library.\n\n--to KEY files every created item into that collection. It overrides\nthe manifest's \"collection\" default for this run; an entry's own \"collection\"\nstill wins over both. The destination applies to created items, including the\nitem Zotero's recognizer makes from a \"recognize\" entry, which its own save\nsession files once recognition finishes. Attach entries add a file to an item\nthat already exists and do not re-file it. The key must exist in the synced\nlocal store, or the run is refused before any write. A connector save session\nhas one target, so on the connector route an entry whose own collection differs\nfrom the run's destination, or whose item already lists another collection, is\nrefused before any item is created; apply it in a separate run.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -997,12 +997,16 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
+        },
+        "reimport": {
+          "description": "Permit stored connector import replay after manually reconciling an earlier run (default: false)",
+          "type": "boolean"
         },
         "to": {
           "description": "Destination collection key to file created items into (overrides the manifest default; attach entries are not re-filed)",
@@ -1055,11 +1059,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -1158,11 +1162,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -1184,7 +1188,7 @@
   },
   {
     "name": "import_file",
-    "description": "Import items from a BibTeX, RIS, or CSL JSON file.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.\n\nRecords are posted in batches, so a record Zotero rejects cannot un-submit the\nrecords sent alongside it. Every record therefore reports its own outcome\ninstead of the run stopping at the first rejection.",
+    "description": "Import items from a BibTeX, RIS, or CSL JSON file.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.\n\nRecords are posted in batches, so a record Zotero rejects cannot un-submit the\nrecords sent alongside it. Every record therefore reports its own outcome\ninstead of the run stopping at the first rejection.\n\nConnector imports keep a replay guard until the completed run is journaled and\nrendered. An interrupted run refuses to import the same file again unless you\ncheck the library and explicitly pass --reimport.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1216,11 +1220,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "reimport": {
@@ -1278,11 +1282,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -1349,7 +1353,7 @@
   },
   {
     "name": "import_pdf",
-    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\n--to \u003ckey\u003e files the created item into the collection with that key after import.\n--collection-name \u003cname\u003e does the same by exact name, creating the collection\nwhen it does not exist (like 'items add-to-collection'). Pass at most one. This\nis a separate step, not part of the connector call: the saveStandaloneAttachment\nendpoint saves into whatever the desktop pane currently targets and accepts no\ncollection parameter.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many PDFs: import file --via connector and items create share\none session, and import apply saves all of its stored creates in one session\nper invocation; its recognize and --fetch-pdf entries, like each PDF here,\nstill use one session each. --rate-limit governs only Web API requests and\ndoes not pace connector calls.",
+    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\nEach connector save keeps a replay guard for these exact PDF bytes until the\ncompleted run is journaled and rendered. An interrupted or uncertain import\nrefuses another save. Check the library and reconcile the earlier session\nbefore removing the guard file named in the refusal.\n\n--to \u003ckey\u003e files the created item into the collection with that key after import.\n--collection-name \u003cname\u003e does the same by exact name, creating the collection\nwhen it does not exist (like 'items add-to-collection'). Pass at most one. This\nis a separate step, not part of the connector call: the saveStandaloneAttachment\nendpoint saves into whatever the desktop pane currently targets and accepts no\ncollection parameter.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many PDFs: import file --via connector and items create share\none session, and import apply saves all of its stored creates in one session\nper invocation; its recognize and --fetch-pdf entries, like each PDF here,\nstill use one session each. --rate-limit governs only Web API requests and\ndoes not pace connector calls.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1377,11 +1381,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "on-duplicate": {
@@ -1435,11 +1439,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -1461,7 +1465,7 @@
   },
   {
     "name": "import_resolve",
-    "description": "Resolve PDFs into an editable import manifest",
+    "description": "Scan a directory of PDFs (or re-read an existing manifest) and write the reviewable import manifest to stdout; redirect it to a file: `zotio import resolve ~/papers \u003e manifest.json`. For each new DOI it fetches metadata from CrossRef, then DataCite (network). Re-running on a manifest refreshes its unresolved create entries and keeps your edits.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -1556,11 +1560,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -1606,11 +1610,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -1652,11 +1656,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -1923,11 +1927,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "stdin": {
@@ -1977,11 +1981,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "permanent": {
@@ -2037,11 +2041,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "strategy": {
@@ -2107,11 +2111,11 @@
           "type": "number"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "missing-abstract": {
@@ -2377,11 +2381,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "to": {
@@ -2438,11 +2442,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "stdin": {
@@ -2514,11 +2518,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "target": {
@@ -2574,11 +2578,11 @@
           "type": "number"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -2656,11 +2660,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -2832,11 +2836,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "tag": {
@@ -2907,11 +2911,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "tag": {
@@ -3012,11 +3016,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "older-than": {
@@ -3084,7 +3088,7 @@
           "type": "string"
         },
         "collections": {
-          "description": "Collection keys to assign this item to",
+          "description": "JSON array of collection keys that REPLACES all collection memberships; use items move for individual memberships",
           "type": "string"
         },
         "continue-on-error": {
@@ -3100,11 +3104,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "stdin": {
@@ -3112,7 +3116,7 @@
           "type": "boolean"
         },
         "tags": {
-          "description": "Tags to apply (array of {tag: string} objects)",
+          "description": "JSON array of {tag: string} objects that REPLACES the whole tag list; use items tags add/remove for individual tags",
           "type": "string"
         },
         "title": {
@@ -3180,7 +3184,7 @@
   },
   {
     "name": "journal_undo",
-    "description": "Reverses what one journal entry recorded, as one new run that is itself journaled.\nWithout --yes it only previews the reversal; add --yes to apply it.\n\nWhat it reverses:\n  - tag and collection additions and removals: each one is inverted\n  - field changes whose previous value the run captured while it wrote (an\n    enrichment's DOI or abstract, a line it appended to Extra): the field is\n    restored, and a field you edited since is left as it is\n  - created items (items create, import): the recorded items are moved to the\n    Zotero trash, which is not a permanent delete; restore them from the trash\n  - trashed items (items delete) are restored from the trash, and restored\n    items (items restore) are trashed again\n\nWhat it refuses, and reports in \"refused\": field overwrites with no captured\nprevious value, merges, permanent deletes, renames that replace one tag or collection\nwith another, and creates whose Zotero key was not recorded. A refusal changes\nnothing, so review the entry with \"journal show \u003crun-id\u003e\" before you rely on a\nfull reversal.\n\nTake the run-id from \"journal list\". A workflow ID is not a run-id: undo each\nentry it lists.",
+    "description": "Reverses what one journal entry recorded, as one new run that is itself journaled.\nWithout --yes it only previews the reversal; add --yes to apply it.\nA run with an earlier recorded undo cannot be undone again. This also protects\ninterrupted undo runs: inspect the earlier undo before you recover its writes.\n\nWhat it reverses:\n  - tag and collection additions and removals: each one is inverted\n  - field changes whose previous value the run captured while it wrote (an\n    enrichment's DOI or abstract, a line it appended to Extra): the field is\n    restored, and a field you edited since is left as it is\n  - created items (items create, import): the recorded items are moved to the\n    Zotero trash, which is not a permanent delete; restore them from the trash\n  - trashed items (items delete) are restored from the trash, and restored\n    items (items restore) are trashed again\n\nWhat it refuses, and reports in \"refused\": field overwrites with no captured\nprevious value, merges, permanent deletes, renames that replace one tag or collection\nwith another, and creates whose Zotero key was not recorded. A refusal changes\nnothing, so review the entry with \"journal show \u003crun-id\u003e\" before you rely on a\nfull reversal.\n\nTake the run-id from \"journal list\". A workflow ID is not a run-id: undo each\nentry it lists.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3204,11 +3208,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -3288,7 +3292,7 @@
   },
   {
     "name": "library_prisma",
-    "description": "Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.\n\nThe report counts records identified (including their source databases), the duplicate\nrecords that resolving the current duplicate clusters would remove, and the\nprojected records-after-deduplication input to screening. The removal figures\nare a projection over the corpus as it is now, not a record of past\ndeduplication. Screening\nitself is deliberately out of scope: use Rayyan, ASReview, or another screening tool\nfor that stage. Run 'zotio items duplicates resolve' to actually remove duplicates\nfirst; the projected removals fall to zero once the clusters are resolved.",
+    "description": "Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.\n\nThe report counts records identified (including their source databases), the duplicate\nrecords that resolving the current duplicate clusters would remove, and the\nprojected records-after-deduplication input to screening. The removal figures\nare a projection over the corpus as it is now, not a record of past\ndeduplication. Screening\nitself is deliberately out of scope: use Rayyan, ASReview, or another screening tool\nfor that stage. Run 'zotio items duplicates resolve' to actually remove duplicates\nfirst; the projected removals fall to zero once the clusters are resolved.\nThe items mirror must have a completed sync pass before this command reports counts.",
     "inputSchema": {
       "properties": {
         "by": {
@@ -3400,11 +3404,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -3446,11 +3450,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -3492,11 +3496,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -3661,11 +3665,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "prune": {
@@ -3753,15 +3757,15 @@
           "type": "boolean"
         },
         "latest-only": {
-          "description": "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since-version (--since-version wins). (default: false)",
+          "description": "Refresh head of each resource only; resets resume offset and caps pages at 1. Mutually exclusive with --since-version (--since-version wins). (default: false)",
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "max-pages": {
@@ -3832,11 +3836,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "prefer": {
@@ -3886,11 +3890,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "page-size": {
@@ -3994,11 +3998,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "min-items": {
@@ -4044,11 +4048,11 @@
           "type": "string"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "page-size": {
@@ -4130,11 +4134,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "vault": {
@@ -4176,11 +4180,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "vault": {
@@ -4230,11 +4234,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "recreate": {
@@ -4296,11 +4300,11 @@
           "type": "number"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "scope": {
@@ -4354,11 +4358,11 @@
           "type": "boolean"
         },
         "max-changes": {
-          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
           "type": "number"
         },
         "max-failures": {
-          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
           "type": "number"
         },
         "yes": {
@@ -4386,9 +4390,13 @@
   },
   {
     "name": "workflow_submit",
-    "description": "Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; one approval, one journal run id; steps apply in order and a failed step does not roll back earlier writes; steps validated per-command exactly like command_run.",
+    "description": "Submit an inline multi-step workflow executed by zotio's workflow runner — previews unless yes; each mutation has its own run_id and shares a workflow_run_id; steps apply in order without rollback; steps validated per-command exactly like command_run.",
     "inputSchema": {
       "properties": {
+        "allow-destructive": {
+          "description": "Allow destructive workflow steps; required together with yes even when a step declares allow-destructive.",
+          "type": "boolean"
+        },
         "continue_on_error": {
           "description": "Continue executing later steps after a step fails.",
           "type": "boolean"

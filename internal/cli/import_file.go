@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -56,7 +57,11 @@ wins over --yes. Every parsed record counts against --max-changes.
 
 Records are posted in batches, so a record Zotero rejects cannot un-submit the
 records sent alongside it. Every record therefore reports its own outcome
-instead of the run stopping at the first rejection.`,
+instead of the run stopping at the first rejection.
+
+Connector imports keep a replay guard until the completed run is journaled and
+rendered. An interrupted run refuses to import the same file again unless you
+check the library and explicitly pass --reimport.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -72,6 +77,13 @@ instead of the run stopping at the first rejection.`,
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
 			if format == "" {
 				format = detectImportFileFormat(filePath)
+				if format == "" {
+					extension := filepath.Ext(filePath)
+					if extension == "" {
+						extension = "no extension"
+					}
+					return usageErr(fmt.Errorf("cannot infer import format from %q (%s; recognized extensions: .bib, .ris, .json): use --format bibtex, ris, or csljson", filePath, extension))
+				}
 			}
 			if flags.via != "connector" {
 				switch format {
@@ -103,6 +115,9 @@ instead of the run stopping at the first rejection.`,
 					Key:     importFileRecordKey(items[index], index),
 					Kind:    "item_create",
 					Changes: []mutation.Change{{Field: "item", Add: items[index]}},
+					Dispatched: func() bool {
+						return batch.executed[index-index%importFileBatchSize]
+					},
 					Apply: func() (string, any, error) {
 						return batch.apply(index)
 					},
@@ -151,6 +166,7 @@ type importFileBatch struct {
 	executed map[int]bool
 	failed   map[int]batchWriteFailure
 	fatal    map[int]error
+	keys     map[int]string
 	// ambiguous marks a batch window whose outcome Zotero may have committed:
 	// the response was lost after dispatch, or the server rejected the batch's
 	// replayed write token. Every Apply in that window reports the same
@@ -170,6 +186,7 @@ func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBat
 		executed:  make(map[int]bool),
 		failed:    make(map[int]batchWriteFailure),
 		fatal:     make(map[int]error),
+		keys:      make(map[int]string),
 		ambiguous: make(map[int]error),
 		envelope:  make(map[int]error),
 	}
@@ -185,15 +202,23 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 		return "failed", nil, err
 	}
 	if err := b.ambiguous[index]; err != nil {
-		return "conflict", map[string]any{"committed": true, "message": err.Error()}, err
+		return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
 	}
 	if err := b.envelope[index]; err != nil {
-		return "failed", err.Error(), err
+		return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
 	}
 	if failure, ok := b.failed[index]; ok {
+		if failure.Malformed {
+			err := ambiguousCreateRefusal("import file", "record", fmt.Errorf("%s", failure.detail(strconv.Itoa(index))))
+			return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
+		}
 		return "failed", failure.detail(strconv.Itoa(index)), nil
 	}
-	return "applied", nil, nil
+	if b.keys[index] == "" {
+		err := ambiguousCreateRefusal("import file", "record", fmt.Errorf("could not read created item key from /items response"))
+		return "conflict", map[string]any{"via": "web", "committed": true, "outcome": "unknown", "message": err.Error()}, err
+	}
+	return "applied", itemCreateAppliedReason("web", b.keys[index]), nil
 }
 
 func (b *importFileBatch) runBatch(start int) {
@@ -233,6 +258,11 @@ func (b *importFileBatch) runBatch(start int) {
 			b.envelope[i] = envelopeErr
 		}
 		return
+	}
+	for position, key := range itemsCreateKeysByIndex(data) {
+		if index, err := strconv.Atoi(position); err == nil {
+			b.keys[start+index] = key
+		}
 	}
 	for key, failure := range importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start) {
 		index, convErr := strconv.Atoi(key)
@@ -281,6 +311,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 				"via":    "connector",
 				"record": index + 1,
 			}}},
+			Dispatched: func() bool { return session.done },
 			Apply: func() (string, any, error) {
 				return session.apply(cmd, index)
 			},
@@ -292,7 +323,21 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 	env, runErr := runMutation(cmd.Context(), flags, "import.file", ops, func(o *mutation.Options) {
 		o.ContinueOnError = true
 	})
-	return renderMutationResult(cmd, flags, env, runErr, nil)
+	if session.sessionID != "" || session.ambiguousSession != "" {
+		// Journal every dispatched record before a slow mirror refresh.
+		refreshItemsFromLocalAPI(cmd.Context(), flags)
+	}
+	renderErr := renderMutationResult(cmd, flags, env, runErr, nil)
+	journal, _ := env.Journal.(map[string]any)
+	runID, _ := journal["run_id"].(string)
+	// A canceled run or failed journal publication must retain the replay
+	// guard, even when Zotero returned every key.
+	if renderErr == nil && cmd.Context().Err() == nil && session.err == nil && runID != "" && session.pendingPath != "" {
+		if err := os.Remove(session.pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove import replay guard %s: %v\n", session.pendingPath, err)
+		}
+	}
+	return renderErr
 }
 
 // importFileConnectorSession performs the one-shot desktop translator import on
@@ -312,6 +357,7 @@ type importFileConnectorSession struct {
 	// ambiguousSession is the session of an import that was dispatched with no
 	// usable answer; its items may exist but are unaddressable.
 	ambiguousSession string
+	pendingPath      string
 
 	done      bool
 	err       error
@@ -437,8 +483,8 @@ func (s *importFileConnectorSession) dispatch(cmd *cobra.Command, conn *connecto
 		return err
 	}
 	// Zotero's /connector/import cannot be asked whether a session committed, so
-	// the intent is recorded durably BEFORE dispatch and removed only once the
-	// outcome is known. A lost response, a crash after the commit, or a cancel
+	// the intent is recorded durably BEFORE dispatch and removed only after
+	// the completed run is journaled and rendered. A lost response or a crash
 	// leaves the record, and the next run of the same bytes refuses to replay
 	// until the operator has looked at the library.
 	pendingPath, identity, err := importFilePendingPath(s.content, s.format)
@@ -453,6 +499,8 @@ func (s *importFileConnectorSession) dispatch(cmd *cobra.Command, conn *connecto
 	if err := writeImportFilePending(pendingPath, newImportFilePending(sessionID, identity, s.format, s.records, target)); err != nil {
 		return fmt.Errorf("recording import intent before dispatch: %w", err)
 	}
+	s.pendingPath = pendingPath
+	defer invalidateAfterConnectorWrite(flags)
 	items, err := conn.Import(cmd.Context(), sessionID, s.content, connectorImportContentType(s.format))
 	if err != nil {
 		if errors.Is(err, connector.ErrCommitted) || errors.Is(err, connector.ErrOutcomeUnknown) {
@@ -460,13 +508,11 @@ func (s *importFileConnectorSession) dispatch(cmd *cobra.Command, conn *connecto
 			// report a committed conflict instead of a clean failure.
 			s.ambiguousSession = sessionID
 			s.target = target
-			refreshItemsFromLocalAPI(cmd.Context(), flags)
 			return err
 		}
 		_ = os.Remove(pendingPath)
 		return err
 	}
-	_ = os.Remove(pendingPath)
 	// Populate partial-result fields BEFORE the filing step: if UpdateSession
 	// fails after the items are already committed, the caller must receive the
 	// populated result (session, keys, count) alongside the error so it can
@@ -477,13 +523,10 @@ func (s *importFileConnectorSession) dispatch(cmd *cobra.Command, conn *connecto
 	s.target = target
 	if target != "" {
 		if err := conn.UpdateSession(cmd.Context(), sessionID, target, nil, ""); err != nil {
-			// The items are already committed; refresh the mirror so local
-			// reads can see them even though filing failed.
-			refreshItemsFromLocalAPI(cmd.Context(), flags)
+			// The caller journals all committed records before refreshing.
 			return err
 		}
 	}
-	refreshItemsFromLocalAPI(cmd.Context(), flags)
 
 	return nil
 }

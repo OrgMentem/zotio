@@ -66,6 +66,7 @@ func newImportCmd(flags *rootFlags) *cobra.Command {
 		Long: `Import data from a JSONL file by issuing one POST request per record.
 Each line must be a valid JSON object. Failed records are logged to stderr
 but do not stop processing the import.
+Supported resources: items, collections, and searches.
 
 The import previews by default and writes only under --yes; --dry-run always
 wins over --yes. Every parsed record counts against --max-changes.`,
@@ -80,6 +81,11 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resource := args[0]
+			switch resource {
+			case "items", "collections", "searches":
+			default:
+				return usageErr(fmt.Errorf("unsupported import resource %q; valid resources: items, collections, searches", resource))
+			}
 			path := "/" + resource
 
 			var reader io.Reader
@@ -154,6 +160,7 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 			ops := make([]mutation.Op, len(records))
 			for i, record := range records {
 				record := record
+				position := fmt.Sprintf("%d", i)
 				ops[i] = mutation.Op{
 					ID:   fmt.Sprintf("import.%s:%03d", resource, i+1),
 					Kind: resource + "_create",
@@ -163,8 +170,16 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 					},
 					Apply: func() (string, any, error) {
 						// Zotero write endpoints take an array of objects.
-						raw, _, err := writeClient.Post(path, []any{record})
+						raw, _, err := writeClient.PostWithHeaders(path, []any{record}, map[string]string{
+							"Zotero-Write-Token": createBatchWriteToken("import."+resource, position, record),
+						})
 						if err != nil {
+							if isCommittedCreateConflict(err) {
+								return "conflict", map[string]any{
+									"committed": true, "outcome": "unknown",
+									"message": ambiguousCreateRefusal("import."+resource, "record", err).Error(),
+								}, err
+							}
 							return "failed", nil, classifyAPIError(err, flags)
 						}
 						if reason := importRejection(raw); reason != "" {
@@ -233,30 +248,36 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 				}
 			}
 
-			if flags.asJSON {
+			if failed > 0 && runErr == nil {
+				runErr = errors.New("import incomplete: one or more records failed")
+			}
+			if len(parseFailures) > 0 {
+				env.OK = false
+			}
+			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
 				if failures == nil {
 					failures = []importFailure{}
 				}
-				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"mode":      "apply",
-					"succeeded": succeeded,
-					"failed":    failed,
-					"skipped":   skipped,
-					"failures":  failures,
-				}, flags); err != nil {
-					return err
+				// Retain record counters as additive fields on the standard
+				// mutation envelope, including its durable journal reference.
+				output := struct {
+					mutation.Envelope
+					Succeeded int             `json:"succeeded"`
+					Failed    int             `json:"failed"`
+					Skipped   int             `json:"skipped"`
+					Failures  []importFailure `json:"failures"`
+				}{env, succeeded, failed, skipped, failures}
+				if !flags.quiet {
+					if err := printJSONFiltered(cmd.OutOrStdout(), output, flags); err != nil {
+						return err
+					}
 				}
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Import complete: %d succeeded, %d failed, %d skipped\n", succeeded, failed, skipped)
-			}
-
-			if failed > 0 {
 				if runErr != nil {
-					return fmt.Errorf("import incomplete: one or more records failed: %w", runErr)
+					return markRendered(runErr)
 				}
-				return errors.New("import incomplete: one or more records failed")
+				return nil
 			}
-			return runErr
+			return renderMutationResult(cmd, flags, env, runErr, nil)
 		},
 	}
 

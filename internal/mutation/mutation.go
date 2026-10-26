@@ -72,6 +72,8 @@ type Op struct {
 	// whole pending-write marker instead of accumulating them, so an earlier
 	// entry the op did not send is not replayed over the live state.
 	Reconciles bool `json:"-"`
+	// Undoes links an undo checkpoint to the original run.
+	Undoes string `json:"-"`
 }
 
 // PlanSummary counts the planned operations before apply.
@@ -140,6 +142,7 @@ type Envelope struct {
 	Journal       any     `json:"journal"`
 	// RunID is the journal run id of an apply (Options.RunID); never rendered.
 	RunID    string   `json:"-"`
+	Undoes   string   `json:"-"`
 	Warnings []string `json:"warnings,omitempty"`
 	Error    *Error   `json:"error,omitempty"`
 }
@@ -227,9 +230,9 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 	return RunObserved(o, operation, ops, nil)
 }
 
-// RunObserved is Run with onOutcome, called right after each attempted op's
-// outcome is final (anything but not_attempted and no_op) and before the next op
-// starts. It lets a caller record a landed write durably next to the side effect
+// RunObserved is Run with onOutcome, called after every attempted op, including
+// an Apply that returns no_op, and before the next op starts. Planned no-ops
+// (empty Changes) and not_attempted ops skip it. It lets a caller record a write
 // instead of once after the last op. The engine ignores what it does: a
 // recording failure cannot undo the write.
 func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, item ResultItem)) (Envelope, error) {

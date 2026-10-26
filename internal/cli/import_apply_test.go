@@ -562,14 +562,14 @@ func TestImportApplyStoredWebCreateReportsOrphanedParentOnUploadFailure(t *testi
 		t.Fatalf("reason = %#v, want the title to search Zotero by", reason)
 	}
 	message, _ := reason["message"].(string)
-	if !strings.Contains(message, "created but the file was not attached") {
+	if !strings.Contains(message, "file upload did not finish with a confirmed outcome") {
 		t.Fatalf("message = %q, want the orphaned-parent condition stated", message)
 	}
-	if !strings.Contains(message, "delete the item and re-run") {
+	if !strings.Contains(message, "zotio attachments add PARENTAB") {
 		t.Fatalf("message = %q, want a deterministic next step", message)
 	}
 	// reasonText prints only "message"; without it a person sees a Go map.
-	if rendered := mutation.Rows(env); !strings.Contains(strings.Join(rendered, " "), "created but the file was not attached") {
+	if rendered := mutation.Rows(env); !strings.Contains(strings.Join(rendered, " "), "file upload did not finish with a confirmed outcome") {
 		t.Fatalf("human rows = %q, want the orphan explanation rendered", rendered)
 	}
 }
@@ -603,12 +603,12 @@ func TestOrphanedConnectorParentDetailCarriesFindableEvidence(t *testing.T) {
 	// absence renders the failure as a bare Go map. With the integration test
 	// skipped whenever Zotero holds :23119, nothing else pins it.
 	msg, ok := detail["message"].(string)
-	if !ok || !strings.Contains(msg, "created but the file was not attached") {
+	if !ok || !strings.Contains(msg, "file upload did not finish with a confirmed outcome") {
 		t.Fatalf("detail[message] = %v, want the orphan sentence the human renderer prints", detail["message"])
 	}
 	if rendered := mutation.Rows(mutation.Envelope{Result: &mutation.Result{
 		Items: []mutation.ResultItem{{Status: "failed", Reason: detail}},
-	}}); !strings.Contains(strings.Join(rendered, " "), "created but the file was not attached") {
+	}}); !strings.Contains(strings.Join(rendered, " "), "file upload did not finish with a confirmed outcome") {
 		t.Fatalf("human rows = %q, want the connector orphan explanation rendered", rendered)
 	}
 
@@ -625,7 +625,7 @@ func TestOrphanedConnectorParentDetailCarriesFindableEvidence(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("error = %v, want the underlying cause preserved for callers", err)
 	}
-	if !strings.Contains(err.Error(), "created but the file was not attached") {
+	if !strings.Contains(err.Error(), "file upload did not finish with a confirmed outcome") {
 		t.Fatalf("error = %q, want the orphan condition stated", err)
 	}
 }
@@ -949,10 +949,10 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 	// Both routes share one orphan contract, so the sentence cannot say "in
 	// Zotero desktop": that is false for the Web API route, which creates the
 	// parent server-side. Locating it is the remediation's job, below.
-	if !strings.Contains(message, `"Orphan Paper" was created but the file was not attached`) {
+	if !strings.Contains(message, `"Orphan Paper" was created, but the file upload did not finish with a confirmed outcome`) {
 		t.Fatalf("reason[message] = %q, want it to name the created-but-unattached condition", message)
 	}
-	if !strings.Contains(message, "Attach Stored Copy of File") || !strings.Contains(message, "delete the item and re-run") {
+	if !strings.Contains(message, "reconcile its attachments before retrying") {
 		t.Fatalf("reason[message] = %q, want a deterministic next step", message)
 	}
 	if !strings.Contains(message, "simulated WebDAV filing failure") {

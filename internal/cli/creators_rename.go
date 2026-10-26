@@ -33,19 +33,11 @@ field.`,
   zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive
   zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --allow-destructive --yes
   zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD2345 --allow-destructive`,
-		Args: cobra.NoArgs,
+		Args:    cobra.NoArgs,
+		PreRunE: func(cmd *cobra.Command, _ []string) error { return validateCreatorsRenameUsage(cmd) },
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireMirrorOnlySource(flags, cmd.CommandPath()); err != nil {
 				return err
-			}
-			if flagFrom == "" {
-				return usageErr(fmt.Errorf("required flag %q not set", "from"))
-			}
-			if flagTo == "" {
-				return usageErr(fmt.Errorf("required flag %q not set", "to"))
-			}
-			if flagFrom == flagTo {
-				return usageErr(fmt.Errorf("--from and --to must differ"))
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -97,8 +89,23 @@ field.`,
 					return applyCreatorRenameUpdate(c, update)
 				}
 			}
+			if len(itemKeys) == 0 {
+				ops = []mutation.Op{{
+					ID:   "creators.rename:" + flagFrom,
+					Key:  flagFrom,
+					Kind: "creator_rename",
+					NoOpReason: map[string]any{
+						"code":    "creator_not_found",
+						"message": fmt.Sprintf("no item in scope %s has a creator displayed as %q; creators audit prints the exact display names", flagScope, flagFrom),
+						"from":    flagFrom,
+					},
+				}}
+			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "creators.rename", ops)
+			if len(itemKeys) == 0 {
+				env.Warnings = append(env.Warnings, fmt.Sprintf("creator_not_found: no item in scope %s has a creator displayed as %q; creators audit prints the exact display names", flagScope, flagFrom))
+			}
 			if scope.LocalEvaluation != "" {
 				env.Warnings = append(env.Warnings, scope.LocalEvaluation)
 			}
@@ -131,6 +138,9 @@ func creatorRenameCandidateItems(db localQueryStore, scope scopeResult, name str
 
 func creatorRenameSingleLine(oldName, newName string) func(mutation.Envelope) string {
 	return func(env mutation.Envelope) string {
+		if len(env.Plan.Operations) == 1 && env.Plan.Operations[0].NoOpReason != nil {
+			return fmt.Sprintf("creator_not_found: no item has a creator displayed as %q; creators audit prints the exact display names", oldName)
+		}
 		action := "would rename"
 		if env.Mode == "apply" {
 			action = "renamed"

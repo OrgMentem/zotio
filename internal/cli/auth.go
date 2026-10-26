@@ -45,12 +45,24 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			// A keyless config is fine for the local desktop API, which needs
 			// no key; doctor reports the same state as "not required".
 			optional := !authed && isLocalZoteroAPI(cfg.BaseURL)
+			source := cfg.AuthSource
+			credentialsPath := ""
+			if cfg.CredentialSource == "credentials file" {
+				source = cfg.CredentialSource
+				credentialsPath, _, err = cfg.CredentialDestination()
+				if err != nil {
+					return configErr(err)
+				}
+			}
 			if flags.asJSON {
 				out := map[string]any{
 					"authenticated": authed,
 					"verified":      false,
-					"source":        cfg.AuthSource,
+					"source":        source,
 					"config":        cfg.Path,
+				}
+				if credentialsPath != "" {
+					out["credentials_path"] = credentialsPath
 				}
 				if optional {
 					out["api_key"] = "not set (optional for the local API)"
@@ -78,8 +90,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			fmt.Fprintln(w, green("Credentials present (not verified)"))
-			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
+			fmt.Fprintf(w, "  Source: %s\n", source)
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
+			if credentialsPath != "" {
+				fmt.Fprintf(w, "  Credentials: %s\n", credentialsPath)
+			}
 			return nil
 		},
 	}
