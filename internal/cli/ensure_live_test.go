@@ -268,11 +268,18 @@ func TestLaunchURIHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-// ensureLive must start its 15s deadline before invoking the launcher so a
-// stalled handler cannot hang forever: a short command deadline returns
-// promptly without entering the readiness loop.
-func TestEnsureLiveLaunchHonorsCommandDeadline(t *testing.T) {
+// ensureLive must start its readiness deadline before invoking the launcher
+// so a stalled handler cannot hang forever. The command context carries no
+// deadline, as in production, so ensureLive's own bound is the only thing
+// that can stop the stalled launcher.
+func TestEnsureLiveLaunchHonorsReadinessDeadline(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	oldReadiness := ensureLiveReadiness
+	ensureLiveReadiness = 300 * time.Millisecond
+	t.Cleanup(func() { ensureLiveReadiness = oldReadiness })
+	// Make the unreachable-desktop probes fail fast, so elapsed time measures
+	// the stalled launcher and nothing else.
+	t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
 	name, _ := launchCommand(runtime.GOOS, "zotero://select/library")
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/"+name, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
@@ -284,20 +291,18 @@ func TestEnsureLiveLaunchHonorsCommandDeadline(t *testing.T) {
 	flags := &rootFlags{}
 	flags.configPath = testConfigFile(t, baseURL)
 	cmd := &cobra.Command{Use: "doctor"}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	cmd.SetContext(ctx)
+	cmd.SetContext(context.Background())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	start := time.Now()
 	err := ensureLive(cmd, flags, true)
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("ensureLive with stalled launcher returned nil, want deadline error")
+	if err == nil || !strings.Contains(err.Error(), "did not become reachable within") {
+		t.Fatalf("ensureLive with stalled launcher = %v, want readiness-deadline precondition error", err)
 	}
-	if elapsed > 10*time.Second {
-		t.Fatalf("ensureLive blocked %v, want prompt deadline return", elapsed)
+	if elapsed > 5*time.Second {
+		t.Fatalf("ensureLive blocked %v on a stalled launcher, want return at its readiness deadline", elapsed)
 	}
 }
 
