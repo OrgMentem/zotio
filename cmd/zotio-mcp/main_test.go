@@ -53,7 +53,8 @@ func TestValidateMCPHTTPRequestOriginCases(t *testing.T) {
 	}{
 		{name: "same loopback origin", host: "localhost:7777", origin: "http://localhost:7777", wantErrSubstring: ""},
 		{name: "origin without matching explicit port", host: "127.0.0.1:7777", origin: "http://127.0.0.1", wantErrSubstring: "Origin"},
-		{name: "foreign origin", host: "127.0.0.1:7777", origin: "https://attacker.example", wantErrSubstring: "Origin"},
+		{name: "https origin without matching explicit port", host: "127.0.0.1:7777", origin: "https://127.0.0.1", wantErrSubstring: "Origin"},
+		{name: "foreign origin", host: "127.0.0.1:7777", origin: "http://attacker.example:7777", wantErrSubstring: "Origin"},
 	}
 	for _, tt := range tests {
 		tt := tt
