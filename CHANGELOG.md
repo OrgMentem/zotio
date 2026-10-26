@@ -27,6 +27,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   and each delete leaves the ADR-0007 deletion marker. `--keys-from` limits it
   to listed keys; a key not in the trash is a usage error.
 
+- **`library health --for all` reports DOI-field problems.** Two `info`
+  findings, so a `--fail-on high` gate does not change. `doi_invalid` names
+  each item whose DOI field holds text that is not a DOI (an item type, a
+  date); `missing_doi` skips such an item because the field is not empty, so
+  no check reported it before. `doi_title_mismatch` names each DOI carried by
+  items whose titles differ, with every item's key, type, and title. `items
+  duplicates --by doi|all` lists the same DOIs under a new
+  `doi_title_mismatches` key beside `groups`.
+
 ### Changed — breaking
 
 - **Duplicate detection no longer groups items on DOI-field text that is not a
@@ -42,6 +51,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `duplicate_candidates` findings (a gate on them can now pass), and `library
   prisma` reports fewer duplicate records removed. Reported by @prismatic7
   (#61).
+
+- **A shared DOI merges only when the items agree on title.** `items
+  duplicates resolve --doi` used to merge every item carrying one DOI, so a
+  chapter that inherited its book's DOI planned to trash the book. A DOI now
+  forms a duplicate group only when every item carrying it has the same title,
+  ignoring case, spacing, a trailing stop, and dash or quote form. Otherwise
+  the DOI forms no group and is reported as `doi_title_mismatch` instead. The
+  same rule applies to `items duplicates`, `duplicate_candidates`, and
+  `library prisma`, which count fewer duplicates for such DOIs. Policy
+  proposed by @prismatic7 (#61).
+
+- **DOI groups compare the DOI, not the stored text.** `10.1162/LMJ.…`,
+  `https://doi.org/10.1162/lmj.…`, and `doi.org/10.1162/lmj.…` now form one
+  group, and the group's `value` is the bare lowercase DOI. Before, each
+  spelling was its own group, so the copies were never reported. A DOI
+  stored as `doi.org/…` without a scheme, under `www.doi.org`, or as a
+  resolver URL rewritten by a library proxy
+  (`http://dx.doi.org.ezproxy.example.edu/10.…`) is now read as a DOI
+  everywhere zotio normalizes one, including `import doi`.
 
 ### Changed
 

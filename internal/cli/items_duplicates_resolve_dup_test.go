@@ -68,6 +68,10 @@ func TestDupResolvePlanSetsTrashedCopiesAside(t *testing.T) {
 		rich    = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1"}}`
 		richDel = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a","date":"2020","publicationTitle":"J","volume":"1","deleted":1}}`
 		medium  = `{"key":"C","version":3,"data":{"key":"C","itemType":"journalArticle","title":"Same","DOI":"10.1234/x","abstractNote":"a"}}`
+		// A trashed copy under another title must not hold the live pair back
+		// as a title mismatch: only live items decide title agreement.
+		otherTitle    = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Different","DOI":"10.1234/x"}}`
+		otherTitleDel = `{"key":"B","version":2,"data":{"key":"B","itemType":"journalArticle","title":"Different","DOI":"10.1234/x","deleted":1}}`
 	)
 	for _, tc := range []struct {
 		name      string
@@ -82,6 +86,17 @@ func TestDupResolvePlanSetsTrashedCopiesAside(t *testing.T) {
 			items:     []string{lean, rich, medium},
 			trashKeys: []string{"B"},
 			wantOps:   []string{"items.duplicates.resolve:C:A"},
+		},
+		{
+			name:      "trashed copy under another title does not block the live pair",
+			items:     []string{lean, otherTitle, medium},
+			trashKeys: []string{"B"},
+			wantOps:   []string{"items.duplicates.resolve:C:A"},
+		},
+		{
+			name:    "deleted payload under another title does not block the live pair",
+			items:   []string{lean, otherTitleDel, medium},
+			wantOps: []string{"items.duplicates.resolve:C:A"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

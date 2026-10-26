@@ -2003,7 +2003,7 @@
     "inputSchema": {
       "properties": {
         "by": {
-          "description": "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge (default: all)",
+          "description": "Duplicate detector to run (doi, title, all); doi and all also report DOIs shared by items whose titles differ (doi_title_mismatches in JSON), which are never duplicate groups; title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge (default: all)",
           "type": "string"
         }
       },
@@ -2013,7 +2013,7 @@
   },
   {
     "name": "items_duplicates_resolve",
-    "description": "Resolve duplicate items by merging metadata onto a master and trashing duplicates.\n\nBy default, resolve only matches duplicate DOI groups. A DOI group forms only\nwhen the shared value has the DOI form 10.\u003cregistrant\u003e/\u003csuffix\u003e; other text\nrepeated in the DOI field, such as an item type or a date, never groups items.\nTitle matching can group distinct items that share generic titles; pass --title\nonly when you are ready to review the preview carefully before applying.",
+    "description": "Resolve duplicate items by merging metadata onto a master and trashing duplicates.\n\nBy default, resolve only matches duplicate DOI groups. Items share a DOI when\ntheir DOI fields name the same 10.\u003cregistrant\u003e/\u003csuffix\u003e, ignoring case and a\ndoi: or doi.org wrapper; other text repeated in the DOI field, such as an item\ntype or a date, never groups items. A shared DOI is merged only when every item\ncarrying it has the same title (ignoring case, spacing and punctuation\nvariants): a chapter that carries its book's DOI is not its book. 'items\nduplicates' lists the DOIs held back for that reason.\nTitle matching can group distinct items that share generic titles; pass --title\nonly when you are ready to review the preview carefully before applying.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
