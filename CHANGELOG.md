@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-10-29
+
 ### Added
 
 - **`import apply --reimport` permits another stored connector create after an
@@ -192,6 +194,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   include the name, item count, and subcollection count.
 
 ### Fixed
+
+- **The online command reference shows every command again.** A help-text
+  placeholder such as `<output>` was copied into the page raw, and the site
+  read it as an HTML tag that never closed. Everything after `zotio export`
+  (20 of 34 command groups, including `vault`) lost its headings and links.
+  Placeholders in descriptions and flag text are now escaped.
 
 - **Full fulltext sync resets its checkpoint after a library restore.**
   Successful `sync --full --fulltext` accepts lower or zero source versions;
@@ -4785,7 +4793,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/OrgMentem/zotio/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/OrgMentem/zotio/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/OrgMentem/zotio/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/OrgMentem/zotio/compare/v0.27.0...v0.28.0
