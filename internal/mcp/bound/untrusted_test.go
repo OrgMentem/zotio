@@ -258,97 +258,52 @@ func TestLibraryJSONOversizedScalarRetainsProvenance(t *testing.T) {
 }
 
 func TestTextCapturePreviewPreservesUTF8RuneBoundaries(t *testing.T) {
-	// Use a long run of multi-byte runes so truncation reliably lands mid-rune.
-	// Each emoji is 4 bytes; each CJK character is 3 bytes.
+	// maxPreviewBytes (4000) must land inside a rune in every case; an input
+	// that ends on a rune boundary passes with the rune back-off deleted.
 	cases := []struct {
 		name string
-		fill string
+		long string
 	}{
-		{name: "emoji 4-byte", fill: "😀"},
-		{name: "CJK 3-byte", fill: "漢"},
-		{name: "mixed 2 and 4 byte", fill: "é😀"},
+		{name: "CJK 3-byte", long: strings.Repeat("漢", 5000)},                        // 3*1333 + 1
+		{name: "mixed 2 and 4 byte", long: strings.Repeat("é😀", 5000)},               // 6*666 + 2 + 2
+		{name: "emoji 4-byte", long: "a" + strings.Repeat("😀", 5000)},                // 1 + 4*999 + 3
+		{name: "two bytes into 3-byte rune", long: "ab" + strings.Repeat("漢", 5000)}, // 2 + 3*1332 + 2
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Drive a live framer: TextCapture with total > MaxBytes forces the
-			// preview path (previewEnvelopeSized -> previewString -> truncation).
-			// Repeat enough to exceed maxPreviewBytes (4000) and force a chop.
-			long := strings.Repeat(tc.fill, 5000)
-			got := TextCapture(long, int64(len(long)+5000))
-			if !json.Valid([]byte(got)) {
-				t.Fatalf("TextCapture returned invalid JSON: %q", got[:min(len(got), 200)])
+			if utf8.RuneStart(tc.long[maxPreviewBytes]) {
+				t.Fatalf("input no longer cuts mid-rune at maxPreviewBytes; the case is vacuous")
 			}
-			var envelope map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(got), &envelope); err != nil {
-				t.Fatalf("decode envelope: %v", err)
+			total := int64(len(tc.long) + 5000)
+			assertPreviewEndsOnRune(t, "TextCapture", TextCapture(tc.long, total))
+
+			// The path MCP mirrors use: an incomplete capture is framed, so the
+			// preview envelope sits between the ZOTERO-DATA delimiters.
+			framed := LibraryTextCapture(tc.long, total, MaxBytes)
+			start := strings.Index(framed, "<<<ZOTERO-DATA ")
+			end := strings.LastIndex(framed, "\n<<<END-ZOTERO-DATA ")
+			if start < 0 || end < start {
+				t.Fatalf("LibraryTextCapture output is not framed: %.200q", framed)
 			}
-			raw, ok := envelope["preview"]
-			if !ok {
-				t.Fatalf("envelope missing preview field: %s", got)
-			}
-			var preview string
-			if err := json.Unmarshal(raw, &preview); err != nil {
-				t.Fatalf("decode preview string: %v", err)
-			}
-			if !utf8.ValidString(preview) {
-				t.Fatalf("preview is not valid UTF-8: %q", preview[:min(len(preview), 200)])
-			}
-			if strings.HasSuffix(preview, "\uFFFD") {
-				t.Fatalf("preview ends in replacement rune U+FFFD, suggesting a split rune was replaced: %q", preview[len(preview)-10:])
-			}
-			// Also exercise LibraryTextCapture with a budget, which wraps
-			// TextCapture and is the other live path to previewString.
-			got2 := LibraryTextCapture(long, int64(len(long)+5000), MaxBytes)
-			// LibraryTextCapture returns either a framed block or a JSON envelope
-			// depending on size; extract preview if JSON envelope, otherwise check
-			// the framed content is valid UTF-8.
-			if json.Valid([]byte(got2)) {
-				var env2 map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(got2), &env2); err == nil {
-					if p2, ok := env2["preview"]; ok {
-						var preview2 string
-						if err := json.Unmarshal(p2, &preview2); err == nil {
-							if !utf8.ValidString(preview2) {
-								t.Fatalf("LibraryTextCapture preview is not valid UTF-8: %q", preview2[:min(len(preview2), 200)])
-							}
-							if strings.HasSuffix(preview2, "\uFFFD") {
-								t.Fatalf("LibraryTextCapture preview ends in U+FFFD: %q", preview2[len(preview2)-10:])
-							}
-						}
-					}
-				}
-			} else {
-				if !utf8.ValidString(got2) {
-					t.Fatalf("LibraryTextCapture framed result is not valid UTF-8")
-				}
-			}
+			body := framed[start:end]
+			assertPreviewEndsOnRune(t, "LibraryTextCapture", body[strings.Index(body, ">>>\n")+4:])
 		})
 	}
-	// Directly force truncation mid-rune via a short prefix that ends mid-character.
-	t.Run("mid-rune chop does not emit replacement", func(t *testing.T) {
-		// "a" + 2000 CJK runes: truncation window is maxPreviewBytes=4000, so
-		// the limit will land inside a 3-byte rune if the arithmetic is off.
-		long := "a" + strings.Repeat("漢", 3000)
-		got := TextCapture(long, int64(len(long)+10000))
-		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(got), &envelope); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		raw, ok := envelope["preview"]
-		if !ok {
-			t.Fatalf("envelope missing preview field: %s", got)
-		}
-		var preview string
-		if err := json.Unmarshal(raw, &preview); err != nil {
-			t.Fatalf("decode preview string: %v", err)
-		}
-		if !utf8.ValidString(preview) {
-			t.Fatalf("preview not valid UTF-8")
-		}
-		if strings.HasSuffix(preview, "\uFFFD") {
-			t.Fatalf("preview ends in U+FFFD")
-		}
-	})
+}
+
+func assertPreviewEndsOnRune(t *testing.T, path, envelope string) {
+	t.Helper()
+	var env struct {
+		Preview *string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(envelope), &env); err != nil || env.Preview == nil {
+		t.Fatalf("%s: no preview envelope (err %v): %.200q", path, err, envelope)
+	}
+	// encoding/json replaces a split rune with U+FFFD, so the preview is always
+	// valid UTF-8; a trailing replacement rune is what a split leaves behind.
+	if p := *env.Preview; strings.HasSuffix(p, "\uFFFD") {
+		t.Fatalf("%s: preview ends in U+FFFD, a rune was split: %q", path, p[max(0, len(p)-12):])
+	}
 }
 
 func TestLibraryJSONOversizedObjectFallsBackToPreviewEnvelope(t *testing.T) {
