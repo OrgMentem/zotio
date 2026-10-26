@@ -67,12 +67,16 @@ zotio vault audit
 zotio vault audit --vault /path/to/vault/Zotero
 ```
 
-The audit reports four finding kinds:
+The audit reports five issue codes in `counts` and `findings[].evidence.issue`.
+Each issue has a corresponding finding kind:
 
-- `orphaned`: the note's Zotero item no longer exists in the local store.
-- `stale`: the note has fallen behind the local store.
-- `needs_notes_boundary`: the note lacks the `## Notes` boundary.
-- `upgradeable`: the note uses the old Zotero selection-link format.
+| Issue code | Finding kind | Meaning |
+| --- | --- | --- |
+| `orphaned` | `vault_orphan` | The note's Zotero item no longer exists in the local store. |
+| `stale` | `vault_stale` | The note has fallen behind the local store. |
+| `needs_notes_boundary` | `vault_needs_notes_boundary` | The managed notes markers are absent or invalid. |
+| `upgradeable` | `vault_upgradeable` | The note has a recognized Zotero selection link but no `zotero_key` frontmatter. |
+| `unparseable_state` | `vault_issue` | The audit cannot parse the saved state comment. |
 
 Refresh the mirror with `zotio sync` before comparing notes with current Zotero data.
 Use `library health --for vault` to find missing or duplicate citekeys before they cause note identity problems.

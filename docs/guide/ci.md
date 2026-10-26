@@ -138,7 +138,9 @@ This site does exactly that: the zotio README badge is regenerated from the main
 | `9` | Setup/precondition failure (missing key, unmet check requirement, unsynced store, a first items sync that has not finished, or a `--baseline` file that does not exist when `--fail-on-new` is set). |
 | `11` | Quality gate failed — findings at or above `--fail-on`, new findings at or above `--fail-on-new`, or `doctor --fail-on` with an error. |
 | `12` | Freshness gate failed (`--require-fresh`, or `doctor --fail-on` with a stale check). |
-| `13` | Sync produced incomplete results, including a failed `items` or `items-trash` pass. A page cap or repeated cursor also causes this exit. Run `zotio sync --max-pages 0` to remove the page cap. |
+| `13` | Sync has failed `items` or `items-trash` passes, partial resource results, fulltext failures, or unfinished incremental passes. |
+
+An unfinished full pass for another resource can exit `1`. Run `zotio sync --full --max-pages 0` to restart an unfinished full pass without the page cap.
 
 `items` and `items-trash` are critical resources. If either fails, sync exits `13` even without `--strict`. The human summary says `Sync incomplete`, not `Sync complete`. Do not run the health gate after a failed sync. Use `--strict` to make every resource failure fail the sync command. Freshness timestamps advance only after a resource pass completes.
 An unfinished first pass has no completion timestamp. `library health --require-fresh` therefore exits `12`; a quality gate or badge request without `--require-fresh` exits `9`.

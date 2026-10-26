@@ -784,7 +784,11 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 			return fmt.Errorf("%d of %d fulltext fetches failed", failed, len(keys))
 		}
 	}
-	if newVer > cursor {
+	if full {
+		if err := db.ResetLibraryVersionContext(ctx, "fulltext", c.BaseURL, newVer); err != nil {
+			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
+		}
+	} else if newVer > cursor {
 		if err := db.SaveLibraryVersionContext(ctx, "fulltext", c.BaseURL, newVer); err != nil {
 			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
 		}

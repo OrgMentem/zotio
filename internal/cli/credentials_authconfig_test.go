@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,5 +258,91 @@ func TestKeylessItemNoOpAppliesAuthConfig(t *testing.T) {
 				t.Fatalf("expected a planning read and one no-op, reads=%d, envelope=%+v", reads, env)
 			}
 		})
+	}
+}
+
+func keylessAcceptingLocalServer(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	isolateAuthHome(t)
+	oldAllow := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllow) })
+	var mutations atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		mutations.Add(1)
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"ABCD2345","version":1,"data":{"name":"x"}}},"success":{"0":"ABCD2345"},"unchanged":{},"failed":{}}`))
+	}))
+	t.Cleanup(server.Close)
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = authConfigRoundTripper(func(r *http.Request) (*http.Response, error) {
+		req := r.Clone(r.Context())
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(server.URL, "http://")
+		return oldTransport.RoundTrip(req)
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+	return &mutations
+}
+
+func TestKeylessMutationsNeverReachLocalAuthConfig(t *testing.T) {
+	for _, selection := range []bool{false, true} {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+			name := method
+			if selection {
+				name += "-selection"
+			}
+			t.Run(name, func(t *testing.T) {
+				mutations := keylessAcceptingLocalServer(t)
+				flags := &rootFlags{yes: true, maxChanges: -1}
+				newClient := flags.newWriteClient
+				if selection {
+					newClient = flags.newSelectionClient
+				}
+				c, err := newClient()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.Get("/items", nil); err != nil {
+					t.Fatalf("planning GET: %v", err)
+				}
+				switch method {
+				case http.MethodPost:
+					_, _, err = c.Post("/collections", []any{map[string]any{"name": "x"}})
+				case http.MethodPut:
+					_, _, err = c.Put("/items/ABCD2345", map[string]any{"title": "x"})
+				case http.MethodPatch:
+					_, _, err = c.Patch("/items/ABCD2345", map[string]any{"title": "x"})
+				case http.MethodDelete:
+					_, _, err = c.Delete("/items/ABCD2345")
+				}
+				if ExitCode(err) != 9 || !errors.Is(err, errMissingWriteKey) {
+					t.Fatalf("exit=%d, error=%v", ExitCode(err), err)
+				}
+				if got := mutations.Load(); got != 0 {
+					t.Fatalf("local server received %d mutations", got)
+				}
+			})
+		}
+	}
+}
+
+func TestKeylessCollectionsCreateNeverPostsAuthConfig(t *testing.T) {
+	mutations := keylessAcceptingLocalServer(t)
+	cmd := newCollectionsCreateCmd(&rootFlags{asJSON: true, yes: true, noInput: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--name", "x"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	err := cmd.Execute()
+	if ExitCode(err) != 9 {
+		t.Fatalf("exit=%d, error=%v", ExitCode(err), err)
+	}
+	if got := mutations.Load(); got != 0 {
+		t.Fatalf("local server received %d mutations", got)
 	}
 }

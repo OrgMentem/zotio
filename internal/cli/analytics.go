@@ -230,7 +230,7 @@ func analyticsScopeForType(db *store.Store, kind, itemType string) (analyticsSco
 		if err != nil {
 			return analyticsScope{}, fmt.Errorf("getting resource status: %w", err)
 		}
-		if !analyticsResourceKinds[kind] && status[kind] == 0 {
+		if store.IsInternalResourceType(kind) || (!analyticsResourceKinds[kind] && status[kind] == 0) {
 			return analyticsScope{}, unknownAnalyticsTypeErr(kind)
 		}
 		rows, err := db.List(kind, 0)

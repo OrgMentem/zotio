@@ -639,9 +639,21 @@ func TestItemsTagsBatchCancellationPreservesDispatchedSiblingStatus(t *testing.T
 		if item.Status != "failed" || !ok || detail["committed"] != true || detail["outcome"] != "unknown" {
 			t.Errorf("%s = %+v, want failed unknown outcome for a dispatched sibling", key, item)
 		}
+		message, _ := detail["message"].(string)
+		for _, guidance := range []string{"already sent", "verify before retrying"} {
+			if !strings.Contains(message, guidance) {
+				t.Errorf("%s message = %q, want %q", key, message, guidance)
+			}
+		}
 	}
 	if item := byKey[batchTestKey(50)]; item.Status != "not_attempted" {
 		t.Errorf("%s = %+v, want not_attempted because its later chunk was never dispatched", batchTestKey(50), item)
+	}
+	rows := strings.Join(mutation.Rows(env), "\n")
+	for _, guidance := range []string{"already sent", "verify before retrying"} {
+		if !strings.Contains(rows, guidance) {
+			t.Errorf("human rows = %q, want %q", rows, guidance)
+		}
 	}
 }
 

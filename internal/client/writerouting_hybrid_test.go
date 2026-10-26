@@ -56,7 +56,7 @@ func TestWriteRoutingSplitsReadsAndWrites(t *testing.T) {
 	}
 }
 
-func TestWriteRoutingFallsBackWhenResolverEmpty(t *testing.T) {
+func TestWriteRoutingRefusesWhenResolverEmpty(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -68,11 +68,11 @@ func TestWriteRoutingFallsBackWhenResolverEmpty(t *testing.T) {
 	c.NoCache = true
 	c.ResolveWriteBase = func(ctx context.Context) (string, error) { return "", nil } // nothing to route to
 
-	if _, _, err := c.Post("/items", []any{}); err != nil {
-		t.Fatalf("POST: %v", err)
+	if _, _, err := c.Post("/items", []any{}); err == nil {
+		t.Fatal("POST succeeded with an unresolved write route")
 	}
-	if n := atomic.LoadInt32(&hits); n != 1 {
-		t.Errorf("base server hits = %d, want 1 (write falls back to BaseURL)", n)
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Errorf("base server hits = %d, want 0", n)
 	}
 }
 
@@ -101,8 +101,8 @@ func TestWriteRoutingRetriesAfterTransientResolveFailure(t *testing.T) {
 		return writeSrv.URL, nil
 	}
 
-	if _, _, err := c.Post("/items", []any{}); err != nil {
-		t.Fatalf("first POST: %v", err)
+	if _, _, err := c.Post("/items", []any{}); err == nil {
+		t.Fatal("first POST succeeded despite resolver failure")
 	}
 	if _, _, err := c.Post("/items", []any{}); err != nil {
 		t.Fatalf("second POST: %v", err)
@@ -111,8 +111,8 @@ func TestWriteRoutingRetriesAfterTransientResolveFailure(t *testing.T) {
 	if n := atomic.LoadInt32(&resolveCalls); n != 2 {
 		t.Errorf("resolver calls = %d, want 2 (transient failure must be retried, not latched)", n)
 	}
-	if n := atomic.LoadInt32(&baseHits); n != 1 {
-		t.Errorf("base server hits = %d, want 1 (only the first write falls back)", n)
+	if n := atomic.LoadInt32(&baseHits); n != 0 {
+		t.Errorf("base server hits = %d, want 0", n)
 	}
 	if n := atomic.LoadInt32(&writeHits); n != 1 {
 		t.Errorf("write server hits = %d, want 1 (second write routes after retry succeeds)", n)

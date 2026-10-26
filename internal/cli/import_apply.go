@@ -243,19 +243,22 @@ refused before any item is created; apply it in a separate run.`,
 				runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops, runOptions...)
-			// Keep uncertain or incompletely journaled sessions guarded. Only a
-			// successful journaled run can retire its pre-dispatch evidence.
-			if runErr == nil && env.Journal != nil {
+			if (attachMode == "stored" || fetchPDF) && env.Result != nil && env.Result.Summary.Applied > 0 {
+				refreshItemsFromLocalAPI(cmd.Context(), flags)
+			}
+			renderErr := renderImportPDFMutationResult(cmd, flags, env, runErr)
+			journal, _ := env.Journal.(map[string]any)
+			runID, _ := journal["run_id"].(string)
+			// Retain replay guards until refresh and output finish without
+			// cancellation, and the successful run has a durable journal ID.
+			if runErr == nil && renderErr == nil && cmd.Context().Err() == nil && runID != "" {
 				for _, path := range intents.paths {
 					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove completed import intent %s: %v\n", path, err)
 					}
 				}
 			}
-			if (attachMode == "stored" || fetchPDF) && env.Result != nil && env.Result.Summary.Applied > 0 {
-				refreshItemsFromLocalAPI(cmd.Context(), flags)
-			}
-			return renderImportPDFMutationResult(cmd, flags, env, runErr)
+			return renderErr
 		},
 	}
 	cmd.Flags().StringVar(&attachMode, "attach-mode", "none", "Attachment handling: none, linked-file, or stored")

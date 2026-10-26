@@ -376,11 +376,12 @@ An inverse-window key never reaches that code — the version GET fails first.
   Its caller (`upsertResourceBatch`) reports the stored count from that page, so
   a suppressed row is honestly counted as not stored.
 - Live reads that cache their rows into the mirror (`writeThroughCacheForPath`
-  in `internal/cli/data_source.go`, the default `auto` data source) consult the
-  same markers through `suppressPendingDeletions` before storing `items` or
-  `items-trash` rows, so a lagging desktop's listing cannot resurrect a
-  permanently deleted item between syncs either. A marker lookup error skips the
-  cache write rather than storing an unchecked page.
+  in `internal/cli/data_source.go`, the default `auto` data source) use
+  `Store.UpsertReadCacheContext` in `internal/store/cache_upsert.go`.
+  The deletion-marker check and cache write share one write-locked transaction
+  for `items` and `items-trash`, so a concurrent permanent delete cannot reopen
+  the resurrection window. A marker lookup error rolls back the cache write
+  rather than storing an unchecked page.
 - The atomicity guarantee is now two-sided: the rows and the marker commit or
   roll back together, so no observer sees the live row gone with no marker
   written.

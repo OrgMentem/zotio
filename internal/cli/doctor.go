@@ -645,7 +645,9 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 				warnings = append(warnings, fmt.Sprintf("counting %s rows: %v", rtype, err))
 				continue
 			}
-			storeRows[rtype] = n
+			if !store.IsInternalResourceType(rtype) {
+				storeRows[rtype] = n
+			}
 		}
 		if err := countRows.Err(); err != nil {
 			warnings = append(warnings, fmt.Sprintf("counting resource rows: %v", err))
@@ -678,6 +680,9 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		var lastSynced, lastChanged sql.NullTime
 		if err := rows.Scan(&rtype, &count, &lastSynced, &libraryVersion, &cursorSource, &lastChanged); err != nil {
 			warnings = append(warnings, fmt.Sprintf("reading sync_state row: %v", err))
+			continue
+		}
+		if store.IsInternalResourceType(rtype) {
 			continue
 		}
 		r := map[string]any{"type": rtype, "rows": storeRows[rtype], "last_delta": count}

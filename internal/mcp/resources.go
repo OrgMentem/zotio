@@ -520,7 +520,9 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 				qerr = fmt.Errorf("scanning resource count: %w", err)
 				break
 			}
-			counts[rt] = n
+			if !store.IsInternalResourceType(rt) {
+				counts[rt] = n
+			}
 			if err := ctx.Err(); err != nil {
 				_ = rows.Close()
 				return nil, err

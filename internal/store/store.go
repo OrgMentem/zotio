@@ -3134,6 +3134,11 @@ func (s *Store) CountContext(ctx context.Context, resourceType string) (int, err
 	return count, err
 }
 
+// IsInternalResourceType identifies mirror metadata that is not a public resource.
+func IsInternalResourceType(resourceType string) bool {
+	return resourceType == "fulltext-versions"
+}
+
 func (s *Store) Status() (map[string]int, error) {
 	rows, err := s.db.Query(
 		`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type ORDER BY resource_type`,
@@ -3150,7 +3155,9 @@ func (s *Store) Status() (map[string]int, error) {
 		if err := rows.Scan(&rt, &count); err != nil {
 			return nil, err
 		}
-		status[rt] = count
+		if !IsInternalResourceType(rt) {
+			status[rt] = count
+		}
 	}
 	return status, rows.Err()
 }

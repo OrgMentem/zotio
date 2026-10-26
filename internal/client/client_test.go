@@ -117,10 +117,9 @@ func TestWriteRouteResolverErrorSurfacesRealCause(t *testing.T) {
 	if !strings.Contains(msg, "401") {
 		t.Fatalf("err = %q, want underlying HTTP status", msg)
 	}
-	// Must still hit local API (so transient deadline failures can retry),
-	// but error must name the resolver cause, not just the local rejection.
-	if n := atomic.LoadInt32(&localHits); n == 0 {
-		t.Fatalf("local server hits = %d, want >=1 (write goes local but error wraps resolver cause)", n)
+	// Resolution failures must never dispatch a mutation to the local API.
+	if n := atomic.LoadInt32(&localHits); n != 0 {
+		t.Fatalf("local server hits = %d, want 0", n)
 	}
 	// Second write must retry resolution, not latch the failure.
 	c.ResolveWriteBase = func(context.Context) (string, error) { return writeSrv.URL, nil }
@@ -169,8 +168,8 @@ func TestReadRejectionDoesNotInheritWriteRouteTransportError(t *testing.T) {
 		t.Fatalf("PATCH error = %v, want resolver transport error", writeErr)
 	}
 	var writeAPIError *APIError
-	if !errors.As(writeErr, &writeAPIError) || writeAPIError.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("PATCH error = %v, want HTTP 405 API error", writeErr)
+	if errors.As(writeErr, &writeAPIError) {
+		t.Fatalf("PATCH error = %v, must not include a local API error", writeErr)
 	}
 
 	_, readErr := c.Get("/items/ABCD", nil)

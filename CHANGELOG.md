@@ -6,6 +6,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Added
 
+- **`import apply --reimport` permits another stored connector create after an
+  interrupted run.** Reconcile existing items and attachment markers first.
+
+- **`tail --workflow` accepts `--allow-destructive`.** Passing
+  `--allow-destructive` without `--workflow` exits 2.
+
 - **`tags delete` and `tags prune` finish the tag hygiene loop.** `zotio tags
   delete <name>... [--automatic-only] [--batch]` removes a tag from every item
   that carries it, walking all `/items?tag=` pages and writing one
@@ -179,12 +185,29 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   on a later poll without advancing the cursor; one-shot `tail` still fails.
 
 - **Mutation previews show what an overwrite or deletion affects.**
-  `items update --tags/--collections` shows the previous lists as well as
-  their replacements and captures them for undo. Permanent item deletion
-  previews include the title and child count. Collection deletion previews
+  `items update --tags/--collections` shows the previous lists and their
+  replacements, and records both in the journal. These whole-list replacements
+  remain non-undoable. Permanent item deletion previews include the title and
+  child count. Collection deletion previews
   include the name, item count, and subcollection count.
 
 ### Fixed
+
+- **Full fulltext sync resets its checkpoint after a library restore.**
+  Successful `sync --full --fulltext` accepts lower or zero source versions;
+  failed or cancelled passes retain the previous checkpoint.
+  Internal `fulltext-versions` resume metadata no longer appears in public
+  store status, analytics, doctor, or MCP resource counts.
+
+- **Uncertain batch writes retain retry guidance in human output.** Failed
+  rows warn that the request was already sent and must be checked before retrying.
+  Structured results retain `committed: true` and `outcome: unknown`.
+
+- **Stored `import apply` runs retain replay guards until completion.** Cleanup
+  requires successful output, an uncancelled context, and a journal `run_id`.
+
+- **`creators rename` reports an unmatched `--from` as a no-op.** The reason
+  code is `creator_not_found`, and the report includes a warning.
 
 - **Resumed and full syncs keep the mirror consistent with a moving library.**
   Incremental resume no longer reuses an offset against a listing that may

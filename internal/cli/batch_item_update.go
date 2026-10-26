@@ -115,7 +115,8 @@ func (b *batchItemUpdater) outcome(index int) (string, any, error) {
 	}
 	if transportErr := b.transport[start]; transportErr != nil {
 		if client.IsAmbiguousWriteError(transportErr) {
-			return "failed", unknownWriteOutcome(transportErr.Error(), b.objects[index]), transportErr
+			message := transportErr.Error() + "; the request may have been applied (already sent) — verify before retrying"
+			return "failed", unknownWriteOutcome(message, b.objects[index]), transportErr
 		}
 		return "failed", transportErr.Error(), transportErr
 	}

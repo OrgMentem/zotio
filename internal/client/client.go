@@ -1180,13 +1180,11 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	}()
 	base := baseOverride
 	if base == "" {
-		base = c.baseURLFor(ctx, method)
-		// If write-route resolution failed but the base is still the local
-		// read plane, surface the resolver error when the local API rejects
-		// the write, so the user sees the real cause (expired key, network
-		// failure resolving keys/current) instead of "local API is read-only".
-		// The write still goes to the local API so a transient resolver error
-		// (context deadline) can be retried on the next write per the contract.
+		var err error
+		base, err = c.baseURLFor(ctx, method)
+		if err != nil {
+			return nil, 0, nil, err
+		}
 	}
 	targetURL := base + path
 	var bodyBytes []byte
@@ -1511,19 +1509,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			continue
 		}
 
-		// Client error or retries exhausted - return the error. When the write
-		// was routed to the local API only because write-route resolution failed,
-		// wrap the local rejection with the resolver error so the diagnosis names
-		// the real cause instead of "local API is read-only".
-		if isMutatingMethod(method) && isLocalWriteRejection(apiErr.Body) {
-			c.writeRouteMu.RLock()
-			routeErr := c.writeRouteErr
-			hasRoute := c.WriteBaseURL != ""
-			c.writeRouteMu.RUnlock()
-			if !hasRoute && routeErr != nil && base == c.BaseURL {
-				return nil, resp.StatusCode, resp.Header, fmt.Errorf("could not resolve Zotero Web API write route: %w: %w", routeErr, apiErr)
-			}
-		}
+		// Client error or retries exhausted - return the error.
 		// A 5xx on a write may follow a commit (a gateway timing out after
 		// Zotero applied it), and a request that is not safe to replay never
 		// reaches the retry branch above that records one. Classify it here so
@@ -1663,32 +1649,35 @@ func isMutatingMethod(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead
 }
 
-func isLocalWriteRejection(body string) bool {
-	return strings.Contains(body, "Endpoint does not support method") ||
-		strings.Contains(body, "Method not implemented")
-}
-
 // baseURLFor returns the base URL for a request: writes (non-GET) route to the
 // resolved WriteBaseURL when hybrid routing is configured; reads use BaseURL. The
-// write base is resolved lazily on first use.
-func (c *Client) baseURLFor(ctx context.Context, method string) string {
+// write base is resolved lazily on first use. Resolution failures never fall
+// back to sending mutations to the read plane.
+func (c *Client) baseURLFor(ctx context.Context, method string) (string, error) {
 	if !isMutatingMethod(method) {
-		return c.BaseURL
+		return c.BaseURL, nil
 	}
 	c.resolveWriteRoute(ctx)
 	c.writeRouteMu.RLock()
-	writeBase := c.WriteBaseURL
+	writeBase, routeErr := c.WriteBaseURL, c.writeRouteErr
+	pending := c.ResolveWriteBase != nil
 	c.writeRouteMu.RUnlock()
 	if writeBase != "" {
-		return writeBase
+		return writeBase, nil
 	}
-	return c.BaseURL
+	if routeErr != nil {
+		return "", fmt.Errorf("could not resolve Zotero Web API write route: %w", routeErr)
+	}
+	if pending {
+		return "", errors.New("could not resolve Zotero Web API write route; refusing to mutate the local read plane")
+	}
+	return c.BaseURL, nil
 }
 
 // resolveWriteRoute runs the CLI-provided write-base resolver until it succeeds.
 // On success it sets WriteBaseURL and prints a one-time notice; on failure it
 // leaves WriteBaseURL empty so a later write retries resolution instead of
-// permanently latching the read-only fallback.
+// dispatching a mutation to the read plane.
 func (c *Client) resolveWriteRoute(ctx context.Context) {
 	if c.ResolveWriteBase == nil {
 		return
