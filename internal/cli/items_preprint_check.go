@@ -389,17 +389,21 @@ func crossrefMatchFromWork(work crossRefWork, fallbackDOI string) crossrefMatch 
 	return match
 }
 
+// normalizeDOI strips the wrappers a DOI is commonly stored in: quotes, a
+// doi.org resolver URL (with or without a scheme, with or without www. or
+// dx.), and a doi: prefix. It never lowercases; callers that compare DOIs do.
+//
+// A resolver URL rewritten by a library proxy counts too: EZproxy's host form
+// appends the proxy domain to the original host, so a DOI copied while signed
+// in is stored as http://dx.doi.org.ezproxy.example.edu/10.1037/x.
 func normalizeDOI(value string) string {
 	doi := strings.TrimSpace(value)
 	doi = strings.Trim(doi, "\"'<>")
-	if parsed, err := url.Parse(doi); err == nil {
-		host := strings.ToLower(parsed.Hostname())
-		if host == "doi.org" || host == "dx.doi.org" {
-			doi = strings.TrimPrefix(parsed.Path, "/")
-		}
+	if parsed, err := url.Parse(doi); err == nil && isDOIResolverHost(parsed.Hostname()) {
+		doi = strings.TrimPrefix(parsed.Path, "/")
 	}
 	lower := strings.ToLower(doi)
-	for _, prefix := range []string{"https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:"} {
+	for _, prefix := range []string{"https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi.org/", "dx.doi.org/", "www.doi.org/", "doi:"} {
 		if strings.HasPrefix(lower, prefix) {
 			doi = doi[len(prefix):]
 			break
@@ -408,6 +412,18 @@ func normalizeDOI(value string) string {
 	doi = strings.TrimSpace(doi)
 	doi = strings.Trim(doi, "\"'<>")
 	return strings.TrimRight(doi, ".,;")
+}
+
+// isDOIResolverHost reports whether host is the DOI resolver, directly or
+// behind a host-rewriting library proxy.
+func isDOIResolverHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, resolver := range []string{"doi.org", "dx.doi.org", "www.doi.org"} {
+		if host == resolver || strings.HasPrefix(host, resolver+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func isArxivSelfDOI(doi string) bool {

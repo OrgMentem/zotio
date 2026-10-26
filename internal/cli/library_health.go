@@ -320,6 +320,10 @@ func healthCheckRegistry() []healthCheck {
 		// --fail-on high gate is unaffected by them; only `all` runs them.
 		{kind: "nonportable_attachment", severity: sevInfo, run: runNonportableAttachment},
 		{kind: duplicateAttachmentBytesKind, severity: sevInfo, run: runDuplicateAttachmentBytes},
+		// DOI-field checks. Info, like the attachment checks above, so a
+		// --fail-on high gate does not change; only `all` runs them.
+		{kind: "doi_title_mismatch", severity: sevInfo, run: runDOITitleMismatch},
+		{kind: "doi_invalid", severity: sevInfo, run: runDOIInvalid},
 	}
 }
 
@@ -350,6 +354,7 @@ var healthPresets = map[string][]string{
 		"citekey_conflict", "citekey_missing", "duplicate_candidates", "missing_citation",
 		"missing_doi", "missing_pdf", "missing_abstract", "missing_tags", "tag_drift",
 		"broken_attachment_file", "retracted_item", "nonportable_attachment", duplicateAttachmentBytesKind,
+		"doi_title_mismatch", "doi_invalid",
 	},
 }
 
@@ -1022,6 +1027,57 @@ func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]Finding, 
 			Source:            ctx.src,
 			Autofixable:       true,
 			RecommendedAction: &RecommendedAction{Command: "zotio items duplicates resolve"},
+		})
+	}
+	return findings, nil, nil
+}
+
+// runDOITitleMismatch reports DOIs carried by several items whose titles
+// differ. scanDOIFields holds them out of duplicate_candidates, so without this
+// finding a chapter carrying its book's DOI would vanish from the report.
+// Info severity: a --fail-on high gate does not change, and only `all` runs it.
+func runDOITitleMismatch(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
+	scan, err := scanDOIFields(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := make([]Finding, 0, len(scan.titleMismatches))
+	for _, r := range scan.titleMismatches {
+		findings = append(findings, Finding{
+			Kind:     "doi_title_mismatch",
+			Severity: sevInfo,
+			Evidence: map[string]any{
+				"group": "doi",
+				"value": sqlStringValue(r["value"]),
+				"count": sqlIntValue(r["count"]),
+				"keys":  r["keys"],
+				"items": r["items"],
+			},
+			Source:            ctx.src,
+			RecommendedAction: &RecommendedAction{Text: "These items share a DOI but not a title, so 'items duplicates resolve' will not merge them. Correct the DOI on the record that does not own it; if the records are one work, make their titles agree."},
+		})
+	}
+	return findings, nil, nil
+}
+
+// runDOIInvalid reports items whose DOI field holds text that is not a DOI.
+// Such a value groups with nothing (scanDOIFields), and missing_doi skips the
+// item because the field is not empty, so it would otherwise reach no check.
+func runDOIInvalid(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
+	scan, err := scanDOIFields(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := make([]Finding, 0, len(scan.invalid))
+	for _, item := range scan.invalid {
+		findings = append(findings, Finding{
+			Kind:              "doi_invalid",
+			Severity:          sevInfo,
+			ItemKey:           item.Key,
+			Title:             item.Title,
+			Evidence:          map[string]any{"doi": item.DOI, "item_type": item.ItemType},
+			Source:            ctx.src,
+			RecommendedAction: &RecommendedAction{Text: "The DOI field does not hold a DOI (expected 10.<registrant>/<suffix>). Replace it with the item's real DOI, or clear it."},
 		})
 	}
 	return findings, nil, nil
@@ -1761,6 +1817,14 @@ func formatFindingLine(f Finding) string {
 	switch f.Kind {
 	case "duplicate_candidates":
 		return fmt.Sprintf("%s %s=%q (%v items)", kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
+	case "doi_title_mismatch":
+		return fmt.Sprintf("%s doi=%q titles differ (%v items)", kind, sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
+	case "doi_invalid":
+		line := fmt.Sprintf("%s %s", kind, f.ItemKey)
+		if f.Title != "" {
+			line += " " + f.Title
+		}
+		return line + fmt.Sprintf(" (DOI field: %q)", sqlStringValue(f.Evidence["doi"]))
 	case duplicateAttachmentBytesKind:
 		line := fmt.Sprintf("%s md5=%s %s (%v copies)", kind, sqlStringValue(f.Evidence["value"]), sqlStringValue(f.Evidence["class"]), f.Evidence["count"])
 		if b, ok := f.Evidence["reclaimable_bytes"]; ok {

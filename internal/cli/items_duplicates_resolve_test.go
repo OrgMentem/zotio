@@ -199,8 +199,8 @@ func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			seedDuplicateResolveStore(t, []json.RawMessage{
-				json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Shared DOI A","DOI":"10.1234/example","collections":["C1"]}}`),
-				json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Shared DOI B","DOI":"10.1234/example","collections":["C2"]}}`),
+				json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Shared DOI","DOI":"10.1234/example","collections":["C1"]}}`),
+				json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Shared DOI.","DOI":"10.1234/example","collections":["C2"]}}`),
 				json.RawMessage(`{"key":"T1","version":20,"data":{"key":"T1","itemType":"journalArticle","title":"Week 3","collections":["C3"]}}`),
 				json.RawMessage(`{"key":"T2","version":21,"data":{"key":"T2","itemType":"journalArticle","title":"Week 3","collections":["C4"]}}`),
 			})

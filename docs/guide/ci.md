@@ -117,6 +117,9 @@ Because `verify` compares content hashes rather than Zotero version integers, an
 !!! note "Attachment storage checks"
     `--for all` also reports two attachment-storage findings from the local mirror, both at `info` severity, so a `--fail-on high` gate does not change. `nonportable_attachment` names each PDF child stored as a linked file: its bytes stay on one computer and other devices or group members see only the path. zotio does not upload the file; convert it to a stored file in Zotero desktop if others need it. `duplicate_attachment_bytes` groups stored attachments that share a Zotero-registered MD5, marks each group `same_parent` or `cross_parent`, and gives reclaimable bytes when Zotero reported the size. A shared MD5 is evidence, not proof, and zotio never deletes by hash. Run the same report alone with `zotio items audit --duplicate-attachment-bytes [--scope EXPR]`. No other preset runs these checks.
 
+!!! note "DOI-field checks"
+    `--for all` also reports two DOI-field findings at `info` severity, so a `--fail-on high` gate does not change. `doi_invalid` names each item whose DOI field holds text that is not a DOI, such as an item type or a date written there by an import; replace it with the real DOI or clear it. `doi_title_mismatch` names each DOI carried by items whose titles differ, for example a chapter that carries its book's DOI. `items duplicates resolve` never merges those items; correct the DOI on the record that does not own it, or make the titles agree if the records are one work.
+
 ## Publish the badge
 
 `badge-path` writes shields endpoint JSON even when the gate fails, so the badge always reflects the latest result. Publish it anywhere shields can reach (GitHub Pages, a gist, any static host) and embed:

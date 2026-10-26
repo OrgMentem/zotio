@@ -1931,7 +1931,7 @@ zotio items duplicates [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--by` | `string` | `all` | Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge |
+| `--by` | `string` | `all` | Duplicate detector to run (doi, title, all); doi and all also report DOIs shared by items whose titles differ (doi_title_mismatches in JSON), which are never duplicate groups; title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge |
 
 #### `zotio items duplicates resolve`
 
@@ -1939,9 +1939,13 @@ Resolve duplicate items by merging metadata onto a master and trashing duplicate
 
 Resolve duplicate items by merging metadata onto a master and trashing duplicates.
 
-By default, resolve only matches duplicate DOI groups. A DOI group forms only
-when the shared value has the DOI form 10.<registrant>/<suffix>; other text
-repeated in the DOI field, such as an item type or a date, never groups items.
+By default, resolve only matches duplicate DOI groups. Items share a DOI when
+their DOI fields name the same 10.<registrant>/<suffix>, ignoring case and a
+doi: or doi.org wrapper; other text repeated in the DOI field, such as an item
+type or a date, never groups items. A shared DOI is merged only when every item
+carrying it has the same title (ignoring case, spacing and punctuation
+variants): a chapter that carries its book's DOI is not its book. 'items
+duplicates' lists the DOIs held back for that reason.
 Title matching can group distinct items that share generic titles; pass --title
 only when you are ready to review the preview carefully before applying.
 

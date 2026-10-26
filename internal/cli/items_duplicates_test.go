@@ -694,6 +694,86 @@ func nearDuplicatePairFixture() []json.RawMessage {
 	}
 }
 
+// doiIdentityFixture is the field report behind #61, plus one work stored
+// three ways. A chapter (N835) carries its book's DOI (FFDS): one DOI, two
+// works. B1-B3 are one work whose DOI is stored bare in capitals, as a
+// resolver URL rewritten by a library proxy, and as a scheme-less doi.org
+// path, with titles that differ only in a trailing stop and dash form. A1/A2
+// carry an item type in the DOI field.
+func doiIdentityFixture() []json.RawMessage {
+	return []json.RawMessage{
+		json.RawMessage(`{"key":"N835","version":1,"data":{"key":"N835","itemType":"bookSection","title":"Making Space: The Purpose and Place of Practice-led Research","DOI":"10.1515/9780748636303"}}`),
+		json.RawMessage(`{"key":"FFDS","version":1,"data":{"key":"FFDS","itemType":"book","title":"Practice-led Research, Research-led Practice in the Creative Arts","DOI":"10.1515/9780748636303"}}`),
+		json.RawMessage(`{"key":"B1","version":1,"data":{"key":"B1","itemType":"journalArticle","title":"space-dis-place: How Sound and Interactivity Can Reconfigure Our Apprehension of Space","DOI":"10.1162/LMJ.2006.16.20"}}`),
+		json.RawMessage(`{"key":"B2","version":1,"data":{"key":"B2","itemType":"journalArticle","title":"space-dis-place: How Sound and Interactivity Can Reconfigure Our Apprehension of Space.","DOI":"http://dx.doi.org.ezproxy.une.edu.au/10.1162/lmj.2006.16.20"}}`),
+		json.RawMessage(`{"key":"B3","version":1,"data":{"key":"B3","itemType":"journalArticle","title":"space\u2013dis\u2013place: How Sound and Interactivity Can Reconfigure Our Apprehension of Space","DOI":"doi.org/10.1162/lmj.2006.16.20"}}`),
+		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"journalArticle","title":"Reading Atmospheres","DOI":"Article"}}`),
+		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"journalArticle","title":"Philosophy and Revolution","DOI":"Article"}}`),
+	}
+}
+
+// One DOI shared by two works must never merge, in any DOI form, and must not
+// vanish either: `items duplicates` names it beside the groups, and resolve
+// plans only the work stored three ways (#61).
+func TestItemsDuplicatesMergesSharedDOIOnlyWhenTitlesAgree(t *testing.T) {
+	seedDuplicateResolveStore(t, doiIdentityFixture())
+
+	out, _ := runItemsDuplicatesReport(t, &rootFlags{asJSON: true}, "--by", "doi")
+	payload := decodeDuplicatesReport(t, out)
+	if len(payload.Groups) != 1 || sqlStringValue(payload.Groups[0]["value"]) != "10.1162/lmj.2006.16.20" || fmt.Sprint(payload.Groups[0]["keys"]) != "[B1 B2 B3]" {
+		t.Fatalf("groups = %v, want only the B1/B2/B3 work under its normalized DOI", payload.Groups)
+	}
+	var mismatches []struct {
+		Value string         `json:"value"`
+		Keys  []string       `json:"keys"`
+		Items []doiFieldItem `json:"items"`
+	}
+	if err := json.Unmarshal(decodeDuplicatesReportKeys(t, out)["doi_title_mismatches"], &mismatches); err != nil {
+		t.Fatalf("decode doi_title_mismatches: %v; out=%s", err, out)
+	}
+	if len(mismatches) != 1 || mismatches[0].Value != "10.1515/9780748636303" || fmt.Sprint(mismatches[0].Keys) != "[FFDS N835]" || len(mismatches[0].Items) != 2 {
+		t.Fatalf("doi_title_mismatches = %+v, want the chapter/book pair with both items", mismatches)
+	}
+
+	srv := newDuplicateResolveTestServer(t, map[string]int{}, map[string]map[string]any{})
+	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
+	if got := duplicateResolvePlanKeys(env.Plan.Operations); fmt.Sprint(got) != "[B2 B3]" {
+		t.Fatalf("resolve plan keys = %v, want [B2 B3]: the chapter and its book must not merge; ops=%+v", got, env.Plan.Operations)
+	}
+}
+
+// Both held-back cases surface in `library health --for all` as info findings,
+// so a --fail-on high gate that passed before still passes.
+func TestLibraryHealthReportsDOIFieldProblemsBelowHighGate(t *testing.T) {
+	db := seedPrismaStore(t, doiIdentityFixture()...)
+	library := scopeResult{All: true, Expr: "library"}
+	gated, err := assembleHealthReport(db, newHealthCtx("all", false), "all", []string{"doi_title_mismatch", "doi_invalid"}, sevHigh, library)
+	if err != nil {
+		t.Fatalf("assemble health report: %v", err)
+	}
+	if gated.Summary.Total != 3 || gated.Gate == nil || gated.Gate.Status != "passed" || healthGateExitError(gated) != nil {
+		t.Fatalf("high gate = %+v summary %+v, want passed with 3 findings: the DOI-field findings are info", gated.Gate, gated.Summary)
+	}
+	report, err := assembleHealthReport(db, newHealthCtx("all", false), "all", []string{"duplicate_candidates", "doi_title_mismatch", "doi_invalid"}, sevHigh, library)
+	if err != nil {
+		t.Fatalf("assemble health report: %v", err)
+	}
+	byKind := map[string][]Finding{}
+	for _, f := range report.Findings {
+		byKind[f.Kind] = append(byKind[f.Kind], f)
+	}
+	if got := byKind["duplicate_candidates"]; len(got) != 1 || sqlStringValue(got[0].Evidence["value"]) != "10.1162/lmj.2006.16.20" {
+		t.Errorf("duplicate_candidates = %+v, want only the B1/B2/B3 work", got)
+	}
+	if got := byKind["doi_title_mismatch"]; len(got) != 1 || fmt.Sprint(got[0].Evidence["keys"]) != "[FFDS N835]" || got[0].Autofixable {
+		t.Errorf("doi_title_mismatch = %+v, want the chapter/book pair, not autofixable", got)
+	}
+	invalid := byKind["doi_invalid"]
+	if len(invalid) != 2 || invalid[0].ItemKey != "A1" || invalid[1].ItemKey != "A2" || invalid[0].Evidence["doi"] != "Article" || invalid[0].Autofixable {
+		t.Errorf("doi_invalid = %+v, want A1 and A2 carrying \"Article\", not autofixable", invalid)
+	}
+}
+
 func runItemsDuplicatesReport(t *testing.T, flags *rootFlags, args ...string) (string, string) {
 	t.Helper()
 	cmd := newItemsDuplicatesCmd(flags)

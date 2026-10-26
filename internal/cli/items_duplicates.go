@@ -114,18 +114,18 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			db := localQueryStore{Store: rawDB}
 
 			var results []map[string]any
-			switch flagBy {
-			case "doi":
-				results, err = queryDuplicateDOIs(db)
-			case "title":
-				results, err = queryDuplicateTitles(db)
-			default:
-				results, err = queryDuplicateDOIs(db)
-				if err == nil {
-					var titleRows []map[string]any
-					titleRows, err = queryDuplicateTitles(db)
-					results = append(results, titleRows...)
-				}
+			// DOIs whose items disagree on title: never in `groups`, because
+			// resolve merges a group, but never silently dropped either.
+			var doiTitleMismatches []map[string]any
+			if flagBy == "doi" || flagBy == "all" {
+				var scan doiFieldScan
+				scan, err = scanDOIFields(db)
+				results, doiTitleMismatches = scan.duplicates, scan.titleMismatches
+			}
+			if err == nil && (flagBy == "title" || flagBy == "all") {
+				var titleRows []map[string]any
+				titleRows, err = queryDuplicateTitles(db)
+				results = append(results, titleRows...)
 			}
 			if err != nil {
 				return fmt.Errorf("querying duplicates: %w", err)
@@ -195,6 +195,11 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 						meta["near_title_total"] = scan.total
 					}
 				}
+				if len(doiTitleMismatches) > 0 {
+					// Sibling key for the same reason: resolve merges
+					// `groups`, and these items must not be merged unseen.
+					siblings["doi_title_mismatches"] = doiTitleMismatches
+				}
 				data, err := duplicateReportPayload(map[string]any{
 					"groups":   groups,
 					"findings": duplicateItemFindings(groups),
@@ -228,6 +233,11 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			}
 			switch {
 			case wantsHumanTable(cmd.OutOrStdout(), flags):
+				if len(doiTitleMismatches) > 0 {
+					if err := printDOITitleMismatches(cmd, doiTitleMismatches); err != nil {
+						return err
+					}
+				}
 				if len(scan.groups) > 0 {
 					if err := printNearDuplicateTitleGroups(cmd, scan.groups, scan.total); err != nil {
 						return err
@@ -246,6 +256,10 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 				// --plain and --csv have no column for a score, and a piped
 				// run without --json gets the bare exact-group array, so
 				// nothing on either stream would carry these rows.
+				if len(doiTitleMismatches) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s not shown in this format; re-run with --json to see them.\n",
+						pluralCount(len(doiTitleMismatches), "DOI shared by items with different titles is", "DOIs shared by items with different titles are"))
+				}
 				if len(scan.groups) > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
 						pluralCount(len(scan.groups), "near-duplicate title group", "near-duplicate title groups"))
@@ -255,7 +269,7 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge")
+	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all); doi and all also report DOIs shared by items whose titles differ (doi_title_mismatches in JSON), which are never duplicate groups; title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge")
 	// Keep the bare duplicate report intact while adding the write-safe resolver subcommand.
 	cmd.AddCommand(newItemsDuplicatesResolveCmd(flags))
 
@@ -297,50 +311,139 @@ func duplicateReportPayload(report, siblings map[string]any, flags *rootFlags) (
 	return json.Marshal(merged)
 }
 
-// queryDuplicateDOIs groups items whose DOI field holds the same DOI. A
-// repeated value only forms a group when it has the DOI form: imports that put
-// the item type ("Article") or a date ("10/10/2020") in the DOI column repeat
-// that text across unrelated works, and every consumer of these rows (resolve,
-// which trashes; the PRISMA flow, which publishes a removed-records count; the
-// duplicate_candidates health finding, which is autofixable) would otherwise
-// treat those works as one.
+// queryDuplicateDOIs returns the DOI groups every consumer treats as "these
+// records ARE the same": resolve trashes all but one, the PRISMA flow
+// publishes their size as a removed-records count, and duplicate_candidates is
+// an autofixable health finding. See scanDOIFields for what may form one.
 func queryDuplicateDOIs(db localQueryStore, scopes ...map[string]struct{}) ([]map[string]any, error) {
-	clause, args, err := duplicateQueryScopeClause(scopes)
+	scan, err := scanDOIFields(db, scopes...)
 	if err != nil {
 		return nil, err
+	}
+	return scan.duplicates, nil
+}
+
+// doiFieldItem is one item in a DOI report row: enough for a person to see
+// which record does not own the DOI.
+type doiFieldItem struct {
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	ItemType string `json:"item_type"`
+	DOI      string `json:"doi"`
+	Trashed  bool   `json:"trashed,omitempty"`
+}
+
+// doiFieldScan sorts every non-empty DOI field into exactly one of three
+// answers.
+type doiFieldScan struct {
+	// duplicates are DOIs carried by more than one item, all with one title.
+	duplicates []map[string]any
+	// titleMismatches are DOIs carried by more than one item whose titles
+	// differ: a chapter that inherited its book's DOI, or one work stored
+	// under two titles. Either way only a person can say which, so these
+	// never merge.
+	titleMismatches []map[string]any
+	// invalid are items whose DOI field holds text that is not a DOI, such as
+	// an item type or a date an import wrote into the column.
+	invalid []doiFieldItem
+}
+
+// scanDOIFields groups items by DOI.
+//
+// Two items share a DOI when their DOI fields name the same DOI after
+// normalizeDOI, compared case-insensitively (DOIs are case-insensitive), so a
+// doi.org URL and the bare form group together. A value that is not a DOI under
+// doiArgPattern, the check `import doi` applies to its argument, groups with
+// nothing: an import that writes "Article" or "10/10/2020" into the column
+// repeats that text across unrelated works.
+//
+// A shared DOI is a duplicate only when every live item carrying it has the
+// same title under normalizeExactTitle, the repo's "same title, written
+// differently" fold. A DOI identifies a work, but a record can carry a DOI that
+// is not its own, and merging on the DOI alone trashed the record that owned it.
+// The whole DOI is then held back rather than split by title: a split would give
+// two groups one DOI, and every consumer identifies a group by its DOI.
+//
+// Trashed items stay in their group, as they did when the SQL grouped, but take
+// no part in the title decision: resolve sets a trashed copy aside before it
+// merges, so a trashed record with another title must not block the live pair.
+// For the same reason a trashed item's malformed DOI is not reported as invalid.
+func scanDOIFields(db localQueryStore, scopes ...map[string]struct{}) (doiFieldScan, error) {
+	clause, args, err := duplicateQueryScopeClause(scopes)
+	if err != nil {
+		return doiFieldScan{}, err
 	}
 	rows, err := db.QueryRaw(fmt.Sprintf(`
 SELECT
-	'doi' AS "group",
-	value,
-	COUNT(*) AS count,
-	json_group_array(id) AS keys
-FROM (
-	SELECT id, LOWER(TRIM(json_extract(data, '$.data.DOI'))) AS value
-	FROM resources
-	WHERE resource_type = 'items'
-		AND COALESCE(TRIM(json_extract(data, '$.data.DOI')), '') != ''%s
-)
-GROUP BY value
-HAVING COUNT(*) > 1
-ORDER BY count DESC, value`, clause), args...)
+	id AS key,
+	TRIM(json_extract(data, '$.data.DOI')) AS doi,
+	COALESCE(TRIM(json_extract(data, '$.data.title')), '') AS title,
+	COALESCE(json_extract(data, '$.data.itemType'), '') AS item_type,
+	CASE
+		WHEN COALESCE(json_extract(data, '$.data.deleted'), json_extract(data, '$.deleted'), 0) IN (1, '1', 'true') THEN 1
+		WHEN EXISTS (SELECT 1 FROM resources t WHERE t.resource_type = 'items-trash' AND t.id = resources.id) THEN 1
+		ELSE 0
+	END AS trashed
+FROM resources
+WHERE resource_type = 'items'
+	AND COALESCE(TRIM(json_extract(data, '$.data.DOI')), '') != ''%s
+ORDER BY id`, clause), args...)
 	if err != nil {
-		return nil, err
+		return doiFieldScan{}, err
 	}
-	groups := rows[:0]
+	var scan doiFieldScan
+	byDOI := make(map[string][]doiFieldItem)
 	for _, row := range rows {
-		if isDOIValue(sqlStringValue(row["value"])) {
-			groups = append(groups, row)
+		item := doiFieldItem{
+			Key:      sqlStringValue(row["key"]),
+			Title:    sqlStringValue(row["title"]),
+			ItemType: sqlStringValue(row["item_type"]),
+			DOI:      sqlStringValue(row["doi"]),
+			Trashed:  sqlIntValue(row["trashed"]) == 1,
 		}
+		doi := strings.ToLower(normalizeDOI(item.DOI))
+		if !doiArgPattern.MatchString(doi) {
+			if !item.Trashed {
+				scan.invalid = append(scan.invalid, item)
+			}
+			continue
+		}
+		byDOI[doi] = append(byDOI[doi], item)
 	}
-	return groups, nil
+	for doi, items := range byDOI {
+		if len(items) < 2 {
+			continue
+		}
+		keys := make([]string, len(items))
+		liveTitles := make(map[string]struct{}, 1)
+		for i, item := range items {
+			keys[i] = item.Key
+			if !item.Trashed {
+				liveTitles[normalizeExactTitle(item.Title)] = struct{}{}
+			}
+		}
+		row := map[string]any{"group": "doi", "value": doi, "count": len(items), "keys": keys}
+		if len(liveTitles) <= 1 {
+			scan.duplicates = append(scan.duplicates, row)
+			continue
+		}
+		row["items"] = items
+		scan.titleMismatches = append(scan.titleMismatches, row)
+	}
+	sortDOIGroupRows(scan.duplicates)
+	sortDOIGroupRows(scan.titleMismatches)
+	return scan, nil
 }
 
-// isDOIValue reports whether a stored DOI field value has the DOI form.
-// doiArgPattern already answers that for `import doi` input, so the duplicate
-// detector asks it rather than growing a second definition.
-func isDOIValue(value string) bool {
-	return doiArgPattern.MatchString(normalizeDOI(value))
+// sortDOIGroupRows orders rows largest first, then by DOI: the order the SQL
+// grouping published before grouping moved into Go.
+func sortDOIGroupRows(rows []map[string]any) {
+	sort.Slice(rows, func(i, j int) bool {
+		if ci, cj := sqlIntValue(rows[i]["count"]), sqlIntValue(rows[j]["count"]); ci != cj {
+			return ci > cj
+		}
+		return sqlStringValue(rows[i]["value"]) < sqlStringValue(rows[j]["value"])
+	})
 }
 
 // queryDuplicateTitles groups citeable items sharing a normalized title.
@@ -959,6 +1062,27 @@ func printNearDuplicateTitleGroups(cmd *cobra.Command, groups []nearDuplicateTit
 		// Sanitized, never truncated: this line is a command to paste, and
 		// half an item key is a command that fails.
 		sanitizeForTerminal(groups[0].Keys[0]))
+	return nil
+}
+
+// printDOITitleMismatches renders, for a human, the DOIs held back from the
+// duplicate groups because their items disagree on title. rows is never empty:
+// the caller owns that branch.
+func printDOITitleMismatches(cmd *cobra.Command, rows []map[string]any) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprint(out, "\nDOIs shared by items with different titles (not merged — one record may carry another work's DOI):\n")
+	tw := newTabWriter(out)
+	fmt.Fprintln(tw, "DOI\tKEY\tTYPE\tTITLE")
+	for _, row := range rows {
+		items, _ := row["items"].([]doiFieldItem)
+		for _, item := range items {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", advisoryCell(sqlStringValue(row["value"])), sanitizeForTerminal(item.Key), advisoryCell(item.ItemType), advisoryCell(item.Title))
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Fprint(cmd.ErrOrStderr(), "\n'items duplicates resolve' will not merge these. Correct the DOI on the record that does not own it; if the records are one work, make their titles agree.\n")
 	return nil
 }
 

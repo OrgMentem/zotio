@@ -55,9 +55,13 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 		// Document DOI-only safe default and explicit risky title matching opt-in.
 		Long: `Resolve duplicate items by merging metadata onto a master and trashing duplicates.
 
-By default, resolve only matches duplicate DOI groups. A DOI group forms only
-when the shared value has the DOI form 10.<registrant>/<suffix>; other text
-repeated in the DOI field, such as an item type or a date, never groups items.
+By default, resolve only matches duplicate DOI groups. Items share a DOI when
+their DOI fields name the same 10.<registrant>/<suffix>, ignoring case and a
+doi: or doi.org wrapper; other text repeated in the DOI field, such as an item
+type or a date, never groups items. A shared DOI is merged only when every item
+carrying it has the same title (ignoring case, spacing and punctuation
+variants): a chapter that carries its book's DOI is not its book. 'items
+duplicates' lists the DOIs held back for that reason.
 Title matching can group distinct items that share generic titles; pass --title
 only when you are ready to review the preview carefully before applying.`,
 		Example: `  zotio items duplicates resolve

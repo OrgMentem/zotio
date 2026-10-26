@@ -98,7 +98,7 @@ func TestLibraryPrismaMergesOverlappingDuplicateDetectors(t *testing.T) {
 // re-rooting P2 while processing the title group used to sever the DOI link.
 func TestLibraryPrismaMergesPartiallyOverlappingClusters(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Distinct one","DOI":"10.1234/chain","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Chain title.","DOI":"10.1234/chain","libraryCatalog":"PubMed"}}`),
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Chain title","DOI":"10.1234/chain","libraryCatalog":"PubMed"}}`),
 		json.RawMessage(`{"key":"P3","version":1,"data":{"key":"P3","itemType":"journalArticle","title":"Chain title","DOI":"10.1234/other","libraryCatalog":"Scopus"}}`),
 	)
@@ -114,8 +114,8 @@ func TestLibraryPrismaMergesPartiallyOverlappingClusters(t *testing.T) {
 
 func TestLibraryPrismaSumsDisjointDuplicateClusters(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI pair","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI pair.","DOI":"10.1234/doi","libraryCatalog":"PubMed"}}`),
 		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-one","libraryCatalog":"Scopus"}}`),
 		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-two","libraryCatalog":"Scopus"}}`),
 	)
@@ -128,8 +128,8 @@ func TestLibraryPrismaSumsDisjointDuplicateClusters(t *testing.T) {
 
 func TestLibraryPrismaScopeRestrictsCorpusAndDuplicates(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"S1","version":1,"data":{"key":"S1","itemType":"journalArticle","title":"Scoped one","DOI":"10.1234/scoped","collections":["C1"]}}`),
-		json.RawMessage(`{"key":"S2","version":1,"data":{"key":"S2","itemType":"journalArticle","title":"Scoped two","DOI":"10.1234/scoped","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"S1","version":1,"data":{"key":"S1","itemType":"journalArticle","title":"Scoped pair","DOI":"10.1234/scoped","collections":["C1"]}}`),
+		json.RawMessage(`{"key":"S2","version":1,"data":{"key":"S2","itemType":"journalArticle","title":"Scoped pair.","DOI":"10.1234/scoped","collections":["C1"]}}`),
 		json.RawMessage(`{"key":"O1","version":1,"data":{"key":"O1","itemType":"journalArticle","title":"Outside pair","DOI":"10.1234/outside"}}`),
 		json.RawMessage(`{"key":"O2","version":1,"data":{"key":"O2","itemType":"journalArticle","title":"Outside pair","DOI":"10.1234/outside"}}`),
 	)
@@ -159,8 +159,8 @@ func TestLibraryPrismaZeroItemScopeIsAValidReport(t *testing.T) {
 
 func TestLibraryPrismaByDOIIgnoresTitleGroups(t *testing.T) {
 	db := seedPrismaStore(t,
-		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI one","DOI":"10.1234/doi"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI two","DOI":"10.1234/doi"}}`),
+		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"DOI pair","DOI":"10.1234/doi"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"DOI pair.","DOI":"10.1234/doi"}}`),
 		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-one"}}`),
 		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Title pair","DOI":"10.1234/title-two"}}`),
 	)

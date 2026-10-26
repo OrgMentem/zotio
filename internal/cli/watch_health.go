@@ -432,7 +432,7 @@ func watchHealthFindingTitle(f Finding) string {
 		return f.Title
 	}
 	switch f.Kind {
-	case "duplicate_candidates":
+	case "duplicate_candidates", "doi_title_mismatch":
 		group := sqlStringValue(f.Evidence["group"])
 		value := sqlStringValue(f.Evidence["value"])
 		if group != "" || value != "" {

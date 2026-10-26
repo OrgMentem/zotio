@@ -502,8 +502,8 @@ func doiDupKeys(t *testing.T, rows []map[string]any, wantValue string) []string 
 		if sqlStringValue(row["value"]) != wantValue {
 			continue
 		}
-		var keys []string
-		if err := json.Unmarshal([]byte(sqlStringValue(row["keys"])), &keys); err != nil {
+		keys, err := duplicateResolveRowKeys(row)
+		if err != nil {
 			t.Fatalf("parse dup keys %v: %v", row["keys"], err)
 		}
 		return keys

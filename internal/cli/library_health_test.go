@@ -43,7 +43,7 @@ func seedHealthStore(t *testing.T) localQueryStore {
 		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"journalArticle","title":"Conflict One","creators":[{"lastName":"A"}],"date":"2021","publicationTitle":"J","DOI":"10.1234/c1","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
 		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"journalArticle","title":"Conflict Two","creators":[{"lastName":"B"}],"date":"2021","publicationTitle":"J","DOI":"10.1234/c2","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
 		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"Dup A","creators":[{"lastName":"C"}],"date":"2018","publicationTitle":"J","DOI":"10.1234/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupa2018"}}`),
-		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"Dup B","creators":[{"lastName":"D"}],"date":"2018","publicationTitle":"J","DOI":"10.1234/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupb2018"}}`),
+		json.RawMessage(`{"key":"D2","version":1,"data":{"key":"D2","itemType":"journalArticle","title":"Dup A.","creators":[{"lastName":"D"}],"date":"2018","publicationTitle":"J","DOI":"10.1234/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupb2018"}}`),
 		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Tag One","tags":[{"tag":"AI"}]}}`),
 		json.RawMessage(`{"key":"T2","version":1,"data":{"key":"T2","itemType":"journalArticle","title":"Tag Two","tags":[{"tag":"ai"}]}}`),
 	}
