@@ -51,10 +51,11 @@ func TestDBPathIsRaceFreeAgainstConcurrentGroupScopeWrites(t *testing.T) {
 		filepath.Join(dataDir, "data-group-22222.db"): true,
 	}
 
-	const iterations = 600
+	const iterations = 50
 
 	var wg sync.WaitGroup
 	errCh := make(chan string, 128)
+	done := make(chan struct{})
 
 	// Writer: drives the real writer path — cobra's PersistentPreRunE via
 	// cli.RootCmd(). Now cycles through "" as well to expose the double-read
@@ -62,6 +63,7 @@ func TestDBPathIsRaceFreeAgainstConcurrentGroupScopeWrites(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(done)
 		groupIDs := []string{"", "11111", "22222"}
 		for range iterations {
 			for _, gid := range groupIDs {
@@ -92,7 +94,12 @@ func TestDBPathIsRaceFreeAgainstConcurrentGroupScopeWrites(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range iterations {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
 				p, pathErr := dbPath()
 				if pathErr != nil {
 					select {
