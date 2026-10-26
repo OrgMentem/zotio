@@ -1183,7 +1183,13 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		var err error
 		base, err = c.baseURLFor(ctx, method)
 		if err != nil {
-			return nil, 0, nil, err
+			// A --dry-run mutation is never dispatched, so an unresolved write
+			// route (keyless preview) still renders its request preview against
+			// the read base; a live mutation refuses before any network I/O.
+			if !c.DryRun || !isMutatingMethod(method) {
+				return nil, 0, nil, err
+			}
+			base = c.BaseURL
 		}
 	}
 	targetURL := base + path

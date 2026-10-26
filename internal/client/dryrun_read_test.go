@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -53,6 +54,8 @@ func TestDryRunExecutesReads(t *testing.T) {
 // regress: mutating verbs stay suppressed under --dry-run, returning the
 // existing fabricated sentinel (nil error, no network call) so commands
 // relying on --dry-run to preview a write without applying it are unaffected.
+// A keyless hybrid client (write route unresolved) previews the same way: the
+// unresolved-route refusal guards live mutations only.
 func TestDryRunSuppressesWrites(t *testing.T) {
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,33 +65,37 @@ func TestDryRunSuppressesWrites(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := clientTestNewClient(t, server.URL)
-	c.DryRun = true
+	for _, unresolved := range []bool{false, true} {
+		c := clientTestNewClient(t, server.URL)
+		c.DryRun = true
+		if unresolved {
+			c.ResolveWriteBase = func(context.Context) (string, error) { return "", nil }
+		}
 
-	cases := []struct {
-		verb string
-		run  func() ([]byte, int, error)
-	}{
-		{"POST", func() ([]byte, int, error) { return c.Post("/items", map[string]string{"title": "x"}) }},
-		{"PUT", func() ([]byte, int, error) { return c.Put("/items/1", map[string]string{"title": "x"}) }},
-		{"PATCH", func() ([]byte, int, error) { return c.Patch("/items/1", map[string]string{"title": "x"}) }},
-		{"DELETE", func() ([]byte, int, error) { return c.Delete("/items/1") }},
-	}
+		cases := []struct {
+			verb string
+			run  func() ([]byte, int, error)
+		}{
+			{"POST", func() ([]byte, int, error) { return c.Post("/items", map[string]string{"title": "x"}) }},
+			{"PUT", func() ([]byte, int, error) { return c.Put("/items/1", map[string]string{"title": "x"}) }},
+			{"PATCH", func() ([]byte, int, error) { return c.Patch("/items/1", map[string]string{"title": "x"}) }},
+			{"DELETE", func() ([]byte, int, error) { return c.Delete("/items/1") }},
+		}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.verb, func(t *testing.T) {
-			body, status, err := tc.run()
-			if err != nil {
-				t.Fatalf("%s returned error under dry-run: %v", tc.verb, err)
-			}
-			if status != 0 {
-				t.Fatalf("%s status = %d, want 0 (dry-run sentinel)", tc.verb, status)
-			}
-			if !bytes.Equal(body, []byte(`{"dry_run": true}`)) {
-				t.Fatalf("%s body = %s, want dry-run sentinel", tc.verb, body)
-			}
-		})
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s/unresolved=%v", tc.verb, unresolved), func(t *testing.T) {
+				body, status, err := tc.run()
+				if err != nil {
+					t.Fatalf("%s returned error under dry-run: %v", tc.verb, err)
+				}
+				if status != 0 {
+					t.Fatalf("%s status = %d, want 0 (dry-run sentinel)", tc.verb, status)
+				}
+				if !bytes.Equal(body, []byte(`{"dry_run": true}`)) {
+					t.Fatalf("%s body = %s, want dry-run sentinel", tc.verb, body)
+				}
+			})
+		}
 	}
 
 	if hits := atomic.LoadInt32(&hits); hits != 0 {
