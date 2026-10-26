@@ -209,10 +209,11 @@ func TestWatchWorkflowOnChangeRunsOnlyAfterCompleteChangedCycles(t *testing.T) {
 			},
 		},
 		{
-			// sync exits 0 when a non-critical resource fails, and the
-			// collection reap still lands; the cycle is still incomplete.
+			// Items are critical, so sync returns an error even though the
+			// collection reap lands. The incomplete cycle must not run workflows.
 			name:     "partially failed sync skips despite a change",
 			onChange: true,
+			wantErr:  true,
 			change: func(l *woLibrary) {
 				l.version = 11
 				delete(l.collections, "CXLL3333")
@@ -294,11 +295,11 @@ func TestWatchWorkflowOnChangeOwedChangesSurviveAcrossProcesses(t *testing.T) {
 	flags := []string{"--workflow", spec, "--workflow-on-change"}
 
 	stderr, err := woRunWatch(t, flags...)
-	if err != nil {
-		t.Fatalf("partial cycle: %v; stderr=%s", err, stderr)
+	if ExitCode(err) != 13 {
+		t.Fatalf("partial cycle: %v (exit %d), want critical-resource exit 13; stderr=%s", err, ExitCode(err), stderr)
 	}
-	if strings.Contains(stderr, "workflow preview") || !strings.Contains(stderr, "workflow skipped") {
-		t.Fatalf("partial cycle must skip the workflow; stderr=%s", stderr)
+	if strings.Contains(stderr, "workflow preview") || !strings.Contains(stderr, "cycle error") {
+		t.Fatalf("partial cycle must report its error without running the workflow; stderr=%s", stderr)
 	}
 
 	// A new process, every resource healthy, nothing new upstream.

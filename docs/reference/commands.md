@@ -3346,8 +3346,9 @@ Exit codes & warnings:
 
   A dependent per-item-type schema resource exits 13 when any fan-out request
   fails after another request succeeds. A full sync exits non-zero when any
-  selected resource does not complete. Exit 0 otherwise when at least one
-  resource synced and no resource flagged in the spec as critical failed. Pass
+  selected resource does not complete. The items and items-trash resources are
+  critical: when either fails the run exits 13 and reports 'Sync incomplete',
+  regardless of --strict. Exit 0 otherwise when at least one resource synced. Pass
   --strict to exit non-zero on any other per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.
 

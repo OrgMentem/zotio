@@ -701,11 +701,16 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			r["last_synced_at"] = lastSynced.Time.UTC().Format(time.RFC3339)
 			age := time.Since(lastSynced.Time)
 			r["staleness"] = age.Round(time.Minute).String()
-			if age > staleAfter {
+			if age < -futureSyncClockTolerance {
 				fresh = false
-			}
-			if age > oldest {
-				oldest = age
+				r["note"] = "last sync time is in the future; the clock changed"
+			} else {
+				if age > staleAfter {
+					fresh = false
+				}
+				if age > oldest {
+					oldest = age
+				}
 			}
 		} else {
 			r["staleness"] = "never"

@@ -247,6 +247,21 @@ func TestPendingWritesSupersedeOverruledEntries(t *testing.T) {
 			[]string{`[{"field":"creators","add":"B","remove":"A"}]`, `[{"field":"creators","add":"C","remove":"B"}]`},
 			`[{"field":"creators","add":"B","remove":"A"},{"field":"creators","add":"C","remove":"B"}]`,
 		},
+		{
+			"extra line additions preserve both obligations",
+			[]string{`[{"field":"extra_line","add":"First line"}]`, `[{"field":"extra_line","add":"Second line"}]`},
+			`[{"field":"extra_line","add":"First line"},{"field":"extra_line","add":"Second line"}]`,
+		},
+		{
+			"extra line repeated removal supersedes only the earlier removal",
+			[]string{`[{"field":"extra_line","add":"Line"}]`, `[{"field":"extra_line","remove":"Line"}]`, `[{"field":"extra_line","remove":"Line"}]`},
+			`[{"field":"extra_line","add":"Line"},{"field":"extra_line","remove":"Line"}]`,
+		},
+		{
+			"unreadable membership remains an obligation",
+			[]string{`[{"field":"tags","add":{"tag":"x"}}]`, `[{"field":"tags","add":"x"}]`},
+			`[{"field":"tags","add":{"tag":"x"}},{"field":"tags","add":"x"}]`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := mirroredWriteTestOpen(t)

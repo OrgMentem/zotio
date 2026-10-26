@@ -31,6 +31,10 @@ const (
 	sevInfo     = "info"
 )
 
+// futureSyncClockTolerance allows a small clock skew before a last-synced
+// time in the future is treated as a clock problem rather than fresh data.
+const futureSyncClockTolerance = 5 * time.Minute
+
 func severityRank(s string) int {
 	switch s {
 	case sevCritical:
@@ -527,11 +531,9 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, commandRegistryPath(cmd), preconditionSyncedStore, detail,
 					remediationFor(cmd.Context(), flags, preconditionSyncedStore))
 			}
-			// A first items pass that stopped partway (page cap, kill, timeout)
-			// has already stamped "last synced", so the guard above and
-			// --require-fresh both pass over whatever pages landed. Gates and
-			// the badge must not certify a library the run never finished
-			// mirroring; the completed-pass predicate is the one import uses.
+			// Older mirrors can carry a freshness stamp from an unfinished
+			// first pass. Gates and the badge must also check the completed-pass
+			// predicate used by import before certifying that mirror.
 			if syncedAt != nil {
 				ready, _, readyErr := importItemsMirrorReady(cmd.Context(), rawDB)
 				if readyErr != nil {
@@ -801,7 +803,10 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		default:
 			age := time.Since(*ctx.src.SyncedAt)
 			fr.AgeSeconds = int(age.Seconds())
-			if age > ctx.requireFresh {
+			if age < -futureSyncClockTolerance {
+				fr.Stale = true
+				fr.Reason = "last sync time is in the future; the clock changed"
+			} else if age > ctx.requireFresh {
 				fr.Stale = true
 				fr.Reason = fmt.Sprintf("local data is %s old, older than the required %s", durationAgo(age), ctx.requireFresh)
 			}

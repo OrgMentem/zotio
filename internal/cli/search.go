@@ -374,6 +374,11 @@ func ResolveFulltextSearchScope(ctx context.Context, db *store.Store, expr strin
 
 // outputSearchResults filters, counts, and outputs search results with provenance.
 func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.RawMessage, limit int, prov DataProvenance) error {
+	// --quiet: print nothing; the exit code is the answer.
+	if flags != nil && flags.quiet {
+		return nil
+	}
+
 	// keep the defensive JSON-shape filter only
 	// for live API search wrappers. Local FTS already returns concrete rows, so
 	// it avoids the per-result unmarshal hot path.

@@ -102,6 +102,9 @@ func TestFxbImportClassificationAcceptsCompletedItemsMirror(t *testing.T) {
 			if err := db.SaveLibraryVersion("items", "http://localhost:23119/api/users/0", 7); err != nil {
 				return err
 			}
+			if err := db.SaveSyncState("items", "", 1); err != nil {
+				return err
+			}
 			return db.SaveSyncResumeStateContext(context.Background(), "items", "100", "items?since=7", 1)
 		}},
 	}

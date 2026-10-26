@@ -631,7 +631,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newWorkflowCmd(flags))
 	rootCmd.AddCommand(newGroupsCmd(flags))
 	rootCmd.AddCommand(newVaultCmd(flags))
-	rootCmd.AddCommand(newVersionCliCmd())
+	rootCmd.AddCommand(newVersionCliCmd(flags))
 	annotateCapabilityRouteFlags(rootCmd)
 	installInstallationWriterLocks(rootCmd, flags)
 	// Installed after the writer locks so the fan-out is the outermost wrapper:
@@ -931,6 +931,9 @@ func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error
 // Rendering goes through renderColumns: bold headers, per-column styling,
 // display-width alignment. Cells are truncated to keep rows terminal-sized.
 func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]string) error {
+	if f != nil && f.quiet {
+		return nil
+	}
 	if f.asJSON {
 		return fmt.Errorf("printTable does not support JSON output")
 	}
@@ -945,11 +948,15 @@ func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]stri
 	return renderColumns(w.OutOrStdout(), headers, clipped)
 }
 
-func newVersionCliCmd() *cobra.Command {
+func newVersionCliCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
+			// --quiet: print nothing; the exit code is the answer.
+			if flags.quiet {
+				return
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "zotio %s\n", version)
 		},
 	}

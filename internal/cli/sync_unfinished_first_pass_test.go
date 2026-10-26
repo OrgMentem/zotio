@@ -17,9 +17,8 @@ import (
 )
 
 // A first items sync that stops at --max-pages leaves a prefix of the library
-// in the mirror. Every page stamped "last synced", so the freshness guard, the
-// gates, and init all read that prefix as a finished mirror: a CI job that ran
-// `sync` then `library health --fail-on high` certified pages it never read.
+// in the mirror, without a completed-pass timestamp. Gates and init must not
+// treat that prefix as a finished mirror; --require-fresh must reject it too.
 func TestUnfinishedFirstItemsSyncIsIncompleteNotReady(t *testing.T) {
 	syncTestWithHumanFriendly(t, false)
 	t.Setenv("HOME", t.TempDir())
@@ -81,8 +80,12 @@ func TestUnfinishedFirstItemsSyncIsIncompleteNotReady(t *testing.T) {
 		{"require-fresh", []string{"--require-fresh", "24h"}},
 	} {
 		_, _, healthErr := hsRunHealthCmd(t, &rootFlags{}, tc.args...)
-		if code := ExitCode(healthErr); code != 9 {
-			t.Errorf("health %s over an unfinished first pass: exit = %d (%v), want 9", tc.name, code, healthErr)
+		want := 9
+		if tc.name == "require-fresh" {
+			want = 12 // No completed pass exists from which to establish freshness.
+		}
+		if code := ExitCode(healthErr); code != want {
+			t.Errorf("health %s over an unfinished first pass: exit = %d (%v), want %d", tc.name, code, healthErr, want)
 		}
 	}
 

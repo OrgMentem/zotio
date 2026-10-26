@@ -268,8 +268,9 @@ Exit codes & warnings:
 
   A dependent per-item-type schema resource exits 13 when any fan-out request
   fails after another request succeeds. A full sync exits non-zero when any
-  selected resource does not complete. Exit 0 otherwise when at least one
-  resource synced and no resource flagged in the spec as critical failed. Pass
+  selected resource does not complete. The items and items-trash resources are
+  critical: when either fails the run exits 13 and reports 'Sync incomplete',
+  regardless of --strict. Exit 0 otherwise when at least one resource synced. Pass
   --strict to exit non-zero on any other per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.`,
 		Example: `  # Sync all resources
@@ -465,6 +466,7 @@ Exit codes & warnings:
 			// those: it needs a successfully observed pass to build on.
 			cleanSync := map[string]bool{}
 			var failedResources []string
+			var criticalFailed []string
 			var warnedResources []string
 			var successCount int
 			var degradedResources []string
@@ -473,6 +475,9 @@ Exit codes & warnings:
 				if res.Err != nil {
 					detail := fmt.Sprintf("%s: %v", res.Resource, res.Err)
 					failedResources = append(failedResources, detail)
+					if isCriticalSyncResource(res.Resource) {
+						criticalFailed = append(criticalFailed, detail)
+					}
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
@@ -555,6 +560,9 @@ Exit codes & warnings:
 				} else if len(incompleteResources) > 0 {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) stopped early, %.1fs)\n",
 						totalSynced, totalResources, len(incompleteResources), elapsed.Seconds())
+				} else if errCount > 0 {
+					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) failed, %.1fs)\n",
+						totalSynced, totalResources, errCount, elapsed.Seconds())
 				} else if warnCount > 0 {
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
 						totalSynced, totalResources, warnCount, elapsed.Seconds())
@@ -596,7 +604,7 @@ Exit codes & warnings:
 			//   2. --full + any other incomplete   -> non-zero
 			//      incremental pass stopped early  -> exit 13
 			//   3. --strict + any error             -> non-zero
-			//   4. any critical failure             -> non-zero regardless of --strict
+			//   4. any critical (items/items-trash) failure -> exit 13 regardless of --strict
 			//   5. nothing synced                   -> non-zero (preserves all-failed exits)
 			//   6. otherwise                        -> exit 0
 			if fulltextErr != nil {
@@ -605,6 +613,10 @@ Exit codes & warnings:
 			if len(degradedResources) > 0 {
 				return degradedErr(fmt.Errorf("%d resource(s) produced partial results: %s",
 					len(degradedResources), strings.Join(degradedResources, "; ")))
+			}
+			if len(criticalFailed) > 0 {
+				return degradedErr(fmt.Errorf("%d critical resource(s) failed to sync: %s",
+					len(criticalFailed), strings.Join(criticalFailed, "; ")))
 			}
 			if full && len(fullIncompleteResources) > 0 {
 				return fmt.Errorf("%d resource(s) incomplete during full sync: %s",
@@ -648,10 +660,17 @@ Exit codes & warnings:
 	return cmd
 }
 
+// fulltextPersistChunkSize bounds one fulltext persist batch: each chunk is
+// fetched and stored before the next is fetched, so peak memory is one chunk
+// and an interrupted pass keeps every chunk it stored.
+const fulltextPersistChunkSize = 50
+
 // syncFulltext fetches changed PDF full-text content and stores it as
 // fulltext-typed rows so 'items fulltext' and 'search' can read it offline.
-// It advances its checkpoint only after every changed attachment has been
-// fetched and durably persisted, so a failed pass is retried on the next run.
+// It persists each fetched chunk with its source and fulltext version before
+// fetching the next. Incremental retries skip documents already stored at the
+// listed version; --full still fetches every document. The pass checkpoint
+// advances only after every changed attachment has been fetched and persisted.
 func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) error {
 	cursor := 0
 	if !full {
@@ -680,43 +699,102 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 		return fmt.Errorf("parsing fulltext index: expected a JSON object, got null")
 	}
 	if len(changed) > 0 {
+		// Read only resume metadata, not PDF text. Versions belong to the
+		// read plane; a matching number from another source proves nothing.
+		storedVersions := make(map[string]int)
+		if !full {
+			rows, err := db.QueryContext(ctx, `SELECT metadata.id,
+				json_extract(metadata.data, '$.fulltextVersion')
+				FROM resources AS metadata JOIN resources AS document
+				ON document.resource_type = 'fulltext' AND document.id = metadata.id
+				WHERE metadata.resource_type = 'fulltext-versions'
+				AND json_extract(metadata.data, '$.source') = ?
+				AND json_type(metadata.data, '$.fulltextVersion') = 'integer'`, c.BaseURL)
+			if err != nil {
+				return fmt.Errorf("reading fulltext resume versions: %w", err)
+			}
+			for rows.Next() {
+				var key string
+				var version int
+				if err := rows.Scan(&key, &version); err != nil {
+					rows.Close()
+					return fmt.Errorf("reading fulltext resume version: %w", err)
+				}
+				if _, listed := changed[key]; listed {
+					storedVersions[key] = version
+				}
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return fmt.Errorf("reading fulltext resume versions: %w", err)
+			}
+		}
 		keys := make([]string, 0, len(changed))
 		for k := range changed {
+			if stored, ok := storedVersions[k]; ok && stored >= changed[k] {
+				continue
+			}
 			keys = append(keys, k)
 		}
-		// the API has no batch fulltext endpoint,
-		// so the per-item fetches still fan out, but persist them in a single
-		// keyed transaction instead of one writeMu-serialized Upsert per item
-		// (which caused lock contention and many tiny transactions).
-		results, errs := cliutil.FanoutRun(ctx, keys,
-			func(k string) string { return k },
-			func(fctx context.Context, k string) (json.RawMessage, error) {
-				// url-encode path param to prevent segment injection.
-				ft, _, ferr := c.GetWithVersionContext(fctx, "/items/"+url.PathEscape(k)+"/fulltext", nil)
-				if ferr != nil {
-					return nil, ferr
+		sort.Strings(keys)
+		// The API has no batch fulltext endpoint, so the per-item fetches
+		// still fan out, but in bounded chunks that are each persisted
+		// before the next chunk is fetched: a Ctrl-C or a failed fetch no
+		// longer discards the documents already retrieved, and peak memory
+		// is one chunk instead of the whole corpus. Persists run without
+		// cancellation so an interrupted pass keeps what it fetched; the
+		// version checkpoint below still advances only when every chunk
+		// succeeded.
+		var failed int
+		for start := 0; start < len(keys); start += fulltextPersistChunkSize {
+			end := min(start+fulltextPersistChunkSize, len(keys))
+			// the API has no batch fulltext endpoint,
+			// so the per-item fetches still fan out, but persist them in one
+			// keyed transaction per chunk instead of one writeMu-serialized
+			// Upsert per item (which caused lock contention and many tiny
+			// transactions).
+			results, errs := cliutil.FanoutRun(ctx, keys[start:end],
+				func(k string) string { return k },
+				func(fctx context.Context, k string) (json.RawMessage, error) {
+					// url-encode path param to prevent segment injection.
+					ft, _, ferr := c.GetWithVersionContext(fctx, "/items/"+url.PathEscape(k)+"/fulltext", nil)
+					if ferr != nil {
+						return nil, ferr
+					}
+					return ft, nil
+				})
+			if len(results) > 0 {
+				ids := make([]string, 0, len(results))
+				payloads := make([]json.RawMessage, 0, len(results))
+				for _, r := range results {
+					ids = append(ids, r.Source)
+					payloads = append(payloads, r.Value)
 				}
-				return ft, nil
-			})
-		if len(results) > 0 {
-			ids := make([]string, 0, len(results))
-			payloads := make([]json.RawMessage, 0, len(results))
-			for _, r := range results {
-				ids = append(ids, r.Source)
-				payloads = append(payloads, r.Value)
+				if _, uerr := db.UpsertFulltextContext(context.WithoutCancel(ctx), ids, payloads, c.BaseURL, changed); uerr != nil {
+					return fmt.Errorf("persisting fulltext: %w", uerr)
+				}
 			}
-			if _, uerr := db.UpsertKeyedContext(ctx, "fulltext", ids, payloads); uerr != nil {
-				return fmt.Errorf("persisting fulltext: %w", uerr)
+			failed += len(errs)
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 		}
-		if len(errs) > 0 {
-			return fmt.Errorf("%d of %d fulltext fetches failed", len(errs), len(keys))
+		if failed > 0 {
+			return fmt.Errorf("%d of %d fulltext fetches failed", failed, len(keys))
 		}
 	}
 	if newVer > cursor {
 		if err := db.SaveLibraryVersionContext(ctx, "fulltext", c.BaseURL, newVer); err != nil {
 			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
 		}
+	}
+	// The explicit fulltext completion stamp. Rows alone never imply a
+	// finished pass (an interrupted first pass leaves rows behind) and a
+	// successful empty pass leaves no rows and no version behind, so the
+	// stamp also proves completion when no version checkpoint exists.
+	if err := db.SaveSyncStateContext(ctx, "fulltext", "", len(changed)); err != nil {
+		return fmt.Errorf("persisting fulltext completion: %w", err)
 	}
 	return nil
 }
@@ -2475,6 +2553,13 @@ func upsertSingleObject(ctx context.Context, db *store.Store, resource string, d
 	return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func() error {
 		return db.UpsertContext(ctx, ref.resource, ref.id, data)
 	})
+}
+
+// isCriticalSyncResource reports whether a sync resource failure must fail the
+// run on its own. Items and its trash feed are the library itself: a mirror
+// that missed either one must not be reported as 'Sync complete'.
+func isCriticalSyncResource(resource string) bool {
+	return resource == "items" || resource == "items-trash"
 }
 
 // normalizeSyncResources preserves the caller's resource order while removing

@@ -594,30 +594,24 @@ WHERE ft.resource_type = 'fulltext'
 	return indexed, rows.Err()
 }
 
-// FulltextSearchReadyContext reports whether the mirror can answer a
-// full-text search: either a completed full-text sync checkpoint exists or
-// indexed full-text rows are present. A mirror that synced items but never
-// ran `zotio sync --fulltext` has neither, and callers must report that as
-// "not indexed" (a precondition naming the remediation) rather than as an
-// empty "no match". Rows alone count as ready so mirrors populated before
-// the checkpoint existed still answer.
+// FulltextSearchReadyContext reports whether a fulltext pass has completed.
+// New mirrors record a completion stamp even for empty, unversioned passes.
+// Older mirrors have only a positive version checkpoint, which also proves
+// completion: sync advances that checkpoint only after the whole pass succeeds.
+// Rows alone never prove completion because an interrupted first pass stores rows.
 func (s *Store) FulltextSearchReadyContext(ctx context.Context) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, lastSynced, _, err := s.GetSyncStateContext(ctx, "fulltext"); err == nil && !lastSynced.IsZero() {
-		return true, nil
-	}
-	if version, _, err := s.StoredLibraryVersionContext(ctx, "fulltext"); err != nil {
-		return false, err
-	} else if version > 0 {
-		return true, nil
-	}
-	count, err := s.CountContext(ctx, "fulltext")
+	_, lastSynced, _, err := s.GetSyncStateContext(ctx, "fulltext")
 	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	if !lastSynced.IsZero() {
+		return true, nil
+	}
+	version, _, err := s.StoredLibraryVersionContext(ctx, "fulltext")
+	return version > 0, err
 }
 
 func truncateFulltextSnippet(snippet string) string {

@@ -140,10 +140,10 @@ func TestDoctorCollectCacheReport(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := s.SaveSyncState("items", "item-cursor", 12); err != nil {
+	if err := s.SaveSyncState("items", "", 12); err != nil {
 		t.Fatalf("save fresh sync state: %v", err)
 	}
-	if err := s.SaveSyncState("collections", "collection-cursor", 3); err != nil {
+	if err := s.SaveSyncState("collections", "", 3); err != nil {
 		t.Fatalf("save stale sync state: %v", err)
 	}
 	// The stored row count and the last fetched delta must be reported
@@ -307,7 +307,7 @@ func TestDoctorCleanCacheReportsFreshAndExitsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if err := s.SaveSyncState("items", "cursor", 1); err != nil {
+	if err := s.SaveSyncState("items", "", 1); err != nil {
 		t.Fatalf("save sync state: %v", err)
 	}
 	if err := s.Close(); err != nil {

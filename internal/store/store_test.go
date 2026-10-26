@@ -51,8 +51,8 @@ func TestSyncResumeStateBindsCursorToRequestScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSyncResumeState: %v", err)
 	}
-	if cursor != "100" || gotScope != scope || syncedAt.IsZero() || count != 100 {
-		t.Fatalf("resume state = (%q, %q, %v, %d), want cursor and scope preserved", cursor, gotScope, syncedAt, count)
+	if cursor != "100" || gotScope != scope || !syncedAt.IsZero() || count != 100 {
+		t.Fatalf("resume state = (%q, %q, %v, %d), want cursor and scope preserved without a completion stamp", cursor, gotScope, syncedAt, count)
 	}
 
 	if err := s.SaveSyncState("items", "legacy", 1); err != nil {

@@ -261,17 +261,19 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// GuardedDB is the only ad-hoc SQL handle a Store exposes. It offers the
+// GuardedDB is the only gated ad-hoc SQL handle a Store exposes. It offers the
 // read methods production callers need (doctor's cache inspection, preflight
 // probes, import health checks) plus single-statement writes that serialize
 // through the store's single-writer lock. It deliberately exposes no raw
 // *sql.DB: no caller can Begin/Conn against the pool and interleave an
-// auxiliary write with sync's batch transactions (ADR-0005). The read
+// auxiliary write with sync's batch transactions (ADR-0005). The GuardedDB read
 // methods (Query, QueryContext, QueryRow, QueryRowContext) only accept
 // read statements (SELECT, WITH-form SELECT, PRAGMA, EXPLAIN) and refuse
 // anything else so a DELETE/UPDATE/INSERT ... RETURNING cannot slip a write
 // through the read path that bypasses the single-writer lock. Writes belong
-// in Exec/ExecContext/ExecWrite.
+// in Exec/ExecContext/ExecWrite. Store.Query/QueryContext/QueryRowContext
+// remain raw: they run no statement gate, so callers must pass fixed statements
+// or (like the MCP sql tool) open read-only and pre-validate the text.
 type GuardedDB struct {
 	s *Store
 }
@@ -854,8 +856,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		// run novel-feature auxiliary-table
 		// migrations after the generated migrations and before the version
-		// stamp, as migrateExtras documents. Currently a no-op (empty slice);
-		// wiring it makes the extension seam actually execute on every open.
+		// stamp, as migrateExtras documents. It owns the creator_orcids table
+		// (with its name_hash and orcid indexes) and schema_sync_versions, which
+		// SaveZoteroSchemaVersionContext writes.
 		if err := s.migrateExtras(ctx, conn); err != nil {
 			return err
 		}
@@ -1322,9 +1325,10 @@ func (s *Store) upsertGenericResourceTx(ctx context.Context, tx *sql.Tx, resourc
 	// populate indexed dependent-resource columns from the
 	// payload so annotation/attachment queries avoid scanning JSON. Non-item
 	// rows (collections, tags) leave these empty, which is harmless.
-	// reuse the caller's already-unmarshaled obj
-	// (batch path) instead of parsing the same payload a second time. The single
-	// Upsert path passes nil and falls back to the raw-bytes extractor.
+	// Reuse the caller's already-unmarshaled obj (UpsertContext for items and
+	// UpsertBatch) instead of parsing the same payload a second time. The
+	// caller-keyed paths (UpsertKeyed batch, mirrored create/reconcile writes)
+	// and non-item UpsertContext calls pass nil and use the raw-bytes extractor.
 	var parentKey, itemType, color, itemDate string
 	if obj != nil {
 		parentKey, itemType, color, itemDate = extractIndexedColumnsFromObj(obj)
@@ -1624,6 +1628,27 @@ func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMe
 // cancelled context rolls the transaction back, so no half-written batch
 // survives: rows the plane sent either all land or none do.
 func (s *Store) UpsertKeyedContext(ctx context.Context, resourceType string, ids []string, data []json.RawMessage) (int, error) {
+	return s.upsertKeyedContext(ctx, resourceType, ids, data, nil)
+}
+
+// UpsertFulltextContext stores public fulltext payloads and private resume
+// metadata atomically. Metadata rows never enter the public search index.
+func (s *Store) UpsertFulltextContext(ctx context.Context, ids []string, data []json.RawMessage, source string, versions map[string]int) (int, error) {
+	metadata := make([]json.RawMessage, len(ids))
+	for i, id := range ids {
+		var err error
+		metadata[i], err = json.Marshal(struct {
+			Source  string `json:"source"`
+			Version int    `json:"fulltextVersion"`
+		}{source, versions[id]})
+		if err != nil {
+			return 0, err
+		}
+	}
+	return s.upsertKeyedContext(ctx, "fulltext", ids, data, metadata)
+}
+
+func (s *Store) upsertKeyedContext(ctx context.Context, resourceType string, ids []string, data, metadata []json.RawMessage) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1656,6 +1681,15 @@ func (s *Store) UpsertKeyedContext(ctx context.Context, resourceType string, ids
 			return 0, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 		if written {
+			if metadata != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO resources (resource_type, id, data)
+					VALUES ('fulltext-versions', ?, ?)
+					ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data,
+					synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`,
+					id, string(metadata[i])); err != nil {
+					return 0, fmt.Errorf("persisting fulltext resume metadata for %s: %w", id, err)
+				}
+			}
 			stored++
 		}
 	}
@@ -2000,9 +2034,9 @@ func sqliteFieldValue(v any) any {
 	}
 }
 
-// lookupFieldValue is kept as an unexported alias for in-package callers so
-// the existing UpsertBatch code reads naturally without prefixing every call
-// with the package name.
+// lookupFieldValue is an unexported alias for in-package callers (used only by
+// ExtractResourceID) so the identity function reads naturally without prefixing
+// every call with the package name.
 func lookupFieldValue(obj map[string]any, snakeKey string) any {
 	return LookupFieldValue(obj, snakeKey)
 }
@@ -2082,15 +2116,14 @@ func prepareResourceItem(resourceType string, item json.RawMessage) (preparedRes
 // and returns (stored, extractFailures, err). stored counts rows actually
 // landed; extractFailures counts items that survived JSON unmarshal but had
 // no extractable primary key (templated IDField AND generic fallback both
-// missed). callers (sync.go.tmpl) compare these against len(items) to emit
-// the per-item primary_key_unresolved warning and the F4b
+// missed). Callers in internal/cli/sync.go compare these against len(items) to
+// emit the per-item primary_key_unresolved warning and the F4b
 // stored_count_zero_after_extraction probe.
 //
-// For resource types that have a domain-specific typed table, the per-item
-// generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
-// inside the same transaction. Without that dispatch, paginated syncs would
-// only populate the generic resources table — typed tables (and indexed
-// columns like parent_id added by dependent-resource sync) would stay empty.
+// Every item lands through upsertGenericResourceTx plus
+// reconcileItemLifecycleTx in the same transaction; indexed columns such as
+// parent_key are populated there from the unmarshaled payload, and there is
+// no separate typed-table dispatch or generated template.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
 	return s.UpsertBatchContext(context.Background(), resourceType, items)
 }
@@ -2195,6 +2228,11 @@ func (s *Store) SaveSyncResumeStateContext(ctx context.Context, resourceType, cu
 	return s.saveSyncStateContext(ctx, resourceType, cursor, scope, count)
 }
 
+// saveSyncStateContext persists the pagination cursor and its request scope.
+// last_synced_at advances only when the pass completes (cursor == ""): page
+// progress saves carry an unfinished offset and must not stamp freshness, or
+// --require-fresh, doctor, and MCP freshness would report a failed pass as
+// just synced. A cleared completion cursor also clears its scope.
 func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, scope string, count int) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2207,14 +2245,20 @@ func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, 
 		return err
 	}
 	defer release()
+	// Completion stamps freshness; page progress only moves the cursor.
+	var completedAt any
+	if cursor == "" {
+		completedAt = time.Now()
+	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sync_state (resource_type, last_cursor, cursor_scope, last_synced_at, total_count, last_changed_at)
 		 VALUES (?, ?, ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
-		 cursor_scope = excluded.cursor_scope, last_synced_at = excluded.last_synced_at,
+		 cursor_scope = excluded.cursor_scope,
+		 last_synced_at = COALESCE(excluded.last_synced_at, sync_state.last_synced_at),
 		 total_count = excluded.total_count,
 		 last_changed_at = COALESCE(excluded.last_changed_at, sync_state.last_changed_at)`,
-		resourceType, cursor, scope, time.Now(), count, count, time.Now(),
+		resourceType, cursor, scope, completedAt, count, count, time.Now(),
 	)
 	return err
 }
@@ -2255,7 +2299,7 @@ func (s *Store) RestartSyncCursorContext(ctx context.Context, resourceType, scop
 	return err
 }
 
-// GetSyncState reads the cursor, last poll time, and last delta count.
+// GetSyncState reads the cursor, last completed pass time, and last delta count.
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
 	return s.GetSyncStateContext(context.Background(), resourceType)
 }
@@ -3384,10 +3428,11 @@ func resourceIDsLockedContext(ctx context.Context, queryer resourceIDQueryerCont
 }
 
 // ResourceIDs lists every mirrored row id for a resource type. Production
+// callers include the incremental collection reap planner
+// (internal/cli/sync_reap.go), which uses it to find absent collections;
 // mark-and-sweep reads the ids inside SweepMissing's transaction through
-// resourceIDsLocked; this exported wrapper exists for tests in other packages
-// that assert mirror contents, namely internal/cli's mirror_reap_test.go and
-// sync_gaps_test.go. Go has no cross-package test-only export.
+// resourceIDsLocked. Tests in other packages also use it to assert mirror
+// contents.
 func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 	return resourceIDsLocked(s.db, resourceType)
 }

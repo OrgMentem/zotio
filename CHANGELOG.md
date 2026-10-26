@@ -71,6 +71,92 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   (`http://dx.doi.org.ezproxy.example.edu/10.…`) is now read as a DOI
   everywhere zotio normalizes one, including `import doi`.
 
+- **`sync` exits 13 when `items` or `items-trash` fails.** These resources
+  are critical even without `--strict`; a successful pass for another resource
+  no longer makes the run succeed. Human output says `Sync incomplete` when
+  a resource fails instead of claiming `Sync complete`.
+
+- **Partial provider results no longer pass as complete.** `import discover`
+  exits 13 when source lookups fail, while still writing the partial manifest
+  unless `--dry-run` applies. Its report names failed sources and marks the
+  counts as incomplete. `creators audit --orcid` also exits 13 for failed
+  CrossRef lookups and stops on cancellation instead of reporting success.
+  `library health --fail-on-new` exits 9 when it skips a check relevant to
+  the gate, and keeps retractions it confirmed before another lookup failed.
+
+- **A Web API apply without a key exits 9 with authentication guidance.**
+  The precondition names `ZOTERO_API_KEY` and `auth set-token --stdin`,
+  replacing generic write-route failures and their inconsistent exit codes.
+  Keyless previews can still use local reads, and no-op applies need no key.
+  Connector routes and separate read prerequisites keep their existing rules.
+
+- **Readers reject a missing explicit `--config` file with exit 10.**
+  This now includes `auth status`, `doctor`, `desktop status`, `vault audit`,
+  and journal/profile listings, which previously ignored the missing file.
+  Help, version, and shell completion remain configuration-independent.
+  `init`, `auth set-token`, and `auth logout` retain their configuration-writer
+  exception.
+
+- **Invalid mutation limits and conflicting output paths exit 2.**
+  `--max-changes` below `-1` and negative `--max-failures` are usage errors.
+  `--max-changes -1` still selects the default cap; `0` refuses all writes.
+  `--max-failures 0` still means unlimited. `--output` and `--deliver file:`
+  cannot name the same canonical file; this now reports a usage error rather
+  than a misleading writer-lock refusal.
+
+- **Usage errors take precedence over missing runtime prerequisites.**
+  Invalid flag values and missing required arguments now exit 2 before
+  checking the mirror or desktop. An empty or whitespace-only `search` query
+  is a usage error instead of a SQLite error. `items enrich --missing-pdf`
+  and `--repair-pdf` require `--email` or `UNPAYWALL_EMAIL` up front instead
+  of succeeding with every candidate skipped.
+
+- **Local reads refuse requests the mirror cannot answer.** Item listings
+  with `--since-version` or `--format` exit 9 under local reads or fallback
+  instead of returning an unfiltered mirror dump. Unsynced tags and trash
+  now exit 9 rather than 5. `library prisma` requires a completed items pass,
+  and `search --fulltext` requires a completed full-text pass (exit 9);
+  partially stored text from an interrupted first pass is not a ready index.
+  The MCP search tool enforces the same full-text prerequisite.
+
+- **Freshness reflects completed passes, not page progress.**
+  `last_synced_at` advances only when a resource pass finishes. A failed or
+  interrupted incremental pass keeps the previous completion time.
+  `library health --require-fresh` treats a timestamp more than five minutes
+  in the future as stale (exit 12), and `doctor` reports the clock problem
+  instead of calling the mirror fresh.
+
+- **Destructive workflow steps require approval on the invocation.**
+  A step's `--allow-destructive` no longer grants consent by itself.
+  `workflow run --yes` also needs `--allow-destructive` when a step declares
+  it; otherwise the runner exits 9 before running any step. MCP
+  `workflow_submit` needs top-level `allow-destructive: true` alongside
+  `yes`. Triggered workflows require the same consent on `watch` or `tail`.
+  Previews identify destructive steps and show their plans.
+
+- **`journal undo` refuses a second undo of the same run.** The journal
+  records which run an undo reverses before its first write. A later attempt
+  exits 9, including after an interrupted undo; inspect that undo run before
+  recovery. This prevents a repeated undo from overwriting later changes.
+
+- **Import and vault JSON reports have corrected contracts.**
+  `import <resource>` applies now use the standard mutation envelope,
+  including `journal.run_id`, instead of the separate
+  `{mode,succeeded,failed,skipped,failures}` object. Vault sync/push/pull
+  reports retain their own shape but add `preview`: it is true whenever the
+  command previews. `dry_run` is true only for an explicit `--dry-run`,
+  not merely because `--yes` is absent.
+
+- **The demo uses valid Zotero keys.** Item and collection keys now follow
+  the same eight-character alphabet as real libraries, so key-taking commands
+  accept them. Scripts that name old demo keys must use the new keys;
+  recreate an existing demo with `demo --reset`.
+
+- **`--quiet` suppresses output on more commands.** This includes `search`,
+  `items top`, `auth status`, `auth logout` previews and applies, `version`,
+  and `profile list`, including JSON output when piped. Exit status still
+  reports failure. Scripts that need the result must omit `--quiet`.
+
 ### Changed
 
 - **`items delete` and `items restore` take many keys.** Both accept
@@ -85,6 +171,106 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   A trash run is undone by a version-guarded restore, and a restore run by a
   trash. An item already restored or gone is a no-op with a reason. Permanent
   deletes and merges are still refused. Older journal entries become undoable.
+
+- **`watch` and `tail --follow` release the writer lock between cycles.**
+  A running watcher no longer blocks unrelated syncs and applies while idle.
+  Each cycle or poll still holds the installation lock while it writes.
+  `tail --follow` reports a failed poll, delivery, or workflow and retries
+  on a later poll without advancing the cursor; one-shot `tail` still fails.
+
+- **Mutation previews show what an overwrite or deletion affects.**
+  `items update --tags/--collections` shows the previous lists as well as
+  their replacements and captures them for undo. Permanent item deletion
+  previews include the title and child count. Collection deletion previews
+  include the name, item count, and subcollection count.
+
+### Fixed
+
+- **Resumed and full syncs keep the mirror consistent with a moving library.**
+  Incremental resume no longer reuses an offset against a listing that may
+  have shrunk. A full sync checks listing stability before sweeping missing
+  rows, so an edit during the walk cannot make it reap a live item and its
+  pending-write marker. A completed full pass can reset a checkpoint when
+  the desktop's library version moves backward. Live read caching also
+  honors permanent-deletion markers instead of resurrecting deleted items.
+
+- **Full-text sync saves progress in bounded chunks.** `sync --fulltext`
+  persists fetched documents in chunks of up to 50 instead of buffering the
+  entire corpus. It keeps successful fetches across cancellation or failures.
+  An incremental retry skips documents already stored at the listed version
+  from the same source; `--full` still fetches every document. The pass
+  checkpoint advances only after completion, including a successful empty
+  pass.
+
+- **Creates and imports preserve evidence across lost responses and retries.**
+  Single-item Web creates use stable write tokens. Unknown Web and connector
+  outcomes retain their evidence in the journal instead of looking like
+  clean failures that are safe to repeat. Connector file imports keep their
+  replay guard until journal publication and output finish, and stored
+  connector imports save intent before creating parents. PDF imports and
+  failed stored uploads retain uncertain or committed outcomes and recovery
+  guidance. A completing attachment retry also reaps abandoned temporary
+  parents from earlier attempts.
+
+- **Batch cancellation keeps the outcomes of writes already sent.**
+  Tag batches, collection creates, and file imports record confirmed and
+  uncertain outcomes for dispatched records instead of relabeling them
+  `not_attempted`. Unknown PATCH and batch outcomes remain in the journal,
+  and undo reports uncertainty instead of silently omitting those writes.
+  Web file imports record real Zotero keys, enabling mirror updates and undo.
+  Connector creates invalidate the response cache so subsequent live reads
+  can see the new items.
+
+- **Vault round-trips preserve concurrent edits and recover their own writes.**
+  `vault pull` checks the file again after network reads and refuses to
+  overwrite a changed notes region. `vault push` finds an existing managed
+  child after a lost binding instead of creating another one. Saved write
+  intent lets a later push recognize its own completed PATCH after a lost
+  baseline, without treating it as an unrelated remote conflict.
+
+- **Workflow checkpoints and tail delivery survive interrupted writes.**
+  Workflow checkpoints sync the containing directory after publishing the
+  file where the platform supports it. File delivery in `tail` syncs appended
+  data before advancing the cursor and rolls back a partial append before
+  retry. `watch --workflow-on-change` reports a failed pre-cycle marker write
+  instead of silently skipping the sync.
+
+- **Authentication reports name the actual credential source.**
+  `auth status` and `doctor` identify `credentials.toml` when it supplies
+  the key rather than pointing at `config.toml`. Changing or clearing a key
+  clears the cached user ID, so later writes cannot target the previous
+  account. Malformed legacy configuration now raises an error instead of
+  falling back to defaults that a later save could make permanent.
+
+- **Provider failures no longer turn into empty or fabricated metadata.**
+  Citation discovery and `collections gaps` retain a COCI error when the
+  fallback provider returns no DOI references. `import url` rejects HTTP
+  failures even with a non-HTML response and preserves DNS timeout errors
+  instead of creating a bare fallback webpage. PDF enrichment also preserves
+  URL-validation failures.
+
+- **MCP workflow submission preserves temporary paths.** Paths with spaces
+  or Windows backslashes no longer pass through shell-style argument
+  splitting. Web bibliography and styled citation reads honor command
+  cancellation and deadlines. The MCP HTTP bearer check rejects an empty
+  configured token.
+
+- **Command diagnostics keep useful details without corrupting output.**
+  `attachments add --mode` sends its deprecation notice to stderr, honors
+  `--quiet`, and leaves JSON results and error envelopes intact. Key errors
+  explain the valid alphabet and length; file import errors name an unknown
+  extension. Error redaction preserves `itemKey` query values while still
+  hiding credentials. `creators rename` explains an unmatched source name,
+  and repeated preprint fixes do not append the same Extra provenance line.
+
+- **Guides and generated references describe the current command contracts.**
+  Capability tables include route-specific prerequisites, including the
+  Web API key required by connector attachment uploads. The guides correct
+  preview exceptions, report shapes, credential storage, bibliography and
+  item-template authentication, stored-upload gates, and delivery during
+  dry runs. They also document MCP HTTP authentication and resource
+  templates, citation discovery and monitoring, `vault audit`, and current
+  deletion-marker and batch-write decisions.
 
 ## [0.30.0] — 2026-10-22
 

@@ -54,6 +54,13 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					return configErr(err)
 				}
 			}
+			if flags.quiet {
+				if !authed && !optional {
+					return authErr(fmt.Errorf("no credentials configured"))
+				}
+				return nil
+			}
+
 			if flags.asJSON {
 				out := map[string]any{
 					"authenticated": authed,
@@ -249,6 +256,9 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 
 			// Preview by default; --yes applies. --dry-run always previews.
 			if !flags.yes || flags.dryRun {
+				if flags.quiet {
+					return nil
+				}
 				credentialsPath, err := cliutil.CredentialsFilePath()
 				if err != nil {
 					return configErr(fmt.Errorf("resolving credentials path: %w", err))
@@ -271,6 +281,9 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
+			}
+			if flags.quiet {
+				return nil
 			}
 
 			// ZOTERO_API_KEY is the only env var that can keep supplying a

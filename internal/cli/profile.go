@@ -463,6 +463,9 @@ func newProfileListCmd(flags *rootFlags) *cobra.Command {
 				names = append(names, n)
 			}
 			sort.Strings(names)
+			if flags.quiet {
+				return nil
+			}
 			if flags.asJSON {
 				out := make([]map[string]any, 0, len(names))
 				for _, n := range names {

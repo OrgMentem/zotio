@@ -212,6 +212,9 @@ func TestSyncFullIncompleteExitsNonZeroWithSuccessfulResource(t *testing.T) {
 				switch r.URL.Path {
 				case "/users/0/items":
 					_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
+				case "/users/0/items/trash":
+					w.Header().Set("Total-Results", "0")
+					_, _ = w.Write([]byte(`[]`))
 				case "/users/0/collections":
 					http.Error(w, row.collectionsBody, row.collectionsStatus)
 				default:

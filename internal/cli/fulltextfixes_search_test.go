@@ -50,6 +50,10 @@ func sliceSearchSeedFulltext(t *testing.T, dbPath, attachmentKey, content string
 		_ = db.Close()
 		t.Fatalf("seed full text: %v", err)
 	}
+	if err := db.SaveSyncState("fulltext", "", 1); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed fulltext completion: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
