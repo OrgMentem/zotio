@@ -1,11 +1,15 @@
 ---
 name: release-recovery-no-tag-recreate
 description: "Never recreate a tag or delete/recreate a GitHub release to recover a failed publish — re-run the failed job instead"
+# Match only the destructive forms, each flag as a whole word: a bare '-d' or
+# '-f' anywhere on the line also matched the text of a tag message ("-26
+# defect", "--dry-run") and blocked creating a new tag. Test every pattern:
+# omp ttsr test --rule <file> --source tool --tool bash '{"command":"..."}'
 condition:
-  - 'git tag[^\n]*-d[^\n]*v[0-9]'
-  - 'git push[^\n]*(--delete|:refs/tags)'
-  - 'gh release delete'
-  - 'git tag[^\n]*-f[^\n]*v[0-9]'
+  - 'git(?:\s+-C\s+\S+)?\s+tag\s+(?:[^\n]*\s)?(?:-d|-f|--delete|--force)(?=\s|$)'
+  - 'git(?:\s+-C\s+\S+)?\s+push(?:\s[^\n]*)?(?:\s--delete(?=\s|$)|\s-d(?=\s|$)|\s:refs/tags/|\s\+refs/tags/)'
+  - 'git(?:\s+-C\s+\S+)?\s+push(?:\s[^\n]*)?\s(?:--force(?:-with-lease)?|-f)(?=\s|$)[^\n]*\bv[0-9]'
+  - 'gh\s+release\s+delete\b'
 scope: ["tool:bash"]
 interruptMode: always
 ---

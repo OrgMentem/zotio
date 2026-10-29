@@ -1,14 +1,18 @@
 ---
 name: release-tag-requires-green-ci
 description: "A release tag must point at a commit whose ci workflow is already green, validated by make ci and a real-library smoke run — release re-runs none of those gates"
+# Fires on creating the local annotated tag, which stays reversible, and does
+# not interrupt: the checklist arrives as a reminder after the tag command and
+# before the separate push that publishes. A reminder on the push itself would
+# arrive only after publication, so the push is deliberately not matched.
 condition:
-  - 'git tag -a[^\n]*v[0-9]+\.[0-9]'
-  - 'git push[^\n]*origin[^\n]*v[0-9]+\.[0-9]'
+  - 'git(?:\s+-C\s+\S+)?\s+tag\s+(?:[^\n]*\s)?-a\s[^\n]*\bv[0-9]+\.[0-9]'
+  - 'git(?:\s+-C\s+\S+)?\s+tag\s+(?:[^\n]*\s)?v[0-9]+\.[0-9][^\n]*\s-a(?=\s|$)'
 scope: ["tool:bash"]
-interruptMode: always
+interruptMode: never
 ---
 
-**Tagging is publication.** Pushing a `vX.Y.Z` tag runs GoReleaser and publishes in one pass: GitHub release, Homebrew tap, Scoop bucket, WinGet PR, then the Official MCP Registry. Confirm all three gates below first.
+**Tagging is publication.** Pushing a `vX.Y.Z` tag runs GoReleaser and publishes in one pass: GitHub release, Homebrew tap, Scoop bucket, WinGet PR, then the Official MCP Registry. Create the tag and push it in **separate** commands, and confirm all three gates below before the push. If a gate fails, do not push: report it, and leave deleting the unpushed local tag to the operator (`release-recovery-no-tag-recreate` guards every tag deletion).
 
 1. **CI must already be green on that exact commit.** `release` does **not** re-run `tidy` / `docs-drift` / `format` / `lint` / `test`, so a `go mod tidy` drift or a lint failure sails straight into a tagged release. That happened on v0.6.0 — the tag pointed at a commit with an untidy `go.mod`.
 2. **Run `make ci` locally** — the same gates, job for job, ~2.5 minutes, including `-race` and the six-target cross-build. Neither is in `make test`. v0.19.0 was pushed green locally and failed CI three times: a data race two new tests had just introduced, a Linux-only discovery bug macOS structurally cannot reach, and a test that only runs when Zotero is not holding `:23119`.
