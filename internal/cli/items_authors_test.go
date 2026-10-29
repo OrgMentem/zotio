@@ -75,9 +75,9 @@ func TestQueryItemAuthorsCountsDistinctFilteredItems(t *testing.T) {
 
 	run := func(t *testing.T, creatorType, collection string, top int) []itemAuthorRow {
 		t.Helper()
-		rows, err := queryItemAuthors(db, creatorType, collection, top)
+		rows, err := queryItemAuthorsScoped(db, creatorType, collection, scopeSelection{}, top)
 		if err != nil {
-			t.Fatalf("queryItemAuthors(type=%q, collection=%q, top=%d): %v", creatorType, collection, top, err)
+			t.Fatalf("queryItemAuthorsScoped(type=%q, collection=%q, top=%d): %v", creatorType, collection, top, err)
 		}
 		out, err := normalizeItemAuthorRows(rows)
 		if err != nil {
@@ -265,7 +265,7 @@ func TestQueryItemAuthorsTrimsNonSpaceWhitespace(t *testing.T) {
 	}
 	db := seedStoreWithItems(t, items)
 
-	rows, err := queryItemAuthors(db, "", "", 0)
+	rows, err := queryItemAuthorsScoped(db, "", "", scopeSelection{}, 0)
 	if err != nil {
 		t.Fatalf("queryItemAuthors: %v", err)
 	}

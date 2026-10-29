@@ -82,19 +82,16 @@ func newItemsAuthorsCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// queryItemAuthors trims inside SQL on purpose: the trimmed name fields are the
-// GROUP BY key, so trimming after the scan would keep the grouping on untrimmed
-// text and split "Curie" from "\tCurie" into two creators with separate counts.
-// SQL therefore owns the normalization for this path; see sqlWhitespaceCharSet
-// for why the character set is spelled out.
-func queryItemAuthors(db localQueryStore, creatorType, collectionKey string, top int) ([]map[string]any, error) {
-	return queryItemAuthorsScoped(db, creatorType, collectionKey, scopeSelection{}, top)
-}
-
 // queryItemAuthorsScoped narrows the creator count to a resolved --scope
 // cohort inside SQL, so the LIMIT still applies to creators rather than to
 // items. The cohort travels as one JSON array parameter: a cohort has no size
 // ceiling, while SQLite's bound-variable count does.
+//
+// It trims inside SQL on purpose: the trimmed name fields are the GROUP BY
+// key, so trimming after the scan would keep the grouping on untrimmed text and
+// split "Curie" from "\tCurie" into two creators with separate counts. SQL
+// therefore owns the normalization for this path; see sqlWhitespaceCharSet for
+// why the character set is spelled out.
 func queryItemAuthorsScoped(db localQueryStore, creatorType, collectionKey string, sel scopeSelection, top int) ([]map[string]any, error) {
 	query := `
 SELECT
