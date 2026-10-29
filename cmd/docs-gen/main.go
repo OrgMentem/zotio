@@ -135,10 +135,10 @@ func writeCommand(b *bytes.Buffer, c *cobra.Command, level int) {
 	fmt.Fprintf(b, "%s `%s`\n\n", hashes, c.CommandPath())
 
 	if s := strings.TrimSpace(c.Short); s != "" {
-		fmt.Fprintf(b, "%s\n\n", s)
+		fmt.Fprintf(b, "%s\n\n", escapeProseHTML(s))
 	}
 	if long := strings.TrimSpace(c.Long); long != "" && long != strings.TrimSpace(c.Short) {
-		fmt.Fprintf(b, "%s\n\n", long)
+		fmt.Fprintf(b, "%s\n\n", escapeProseHTML(long))
 	}
 
 	fmt.Fprintf(b, "```\n%s\n```\n\n", strings.TrimSpace(c.UseLine()))
@@ -190,7 +190,7 @@ func flagRows(fs *pflag.FlagSet) []flagRow {
 			name:  name,
 			typ:   f.Value.Type(),
 			def:   f.DefValue,
-			usage: strings.ReplaceAll(f.Usage, "|", "\\|"),
+			usage: escapeProseHTML(strings.ReplaceAll(f.Usage, "|", "\\|")),
 		})
 	})
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
@@ -207,6 +207,35 @@ func writeFlagTable(b *bytes.Buffer, rows []flagRow) {
 		}
 		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s |\n", r.name, r.typ, def, r.usage)
 	}
+}
+
+// escapeProseHTML escapes '<' and '>' outside backtick code spans. Help text is
+// plain text full of placeholders such as <key> and <output>; written raw, the
+// Markdown renderer reads them as HTML tags, and an unclosed one at the start
+// of a line swallows every later section of the page. Inside a code span the
+// renderer already shows them literally, so an entity there would print as
+// "&lt;".
+func escapeProseHTML(s string) string {
+	if !strings.ContainsAny(s, "<>") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	inCode := false
+	for _, r := range s {
+		switch {
+		case r == '`':
+			inCode = !inCode
+			b.WriteRune(r)
+		case r == '<' && !inCode:
+			b.WriteString("&lt;")
+		case r == '>' && !inCode:
+			b.WriteString("&gt;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // ---- capabilities ---------------------------------------------------------

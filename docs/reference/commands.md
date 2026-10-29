@@ -49,7 +49,7 @@ These flags are available on every command.
 | `--continue-on-error` | `bool` | `false` | On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first |
 | `--csv` | `bool` | `false` | Output as CSV (table and array responses) |
 | `--data-source` | `string` | `auto` | Data source for read commands: auto (live with local fallback), live (API only), local (synced data only) |
-| `--deliver` | `string` |  | Also write output to a sink (output still goes to stdout): file:<path> or webhook:<url>; stdout is the default |
+| `--deliver` | `string` |  | Also write output to a sink (output still goes to stdout): file:&lt;path&gt; or webhook:&lt;url&gt;; stdout is the default |
 | `--dry-run` | `bool` | `false` | Preview writes without sending them; read requests still run |
 | `--group` | `string` |  | Operate on a Zotero group library by numeric group ID, or 'all' to fan one read/diagnostic out across the personal library and every accessible group (default: personal library) |
 | `--human-friendly` | `bool` | `false` | Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win) |
@@ -418,9 +418,9 @@ Manage collections in your Zotero library.
 
 This group covers the collections themselves (create, update, move, delete,
 list, export); it does not add items to a collection. To add an item, use
-'zotio items move --to <collectionKey>' (by key, also --from and --keys-from
-for many items at once) or 'zotio items add-to-collection <itemKey>
---collection-name <name>' (by name, creating the collection if it does not
+'zotio items move --to &lt;collectionKey&gt;' (by key, also --from and --keys-from
+for many items at once) or 'zotio items add-to-collection &lt;itemKey&gt;
+--collection-name &lt;name&gt;' (by name, creating the collection if it does not
 exist yet).
 
 ```
@@ -876,7 +876,7 @@ Two signals, reported separately:
                        profile lock (.parentlock via fcntl on macOS and Linux,
                        parent.lock opened exclusively on Windows), or the
                        connector answered.
-  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+  connector_reachable  GET &lt;connector&gt;/ping answered 200 within 3s during this
                        check. Imports and every other connector write need
                        this.
 
@@ -896,8 +896,8 @@ state:
                  open but not responding.
   connector_off  the lock is older than the startup window and nothing
                  listens on the connector port (every address refused
-                 repeated connects): the connector is disabled (Settings ->
-                 Advanced -> "Allow other applications to communicate with
+                 repeated connects): the connector is disabled (Settings -&gt;
+                 Advanced -&gt; "Allow other applications to communicate with
                  Zotero") or on another port.
   stopped        neither signal holds.
 
@@ -946,7 +946,7 @@ Two signals, reported separately:
                        profile lock (.parentlock via fcntl on macOS and Linux,
                        parent.lock opened exclusively on Windows), or the
                        connector answered.
-  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+  connector_reachable  GET &lt;connector&gt;/ping answered 200 within 3s during this
                        check. Imports and every other connector write need
                        this.
 
@@ -966,8 +966,8 @@ state:
                  open but not responding.
   connector_off  the lock is older than the startup window and nothing
                  listens on the connector port (every address refused
-                 repeated connects): the connector is disabled (Settings ->
-                 Advanced -> "Allow other applications to communicate with
+                 repeated connects): the connector is disabled (Settings -&gt;
+                 Advanced -&gt; "Allow other applications to communicate with
                  Zotero") or on another port.
   stopped        neither signal holds.
 
@@ -1071,16 +1071,16 @@ Examples:
 Reproducible, resumable paginated export with a content manifest
 
 Export every page of a library, collection, or tag scope as JSONL, BibTeX,
-RIS, or CSL-JSON. A sidecar manifest (<output>.manifest.json) records each
+RIS, or CSL-JSON. A sidecar manifest (&lt;output&gt;.manifest.json) records each
 item's key, version, and canonical data hash for drift detection. An
-interrupted run continues with --resume using <output>.checkpoint.json.
+interrupted run continues with --resume using &lt;output&gt;.checkpoint.json.
 Translator formats need Zotero to return the requested include field.
 
 Scope uses the shared --scope grammar: library (default), collection:KEY,
 tag:NAME, or collection:KEY AND tag:NAME. The data file and the manifest are
 each published atomically (a temporary file renamed into place), so a failed
 run keeps the previous snapshot. A JSONL run keeps its in-progress data in
-<output>.partial until it finishes.
+&lt;output&gt;.partial until it finishes.
 
 ```
 zotio export snapshot [scope] [flags]
@@ -1102,7 +1102,7 @@ zotio export snapshot --output backup.jsonl
 | `--limit` | `int` | `0` | Maximum items to export (0 = no limit) |
 | `--page-size` | `int` | `100` | Items per API page (1-100) |
 | `--resume` | `bool` | `false` | Resume an interrupted snapshot from its checkpoint sidecar |
-| `-o, --output` | `string` |  | Output data file (required); the manifest is written to <output>.manifest.json |
+| `-o, --output` | `string` |  | Output data file (required); the manifest is written to &lt;output&gt;.manifest.json |
 
 #### `zotio export snapshot verify`
 
@@ -1152,7 +1152,7 @@ best-effort: a failure is a warning and the command exits 0. Results
 and errors name only the endpoint's scheme and host.
 
 Write what surprised you or tripped you up, not a bug report. The
-loop is: agent notices friction -> one invocation -> captured -> the
+loop is: agent notices friction -&gt; one invocation -&gt; captured -&gt; the
 maintainer sees it.
 
 ```
@@ -1485,8 +1485,8 @@ completed run is journaled and rendered. An interrupted or uncertain import
 refuses another save. Check the library and reconcile the earlier session
 before removing the guard file named in the refusal.
 
---to <key> files the created item into the collection with that key after import.
---collection-name <name> does the same by exact name, creating the collection
+--to &lt;key&gt; files the created item into the collection with that key after import.
+--collection-name &lt;name&gt; does the same by exact name, creating the collection
 when it does not exist (like 'items add-to-collection'). Pass at most one. This
 is a separate step, not part of the connector call: the saveStandaloneAttachment
 endpoint saves into whatever the desktop pane currently targets and accepts no
@@ -1562,7 +1562,7 @@ file's embedded metadata) and reports:
 
   duplicate         the DOI already belongs to an item in your library
   attach_candidate  matches an item you have that is missing its PDF
-  new               not in your library (use 'import doi <DOI>' to add it)
+  new               not in your library (use 'import doi &lt;DOI&gt;' to add it)
   unidentified      no DOI found (rename the file with its DOI, or add it in Zotero)
 
 This complements Zotero's "Retrieve Metadata for PDF": it makes the library-aware
@@ -1679,7 +1679,7 @@ collection when no collection of that name exists.
 
 Prefer this when you know the collection by name. When you already have the
 collection key, or need to move many items at once or remove a membership, use
-'zotio items move --to <collectionKey>' (also --from, --keys-from); this command
+'zotio items move --to &lt;collectionKey&gt;' (also --from, --keys-from); this command
 resolves the name and then applies the same membership change.
 
 The plan holds two operations when the collection has to be created -- a
@@ -1985,7 +1985,7 @@ Resolve duplicate items by merging metadata onto a master and trashing duplicate
 Resolve duplicate items by merging metadata onto a master and trashing duplicates.
 
 By default, resolve only matches duplicate DOI groups. Items share a DOI when
-their DOI fields name the same 10.<registrant>/<suffix>, ignoring case and a
+their DOI fields name the same 10.&lt;registrant&gt;/&lt;suffix&gt;, ignoring case and a
 doi: or doi.org wrapper; other text repeated in the DOI field, such as an item
 type or a date, never groups items. A shared DOI is merged only when every item
 carrying it has the same title (ignoring case, spacing and punctuation
@@ -2034,12 +2034,12 @@ Work queues come from the same checks as 'items audit':
                       them and the item's copy is blank. A blank volume is only
                       a defect if the venue actually has one, so those fields
                       are reported by --validate, not by 'library health'.
-  --missing-subjects  propose OpenAlex subject terms as automatic "concept/<term>"
+  --missing-subjects  propose OpenAlex subject terms as automatic "concept/&lt;term&gt;"
                       tags for untagged items (requires DOI). Only concepts
                       OpenAlex scores at or above 0.50 are proposed, the
                       strongest six at most, so an untagged library becomes
                       facetable without burying the operator's own tags.
-  --missing-mesh      propose PubMed MeSH descriptors as automatic "mesh/<descriptor>"
+  --missing-mesh      propose PubMed MeSH descriptors as automatic "mesh/&lt;descriptor&gt;"
                       tags for items with a PMID (the PMID field or an Extra
                       "PMID:" line) or a DOI that PubMed knows. The PMID is read
                       from the item; a DOI is resolved through PubMed ESearch.
@@ -2057,7 +2057,7 @@ PDF attachment modes:
 
 Downloaded PDFs accept application/pdf, application/octet-stream, or an absent
 Content-Type, then must pass a %PDF- magic check. Stored (imported-file)
-retro-attachment is handled by 'zotio attachments add <item-key> <file>', which
+retro-attachment is handled by 'zotio attachments add &lt;item-key&gt; &lt;file&gt;', which
 uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
@@ -2083,9 +2083,9 @@ zotio items enrich [flags]
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
 | `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
-| `--missing-mesh` | `bool` | `false` | Propose PubMed MeSH descriptors as automatic mesh/<descriptor> tags for items with a PMID or DOI that carry no mesh/ tag yet |
+| `--missing-mesh` | `bool` | `false` | Propose PubMed MeSH descriptors as automatic mesh/&lt;descriptor&gt; tags for items with a PMID or DOI that carry no mesh/ tag yet |
 | `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
-| `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic concept/<term> tags for untagged items (uses the item's DOI) |
+| `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic concept/&lt;term&gt; tags for untagged items (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
@@ -2098,7 +2098,7 @@ zotio items enrich [flags]
 Resolve the on-disk path (file:// URL) of an item's attachment
 
 Return the local filesystem location of an item's attachment via the Zotero
-local API (/items/<key>/file/view/url). Accepts an attachment key directly, or a
+local API (/items/&lt;key&gt;/file/view/url). Accepts an attachment key directly, or a
 regular item key whose PDF attachment is resolved automatically through its child
 items.
 
@@ -2235,7 +2235,7 @@ Accepts many item keys, or --keys-from to read them from a file or stdin.
 
 To file an item into a collection you know by name rather than by key (creating
 the collection when it does not exist), use 'zotio items add-to-collection
-<itemKey> --collection-name <name>'. That command resolves the name to a key and
+&lt;itemKey&gt; --collection-name &lt;name&gt;'. That command resolves the name to a key and
 then delegates the membership change here, so guards and idempotency are shared.
 
 ```
@@ -2299,7 +2299,7 @@ launch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,
 rundll32 on Windows).
 
 The link targets the personal library by default, or a group library when the
-global --group <id> flag (or ZOTERO_GROUP) is set. With --agent/--json the
+global --group &lt;id&gt; flag (or ZOTERO_GROUP) is set. With --agent/--json the
 command emits {uri, target_type, library_scope, launched}.
 
 ```
@@ -2739,7 +2739,7 @@ What it reverses:
 What it refuses, and reports in "refused": field overwrites with no captured
 previous value, merges, permanent deletes, renames that replace one tag or collection
 with another, and creates whose Zotero key was not recorded. A refusal changes
-nothing, so review the entry with "journal show <run-id>" before you rely on a
+nothing, so review the entry with "journal show &lt;run-id&gt;" before you rely on a
 full reversal.
 
 Take the run-id from "journal list". A workflow ID is not a run-id: undo each
@@ -2867,13 +2867,13 @@ Named sets of flags saved for reuse
 Profiles capture a set of flag values under a name so a scheduled
 agent can invoke the same command with the same configuration each run.
 
-  profile save <name>         captures the current invocation's set flags
-  profile use <name>          prints the values (for inspection)
+  profile save &lt;name&gt;         captures the current invocation's set flags
+  profile use &lt;name&gt;          prints the values (for inspection)
   profile list                lists all saved profiles
-  profile show <name>         shows the values of one profile
-  profile delete <name>       removes a profile
+  profile show &lt;name&gt;         shows the values of one profile
+  profile delete &lt;name&gt;       removes a profile
 
-Use --profile <name> on any command to apply that profile's values.
+Use --profile &lt;name&gt; on any command to apply that profile's values.
 Explicit flags override profile values.
 
 ```
@@ -2918,7 +2918,7 @@ zotio profile list
 Save the current invocation's non-default flags as a named profile
 
 Captures every flag explicitly set on the invocation and stores
-them under <name>. To update an existing profile, run save again; the
+them under &lt;name&gt;. To update an existing profile, run save again; the
 entry is replaced, and the output says so ("replaced": true in JSON).
 
 Approval flags (--yes, --allow-destructive, --allow-zotero-cloud) are never
@@ -3543,11 +3543,11 @@ Tail streams live data changes by polling the API at configurable intervals.
 Events are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
 
-When --workflow <spec.json> is set, tail runs the workflow once after a poll
+When --workflow &lt;spec.json&gt; is set, tail runs the workflow once after a poll
 cycle that emits events. It previews unless this tail invocation carries --yes.
 Destructive steps also require --allow-destructive on this tail invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
-until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+until it is resumed or deleted with zotio workflow run &lt;spec&gt; --yes --resume.
 The cursor advances only after the triggered invocation returns, so a crash
 before or during the trigger replays the same batch on the next poll.
 
@@ -3591,7 +3591,7 @@ Examples:
 | `--follow` | `bool` | `true` | Keep running (set --follow=false for single poll) |
 | `--interval` | `duration` | `10s` | Poll interval |
 | `--resource` | `string` |  | Resource type to tail |
-| `--workflow` | `string` |  | Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume |
+| `--workflow` | `string` |  | Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run &lt;spec&gt; --yes --resume |
 
 ## `zotio vault`
 
@@ -3669,7 +3669,7 @@ zotio vault pull --dry-run
 Write each note's "## Notes" region back to a Zotero child note
 
 Push the user-owned Notes region of each vault note to a single managed Zotero
-child note (Obsidian -> Zotero). Reads stay local; writes go to the Web API (an
+child note (Obsidian -&gt; Zotero). Reads stay local; writes go to the Web API (an
 api_key must be configured). Idempotent and conflict-safe: a note is only written
 when its Notes region changed since the last push, the remote note body is checked
 first, and a divergent remote is never overwritten — a conflict artifact is
@@ -3806,11 +3806,11 @@ Each resource argument takes a name that sync --resources accepts, such as
 items or collections; with none, watch syncs the default set. An unknown name
 exits 2 before the first cycle.
 
-When --workflow <spec.json> is set, watch runs the workflow after every
+When --workflow &lt;spec.json&gt; is set, watch runs the workflow after every
 successful sync cycle. It previews unless this watch invocation carries --yes.
 Destructive steps also require --allow-destructive on this watch invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
-until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+until it is resumed or deleted with zotio workflow run &lt;spec&gt; --yes --resume.
 
 Add --workflow-on-change to run the workflow only after a cycle that changed
 the mirror: a row stored, rewritten with different content, or reaped because
@@ -3845,7 +3845,7 @@ zotio watch [resource...] [flags]
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
-| `--workflow` | `string` |  | Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume |
+| `--workflow` | `string` |  | Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run &lt;spec&gt; --yes --resume |
 | `--workflow-on-change` | `bool` | `false` | With --workflow: run it only after a complete sync cycle that stored, rewrote, or reaped mirror rows; unchanged cycles log a skip |
 
 ## `zotio which`
@@ -3941,7 +3941,7 @@ Pass --yes once to apply the whole workflow. A step may declare
 --allow-destructive, but apply also requires --allow-destructive on workflow run.
 The preview marks destructive steps and shows their plans.
 Each mutation gets its own journal run_id. All mutations share a workflow_run_id
-(zotio journal list --workflow <workflow-run-id>); undo each entry by its run_id.
+(zotio journal list --workflow &lt;workflow-run-id&gt;); undo each entry by its run_id.
 Steps apply in order. There is no rollback: if a step fails, earlier writes stay
 applied. The run stops at the first failed step unless the spec sets
 "continue_on_error". A failed or interrupted applied run keeps its checkpoint
