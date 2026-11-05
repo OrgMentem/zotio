@@ -204,7 +204,7 @@ outright. That cannot be undone by 'items restore' and requires --allow-destruct
 				ops = append(ops, op)
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.delete", ops)
-			if runErr != nil && applyErr != nil {
+			if runErr != nil && applyErr != nil && !isJournalBarrier(runErr) {
 				runErr = classifyAPIError(applyErr, flags)
 			}
 			if permanent && env.Mode == "preview" && !flags.quiet && wantsHumanTable(cmd.OutOrStdout(), flags) {

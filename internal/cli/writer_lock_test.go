@@ -544,6 +544,198 @@ func TestInstallationWriterLockReleasesWhenFlagValidationFails(t *testing.T) {
 	}
 }
 
+// Cobra also runs a leaf's PreRunE after every PersistentPreRunE and before
+// RunE, and returns from execute() when it fails — so the RunE wrapper that
+// normally releases the handed-off installation lock never runs. Unlike the
+// Validate* phases, this one cannot be pre-checked before acquiring (a leaf
+// PreRunE is not required to be pure), so the PreRunE wrapper must release it.
+// The lock must be free without waiting for a GC finalizer to close the flock's
+// descriptor: under zotio-mcp that wait is unbounded and wedges every later
+// writer command in the server.
+func TestInstallationWriterLockReleasesWhenLeafPreRunFails(t *testing.T) {
+	for _, shape := range []string{"PreRunE", "PreRun"} {
+		t.Run(shape, func(t *testing.T) {
+			home := useWriterLockTestHome(t)
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			flags := &rootFlags{configPath: configPath}
+			root := &cobra.Command{
+				Use:               "zotio",
+				PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+			}
+			ran := false
+			syncCmd := newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+				ran = true
+				return nil
+			})
+			preRan := false
+			leafErr := errors.New("leaf pre-run refused")
+			switch shape {
+			case "PreRunE":
+				syncCmd.PreRunE = func(*cobra.Command, []string) error {
+					preRan = true
+					return leafErr
+				}
+			case "PreRun":
+				// A non-error PreRun cannot fail, so it is the panic path that
+				// would strand the lock. Promotion to PreRunE must not swallow it.
+				syncCmd.PreRun = func(*cobra.Command, []string) {
+					preRan = true
+					panic(leafErr)
+				}
+			}
+			root.AddCommand(syncCmd)
+			installInstallationWriterLocks(root, flags)
+			root.SilenceErrors, root.SilenceUsage = true, true
+			root.SetArgs([]string{"sync"})
+
+			func() {
+				defer func() {
+					recovered := recover()
+					if recoveredErr, _ := recovered.(error); recovered != nil && !errors.Is(recoveredErr, leafErr) {
+						t.Fatalf("recovered = %v, want %v", recovered, leafErr)
+					}
+				}()
+				if err := root.ExecuteContext(context.Background()); !errors.Is(err, leafErr) {
+					t.Fatalf("execute error = %v, want %v", err, leafErr)
+				}
+			}()
+
+			if !preRan {
+				t.Fatal("leaf pre-run never ran, so the test proves nothing")
+			}
+			if ran {
+				t.Fatal("command body ran despite a failing leaf pre-run")
+			}
+			if !writerLockIsFree(t, filepath.Join(home, ".zotio", ".writer.lock")) {
+				t.Fatal("writer lock leaked after a leaf pre-run failure")
+			}
+		})
+	}
+}
+
+// The release above must be conditional: a leaf PreRunE that SUCCEEDS has to
+// leave the installation lock held, because RunE — the real transaction — has
+// not run yet.
+func TestInstallationWriterLockHeldThroughSuccessfulLeafPreRun(t *testing.T) {
+	home := useWriterLockTestHome(t)
+	lockPath := filepath.Join(home, ".zotio", ".writer.lock")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	flags := &rootFlags{configPath: configPath}
+	root := &cobra.Command{
+		Use:               "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	}
+	heldInBody := false
+	syncCmd := newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+		heldInBody = !writerLockIsFree(t, lockPath)
+		return nil
+	})
+	preRan := false
+	syncCmd.PreRunE = func(*cobra.Command, []string) error {
+		preRan = true
+		return nil
+	}
+	root.AddCommand(syncCmd)
+	installInstallationWriterLocks(root, flags)
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetArgs([]string{"sync"})
+
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !preRan {
+		t.Fatal("leaf pre-run never ran")
+	}
+	if !heldInBody {
+		t.Fatal("leaf pre-run released the installation lock before the command body ran")
+	}
+	if !writerLockIsFree(t, lockPath) {
+		t.Fatal("writer lock leaked after a successful command")
+	}
+}
+
+// Per-phase releases enumerate the phases Cobra runs between the acquire and
+// RunE. ExecuteRootInProcess is the backstop that does not: it releases a
+// handed-off ownership nothing else claimed, so the in-process MCP server never
+// depends on a GC finalizer to close the flock's descriptor.
+func TestExecuteRootInProcessReleasesStrandedWriterLock(t *testing.T) {
+	home := useWriterLockTestHome(t)
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	flags := &rootFlags{configPath: configPath}
+	root := &cobra.Command{
+		Use:               "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	}
+	syncCmd := newWriterLockTestSyncCmd(func(*cobra.Command, []string) error { return nil })
+	root.AddCommand(syncCmd)
+	installInstallationWriterLocks(root, flags)
+	// Installed after the wrappers on purpose: this stands in for any phase
+	// between the acquire and RunE that no wrapper covers.
+	strandErr := errors.New("unwrapped phase refused")
+	syncCmd.PreRunE = func(*cobra.Command, []string) error { return strandErr }
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetArgs([]string{"sync"})
+
+	if err := ExecuteRootInProcess(context.Background(), root); !errors.Is(err, strandErr) {
+		t.Fatalf("execute error = %v, want %v", err, strandErr)
+	}
+	if !writerLockIsFree(t, filepath.Join(home, ".zotio", ".writer.lock")) {
+		t.Fatal("writer lock leaked past the execution boundary")
+	}
+}
+
+// ADR-0005: no code path may release a lock it did not acquire. A nested
+// in-process execution reuses the installation lock its caller holds, so its
+// own boundary must leave that lock held for the rest of the outer transaction.
+func TestNestedExecuteRootInProcessKeepsOuterWriterLock(t *testing.T) {
+	home := useWriterLockTestHome(t)
+	lockPath := filepath.Join(home, ".zotio", ".writer.lock")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	outerFlags := &rootFlags{configPath: configPath}
+	outer := &cobra.Command{
+		Use:               "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	}
+	innerRan, heldAfterInner := false, false
+	outer.AddCommand(newWriterLockTestSyncCmd(func(cmd *cobra.Command, _ []string) error {
+		innerFlags := &rootFlags{configPath: configPath}
+		inner := &cobra.Command{
+			Use:               "zotio",
+			PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+		}
+		inner.AddCommand(newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+			innerRan = true
+			return nil
+		}))
+		installInstallationWriterLocks(inner, innerFlags)
+		inner.SilenceErrors, inner.SilenceUsage = true, true
+		inner.SetArgs([]string{"sync"})
+		// cmd.Context() carries the outer ownership, which is how a nested
+		// RootCmd invocation inherits it.
+		if err := ExecuteRootInProcess(cmd.Context(), inner); err != nil {
+			return err
+		}
+		heldAfterInner = !writerLockIsFree(t, lockPath)
+		return nil
+	}))
+	installInstallationWriterLocks(outer, outerFlags)
+	outer.SilenceErrors, outer.SilenceUsage = true, true
+	outer.SetArgs([]string{"sync"})
+
+	if err := ExecuteRootInProcess(context.Background(), outer); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !innerRan {
+		t.Fatal("nested command body never ran")
+	}
+	if !heldAfterInner {
+		t.Fatal("nested execution released the installation lock its caller acquired")
+	}
+	if !writerLockIsFree(t, lockPath) {
+		t.Fatal("writer lock leaked after the outer command finished")
+	}
+}
+
 func TestWithPathWriterLockReleasesAfterPanic(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "writer.lock")
 	wantPanic := "transaction panicked"

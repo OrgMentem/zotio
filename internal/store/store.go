@@ -64,6 +64,12 @@ type Store struct {
 	// is one worker per resource (the len(resources)-sized work channel consumed
 	// by the newSyncCmd pool via runSyncWorker) — read-then-write sequences
 	// (e.g., GetSyncState → SaveSyncState) are race-free by construction within a resource.
+	//
+	// That argument does NOT extend across resources: concurrent workers do
+	// share rows (items and items-trash always pair, and each item write
+	// reconciles the opposite item state), so a read-then-write sequence whose
+	// result depends on no other writer landing in between must hold the lock
+	// across the whole sequence — see WithWriteLease.
 	writeMu sync.Mutex
 
 	upsertBatchHook func()
@@ -402,6 +408,55 @@ func (g *GuardedDB) PingContext(ctx context.Context) error {
 	return g.s.db.PingContext(ctx)
 }
 
+// writeLeaseKey carries an already-held writeMu lease on a specific Store.
+type writeLeaseKey struct{}
+
+// holdsWriteLease reports whether ctx carries a lease on this store's
+// writeMu, taken by WithWriteLease on the calling goroutine's behalf.
+func (s *Store) holdsWriteLease(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	holder, _ := ctx.Value(writeLeaseKey{}).(*Store)
+	return holder == s
+}
+
+// WithWriteLease runs fn holding the store's single-writer lock, so a caller
+// that must observe its own write — a read-before / write / read-after
+// sequence whose result is only meaningful if nothing else wrote in between —
+// is not interleaved with another in-process writer.
+//
+// Context-taking store writes called with the context fn receives see the
+// lease and reuse the held lock instead of deadlocking on it. The lease is
+// bound to this Store, so a write to any other Store still takes that store's
+// own lock. A write method that takes NO context cannot see the lease and must
+// not be called inside fn: it waits for the lock fn holds. That covers the
+// context-less wrappers (Upsert, UpsertBatch, UpsertMirroredWrite, ...) and
+// the methods that lock writeMu directly (RecordPendingWrite,
+// ExpirePendingWrites, ClearPendingWrite, ReapResource, ReapMirroredItem,
+// RestoreMirroredItem).
+//
+// fn must write on its own goroutine. A goroutine fn starts, or one that
+// outlives it, inherits the lease without the lock's protection and must not
+// write through the lease context.
+//
+// Reads stay lock-free and concurrent (ADR-0005): the lease serializes
+// writers only.
+func (s *Store) WithWriteLease(ctx context.Context, fn func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.holdsWriteLease(ctx) {
+		return fn(ctx)
+	}
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn(context.WithValue(ctx, writeLeaseKey{}, s))
+}
+
 // acquireWrite serializes writers honouring cancellation. A plain
 // writeMu.Lock ignores the context, so a cancelled sync stuck behind a slow
 // writer would wait out the whole transaction; TryLock polling lets it fail
@@ -412,6 +467,11 @@ func (s *Store) acquireWrite(ctx context.Context) (release func(), err error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	// An enclosing WithWriteLease already holds writeMu for this goroutine;
+	// writeMu is not reentrant, so re-locking it here would deadlock.
+	if s.holdsWriteLease(ctx) {
+		return func() {}, nil
 	}
 	if s.writeMu.TryLock() {
 		return s.writeMu.Unlock, nil

@@ -362,3 +362,133 @@ func TestRunApplyAppliedWithReasonRemainsApplied(t *testing.T) {
 		t.Fatal("reason is nil, want partial-success reason preserved")
 	}
 }
+
+// A caller whose durable record of a landed write failed stops the run before
+// the next op's side effect. --continue-on-error does not soften that: the flag
+// tolerates a failed write, not an unrecorded one that landed.
+func TestRunObservedObserverErrorStopsBeforeNextOp(t *testing.T) {
+	var applied []string
+	apply := func(key string) func() (string, any, error) {
+		return func() (string, any, error) {
+			applied = append(applied, key)
+			return "applied", nil, nil
+		}
+	}
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: apply("K1")},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: apply("K2")},
+		{ID: "op3", Key: "K3", Kind: "test", Changes: []Change{{Field: "title", Add: "C"}}, Apply: apply("K3")},
+	}
+	recordErr := errors.New("journal disk full")
+	calls := 0
+	env, err := RunObserved(Options{Yes: true, MaxChanges: -1, ContinueOnError: true}, "test", ops, func(op Op, item ResultItem) error {
+		calls++
+		return recordErr
+	})
+	if !errors.Is(err, recordErr) {
+		t.Fatalf("err = %v, want the observer's own error", err)
+	}
+	if len(applied) != 1 || applied[0] != "K1" {
+		t.Fatalf("applied %v, want only the first op's write", applied)
+	}
+	if calls != 1 {
+		t.Fatalf("observer called %d time(s), want 1 (the run stops at the first failure)", calls)
+	}
+	if env.OK {
+		t.Fatalf("env.OK = true, want false for a run stopped with an unrecorded write")
+	}
+	if env.Result.Summary.Applied != 1 || env.Result.Summary.NotAttempted != 2 {
+		t.Fatalf("summary = %+v, want 1 applied and 2 not attempted", env.Result.Summary)
+	}
+	if env.Result.Items[0].Key != "K1" || env.Result.Items[0].Status != "applied" {
+		t.Fatalf("first item = %+v, want the landed write named", env.Result.Items[0])
+	}
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "op1") || !strings.Contains(env.Warnings[0], "1 operation(s) landed") {
+		t.Fatalf("warnings = %v, want one naming the op it stopped after and what landed", env.Warnings)
+	}
+}
+
+// An observer failure with no later write left to hold back stopped nothing:
+// the run's outcome stands and the failure is a warning. That covers the last
+// write, one followed only by planned no-ops (which write nothing and still
+// run), and a batch whose later writes were dispatched with the first, so they
+// landed and are still collected and observed.
+func TestRunObservedObserverErrorWithNothingToHoldBackIsAWarning(t *testing.T) {
+	applied := func() (string, any, error) { return "applied", nil, nil }
+	dispatched := func() bool { return true }
+	cases := []struct {
+		name         string
+		ops          []Op
+		wantApplied  int
+		wantNoOp     int
+		wantObserved int
+	}{
+		{name: "last write", wantApplied: 1, wantObserved: 1, ops: []Op{
+			{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: applied},
+		}},
+		{name: "followed by a planned no-op", wantApplied: 1, wantNoOp: 1, wantObserved: 1, ops: []Op{
+			{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: applied},
+			{ID: "op2", Key: "K2", Kind: "test"},
+		}},
+		{name: "later writes already dispatched", wantApplied: 2, wantObserved: 2, ops: []Op{
+			{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: applied},
+			{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: applied, Dispatched: dispatched},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var observed []string
+			env, err := RunObserved(Options{Yes: true, MaxChanges: -1}, "test", tc.ops, func(op Op, _ ResultItem) error {
+				observed = append(observed, op.ID)
+				if op.ID == "op1" {
+					return errors.New("journal disk full")
+				}
+				return nil
+			})
+			if err != nil || !env.OK {
+				t.Fatalf("env.OK = %t, err = %v, want the run's own outcome (ok, no error)", env.OK, err)
+			}
+			if s := env.Result.Summary; s.Applied != tc.wantApplied || s.NoOp != tc.wantNoOp || s.NotAttempted != 0 {
+				t.Fatalf("summary = %+v, want %d applied, %d no-op, none held back", s, tc.wantApplied, tc.wantNoOp)
+			}
+			if len(observed) != tc.wantObserved {
+				t.Fatalf("observed %v, want %d landed op(s) observed", observed, tc.wantObserved)
+			}
+			if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "op1") || !strings.Contains(env.Warnings[0], "journal disk full") || !strings.Contains(env.Warnings[0], "no later write was held back") {
+				t.Fatalf("warnings = %v, want one naming the op and the record failure", env.Warnings)
+			}
+		})
+	}
+}
+
+// Cancellation before the first write leaves nothing half-done, so the engine
+// must not borrow the partial run's "mutation incomplete" wording: callers read
+// that as "part of the run applied" and go looking for writes to reconcile.
+func TestRunApplyCanceledBeforeFirstWriteSaysNothingLanded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	applied := 0
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			applied++
+			return "applied", nil, nil
+		}},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
+			applied++
+			return "applied", nil, nil
+		}},
+	}
+	env, err := Run(Options{Yes: true, MaxChanges: -1, Context: ctx}, "test", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want it to wrap context.Canceled", err)
+	}
+	if applied != 0 || env.Result.Summary.Applied != 0 || env.Result.Summary.NotAttempted != 2 {
+		t.Fatalf("applied=%d summary=%+v, want nothing applied and both ops not attempted", applied, env.Result.Summary)
+	}
+	if strings.Contains(err.Error(), "mutation incomplete") {
+		t.Fatalf("err = %q, want it not to claim an incomplete (part-applied) run", err)
+	}
+	if !strings.Contains(err.Error(), "before any write landed") {
+		t.Fatalf("err = %q, want it to say no write landed", err)
+	}
+}

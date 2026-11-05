@@ -333,7 +333,7 @@ Join arms with ` AND ` (capital letters, a space on each side) to select only th
 | 4 | Authentication required |
 | 5 | API error (upstream issue) |
 | 7 | Rate limited (wait and retry) |
-| 9 | Precondition unmet: unsynced store, Zotero or the Web API unreachable when required, or a writer lock is held |
+| 9 | Precondition unmet: unsynced store, Zotero or the Web API unreachable when required, a writer lock is held, or the journal could not record a write that landed (the run held back its later writes; the writes it lists as applied landed, so read them before retrying) |
 | 10 | Config error |
 | 11 | Quality gate failed (`--fail-on` on `library health`, `items bibcheck`, `doctor`; `items bibcheck --fail-on-unknown`) |
 | 12 | Stale data (`--require-fresh`) |

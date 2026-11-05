@@ -207,8 +207,9 @@ func runTagsMutationForKeys(cmd *cobra.Command, flags *rootFlags, operation, kin
 	// cannot express. It must win over runErr, because the same request failure
 	// also marks its items failed and therefore always makes runErr non-nil.
 	// Per-object rejections never enter updater.Err(), so their own conflict or
-	// failed status still uses the engine's exit contract.
-	if updater != nil {
+	// failed status still uses the engine's exit contract. The journal barrier
+	// is not generic: it outranks an earlier chunk's request failure.
+	if updater != nil && !isJournalBarrier(runErr) {
 		if batchErr := updater.Err(); batchErr != nil {
 			// The mutation envelope already reports every item as failed, and
 			// renderMutationResult marks the error rendered so no second JSON

@@ -213,6 +213,10 @@ func TestExecuteDeliverIsOutputRoutingUnderDryRun(t *testing.T) {
 
 func executeRootForDeliverTest(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
+	// Execute installs the production mutation hooks, which are package
+	// globals; scope them to this test so later unit tests do not journal
+	// through hooks they never installed.
+	installOutcomeHooks(t)
 
 	oldArgs := os.Args
 	oldStdout := os.Stdout

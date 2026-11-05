@@ -173,8 +173,16 @@ type rootExecutionKey struct{}
 // a *rootFlags that only the tree's builder holds, so an in-process caller that
 // has nothing but the *cobra.Command cannot otherwise reach the deliver spool
 // its own arguments caused to be opened.
+// It also carries the installation writer-lock ownership that the root pre-run
+// acquired and handed to the command body, for the same reason: when Cobra
+// returns from execute() between the two (a failing leaf PreRunE, or any phase
+// no release wrapper covers), the ownership lives only in a leaf command
+// context the caller cannot reach, and under zotio-mcp the flock would then
+// stay held until a GC finalizer closed its descriptor — wedging every later
+// writer in that server.
 type rootExecution struct {
-	flags *rootFlags
+	flags      *rootFlags
+	writerLock *writerLockOwnership
 }
 
 // publishRootExecution hands the executing tree's flag state to the enclosing
@@ -187,6 +195,47 @@ func publishRootExecution(ctx context.Context, flags *rootFlags) {
 	if execution, ok := ctx.Value(rootExecutionKey{}).(*rootExecution); ok {
 		execution.flags = flags
 	}
+}
+
+// rootExecutionFor returns the enclosing ExecuteRootInProcess execution, or nil
+// for a tree executed some other way (unit tests calling ExecuteContext
+// directly). A nested in-process execution shadows the outer one, so what it
+// records can only ever be released by its own boundary.
+func rootExecutionFor(cmd *cobra.Command) *rootExecution {
+	execution, _ := commandContext(cmd).Value(rootExecutionKey{}).(*rootExecution)
+	return execution
+}
+
+// trackExecutionWriterLock records a writer-lock ownership the root pre-run
+// handed to the command body, so ExecuteRootInProcess can release it if no
+// Cobra phase below gets the chance.
+func trackExecutionWriterLock(cmd *cobra.Command, ownership *writerLockOwnership) {
+	if execution := rootExecutionFor(cmd); execution != nil {
+		execution.writerLock = ownership
+	}
+}
+
+// clearExecutionWriterLock retires a tracked ownership once something has
+// released it. The pointer comparison is load-bearing: a command that also
+// holds output-scope locks releases those through the same helper, and clearing
+// on any release would disarm the backstop for the installation lock.
+func clearExecutionWriterLock(cmd *cobra.Command, ownership *writerLockOwnership) {
+	if execution := rootExecutionFor(cmd); execution != nil && execution.writerLock == ownership {
+		execution.writerLock = nil
+	}
+}
+
+// releaseWriterLockHandoff releases a tracked ownership nothing else released.
+// It never releases a lock this execution did not acquire: only the root
+// pre-run's own handoff is ever tracked, and a transaction that reuses a lock
+// already held in its command context acquires nothing and tracks nothing.
+func (execution *rootExecution) releaseWriterLockHandoff() error {
+	if execution == nil || execution.writerLock == nil {
+		return nil
+	}
+	ownership := execution.writerLock
+	execution.writerLock = nil
+	return finishWriterLockOwnership(ownership.owner, ownership, nil)
 }
 
 // ExecuteRootInProcess runs a root command from RootCmd and owns the resources
@@ -202,18 +251,28 @@ func publishRootExecution(ctx context.Context, flags *rootFlags) {
 // A PersistentPostRunE hook cannot do this job: Cobra skips post-run hooks when
 // PersistentPreRunE, flag validation or RunE returns an error, and a failing
 // command is exactly when an unclaimed spool is most likely.
-func ExecuteRootInProcess(ctx context.Context, root *cobra.Command) error {
+func ExecuteRootInProcess(ctx context.Context, root *cobra.Command) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	execution := &rootExecution{}
+	// Backstop for the installation writer lock, deferred for the same reasons
+	// as the spool: a panic the MCP server recovers must not keep it, and the
+	// phase wrappers that normally release it are skipped on exactly the error
+	// paths Cobra's post-run hooks never see. Its order against the spool
+	// cleanup is immaterial: the two own unrelated resources.
+	defer func() {
+		if releaseErr := execution.releaseWriterLockHandoff(); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
 	// Read execution.flags at defer time, not now: PersistentPreRunE publishes
 	// it during the call below. Deferred rather than inline so a panic escaping
 	// the command tree — the MCP server recovers those and keeps serving — still
 	// closes and unlinks the spool. Running after the body also fixes the
 	// ordering delivery needs: the spool is still readable while it streams.
 	defer func() { execution.flags.cleanupDeliverSpool() }()
-	err := root.ExecuteContext(context.WithValue(ctx, rootExecutionKey{}, execution))
+	err = root.ExecuteContext(context.WithValue(ctx, rootExecutionKey{}, execution))
 	flags := execution.flags
 	if flags == nil {
 		return err

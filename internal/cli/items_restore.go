@@ -75,7 +75,7 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			// Shared envelope, not a bespoke {action,resource,key,status,success}
 			// shape: .result.items[i] works for every other mutation.
 			env, runErr := runMutation(cmd.Context(), flags, "items.restore", ops)
-			if runErr != nil && applyErr != nil {
+			if runErr != nil && applyErr != nil && !isJournalBarrier(runErr) {
 				runErr = classifyAPIError(applyErr, flags)
 			}
 			return renderMutationResult(cmd, flags, env, runErr, nil)

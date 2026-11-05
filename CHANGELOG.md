@@ -4,6 +4,32 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+
+- **A write run stops when the journal cannot record a write that landed.**
+  Each landed write is journaled as it lands, so a run killed mid-flight stays
+  undoable, but a failed record was ignored and the run kept writing. When that
+  record fails and writes remain, the run now stops before the next write and
+  exits 9, even when an earlier write in the same run failed with its own
+  error; the envelope lists the writes that landed. A permanent delete still
+  gets its deletion marker first. When the unrecorded write was the run's last,
+  nothing is stopped: the failure is a warning, and the run's final journal
+  entry records the write.
+
+- **A write run cancelled before any write was confirmed no longer exits 13.**
+  Ctrl-C or SIGTERM before any write was confirmed exited 13 ("partial") with
+  "mutation incomplete". It now exits 1. If no write had been sent, the error
+  says that no write landed. If a write was in flight, its outcome is unknown:
+  the error still says "mutation incomplete", and the envelope marks that write
+  `committed` with outcome `unknown`, so check it before you retry. A cancelled
+  run that did land a write still exits 13.
+
+- **`watch --workflow-on-change` no longer runs its workflow after a cycle that
+  changed nothing.** Sync runs its resource workers in parallel, and they share
+  item rows, so one worker's change count could include another worker's
+  write. Each counted page write and the reads around it now hold the local
+  database's write lock together.
+
 ## [0.32.0] — 2026-11-05
 
 ### Changed — breaking

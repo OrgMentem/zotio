@@ -245,6 +245,48 @@ claim distributed locking across machines, NFS, or iCloud-backed paths.
   append, tail moves any final line without a newline to a `<file>.torn-*`
   sidecar and truncates the file to its last complete line, so a failed
   rollback is repaired by the next append.
+- **2026-11-05 — an in-process store writer may hold `writeMu` across a
+  sequence (`Store.WithWriteLease`).** The per-resource argument on `writeMu`
+  (one sync worker per resource, so read-then-write is race-free) does not hold
+  across resources: concurrent workers share rows, because items and
+  items-trash always pair and every item write reconciles the opposite item
+  state. `watch --workflow-on-change` counts changed rows by diffing each
+  written row before and after, and with that diff taken around an unlocked
+  write it charged a neighbour's write to its own no-op and ran the triggered
+  workflow after a cycle that changed nothing. A writer whose result depends on
+  no other in-process writer landing mid-sequence now runs the whole sequence
+  inside `WithWriteLease`, which holds `writeMu` and passes a lease through the
+  context so the context-taking writes nested in it reuse the held lock instead
+  of deadlocking on a non-reentrant mutex. The lease is per-`Store`, is only
+  visible to writes that take a context (a writer without one — the
+  context-less wrappers such as `Upsert` and `UpsertMirroredWrite`, and
+  `RecordPendingWrite`, `ExpirePendingWrites`, `ClearPendingWrite`,
+  `ReapResource`, `ReapMirroredItem` and `RestoreMirroredItem`, which lock
+  `writeMu` directly — waits for the held lock and must not be called inside
+  one), and must not be used from a goroutine the leased body starts.
+  Reads stay lock-free, so "Lock all reads" remains rejected: a lease serializes
+  writers, and the reads inside one are the writer's own.
+- **2026-11-05 — a handed-off installation lock has two more releasers.** The
+  root pre-run acquires the installation lock after the pure flag checks and
+  hands it to the RunE wrapper. Cobra runs a leaf `PreRunE` between the two
+  and returns without RunE when it fails, so a failing leaf `PreRunE` left the
+  lock held until a GC finalizer closed the flock's descriptor, which in
+  `zotio-mcp` wedges every later writer. Two paths now release it. First,
+  `wrapInstallationWriterCommand` wraps the leaf `PreRunE` (a `PreRun` is
+  promoted to the same form). On an error or a panic it releases the handed-off
+  ownership; on success it keeps the lock for RunE. Second,
+  `ExecuteRootInProcess` records the handoff on its execution and releases any
+  ownership that is still unreleased when it returns. A nested in-process
+  execution reuses its caller's lock, records nothing, and therefore releases
+  nothing. No production command could strand the lock this way when this was
+  found: the only leaf `PreRunE` validators (`creators rename`,
+  `searches materialize`) also run through `validateCommandUsage` inside the
+  root pre-run, and a failure there releases the lock. The new paths guard
+  future leaf validators and any phase no wrapper covers.
+  `TestInstallationWriterLockReleasesWhenLeafPreRunFails`,
+  `TestInstallationWriterLockHeldThroughSuccessfulLeafPreRun`,
+  `TestExecuteRootInProcessReleasesStrandedWriterLock` and
+  `TestNestedExecuteRootInProcessKeepsOuterWriterLock` pin these rules.
 
 ## References
 

@@ -193,6 +193,7 @@ func commandContext(cmd *cobra.Command) context.Context {
 
 func finishWriterLockOwnership(cmd *cobra.Command, ownership *writerLockOwnership, transactionErr error) error {
 	cmd.SetContext(ownership.previous)
+	clearExecutionWriterLock(cmd, ownership)
 	if releaseErr := ownership.lock.Release(); releaseErr != nil {
 		if transactionErr != nil {
 			return errors.Join(transactionErr, fmt.Errorf("releasing writer lock at %q: %w", ownership.path, releaseErr))
@@ -389,7 +390,11 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		// required -- because the release below is disarmed on success and RunE,
 		// the other releaser, never runs. Validation is pure and idempotent, so
 		// cobra re-running it costs nothing. No production command defines a
-		// non-persistent PreRunE that could satisfy a required flag later.
+		// non-persistent PreRunE that could satisfy a required flag later, so
+		// pre-checking here cannot report a failure cobra would not reach.
+		// A leaf PreRunE that FAILS is a distinct hazard and is not pre-checked
+		// here: it is not required to be pure, so running it twice is not free.
+		// wrapInstallationWriterCommand wraps it to release the handoff instead.
 		// Positional Args need no pre-check here: Cobra runs ValidateArgs before
 		// any PersistentPreRunE (cobra command.go:968), so an Args failure
 		// returns before this hook can acquire anything.
@@ -403,6 +408,11 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		if err != nil {
 			return err
 		}
+		// Record the handoff on the enclosing ExecuteRootInProcess execution so
+		// the boundary can release it even if no phase wrapper below gets the
+		// chance. finishWriterLockOwnership clears this again, so the backstop
+		// only ever sees ownership that nothing else released.
+		trackExecutionWriterLock(cmd, ownership)
 		// original may panic during setup. On success, ownership release is
 		// handed off to the RunE wrapper installed by wrapInstallationWriterCommand
 		// (it holds the lock until the command body finishes). On error or panic
@@ -471,6 +481,50 @@ func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operati
 			})
 		}
 	}
+	// Cobra runs a leaf's PreRunE AFTER every PersistentPreRunE and BEFORE
+	// RunE (cobra command.go:999-1012), and returns from execute() when it
+	// fails — so the RunE wrapper above, the only other releaser of a handed-off
+	// ownership, never runs. Releasing here is what keeps that phase from
+	// stranding the installation lock for the rest of a zotio-mcp server's life.
+	// A nil error must leave the lock held: RunE is still to come.
+	// No production command reaches this release today: the two leaf PreRunE
+	// validators (`creators rename`, `searches materialize`) also run earlier,
+	// through validateCommandUsage inside the root pre-run, where a failure
+	// releases the lock before the leaf PreRunE runs. This covers any leaf
+	// PreRunE that is not mirrored there.
+	wrapPreRun := func(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+		return func(cmd *cobra.Command, args []string) (err error) {
+			completed := false
+			// run may panic; the in-process MCP server recovers panics and keeps
+			// serving, so this release must happen on that path too. The panic
+			// itself keeps propagating.
+			defer func() {
+				if completed && err == nil {
+					return
+				}
+				if ownership := installationWriterLockHandoff(cmd, flags); ownership != nil {
+					err = finishWriterLockOwnership(cmd, ownership, err)
+				}
+			}()
+			err = run(cmd, args)
+			completed = true
+			return err
+		}
+	}
+	// Cobra's own precedence: PreRun is called only when PreRunE is nil.
+	// Promoting it to the equivalent PreRunE form changes no user-visible
+	// behavior and lets one wrapper cover both shapes.
+	if cmd.PreRunE != nil {
+		cmd.PreRunE = wrapPreRun(cmd.PreRunE)
+	} else if cmd.PreRun != nil {
+		preRun := cmd.PreRun
+		cmd.PreRun = nil
+		cmd.PreRunE = wrapPreRun(func(cmd *cobra.Command, args []string) error {
+			preRun(cmd, args)
+			return nil
+		})
+	}
+
 	if cmd.RunE != nil {
 		cmd.RunE = wrap(cmd.RunE)
 	}

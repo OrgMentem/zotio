@@ -155,7 +155,7 @@ Each permanent delete leaves a deletion marker in the local mirror, as
 				fmt.Fprintf(cmd.ErrOrStderr(), "%d trashed item(s) selected for permanent deletion\n", len(ops))
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.trash.empty", ops)
-			if runErr != nil && applyErr != nil {
+			if runErr != nil && applyErr != nil && !isJournalBarrier(runErr) {
 				runErr = classifyAPIError(applyErr, flags)
 			}
 			return renderMutationResult(cmd, flags, env, runErr, nil)

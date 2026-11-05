@@ -233,9 +233,19 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 // RunObserved is Run with onOutcome, called after every attempted op, including
 // an Apply that returns no_op, and before the next op starts. Planned no-ops
 // (empty Changes) and not_attempted ops skip it. It lets a caller record a write
-// instead of once after the last op. The engine ignores what it does: a
-// recording failure cannot undo the write.
-func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, item ResultItem)) (Envelope, error) {
+// instead of once after the last op.
+//
+// A recording failure cannot undo the write that already landed, but it can
+// stop the next one: onOutcome returns an error to hold back every later write
+// not yet sent, so nothing further is applied that no durable record
+// describes. Planned no-ops still run, and writes already dispatched with a
+// batch are still collected and observed. When that holds a write back, the
+// held ops report not_attempted, the envelope is not ok and carries a warning
+// naming what landed, and the run returns that error unwrapped, so the
+// caller's own type and exit code survive. When no write was left to hold back
+// (it was the last one, or every later one was already dispatched), the error
+// stopped nothing: it becomes a warning and the run's outcome stands.
+func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, item ResultItem) error) (Envelope, error) {
 	mode := ResolveMode(o)
 	env := Envelope{
 		SchemaVersion: SchemaVersion,
@@ -270,6 +280,9 @@ func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, it
 	stop := false
 	canceled := false
 	collected := 0
+	var observeErr error
+	observeAt := ""
+	heldBack := 0
 	for _, op := range ops {
 		// Cancellation is checked between operations. The op already running when
 		// the context is cancelled is aborted by its own transport; this keeps the
@@ -278,10 +291,17 @@ func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, it
 			stop = true
 			canceled = true
 		}
-		if stop {
+		// An earlier landed write the observer could not record holds back
+		// every write not yet sent, so nothing further lands that no durable
+		// record describes. Planned no-ops write nothing and still run.
+		holdBack := observeErr != nil && len(op.Changes) > 0
+		if stop || holdBack {
 			if op.Dispatched == nil || !op.Dispatched() {
 				result.Items = append(result.Items, ResultItem{OpID: op.ID, Key: op.Key, Status: "not_attempted"})
 				result.Summary.NotAttempted++
+				if holdBack {
+					heldBack++
+				}
 				continue
 			}
 			collected++
@@ -351,7 +371,12 @@ func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, it
 		}
 		result.Items = append(result.Items, item)
 		if onOutcome != nil {
-			onOutcome(op, item)
+			// The hold-back that follows is not negotiable by
+			// --continue-on-error: that flag tolerates a failed *write*, not an
+			// unrecorded landed one.
+			if err := onOutcome(op, item); err != nil && observeErr == nil {
+				observeErr, observeAt = err, op.ID
+			}
 		}
 
 		if (item.Status == "conflict" || item.Status == "failed") && !o.ContinueOnError {
@@ -367,15 +392,46 @@ func RunObserved(o Options, operation string, ops []Op, onOutcome func(op Op, it
 		}
 		env.Warnings = append(env.Warnings, warning)
 	}
+	if observeErr != nil {
+		if heldBack > 0 {
+			env.Warnings = append(env.Warnings, fmt.Sprintf("run stopped after operation %s: %v; %d operation(s) landed and are listed in result.items, %d were not attempted", observeAt, observeErr, result.Summary.Applied, result.Summary.NotAttempted))
+		} else {
+			env.Warnings = append(env.Warnings, fmt.Sprintf("after operation %s: %v; no later write was held back", observeAt, observeErr))
+		}
+	}
 	env.Result = &result
 	env.OK = result.Summary.Conflicts == 0 && result.Summary.Failed == 0 && result.Summary.NotAttempted == 0 && env.Plan.Summary.Invalid == 0
 	if !env.OK {
+		if heldBack > 0 {
+			// The observer's own error, unwrapped: it names why the run stopped
+			// and carries the exit code its caller chose. It outranks the
+			// generic incomplete error even when ops also failed, because an
+			// unrecorded landed write is the thing the operator must act on.
+			return env, observeErr
+		}
 		if canceled && o.Context != nil && o.Context.Err() != nil {
+			if !anyLanded(result.Items) {
+				// Nothing reached the library, so nothing is half-done and
+				// there is no journal to reconcile. Saying "incomplete" here
+				// invites recovery work for a run that wrote nothing.
+				return env, fmt.Errorf("mutation canceled before any write landed: %w", o.Context.Err())
+			}
 			return env, fmt.Errorf("mutation incomplete: %w", o.Context.Err())
 		}
 		return env, ErrIncomplete
 	}
 	return env, nil
+}
+
+// anyLanded reports whether any attempted op left a write behind — applied, or
+// committed with an unconfirmed outcome (see OpLanded).
+func anyLanded(items []ResultItem) bool {
+	for _, item := range items {
+		if OpLanded(item) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrIncomplete is returned when a multi-operation apply finished with a

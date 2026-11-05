@@ -182,9 +182,10 @@ func readCollectionVersion(c *client.Client, flags *rootFlags, key string) (int,
 
 // preferApplyErr keeps the classified error of the write that failed (its HTTP
 // class, its message) over the engine's generic "mutation incomplete". Exit 13
-// stays: it means part of the run applied, which only the engine knows.
+// stays: it means part of the run applied, which only the engine knows. The
+// journal barrier stays too (isJournalBarrier): it outranks the failed write.
 func preferApplyErr(runErr, applyErr error) error {
-	if runErr == nil || applyErr == nil {
+	if runErr == nil || applyErr == nil || isJournalBarrier(runErr) {
 		return runErr
 	}
 	var typed *cliError

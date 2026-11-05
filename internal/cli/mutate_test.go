@@ -349,3 +349,214 @@ func TestRunMutationKilledMidRunMarksPurgedItems(t *testing.T) {
 		}
 	}
 }
+
+// Exit 13 is the "part of the run applied" signal, so a cancellation that
+// reached no write at all must not claim it: an agent reading 13 goes looking
+// for landed writes to reconcile, and a Ctrl-C or a caller's deadline before
+// the first op leaves none.
+func TestRunMutationCanceledWithNothingAppliedIsNotDegraded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	applied := 0
+	apply := func() (string, any, error) {
+		applied++
+		return "applied", nil, nil
+	}
+	ops := []mutation.Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []mutation.Change{{Field: "title", Add: "A"}}, Apply: apply},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []mutation.Change{{Field: "title", Add: "B"}}, Apply: apply},
+	}
+	env, err := runMutation(ctx, &rootFlags{yes: true, maxChanges: -1}, "test", ops)
+	if err == nil {
+		t.Fatal("runMutation err = nil, want the cancellation error")
+	}
+	if applied != 0 || env.Result == nil || env.Result.Summary.Applied != 0 {
+		t.Fatalf("applied=%d summary=%+v, want nothing applied", applied, env.Result)
+	}
+	if got := ExitCode(err); got == 13 {
+		t.Fatalf("exit code = 13 for a run that applied nothing; want the generic failure code")
+	} else if got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if strings.Contains(err.Error(), "mutation incomplete") {
+		t.Fatalf("err = %q, want it not to report a partial run", err)
+	}
+}
+
+// The other half of the contract: once a write has landed, a cancellation IS
+// partial and keeps exit 13.
+func TestRunMutationCanceledAfterAWriteLandedStaysDegraded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	applied := 0
+	ops := []mutation.Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []mutation.Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			applied++
+			cancel()
+			return "applied", nil, nil
+		}},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []mutation.Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
+			applied++
+			return "applied", nil, nil
+		}},
+	}
+	env, err := runMutation(ctx, &rootFlags{yes: true, maxChanges: -1}, "test", ops)
+	if err == nil {
+		t.Fatal("runMutation err = nil, want the cancellation error")
+	}
+	if applied != 1 || env.Result.Summary.Applied != 1 || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("applied=%d summary=%+v, want one landed write and one op not attempted", applied, env.Result.Summary)
+	}
+	if ExitCode(err) != 13 {
+		t.Fatalf("exit code = %d, want 13 for a cancellation with a landed write", ExitCode(err))
+	}
+}
+
+// A per-op journal record that keeps failing must stop the run before the next
+// write. Otherwise op2's side effect runs with nothing durable describing op1,
+// and a kill before the run's final entry loses op1's journal line — and, for a
+// permanent delete, its ADR-0007 marker, so the next sync resurrects the item.
+func TestRunMutationStopsWhenOutcomeRecordKeepsFailing(t *testing.T) {
+	db, dbPath := reapTestStore(t)
+	for _, key := range []string{"AAAA1111", "BBBB2222"} {
+		if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+			json.RawMessage(`{"key":"` + key + `","version":1,"data":{"key":"` + key + `","itemType":"book"}}`),
+		}); err != nil {
+			t.Fatalf("seed mirror: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	installOutcomeHooks(t)
+	records := 0
+	mutationOutcomeRecorder = func(string, string, string, mutation.Op, mutation.ResultItem) error {
+		records++
+		return errors.New("journal disk full")
+	}
+
+	var applied []string
+	ops := make([]mutation.Op, 0, 2)
+	for _, key := range []string{"AAAA1111", "BBBB2222"} {
+		target := key
+		ops = append(ops, mutation.Op{
+			ID: "op-" + target, Key: target, Kind: "item_delete",
+			Changes: []mutation.Change{{Field: "deleted", Add: true}},
+			Apply: func() (string, any, error) {
+				applied = append(applied, target)
+				return "applied", nil, nil
+			},
+		})
+	}
+	// --continue-on-error must not soften this: it tolerates a failed write,
+	// not a landed one nothing recorded.
+	env, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1, continueOnError: true}, "test", ops)
+	if err == nil {
+		t.Fatal("runMutation err = nil, want the unrecorded-write precondition")
+	}
+	if ExitCode(err) != 9 {
+		t.Fatalf("exit code = %d (err %v), want 9 (precondition)", ExitCode(err), err)
+	}
+	if len(applied) != 1 || applied[0] != "AAAA1111" {
+		t.Fatalf("applied %v, want the run stopped before the second write", applied)
+	}
+	if records != 1 {
+		t.Fatalf("recorder called %d time(s), want 1: a failed record is not retried", records)
+	}
+	if env.OK || env.Result.Summary.Applied != 1 || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("env = %+v, want ok:false with one landed write and one op not attempted", env)
+	}
+	if !strings.Contains(err.Error(), "AAAA1111") {
+		t.Fatalf("err = %q, want it to name the write whose record failed", err)
+	}
+	if len(env.Warnings) == 0 || !strings.Contains(strings.Join(env.Warnings, "|"), "1 operation(s) landed") {
+		t.Fatalf("warnings = %v, want the landed set reported", env.Warnings)
+	}
+
+	// The delete landed, so its marker exists even though the record failed;
+	// the op that never ran leaves no trace.
+	reopened, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	marked, err := reopened.PendingDeletion("items", "AAAA1111")
+	if err != nil || !marked {
+		t.Fatalf("PendingDeletion(AAAA1111) = %t, %v, want the ADR-0007 marker written", marked, err)
+	}
+	if marked, err := reopened.PendingDeletion("items", "BBBB2222"); err != nil || marked {
+		t.Fatalf("PendingDeletion(BBBB2222) = %t, %v, want no marker for the op that never ran", marked, err)
+	}
+}
+
+// A record attempt can append its line and still report failure (the append
+// landed, the sync did not). Re-recording would put the op in the journal
+// twice, and a run killed before its final entry is read back from those
+// op-level records, so journal show and journal undo would list the write
+// twice. The op must appear once.
+func TestRunMutationFailedOutcomeRecordIsNotDuplicated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	prevJournal, prevOutcome := mutationJournalRecorder, mutationOutcomeRecorder
+	t.Cleanup(func() { mutationJournalRecorder, mutationOutcomeRecorder = prevJournal, prevOutcome })
+	// No final entry: this stands in for a kill right after the run stops.
+	mutationJournalRecorder = nil
+	mutationOutcomeRecorder = func(runID, operation, mode string, op mutation.Op, item mutation.ResultItem) error {
+		if err := recordMutationOutcome(runID, operation, mode, op, item); err != nil {
+			return err
+		}
+		return errors.New("syncing journal entry: input/output error")
+	}
+
+	apply := func() (string, any, error) { return "applied", nil, nil }
+	ops := []mutation.Op{
+		{ID: "op1", Key: "AAAA2222", Kind: "tag_add", Changes: []mutation.Change{{Field: "tags", Add: "x"}}, Apply: apply},
+		{ID: "op2", Key: "BBBB3333", Kind: "tag_add", Changes: []mutation.Change{{Field: "tags", Add: "x"}}, Apply: apply},
+	}
+	_, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1}, "items.tags.add", ops)
+	if ExitCode(err) != 9 {
+		t.Fatalf("exit code = %d (err %v), want 9", ExitCode(err), err)
+	}
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("journal entries = %+v, %v; want the one interrupted run", entries, err)
+	}
+	if got := entries[0]; !got.Partial || len(got.Ops) != 1 || got.Ops[0].Key != "AAAA2222" || got.Summary.Applied != 1 {
+		t.Fatalf("interrupted run = %+v, want op1 recorded exactly once", got)
+	}
+}
+
+// A record failure on the last landed write has no later write to hold back,
+// so it must not turn a fully applied run into exit 9: a caller reading 9
+// fixes the environment and retries, and a retried create lands twice. The
+// final entry repeats every op and is the run's record; the per-op failure is
+// a warning.
+func TestRunMutationLastOutcomeRecordFailureIsAWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	prevJournal, prevOutcome := mutationJournalRecorder, mutationOutcomeRecorder
+	t.Cleanup(func() { mutationJournalRecorder, mutationOutcomeRecorder = prevJournal, prevOutcome })
+	mutationJournalRecorder = recordMutationJournal
+	mutationOutcomeRecorder = func(string, string, string, mutation.Op, mutation.ResultItem) error {
+		return errors.New("journal disk full")
+	}
+
+	ops := []mutation.Op{{ID: "op1", Key: "AAAA1111", Kind: "tag_add", Changes: []mutation.Change{{Field: "tags", Add: "x"}}, Apply: func() (string, any, error) {
+		return "applied", nil, nil
+	}}}
+	env, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1}, "items.tags.add", ops)
+	if err != nil {
+		t.Fatalf("runMutation err = %v (exit %d), want nil: the only write landed and no write was held back", err, ExitCode(err))
+	}
+	if !env.OK || env.Result.Summary.Applied != 1 {
+		t.Fatalf("env = %+v, want ok:true with the write applied", env)
+	}
+	if warnings := strings.Join(env.Warnings, "|"); !strings.Contains(warnings, "AAAA1111") || !strings.Contains(warnings, "no later write was held back") {
+		t.Fatalf("warnings = %v, want the failed record reported", env.Warnings)
+	}
+	journal, _ := env.Journal.(map[string]any)
+	runID, _ := journal["run_id"].(string)
+	entry, err := mutation.ReadEntry(helpersTestJournalDir(t), runID)
+	if err != nil || entry.Partial || len(entry.Ops) != 1 || entry.Ops[0].Key != "AAAA1111" || entry.Ops[0].Status != "applied" {
+		t.Fatalf("journal entry %q = %+v, %v; want the final entry recording the landed write", runID, entry, err)
+	}
+}

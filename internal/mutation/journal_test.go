@@ -500,8 +500,9 @@ func TestRunObservedCallsBackAfterEachAttemptedOp(t *testing.T) {
 		{ID: "f", Key: "F", Changes: []Change{{Field: "x"}}, Apply: apply("failed")},
 		{ID: "z", Key: "Z", Changes: []Change{{Field: "x"}}, Apply: apply("applied")},
 	}
-	_, _ = RunObserved(Options{Yes: true, MaxChanges: -1, RunID: "run-1"}, "t", ops, func(op Op, item ResultItem) {
+	_, _ = RunObserved(Options{Yes: true, MaxChanges: -1, RunID: "run-1"}, "t", ops, func(op Op, item ResultItem) error {
 		seen = append(seen, "outcome:"+op.ID+"="+item.Status)
+		return nil
 	})
 	want := "apply:applied,outcome:a=applied,apply:failed,outcome:f=failed"
 	if got := strings.Join(seen, ","); got != want {

@@ -436,7 +436,8 @@ Applied field changes record provenance in the item's Extra field.`,
 // rows) into the envelope: ok:false with an error entry, and the same
 // non-zero exit the process returns. Benign skips never reach here; they stay
 // in journal.skipped with ok:true. An engine error already on the envelope (a
-// gate refusal) keeps its own entry and exit code. A run that applied part of
+// gate refusal) keeps its own entry and exit code, and so does the journal
+// barrier (exit 9, isJournalBarrier). A run that applied part of
 // its plan before the failures exits 13 (partial). Otherwise the exit code
 // follows what the providers said: auth failures (401/403) exit 4, other
 // client errors (400, ...) exit 2, transport failures, 429 and 5xx exit 5,
@@ -448,6 +449,9 @@ func enrichLookupFailure(env *mutation.Envelope, runErr error, lookupErrs []erro
 	}
 	env.OK = false
 	env.Error = &mutation.Error{Code: "enrich_lookup_failed", Message: joined.Error()}
+	if isJournalBarrier(runErr) {
+		return errors.Join(runErr, joined)
+	}
 	if env.Result != nil && env.Result.Summary.Applied > 0 {
 		return degradedErr(errors.Join(runErr, joined))
 	}

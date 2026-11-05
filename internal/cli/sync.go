@@ -195,25 +195,35 @@ func readSyncRowImages(ctx context.Context, db *store.Store, refs []syncRowRef) 
 // the rows it actually changed by comparing each named row before and after.
 // A version-guarded no-op and an identical refetch therefore count nothing.
 // rowRefs runs only when tracking, so an untracked sync decodes nothing extra.
-func trackSyncRowChanges(ctx context.Context, db *store.Store, rowRefs func() []syncRowRef, write func() error) error {
+//
+// The two reads and the write are one serialized unit (store.WithWriteLease):
+// sync runs several resource workers concurrently (default 4) and they share
+// rows — items and items-trash always pair, and each page write reconciles the
+// opposite item state — so a diff taken around an unlocked write counted
+// another worker's write as this one's, and `watch --workflow-on-change` ran
+// the workflow after a cycle that changed nothing. An untracked sync takes no
+// lease and keeps the plain per-write locking.
+func trackSyncRowChanges(ctx context.Context, db *store.Store, rowRefs func() []syncRowRef, write func(context.Context) error) error {
 	tracker := syncChangeTrackerFrom(ctx)
 	if tracker == nil {
-		return write()
+		return write(ctx)
 	}
 	refs := rowRefs()
-	before := readSyncRowImages(ctx, db, refs)
-	if err := write(); err != nil {
-		return err
-	}
-	after := readSyncRowImages(ctx, db, refs)
-	var changed int64
-	for i := range refs {
-		if !before[i].known || !after[i].known || before[i] != after[i] {
-			changed++
+	return db.WithWriteLease(ctx, func(ctx context.Context) error {
+		before := readSyncRowImages(ctx, db, refs)
+		if err := write(ctx); err != nil {
+			return err
 		}
-	}
-	tracker.upserted.Add(changed)
-	return nil
+		after := readSyncRowImages(ctx, db, refs)
+		var changed int64
+		for i := range refs {
+			if !before[i].known || !after[i].known || before[i] != after[i] {
+				changed++
+			}
+		}
+		tracker.upserted.Add(changed)
+		return nil
+	})
 }
 
 func newSyncCmd(flags *rootFlags) *cobra.Command {
@@ -1168,7 +1178,7 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			}
 			return refs
 		}
-		if err := trackSyncRowChanges(ctx, db, rowRefs, func() error {
+		if err := trackSyncRowChanges(ctx, db, rowRefs, func(ctx context.Context) error {
 			_, uerr := db.UpsertKeyedContext(ctx, resource, ids, payloads)
 			return uerr
 		}); err != nil {
@@ -2436,7 +2446,7 @@ func upsertResourceBatch(ctx context.Context, db *store.Store, resource string, 
 	var stored, extractFailures int
 	err := trackSyncRowChanges(ctx, db, func() []syncRowRef {
 		return syncBatchRowRefs(resource, items)
-	}, func() error {
+	}, func(ctx context.Context) error {
 		var werr error
 		stored, extractFailures, werr = writeResourceBatch(ctx, db, resource, items)
 		return werr
@@ -2554,7 +2564,7 @@ func upsertSingleObject(ctx context.Context, db *store.Store, resource string, d
 	}
 
 	ref := syncRowRef{resource: canonicalStoreResource(resource), id: id}
-	return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func() error {
+	return trackSyncRowChanges(ctx, db, func() []syncRowRef { return []syncRowRef{ref} }, func(ctx context.Context) error {
 		return db.UpsertContext(ctx, ref.resource, ref.id, data)
 	})
 }

@@ -130,9 +130,10 @@ check the library and explicitly pass --reimport.`,
 			env, runErr := runMutation(cmd.Context(), flags, "import.file", ops, func(o *mutation.Options) {
 				o.ContinueOnError = true
 			})
-			if runErr != nil && env.Result != nil && env.Result.Summary.Failed > 0 {
+			if runErr != nil && env.Result != nil && env.Result.Summary.Failed > 0 && !isJournalBarrier(runErr) {
 				// Zotero answers a batched write with HTTP 200 even when it
 				// rejected elements; that stays exit 13, not a hard failure.
+				// The journal barrier keeps its exit 9.
 				runErr = degradedErr(runErr)
 			}
 			return renderMutationResult(cmd, flags, env, runErr, nil)

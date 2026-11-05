@@ -367,6 +367,10 @@ func TestExecuteDeliverFileCleansUpSpoolAfterPanic(t *testing.T) {
 
 func executeForDeliverSpoolTest(t *testing.T, args ...string) (recovered any) {
 	t.Helper()
+	// Execute installs the production mutation hooks, which are package
+	// globals; scope them to this test so later unit tests do not journal
+	// through hooks they never installed.
+	installOutcomeHooks(t)
 
 	stdout, err := os.CreateTemp(t.TempDir(), "stdout-*")
 	if err != nil {

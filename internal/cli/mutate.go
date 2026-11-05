@@ -53,7 +53,7 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 	}
 	missingKey, restoreApply := watchMissingWriteKey(ops)
 	defer restoreApply()
-	var observe func(op mutation.Op, item mutation.ResultItem)
+	var observe func(op mutation.Op, item mutation.ResultItem) error
 	recordOutcomes := resolveMutationMode(flags).Apply && (mutationOutcomeRecorder != nil || mirrorPermanentDelete != nil)
 	if recordOutcomes {
 		// Record each landed write next to its side effect. A kill, a closed
@@ -65,15 +65,32 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 			opts.RunID = mutation.NewRunID(time.Now())
 		}
 		mode := mutation.ResolveMode(opts).Mode
-		observe = func(op mutation.Op, item mutation.ResultItem) {
-			if mutationOutcomeRecorder != nil {
-				// A failed record is not fatal: the run's final entry repeats
-				// every op, and its failure is what gets reported.
-				_ = mutationOutcomeRecorder(opts.RunID, operation, mode, op, item)
-			}
+		observe = func(op mutation.Op, item mutation.ResultItem) error {
+			// The marker goes first, and regardless of what the journal record
+			// does: the delete has landed, and until the marker exists a sync
+			// inside the Web-API-write / local-read lag window re-inserts the
+			// item (ADR-0007).
 			if mirrorPermanentDelete != nil && op.Kind == "item_delete" && item.Status == "applied" && item.Key != "" {
 				mirrorPermanentDelete(item.Key)
 			}
+			if mutationOutcomeRecorder == nil {
+				return nil
+			}
+			err := mutationOutcomeRecorder(opts.RunID, operation, mode, op, item)
+			if err == nil {
+				return nil
+			}
+			// Fail closed, without a retry: a first attempt that appended its
+			// line and then failed to sync would leave the op recorded twice,
+			// and the journal reader does not fold duplicate op records. The
+			// run's final entry would repeat this op, but a kill before that
+			// entry lands leaves a write that reached the library with no
+			// journal line to undo it — and, for a permanent delete, nothing
+			// that stops the next sync resurrecting the item. The engine holds
+			// back every later write rather than widen that window. With no
+			// write left to hold back it is a warning, and the final entry is
+			// the run's record.
+			return preconditionErr(&journalBarrierError{err: fmt.Errorf("the journal could not record the landed %s write for %s in run %s: %w", opKindLabel(op), opTargetLabel(op, item), opts.RunID, err)})
 		}
 	}
 	env, err := mutation.RunObserved(opts, operation, ops, observe)
@@ -99,6 +116,45 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		return env, keyErr
 	}
 	return env, classifyMutationErr(env, err)
+}
+
+// journalBarrierError is the exit-9 precondition runMutation returns when the
+// journal could not record a landed write and the engine therefore held back
+// the run's later writes. Commands that replace the engine's generic error with
+// their own failed write's class must keep this one: see isJournalBarrier.
+type journalBarrierError struct{ err error }
+
+func (e *journalBarrierError) Error() string { return e.err.Error() }
+func (e *journalBarrierError) Unwrap() error { return e.err }
+
+// isJournalBarrier reports whether a runMutation error is the journal barrier.
+// It outranks an earlier failed write's own error: that write is already in the
+// envelope, while the barrier is what tells the operator that writes landed
+// with no journal record and that the rest of the run was held back.
+func isJournalBarrier(err error) bool {
+	var barrier *journalBarrierError
+	return errors.As(err, &barrier)
+}
+
+// opKindLabel names an op's kind for an error message, falling back to a word
+// that reads correctly when a plan builder left Kind empty.
+func opKindLabel(op mutation.Op) string {
+	if op.Kind == "" {
+		return "mutation"
+	}
+	return op.Kind
+}
+
+// opTargetLabel names what an op wrote: its confirmed key, else the planned
+// key, else the op id — a create has no key until Apply reports one.
+func opTargetLabel(op mutation.Op, item mutation.ResultItem) string {
+	if item.Key != "" {
+		return item.Key
+	}
+	if op.Key != "" {
+		return op.Key
+	}
+	return "operation " + op.ID
 }
 
 // watchMissingWriteKey wraps each op's Apply, in place, to record the first
@@ -147,8 +203,9 @@ func watchMissingWriteKey(ops []mutation.Op) (missingKey func() error, restore f
 
 // classifyMutationErr types the engine's errors for the exit-code contract. A
 // gate refusal keeps its engine error; invalid local input is a usage error;
-// an incomplete multi-op run is degraded (exit 13) only when some op applied and another failed. It does not mark the error
-// rendered: only the code that prints the envelope may do that.
+// an incomplete or canceled multi-op run is degraded (exit 13) only when some
+// op applied and another failed or was not attempted. It does not mark the
+// error rendered: only the code that prints the envelope may do that.
 func classifyMutationErr(env mutation.Envelope, err error) error {
 	if err == nil {
 		return nil
@@ -164,17 +221,18 @@ func classifyMutationErr(env mutation.Envelope, err error) error {
 	if errors.As(err, &typed) {
 		return err
 	}
-	if errors.Is(err, mutation.ErrIncomplete) {
+	if errors.Is(err, mutation.ErrIncomplete) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		// Exit 13 means partial: some ops applied and others failed or were
 		// never attempted. A run with nothing applied, or one whose only
-		// problem is a lost precondition (conflict), keeps exit 1.
+		// problem is a lost precondition (conflict), keeps exit 1. A
+		// cancellation is held to the same gate: Ctrl-C, SIGTERM or a caller's
+		// deadline before the first write leaves nothing to reconcile, and
+		// reporting that run as partial sends callers looking for writes that
+		// never happened.
 		if r := env.Result; r != nil && r.Summary.Applied > 0 && r.Summary.Failed+r.Summary.NotAttempted > 0 {
 			return degradedErr(err)
 		}
 		return err
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return degradedErr(err)
 	}
 	return err
 }

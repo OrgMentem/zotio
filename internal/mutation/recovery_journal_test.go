@@ -71,8 +71,9 @@ func TestRunObservedIncludesAttemptedNoOp(t *testing.T) {
 		}},
 	}
 	var observed []string
-	_, err := RunObserved(Options{Yes: true, MaxChanges: -1}, "items.tags.add", ops, func(op Op, item ResultItem) {
+	_, err := RunObserved(Options{Yes: true, MaxChanges: -1}, "items.tags.add", ops, func(op Op, item ResultItem) error {
 		observed = append(observed, op.ID+":"+item.Status)
+		return nil
 	})
 	if err != nil || len(observed) != 1 || observed[0] != "attempted-no-op:no_op" {
 		t.Fatalf("observed=%v, err=%v", observed, err)

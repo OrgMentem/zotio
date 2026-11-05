@@ -144,7 +144,7 @@ func agentContextExitCodes() []agentContextExitCode {
 		{4, "", "Authentication failed or no Web API key."},
 		{5, "", "Upstream error: the Zotero API or a provider failed."},
 		{7, "", "Rate limited."},
-		{9, "", "Precondition unmet: unsynced store, Zotero unreachable when required, or another writer holds the lock. Fix the environment and retry."},
+		{9, "", "Precondition unmet: unsynced store, Zotero unreachable when required, another writer holds the lock, or the journal could not record a write that landed, so the run held back its later writes. Fix the environment and retry; after a journal stop, first read the writes the envelope lists as applied, because they landed."},
 		{10, "", "Configuration error."},
 		{11, "", "Quality gate tripped (--fail-on)."},
 		{12, "", "Freshness gate tripped (--require-fresh). Run sync and retry."},

@@ -696,5 +696,52 @@ func TestDeleteIgnoreMissingIsAStructuredNoOp(t *testing.T) {
 	}
 }
 
+// A landed write the journal cannot record holds back the rest of the run with
+// exit 9. items delete reports a failed write's own HTTP class in place of the
+// engine's generic error; it must not do that to the journal barrier, or the
+// operator learns that one write failed but not that another landed with no
+// journal record and the rest were held back.
+func TestItemsDeleteKeepsJournalBarrierOverAnEarlierFailedWrite(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		patched []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Last-Modified-Version", "42")
+			_, _ = w.Write([]byte(`{"key":"K","version":42,"data":{}}`))
+			return
+		}
+		key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		mu.Lock()
+		patched = append(patched, key)
+		mu.Unlock()
+		if key == "AAAA2222" {
+			http.Error(w, "rejected", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	prevOutcome := mutationOutcomeRecorder
+	t.Cleanup(func() { mutationOutcomeRecorder = prevOutcome })
+	mutationOutcomeRecorder = func(_, _, _ string, _ mutation.Op, item mutation.ResultItem) error {
+		if !mutation.OpLanded(item) {
+			return nil
+		}
+		return fmt.Errorf("journal disk full")
+	}
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1, continueOnError: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	err := runDeleteCmd(t, cmd, srv.URL, "AAAA2222", "BBBB3333", "CCCC4444")
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d (err %v), want 9: the journal barrier outranks the earlier failed write", got, err)
+	}
+	if !reflect.DeepEqual(patched, []string{"AAAA2222", "BBBB3333"}) {
+		t.Fatalf("writes = %v, want the failed write, the unrecorded landed write, and nothing after it", patched)
+	}
+}
+
 // Multi-key delete, the exact-arity replacement contract and the key-list
 // refusals live in items_multi_key_test.go.
