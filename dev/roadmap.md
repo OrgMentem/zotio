@@ -203,7 +203,7 @@ run-local sequence, so agents/CI can diff):
 | **Merge** | Capability registry + `agent-context` + MCP resources + preconditions | One capability source of truth (read/write/destructive/data-source/auth/freshness/`requires`). |
 | **Merge** | PDF ingest + identifier adapters + schema builders + bulk manifest | One `import plan -> resolve -> apply` journey. |
 | **Merge** | Vault audit/repair into vault | `vault audit` = the safe preflight before `push/pull/sync`, not a separate pillar. |
-| **Add** | Attachment-mode contract | `--attach-mode none\|linked-file\|upload`; each honest about portability/API limits. |
+| **Add** | Attachment-mode contract | `--attach-mode none\|linked-file\|upload` (the third mode shipped as `stored`); each honest about portability/API limits. |
 | **Add** | Freshness gates | `--require-fresh 24h` to stop stale local reads from driving high-risk writes. |
 | **Add** | Precondition contract | Declared preconditions + loud remediation + launch primitive (this doc's central new principle). |
 | **Add** *(validate first)* | `export snapshot` review lockfile | Reproducible review handoff (keys + versions + freshness + health gaps + export hash). Plausible but unvalidated; Phase 6, dampened — Zotero `version` ints bump on any edit, so a version-keyed lockfile reads "stale" easily. |
@@ -212,7 +212,8 @@ run-local sequence, so agents/CI can diff):
 (create `linked_file` attachment metadata pointing at the on-disk path — lower risk, but doesn't sync,
 no group libraries, no mobile). Gate `upload` (stored file via the multi-step Web API protocol:
 create item → request authorization → POST to upload URL → register; plus quota/permission/conflict/
-rate-limit failure modes) behind a later phase.
+rate-limit failure modes) behind a later phase. *Shipped since as `--attach-mode stored`; see the
+stored-file row in the Defer table below.*
 
 ## Phase plan
 
@@ -422,7 +423,7 @@ lookup). The genuine deltas and their dispositions:
 | Decision | Item | Rationale |
 |---|---|---|
 | **Build — SHIPPED 2026-07-11** | `items similar` — explainable local relatedness | zotero-mcp-local ranks library items by composite similarity over shared collections/tags/creators/venue plus fulltext rare-word overlap. Shipped: Jaccard on collections/tags/creators (0.30/0.25/0.10), exact-match venue (0.10), rare-term overlap over synced fulltext rows (0.25; DF-based, two-pass, memory-bounded). Deterministic, no-LLM, no network — does **not** relitigate the semantic-search cut (no embeddings). Every signal lives in zotio's mirror via typed store reads (ADR-0002). Complements shipped `items related` (explicit edges) with *discovered* similarity, with human-readable "why" reasons per hit. |
-| **Build (bounded) — SHIPPED 2026-07-11** | Close the OA-PDF loop: download, not just link | zotero-library-mcp downloads Unpaywall/arXiv PDFs (size cap, content-type/PDF-header validation) and attaches the file; zotio's `items enrich --missing-pdf` only attached a `linked_url`. Shipped as `items enrich --attach-mode linked-url\|linked-file` (default linked-url, unchanged): linked-file downloads to `--pdf-dir` (content-type + `%PDF-` magic validation, 100 MiB streaming cap, non-public destinations rejected at dial time, no clobber) and creates a `linked_file` child via the import-apply seam. Downloads happen at apply time only; preview names mode and destination. A `stored` mode was built then removed in review: the desktop Connector can only parent attachments to same-session connector-created items, so stored retro-attach waits on the Web API stored-file *upload protocol*, which stays deferred. |
+| **Build (bounded) — SHIPPED 2026-07-11** | Close the OA-PDF loop: download, not just link | zotero-library-mcp downloads Unpaywall/arXiv PDFs (size cap, content-type/PDF-header validation) and attaches the file; zotio's `items enrich --missing-pdf` only attached a `linked_url`. Shipped as `items enrich --attach-mode linked-url\|linked-file` (default linked-url, unchanged): linked-file downloads to `--pdf-dir` (content-type + `%PDF-` magic validation, 100 MiB streaming cap, non-public destinations rejected at dial time, no clobber) and creates a `linked_file` child via the import-apply seam. Downloads happen at apply time only; preview names mode and destination. A `stored` mode was built then removed in review: the desktop Connector can only parent attachments to same-session connector-created items, so stored retro-attach waited on the Web API stored-file *upload protocol*. That protocol has since shipped (`attachments add`, see the stored-file row in the Defer table); `items enrich` still refuses `stored` and points at `attachments add`. |
 | **Decline** | Tag colors (`/settings/tagColors` PUT) | Cosmetic desktop-UI state, not trust/automation. Cheap (one settings endpoint) but no thesis fit; revisit only on user demand. |
 | **Decline** | Programmatic annotation *creation* | zotero-library-mcp computes highlight rects via PyMuPDF and writes Zotero annotation items. Requires a PDF geometry engine in Go — heavy dependency for a write-risky niche. Reading annotations (shipped) is the trust surface; authoring them is not. |
 | **Decline** | In-CLI PDF byte-level text extraction | zotio serves Zotero's own fulltext index (`sync --fulltext`, `items fulltext`); `items file` + `pdftotext` composes the fallback. A PDF parser dependency is not justified (composability thesis). |
