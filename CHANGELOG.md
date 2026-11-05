@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-11-05
+
 ### Changed — breaking
 
 - **`zotio-mcp --allow-unauthenticated` refuses an address other hosts can
@@ -12,6 +14,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   printed a warning and served read and write tools to the network. Loopback
   binds are unchanged. To serve other hosts, keep the bearer token
   (`ZOTIO_MCP_TOKEN` or `--mcp-auth-token-file`); a reverse proxy can send it.
+
+- **`tail --workflow` advances its cursor when the workflow fails.** A script
+  that restarted `tail` to get a failed window delivered again no longer gets
+  it: the events are delivered once, and only the workflow is retried, from a
+  `<db>.tail-trigger-*.json` record next to the local database. The
+  held-retry stderr line has new text. See the first Fixed entry below.
 
 ### Fixed
 
@@ -4822,7 +4830,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/OrgMentem/zotio/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/OrgMentem/zotio/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/OrgMentem/zotio/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/OrgMentem/zotio/compare/v0.28.0...v0.29.0
