@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,52 +259,71 @@ func TestDeliverWebhookRejectsPrivateLiteralTarget(t *testing.T) {
 	}
 }
 
-func TestDeliverWebhookRevalidatesHostAtDialTime(t *testing.T) {
-	var calls int
-	oldLookup := publicOutboundIPLookup
-	publicOutboundIPLookup = func(ctx context.Context, host string) ([]string, error) {
-		calls++
-		if calls == 1 {
-			return nil, fmt.Errorf("resolving host %q: test DNS unavailable", host)
+// stubRebindingResolver makes every hostname resolve to a public address on
+// the first lookup (URL validation) and to loopback afterwards (dial time),
+// so the real publicOutboundIPs filter must catch the rebinding. It returns
+// the lookup counter and a listener port that counts accepted connections.
+func stubRebindingResolver(t *testing.T) (calls *atomic.Int64, port string, accepted *atomic.Int64) {
+	t.Helper()
+	oldAllow := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(false)
+	calls, accepted = &atomic.Int64{}, &atomic.Int64{}
+	oldResolve := publicOutboundResolve
+	publicOutboundResolve = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		if calls.Add(1) == 1 {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
 		}
-		return nil, fmt.Errorf("host %q resolves to local or private address 127.0.0.1", host)
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
 	}
-	t.Cleanup(func() { publicOutboundIPLookup = oldLookup })
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		publicOutboundResolve = oldResolve
+		allowPrivateOutboundForTests.Store(oldAllow)
+	})
+	_, port, _ = net.SplitHostPort(ln.Addr().String())
+	return calls, port, accepted
+}
 
-	err := deliverWebhook(context.Background(), "http://rebind.example.test/hook", []byte(`{"ok":true}`), false)
+func assertRebindingRefused(t *testing.T, name string, err error, calls, accepted *atomic.Int64) {
+	t.Helper()
 	if err == nil {
-		t.Fatal("deliverWebhook accepted host that rebound to loopback, want rejection")
+		t.Fatalf("%s accepted host that rebound to loopback, want rejection", name)
 	}
-	if calls < 2 {
-		t.Fatalf("public outbound lookup calls = %d, want validation plus dial-time lookup", calls)
+	if calls.Load() < 2 {
+		t.Fatalf("resolver calls = %d, want validation plus dial-time lookup", calls.Load())
 	}
 	if !strings.Contains(err.Error(), "local or private") {
-		t.Fatalf("deliverWebhook rebinding error = %v, want local/private rejection", err)
+		t.Fatalf("%s rebinding error = %v, want local/private rejection", name, err)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("%s opened %d connection(s) to the rebound loopback address", name, n)
 	}
 }
 
-func TestPostFeedbackRevalidatesHostAtDialTime(t *testing.T) {
-	var calls int
-	oldLookup := publicOutboundIPLookup
-	publicOutboundIPLookup = func(ctx context.Context, host string) ([]string, error) {
-		calls++
-		if calls == 1 {
-			return nil, fmt.Errorf("resolving host %q: test DNS unavailable", host)
-		}
-		return nil, fmt.Errorf("host %q resolves to local or private address 127.0.0.1", host)
-	}
-	t.Cleanup(func() { publicOutboundIPLookup = oldLookup })
+func TestDeliverWebhookRevalidatesHostAtDialTime(t *testing.T) {
+	calls, port, accepted := stubRebindingResolver(t)
+	err := deliverWebhook(context.Background(), "http://rebind.example.test:"+port+"/hook", []byte(`{"ok":true}`), false)
+	assertRebindingRefused(t, "deliverWebhook", err, calls, accepted)
+}
 
-	err := postFeedback("https://feedback-rebind.example.test/hook", FeedbackEntry{Text: "hello"})
-	if err == nil {
-		t.Fatal("postFeedback accepted host that rebound to loopback, want rejection")
-	}
-	if calls < 2 {
-		t.Fatalf("public outbound lookup calls = %d, want validation plus dial-time lookup", calls)
-	}
-	if !strings.Contains(err.Error(), "local or private") {
-		t.Fatalf("postFeedback rebinding error = %v, want local/private rejection", err)
-	}
+func TestPostFeedbackRevalidatesHostAtDialTime(t *testing.T) {
+	calls, port, accepted := stubRebindingResolver(t)
+	err := postFeedback("https://feedback-rebind.example.test:"+port+"/hook", FeedbackEntry{Text: "hello"})
+	assertRebindingRefused(t, "postFeedback", err, calls, accepted)
 }
 
 func TestDeliverWebhookHonorsContextCancellation(t *testing.T) {
