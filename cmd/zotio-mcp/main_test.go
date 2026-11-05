@@ -44,6 +44,38 @@ func TestIsLoopbackHTTPAddr(t *testing.T) {
 	}
 }
 
+func TestCheckUnauthenticatedExposure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		addr        string
+		allowUnauth bool
+		wantRefusal bool
+	}{
+		{name: "unauthenticated on loopback", addr: "127.0.0.1:7777", allowUnauth: true},
+		{name: "unauthenticated on localhost", addr: "localhost:7777", allowUnauth: true},
+		{name: "unauthenticated on wildcard", addr: ":7777", allowUnauth: true, wantRefusal: true},
+		{name: "unauthenticated on all interfaces", addr: "0.0.0.0:7777", allowUnauth: true, wantRefusal: true},
+		{name: "unauthenticated on remote address", addr: "192.168.1.5:7777", allowUnauth: true, wantRefusal: true},
+		{name: "token auth off-host", addr: "0.0.0.0:7777"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkUnauthenticatedExposure(tt.addr, tt.allowUnauth)
+			if (err != nil) != tt.wantRefusal {
+				t.Fatalf("checkUnauthenticatedExposure(%q, %v) = %v, want refusal %v", tt.addr, tt.allowUnauth, err, tt.wantRefusal)
+			}
+			if err != nil && !strings.Contains(err.Error(), "--allow-unauthenticated") {
+				t.Fatalf("refusal %q does not name --allow-unauthenticated", err)
+			}
+		})
+	}
+}
+
 func TestValidateMCPHTTPRequestOriginCases(t *testing.T) {
 	tests := []struct {
 		name             string

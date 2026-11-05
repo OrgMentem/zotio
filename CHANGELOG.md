@@ -4,6 +4,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **`zotio-mcp --allow-unauthenticated` refuses an address other hosts can
+  reach.** With `--transport http`, unauthenticated serving on `0.0.0.0`, `:PORT`
+  or any non-loopback address now exits 2 before it listens; before, it only
+  printed a warning and served read and write tools to the network. Loopback
+  binds are unchanged. To serve other hosts, keep the bearer token
+  (`ZOTIO_MCP_TOKEN` or `--mcp-auth-token-file`); a reverse proxy can send it.
+
 ## [0.31.0] — 2026-10-29
 
 ### Added

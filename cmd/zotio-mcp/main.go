@@ -119,6 +119,10 @@ func main() {
 		// can reach the port. Require a bearer token by default (auto-generated
 		// and handed over through a private file) unless --allow-unauthenticated
 		// is passed.
+		if err := checkUnauthenticatedExposure(*addr, *allowUnauth); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(2)
+		}
 		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *mcpAuthTokenFile, *allowUnauth)
 		if tokErr != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: cannot resolve auth token: %v\n", tokErr)
@@ -367,6 +371,18 @@ func validBearerToken(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
 }
 
+// checkUnauthenticatedExposure refuses --allow-unauthenticated on an address
+// other hosts can reach. Off-host, that combination hands read+write access to
+// the user's Zotero account to anyone on the network, and a startup warning is
+// no control. A host that must bind off-host keeps the bearer token: a reverse
+// proxy can send it through ZOTIO_MCP_TOKEN or --mcp-auth-token-file.
+func checkUnauthenticatedExposure(addr string, allowUnauth bool) error {
+	if !allowUnauth || isLoopbackHTTPAddr(addr) {
+		return nil
+	}
+	return fmt.Errorf("refusing --allow-unauthenticated on %s: other hosts can reach it and would get read+write tools with no authentication; bind a loopback address, or drop --allow-unauthenticated and set ZOTIO_MCP_TOKEN or --mcp-auth-token-file", addr)
+}
+
 // resolveMCPAuthToken picks the bearer token the HTTP transport enforces:
 // --mcp-auth-token-file, then ZOTIO_MCP_TOKEN, else a freshly generated one.
 // It returns an empty token (auth disabled) only when allowUnauth is set.
@@ -405,7 +421,7 @@ func resolveMCPAuthToken(flagToken, tokenFile string, allowUnauth bool) (token, 
 func announceMCPAuth(log io.Writer, addr, token, source string, generated bool) error {
 	switch {
 	case token == "":
-		fmt.Fprintln(log, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process or reachable host can invoke read+write tools.")
+		fmt.Fprintln(log, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process can invoke read+write tools.")
 	case generated:
 		path, err := writeGeneratedMCPToken(addr, token)
 		if err != nil {

@@ -66,7 +66,8 @@ Each start replaces the generated token file for that bind address.
 Use an explicit token file or environment variable when clients need a stable token.
 The server refuses token values passed through `--mcp-auth-token`.
 
-`--allow-unauthenticated` disables HTTP bearer authentication. Avoid it: loopback does not isolate users, and reachable clients can invoke read and write tools.
+`--allow-unauthenticated` disables HTTP bearer authentication. Avoid it: loopback does not isolate users, and local clients can invoke read and write tools.
+The server refuses it on any address other than loopback (exit 2). To serve other hosts, keep the bearer token; a reverse proxy can send it.
 This transport token is separate from the Zotero API key.
 
 ## Authentication
