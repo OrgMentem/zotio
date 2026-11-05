@@ -3544,15 +3544,18 @@ Events are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
 
 When --workflow &lt;spec.json&gt; is set, tail runs the workflow once after a poll
-cycle that emits events. It previews unless this tail invocation carries --yes.
-Destructive steps also require --allow-destructive on this tail invocation.
-A failed applied run leaves its checkpoint: subsequent applied triggers refuse
-until it is resumed or deleted with zotio workflow run &lt;spec&gt; --yes --resume.
+cycle that emits events, and after any poll while an earlier failed or
+interrupted run is still owed. It previews unless this tail invocation carries
+--yes. Destructive steps also require --allow-destructive on this tail
+invocation. A failed applied run leaves its checkpoint: subsequent applied
+triggers refuse until it is resumed or deleted with
+zotio workflow run &lt;spec&gt; --yes --resume.
 The cursor advances once the events are delivered. The events the workflow has
-not yet run for are recorded next to the local database first, so a failed or
-interrupted trigger is retried on the next poll, alone and with any newer
-events, without delivering the earlier events again. A crash after a
-successful run can repeat it, so workflows must be idempotent.
+not yet run for are recorded next to the local database first (one record per
+API source and workflow spec), so a failed or interrupted trigger is retried on
+the next poll, alone and with any newer events, without delivering the earlier
+events again. A crash after a successful run can repeat it, so workflows must
+be idempotent.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.
@@ -3594,7 +3597,7 @@ Examples:
 | `--follow` | `bool` | `true` | Keep running (set --follow=false for single poll) |
 | `--interval` | `duration` | `10s` | Poll interval |
 | `--resource` | `string` |  | Resource type to tail |
-| `--workflow` | `string` |  | Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run &lt;spec&gt; --yes --resume |
+| `--workflow` | `string` |  | Run this workflow after a poll that emits events or still owes a failed run; previews unless --yes, and failed applied runs require zotio workflow run &lt;spec&gt; --yes --resume |
 
 ## `zotio vault`
 

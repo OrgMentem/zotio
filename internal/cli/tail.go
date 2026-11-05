@@ -51,15 +51,18 @@ Events are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
 
 When --workflow <spec.json> is set, tail runs the workflow once after a poll
-cycle that emits events. It previews unless this tail invocation carries --yes.
-Destructive steps also require --allow-destructive on this tail invocation.
-A failed applied run leaves its checkpoint: subsequent applied triggers refuse
-until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+cycle that emits events, and after any poll while an earlier failed or
+interrupted run is still owed. It previews unless this tail invocation carries
+--yes. Destructive steps also require --allow-destructive on this tail
+invocation. A failed applied run leaves its checkpoint: subsequent applied
+triggers refuse until it is resumed or deleted with
+zotio workflow run <spec> --yes --resume.
 The cursor advances once the events are delivered. The events the workflow has
-not yet run for are recorded next to the local database first, so a failed or
-interrupted trigger is retried on the next poll, alone and with any newer
-events, without delivering the earlier events again. A crash after a
-successful run can repeat it, so workflows must be idempotent.
+not yet run for are recorded next to the local database first (one record per
+API source and workflow spec), so a failed or interrupted trigger is retried on
+the next poll, alone and with any newer events, without delivering the earlier
+events again. A crash after a successful run can repeat it, so workflows must
+be idempotent.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.
@@ -164,11 +167,8 @@ native streaming instead of polling.`,
 			// collected.
 			var hook *tailTriggerHook
 			if workflowPath != "" {
-				pendingPath, err := tailTriggerPendingPath(dbPath, resource, workflowPath)
-				if err != nil {
-					return err
-				}
-				hook = &tailTriggerHook{pendingPath: pendingPath, run: func(batch tailChangeBatch) error {
+				var err error
+				hook, err = newTailTriggerHook(dbPath, workflowPath, func(batch tailChangeBatch) error {
 					inv := workflowRunInvocation{
 						Yes:              flags.yes,
 						AllowDestructive: flags.allowDestructive,
@@ -188,7 +188,10 @@ native streaming instead of polling.`,
 						inv.Trigger = trigger
 					}
 					return runTriggeredWorkflowE(cmd.Context(), cmd, "tail", workflowPath, inv)
-				}}
+				})
+				if err != nil {
+					return err
+				}
 			}
 
 			poll := func() error {
@@ -254,7 +257,7 @@ native streaming instead of polling.`,
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
 	// Cursor persistence location.
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
-	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
+	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after a poll that emits events or still owes a failed run; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 	cmd.Flags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow destructive steps in --workflow (requires --workflow)")
 
 	return cmd
@@ -309,57 +312,83 @@ type tailChangeBatch struct {
 }
 
 // merge returns the events a trigger owes once next is delivered on top of
-// b. An event already owed is not listed twice, because a redelivered window
-// (a held cursor) repeats events that are already owed. The result is a
-// baseline if either part is, so a workflow that reads trigger values keeps
-// skipping a listing it never saw as changes.
+// b.
+//
+// A baseline lists the current records, not changes, so it is never merged
+// with a change batch: the change batch is kept and the listing dropped. A
+// workflow that reads trigger values would skip a merged batch as "the first
+// poll" and so lose the real changes in it; any other workflow still runs once
+// on the kept batch. Of two baselines, the newer listing is kept.
+//
+// Between two change batches the latest event per resource and key wins: an
+// event in next replaces an owed event for the same record, so a tag that was
+// deleted and then created again is owed as an upsert, and a redelivered
+// window (a held cursor) does not list an owed event twice. Order is otherwise
+// preserved.
 func (b tailChangeBatch) merge(next tailChangeBatch) tailChangeBatch {
-	if len(next.Events) == 0 {
+	switch {
+	case len(next.Events) == 0:
 		return b
-	}
-	if len(b.Events) == 0 {
+	case len(b.Events) == 0:
+		return next
+	case next.Baseline && !b.Baseline:
+		return b
+	case b.Baseline:
 		return next
 	}
-	merged := tailChangeBatch{
-		Baseline: b.Baseline || next.Baseline,
-		Events:   append(make([]workflowRunTriggerEvent, 0, len(b.Events)+len(next.Events)), b.Events...),
-	}
-	owed := make(map[workflowRunTriggerEvent]struct{}, len(b.Events))
-	for _, event := range b.Events {
-		owed[event] = struct{}{}
-	}
+	replaced := make(map[[2]string]struct{}, len(next.Events))
 	for _, event := range next.Events {
-		if _, dup := owed[event]; !dup {
+		replaced[[2]string{event.Resource, event.Key}] = struct{}{}
+	}
+	merged := tailChangeBatch{Events: make([]workflowRunTriggerEvent, 0, len(b.Events)+len(next.Events))}
+	for _, event := range b.Events {
+		if _, ok := replaced[[2]string{event.Resource, event.Key}]; !ok {
 			merged.Events = append(merged.Events, event)
 		}
 	}
+	merged.Events = append(merged.Events, next.Events...)
 	return merged
 }
 
 // tailTriggerHook is the --workflow trigger tail runs after delivery.
 //
 // The trigger is decoupled from delivery: once a poll's events reach every
-// sink, they are recorded at pendingPath as owed, the cursor advances, and
-// run is called with every owed event. Only a successful run clears the
-// record. A workflow that fails every time is therefore retried alone on
-// each poll, with any newer events added, and the delivered events are never
-// sent to stdout or a sink again. Holding the cursor instead re-delivered the
-// whole, growing window every interval.
+// sink, they are recorded as owed (pendingPath), the cursor advances, and run
+// is called with every owed event. Only a successful run clears the record.
+// A workflow that fails every time is therefore retried alone on each poll,
+// with any newer events added, and the delivered events are never sent to
+// stdout or a sink again. Holding the cursor instead re-delivered the whole,
+// growing window every interval.
 type tailTriggerHook struct {
-	pendingPath string
-	run         func(batch tailChangeBatch) error
+	// dbPath is the local database with symlinks resolved, so every spelling
+	// of one database finds the same record; specPath is absolute.
+	dbPath, specPath string
+	run              func(batch tailChangeBatch) error
 }
 
-// tailTriggerPendingPath keys the owed-trigger record by local database,
-// resource, and workflow spec, so two workflows tailing one resource each keep
-// their own record. The resource is one of tailKnownResources.
-func tailTriggerPendingPath(dbPath, resource, specPath string) (string, error) {
-	abs, err := filepath.Abs(specPath)
+func newTailTriggerHook(dbPath, specPath string, run func(batch tailChangeBatch) error) (*tailTriggerHook, error) {
+	// Resolve every symlink component, including a final link whose target
+	// the first poll has not created yet, so each spelling of one database
+	// finds the same owed-trigger record before and after it exists.
+	db, err := canonicalOutputPath(dbPath)
 	if err != nil {
-		return "", fmt.Errorf("resolving workflow spec path: %w", err)
+		return nil, fmt.Errorf("resolving the local database path: %w", err)
 	}
-	sum := sha256.Sum256([]byte(abs))
-	return dbPath + ".tail-trigger-" + resource + "-" + hex.EncodeToString(sum[:8]) + ".json", nil
+	spec, err := filepath.Abs(specPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving workflow spec path: %w", err)
+	}
+	return &tailTriggerHook{dbPath: db, specPath: spec, run: run}, nil
+}
+
+// pendingPath keys the owed-trigger record by local database, resource,
+// workflow spec, and API source. Two workflows tailing one resource each keep
+// their own record, and so does each API source: the cursor is per source
+// (store.GetLibraryVersion), so events owed on one source must never reach a
+// run against another. The resource is one of tailKnownResources.
+func (h *tailTriggerHook) pendingPath(resource, source string) string {
+	sum := sha256.Sum256([]byte(h.specPath + "\x00" + source))
+	return h.dbPath + ".tail-trigger-" + resource + "-" + hex.EncodeToString(sum[:8]) + ".json"
 }
 
 // loadTailPendingTrigger reads the owed events. A missing record owes
@@ -414,11 +443,10 @@ type tailTriggerHeldError struct {
 }
 
 func (e *tailTriggerHeldError) Error() string {
-	cursor := "the cursor advanced"
 	if e.cursorHeld {
-		cursor = "the cursor is held only for unread deletions"
+		return fmt.Sprintf("tail %s: triggered workflow failed: %v; delivered %d new event(s) this poll, but the cursor is held because deletions could not be read, so the next poll delivers this window's upserts again; the workflow still owes %d delivered event(s) and is retried on the next poll", e.resource, e.err, e.delivered, e.owed)
 	}
-	return fmt.Sprintf("tail %s: triggered workflow failed: %v; delivered %d new event(s) this poll and %s; the %d delivered event(s) the workflow still owes are not re-delivered, and the next poll retries only the workflow", e.resource, e.err, e.delivered, cursor, e.owed)
+	return fmt.Sprintf("tail %s: triggered workflow failed: %v; delivered %d new event(s) this poll and the cursor advanced; the %d delivered event(s) the workflow still owes are not re-delivered, and the next poll retries only the workflow", e.resource, e.err, e.delivered, e.owed)
 }
 
 func (e *tailTriggerHeldError) Unwrap() error { return e.err }
@@ -563,8 +591,10 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		return 0, fmt.Errorf("tail %s: reading cursor: %w", resource, err)
 	}
 	var owed tailChangeBatch
+	var pendingPath string
 	if hook != nil {
-		if owed, err = loadTailPendingTrigger(hook.pendingPath); err != nil {
+		pendingPath = hook.pendingPath(resource, c.BaseURL)
+		if owed, err = loadTailPendingTrigger(pendingPath); err != nil {
 			return 0, fmt.Errorf("tail %s: %w", resource, err)
 		}
 	}
@@ -744,7 +774,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	// them: a crash after the save must still run the workflow for them.
 	owed = owed.merge(batch)
 	if hook != nil && len(batch.Events) > 0 {
-		if err := saveTailPendingTrigger(hook.pendingPath, owed); err != nil {
+		if err := saveTailPendingTrigger(pendingPath, owed); err != nil {
 			return emitted, fmt.Errorf("tail %s: recording the workflow trigger: %w", resource, err)
 		}
 	}
@@ -765,7 +795,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 				err:        err,
 			}
 		}
-		if err := saveTailPendingTrigger(hook.pendingPath, tailChangeBatch{}); err != nil {
+		if err := saveTailPendingTrigger(pendingPath, tailChangeBatch{}); err != nil {
 			return emitted, fmt.Errorf("tail %s: clearing the workflow trigger after a successful run (the next poll runs it again): %w", resource, err)
 		}
 	}

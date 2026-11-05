@@ -208,7 +208,7 @@ func TestEmitChangesWithHook_RecordsOwedTriggerBeforeItRuns(t *testing.T) {
 	var hook *tailTriggerHook
 	hook = tailTestHook(t, func(batch tailChangeBatch) error {
 		hookRuns++
-		recorded, err := loadTailPendingTrigger(hook.pendingPath)
+		recorded, err := loadTailPendingTrigger(hook.pendingPath("items", api.URL))
 		if err != nil {
 			return err
 		}
@@ -253,7 +253,7 @@ func TestEmitChangesWithHook_RecordsOwedTriggerBeforeItRuns(t *testing.T) {
 	if len(sinces) != 2 || sinces[0] != "6" || sinces[1] != "7" {
 		t.Fatalf("since values = %v, want [6 7]: the retry must not re-read the delivered window", sinces)
 	}
-	if _, err := os.Stat(hook.pendingPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(hook.pendingPath("items", api.URL)); !os.IsNotExist(err) {
 		t.Fatalf("owed record after the successful retry: %v, want it removed", err)
 	}
 }

@@ -19,10 +19,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   fails.** A failing trigger used to hold the cursor, so every poll sent the
   whole, growing window to stdout, the webhook and the file sink again. Events
   are now delivered once and the cursor advances. The events the workflow has
-  not run for are recorded next to the local database, and each later poll
-  retries only the workflow, with any newer events. The stderr line says what
-  was delivered and what is still owed. This replaces the 0.29.0 behaviour of
-  keeping the cursor behind a failed triggered workflow.
+  not run for are recorded next to the local database, one record for each
+  API source and workflow spec, and each later poll retries only the
+  workflow, with any newer events. The latest event for a record wins, so a
+  tag deleted and then recreated is owed as an upsert, and a first-poll
+  listing never absorbs real changes. The stderr line says what was delivered
+  and what is still owed. This replaces the 0.29.0 behaviour of keeping the
+  cursor behind a failed triggered workflow.
 
 - **A `tail` `file:` sink no longer joins an event to a broken last line.** A
   killed append, or a rollback that failed, could leave the file without a

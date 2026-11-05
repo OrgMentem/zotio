@@ -236,10 +236,12 @@ claim distributed locking across machines, NFS, or iCloud-backed paths.
   exit 9. This includes aliases through symlinked ancestors.
 - **2026-11-05 — a tail trigger is retried apart from delivery.** Inside the
   same poll transaction, tail now delivers, durably records the delivered
-  events the `--workflow` trigger owes (`<db>.tail-trigger-<resource>-<spec
-  hash>.json`), publishes the cursor, then runs the workflow, and clears the
-  record only after a successful run. A failed workflow no longer holds the
-  cursor, so it is retried alone and never redelivers events. Before each file
+  events the `--workflow` trigger owes (`<db>.tail-trigger-<resource>-<hash>.json`,
+  where `<db>` has symlinks resolved and the hash covers the absolute spec path
+  and the API source, as the cursor does), publishes the cursor, then runs the
+  workflow, and clears the record only after a successful run. A failed
+  workflow no longer holds the cursor, so it is retried alone and never
+  redelivers events. Before each file
   append, tail moves any final line without a newline to a `<file>.torn-*`
   sidecar and truncates the file to its last complete line, so a failed
   rollback is repaired by the next append.

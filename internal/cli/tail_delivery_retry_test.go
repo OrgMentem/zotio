@@ -90,14 +90,21 @@ func batchKeys(batch tailChangeBatch) []string {
 	return keys
 }
 
-// tailTestHook builds the --workflow trigger seam with its pending record in
-// a private temp dir.
+// tailTestHook builds the --workflow trigger seam with its owed record next
+// to a private temp database.
 func tailTestHook(t *testing.T, run func(tailChangeBatch) error) *tailTriggerHook {
 	t.Helper()
-	return &tailTriggerHook{
-		pendingPath: filepath.Join(t.TempDir(), "tail-trigger.json"),
-		run:         run,
+	dir := t.TempDir()
+	return tailTestHookAt(t, filepath.Join(dir, "x.db"), filepath.Join(dir, "spec.json"), run)
+}
+
+func tailTestHookAt(t *testing.T, dbPath, specPath string, run func(tailChangeBatch) error) *tailTriggerHook {
+	t.Helper()
+	hook, err := newTailTriggerHook(dbPath, specPath, run)
+	if err != nil {
+		t.Fatalf("newTailTriggerHook: %v", err)
 	}
+	return hook
 }
 
 // Finding zotio-1199a7b2032d6489: a workflow that fails every time held the
@@ -184,7 +191,7 @@ func TestTailFailingTriggerDeliversEachEventOnceAndRetriesTheTrigger(t *testing.
 	if len(triggered) != 4 || !reflect.DeepEqual(triggered[3], want) {
 		t.Fatalf("trigger batches = %v, want a fourth run over %v", triggered, want)
 	}
-	if _, err := os.Stat(hook.pendingPath); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(hook.pendingPath("items", api.URL)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pending trigger record after a successful run: %v, want it removed", err)
 	}
 	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", sink, &stdout, hook); err != nil {
@@ -195,40 +202,86 @@ func TestTailFailingTriggerDeliversEachEventOnceAndRetriesTheTrigger(t *testing.
 	}
 }
 
-// A pending trigger is durable: a new tail process with a working workflow
-// runs it for the events its predecessor delivered.
-func TestTailPendingTriggerSurvivesAcrossProcesses(t *testing.T) {
-	lib := &tailGrowingLibrary{version: 6}
-	lib.add("AAAA0001")
-	api := lib.server(t)
-	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
-	c.NoCache = true
-	db := tailTestStore(t)
-	if err := db.SaveLibraryVersion("tail:items", api.URL, 6); err != nil {
-		t.Fatalf("seeding cursor: %v", err)
-	}
-	pending := filepath.Join(t.TempDir(), "tail-trigger.json")
+// The owed record is the only state a restarted tail has. A first `tail`
+// invocation delivers an item and its workflow fails; a second invocation,
+// with a fresh process state and the database named through a symlink, runs
+// the workflow for that item without delivering it again.
+func TestTailOwedTriggerSurvivesARestartedTailCommand(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "7")
+		if r.URL.Query().Get("since") != "" {
+			_, _ = io.WriteString(w, `[]`)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"key":"AAAA0001","version":7}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `{"items":[]}`)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
-	var stdout bytes.Buffer
-	failing := &tailTriggerHook{pendingPath: pending, run: func(tailChangeBatch) error { return errors.New("workflow failed") }}
-	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &stdout, failing); err == nil {
-		t.Fatal("failing trigger: want an error")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tail.db")
+	linkPath := filepath.Join(dir, "tail-link.db")
+	// The step reads an item the API does not have, so the run fails.
+	specPath := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"items", "get", "ZZZZ9999"}}}})
+	runTail := func(db string) (string, string, error) {
+		t.Helper()
+		cmd := RootCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		cmd.SetArgs([]string{"tail", "items", "--follow=false", "--db", db, "--workflow", specPath})
+		err := cmd.ExecuteContext(context.Background())
+		return out.String(), errOut.String(), err
 	}
 
-	var got []string
-	restarted := &tailTriggerHook{pendingPath: pending, run: func(batch tailChangeBatch) error {
-		got = batchKeys(batch)
-		return nil
-	}}
-	stdout.Reset()
-	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &stdout, restarted); err != nil {
-		t.Fatalf("restarted poll: %v", err)
+	stdout, stderr, err := runTail(dbPath)
+	if err == nil || !strings.Contains(err.Error(), "not re-delivered") {
+		t.Fatalf("first tail: error = %v (stderr %q), want the held workflow failure", err, stderr)
 	}
-	if !reflect.DeepEqual(got, []string{"AAAA0001"}) {
-		t.Fatalf("restarted trigger keys = %v, want the delivered AAAA0001", got)
+	if got := eventKeys(t, stdout); !reflect.DeepEqual(got, []string{"AAAA0001"}) {
+		t.Fatalf("first tail stdout keys = %v, want AAAA0001 delivered", got)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("restarted poll re-delivered %q", stdout.String())
+
+	if err := os.Symlink(dbPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The workflow is fixed in place; the record is keyed by the spec's path.
+	data, err := json.Marshal(workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"version"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err = runTail(linkPath)
+	if err != nil {
+		t.Fatalf("restarted tail: %v (stderr %q)", err, stderr)
+	}
+	if !strings.Contains(stderr, "workflow preview ok") {
+		t.Fatalf("restarted tail stderr = %q, want the owed workflow run", stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("restarted tail re-delivered %q", stdout)
+	}
+	matches, err := filepath.Glob(dbPath + ".tail-trigger-*")
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("owed records after the successful run = %v, %v; want none", matches, err)
 	}
 }
 
