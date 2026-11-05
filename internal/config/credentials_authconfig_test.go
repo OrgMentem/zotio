@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func authConfigHome(t *testing.T) {
+func authConfigHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -16,6 +16,7 @@ func authConfigHome(t *testing.T) {
 	}
 	t.Setenv("ZOTERO_CONFIG_DIR", filepath.Join(home, "primary"))
 	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(home, "data"))
+	return home
 }
 
 func TestLoadDefaultPathParseErrorsAuthConfig(t *testing.T) {

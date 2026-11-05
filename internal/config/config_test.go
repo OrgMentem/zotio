@@ -26,8 +26,8 @@ func TestLegacyConfigPathRejectsRelativeHome(t *testing.T) {
 }
 
 func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *testing.T) {
-	authConfigHome(t)
-	cfgPath := filepath.Join(os.Getenv("HOME"), "config.toml")
+	home := authConfigHome(t)
+	cfgPath := filepath.Join(home, "config.toml")
 
 	seed := "auth_header = \"legacy-header\"\naccess_token = \"legacy-bearer\"\n"
 	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
