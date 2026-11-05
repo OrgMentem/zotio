@@ -242,7 +242,8 @@ P6  reproducible export  ->  P7  packaging & niceties
 - **Phase 4 — Reviewable import. SHIPPED.** `import scan → resolve → apply` over an editable JSON
   manifest; DOI/PMID/arXiv/ISBN adapters (`import doi|pmid|arxiv|isbn`); schema-valid creation via
   Web `/items/new` (`items new`, refuses loudly offline); `import apply --attach-mode none|linked-file`
-  (`upload` refused loudly, deferred); enrich gained Semantic Scholar/OpenCitations providers + a
+  (`upload` refused loudly, deferred; stored upload shipped later, see the Defer table's
+  stored-file row); enrich gained Semantic Scholar/OpenCitations providers + a
   read-only `--validate` discrepancy mode (OpenAlex already shipped).
 - **Phase 5 — Agent/vault trust plane. SHIPPED.** `zotero://freshness` (decision-ready sync ages),
   `zotero://health/{scope}` (ranked findings per scope), and bounded graph resources
@@ -357,7 +358,7 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 | Decision | Item | Rationale |
 |---|---|---|
 | **Defer** | Journal before-images / broader undo | Relitigates the recorded "defer universal undo"; no demand evidence. Before-images are the principled path *if* demand shows. |
-| **Defer** | Stored-file upload protocol | Still the riskiest import edge; the attach-mode contract already reserves `upload`. Revisit on group-library demand. |
+| **SHIPPED** (corrected 2026-11-05) | Stored-file upload protocol | Shipped as stored mode on `import apply --attach-mode stored` and `attachments add` (see CHANGELOG). The Web route uploads into Zotero's cloud storage; `--via connector` hands the file to Zotero desktop so it reaches the configured store, WebDAV included. The stored-upload guard refuses a Web upload when the desktop keeps files elsewhere (`internal/cli/file_storage_guard.go`, AGENTS.md). |
 | **Decline** | Multi-library workspace model | A workspace registry is architecture without a user. The cheap 80% is `--group all` read/diagnostic fan-out, **SHIPPED 2026-09-03** (`zotio-e93e08d3268d422a`): the root pre-run accepts `all`, resolves the personal library plus every accessible group, runs the command once per library with the scope global set and restored around each, and merges one report with a `library` dimension on every row. Reads and diagnostics only — a non-read command refuses at exit 2 before any request, because no environment makes `items delete --group all` legal. One unreachable group is reported against that group and the rest still return. Corrected 2026-08-17: this row previously implied the fan-out already shipped, so the decline rested on an unbuilt alternative; it is now real. |
 | **Decline** | Beacon recurring scheduler | `watch --interval` + OS schedulers/CI cover it; a resident daemon is a large operational surface against the composability thesis. |
 | **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
@@ -365,7 +366,7 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 | **Park** (2026-10-01) | Vault orphan-note archive (`zotio-a34bf505d2628ad7`) | `vault audit` stays read-only (Phase 5). An archive action needs a demand signal plus a reversible, byte-preserving move design and a fresh-sync precondition. |
 | **Park** (2026-10-01) | DOI-less OpenAlex works in `import monitor` (`zotio-808bcb0785554a66`) | Needs a new resolver with conservative OpenAlex→Zotero schema mapping. No demand signal; the monitor documents the omission. |
 | **Park** (2026-10-01) | PRISMA acquisition provenance (`zotio-5c87874d474d4523`) | `library prisma` groups by `libraryCatalog`. Provenance needs a home first: the import journal (per-machine, no metadata write) is the boring start; a tag or `extra` line pollutes user metadata. Build on demand. |
-| **Defer** (until 2027-01-01) | Scope intersection grammar (`zotio-a90bcce3da4d6c5b`) | Every scope adopter would need multi-arm resolution and precondition unions; no user asked. Roadmap thesis is one bounded grammar. |
+| **SHIPPED** (0.29.0, 2026-10-12; corrected 2026-11-05) | Scope intersection grammar (`zotio-a90bcce3da4d6c5b`) | Arms join with ` AND ` (`internal/cli/scope.go`); `library` cannot be an arm. This row deferred it to 2027-01-01 and was not updated when it shipped. |
 | **Closed, measured** (2026-10-01) | BibTeX key lock to `citationKey` (`zotio-2e9d0aaecd686079`) | Web API `format=bibtex` already emits the native `citationKey` field: 40/40 entries matched against `resolveCiteKey` on the live library, 0 items with `extra`-only keys. No gap. |
 | **Closed** (2026-10-01) | Indexed-date OpenAlex monitor (`zotio-73086396a45a3600`) | `from_created_date` needs an OpenAlex Premium key; the free filter is `from_publication_date`, which the monitor already uses. |
 | **Park** (2026-10-01) | Persistent health-watch alert baselines (`zotio-812a2e78414fa894`) | The fix needs durable baseline identity, acknowledgment-safe writes, and reset behavior. Build when users need continuity across watch restarts and select a state location. |
