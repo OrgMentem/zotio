@@ -199,8 +199,12 @@ func resolvePublicOutboundHostWithContext(ctx context.Context, host string) erro
 var publicOutboundIPLookup = publicOutboundIPs
 
 // publicOutboundResolve is the DNS seam under publicOutboundIPs. Tests stub it
-// so the real private-address filter still runs on the resolved addresses.
-var publicOutboundResolve = net.DefaultResolver.LookupIPAddr
+// so the real private-address filter still runs on the resolved addresses. It
+// reads net.DefaultResolver per call, so a test that swaps the default
+// resolver still reaches this path.
+var publicOutboundResolve = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
 
 func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	if addr, err := netip.ParseAddr(strings.TrimSuffix(host, ".")); err == nil {
