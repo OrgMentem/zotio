@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -339,21 +340,23 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Classify only explicit loopback bind hosts as local.
+// Classify only explicit loopback bind hosts as local: localhost (with or
+// without its trailing root dot) and loopback IP literals, including IPv6
+// with a zone such as [::1%lo0]. Other names are not resolved.
 func isLoopbackHTTPAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
 		return false
 	}
 	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
 		return true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || ip.IsUnspecified() {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
 		return false
 	}
-	return ip.IsLoopback()
+	return ip.WithZone("").Unmap().IsLoopback()
 }
 
 // validBearerToken reports whether r carries the expected bearer token, using a

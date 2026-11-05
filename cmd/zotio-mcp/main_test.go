@@ -31,6 +31,11 @@ func TestIsLoopbackHTTPAddr(t *testing.T) {
 		{name: "ipv4 wildcard", addr: "0.0.0.0:7777", want: false},
 		{name: "ipv6 loopback", addr: "[::1]:7777", want: true},
 		{name: "remote ipv4", addr: "1.2.3.4:7777", want: false},
+		{name: "localhost with root dot", addr: "localhost.:7777", want: true},
+		{name: "ipv6 loopback with zone", addr: "[::1%lo0]:7777", want: true},
+		{name: "ipv6 wildcard", addr: "[::]:7777", want: false},
+		{name: "ipv4-mapped loopback", addr: "[::ffff:127.0.0.1]:7777", want: true},
+		{name: "other name", addr: "myhost.local:7777", want: false},
 	}
 
 	for _, tt := range tests {
