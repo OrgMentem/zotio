@@ -69,10 +69,10 @@ func TestWdEmitChangesHandsTheEventBatchToTheHook(t *testing.T) {
 	db := tailTestStore(t)
 
 	var batches []tailChangeBatch
-	hook := func(batch tailChangeBatch) error {
+	hook := tailTestHook(t, func(batch tailChangeBatch) error {
 		batches = append(batches, batch)
 		return nil
-	}
+	})
 	for range 2 {
 		var out bytes.Buffer
 		if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook); err != nil {

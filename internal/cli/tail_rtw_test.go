@@ -41,10 +41,10 @@ func TestRtwTailTagIdentityReachesNDJSONAndTrigger(t *testing.T) {
 			}
 			var out bytes.Buffer
 			var batch tailChangeBatch
-			n, err := emitChangesWithHook(context.Background(), c, db, "tags", "/tags", DeliverSink{Scheme: "stdout"}, &out, func(b tailChangeBatch) error {
+			n, err := emitChangesWithHook(context.Background(), c, db, "tags", "/tags", DeliverSink{Scheme: "stdout"}, &out, tailTestHook(t, func(b tailChangeBatch) error {
 				batch = b
 				return nil
-			})
+			}))
 			if err != nil {
 				t.Fatalf("tail poll: %v", err)
 			}

@@ -3548,8 +3548,11 @@ cycle that emits events. It previews unless this tail invocation carries --yes.
 Destructive steps also require --allow-destructive on this tail invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run &lt;spec&gt; --yes --resume.
-The cursor advances only after the triggered invocation returns, so a crash
-before or during the trigger replays the same batch on the next poll.
+The cursor advances once the events are delivered. The events the workflow has
+not yet run for are recorded next to the local database first, so a failed or
+interrupted trigger is retried on the next poll, alone and with any newer
+events, without delivering the earlier events again. A crash after a
+successful run can repeat it, so workflows must be idempotent.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.

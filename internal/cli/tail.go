@@ -5,6 +5,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
@@ -52,8 +55,11 @@ cycle that emits events. It previews unless this tail invocation carries --yes.
 Destructive steps also require --allow-destructive on this tail invocation.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
-The cursor advances only after the triggered invocation returns, so a crash
-before or during the trigger replays the same batch on the next poll.
+The cursor advances once the events are delivered. The events the workflow has
+not yet run for are recorded next to the local database first, so a failed or
+interrupted trigger is retried on the next poll, alone and with any newer
+events, without delivering the earlier events again. A crash after a
+successful run can repeat it, so workflows must be idempotent.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.
@@ -149,17 +155,20 @@ native streaming instead of polling.`,
 
 			fmt.Fprintln(cmd.ErrOrStderr(), tailStartBanner(resource, interval, follow))
 
-			// Run a trigger after delivery but before the cursor advances. A
-			// crash or workflow failure leaves this window retryable. A crash
-			// after a successful trigger can replay it, so workflows must be
+			// Run a trigger after delivery. Delivered events are recorded as
+			// owed before the cursor advances and cleared only after a
+			// successful run, so a failing workflow is retried alone on later
+			// polls instead of re-delivering its window. A crash after a
+			// successful trigger can replay it, so workflows must be
 			// idempotent. Without --workflow there is no hook, so no batch is
 			// collected.
-			var afterDelivery func(batch tailChangeBatch) error
+			var hook *tailTriggerHook
 			if workflowPath != "" {
-				afterDelivery = func(batch tailChangeBatch) error {
-					if len(batch.Events) == 0 {
-						return nil
-					}
+				pendingPath, err := tailTriggerPendingPath(dbPath, resource, workflowPath)
+				if err != nil {
+					return err
+				}
+				hook = &tailTriggerHook{pendingPath: pendingPath, run: func(batch tailChangeBatch) error {
 					inv := workflowRunInvocation{
 						Yes:              flags.yes,
 						AllowDestructive: flags.allowDestructive,
@@ -179,7 +188,7 @@ native streaming instead of polling.`,
 						inv.Trigger = trigger
 					}
 					return runTriggeredWorkflowE(cmd.Context(), cmd, "tail", workflowPath, inv)
-				}
+				}}
 			}
 
 			poll := func() error {
@@ -192,7 +201,7 @@ native streaming instead of polling.`,
 					}
 					defer db.Close()
 					emit := func() error {
-						_, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery)
+						_, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), hook)
 						return err
 					}
 					if sink.Scheme == "file" {
@@ -210,7 +219,7 @@ native streaming instead of polling.`,
 				if !follow {
 					return fmt.Errorf("initial tail poll: %w", pollErr)
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "[tail] poll error: %v; holding the cursor for retry\n", pollErr)
+				fmt.Fprintln(cmd.ErrOrStderr(), tailPollErrorLine(pollErr))
 			}
 
 			// Honor --follow=false as a single poll.
@@ -232,7 +241,7 @@ native streaming instead of polling.`,
 					return nil
 				case <-timer.C:
 					if err := poll(); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "[tail] poll error: %v; holding the cursor for retry\n", err)
+						fmt.Fprintln(cmd.ErrOrStderr(), tailPollErrorLine(err))
 					}
 					timer.Reset(interval)
 				}
@@ -249,6 +258,17 @@ native streaming instead of polling.`,
 	cmd.Flags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow destructive steps in --workflow (requires --workflow)")
 
 	return cmd
+}
+
+// tailPollErrorLine is the stderr line for a failed poll. A held trigger
+// already delivered its events and moved the cursor, so its error says what
+// was and was not delivered instead of claiming the cursor is held.
+func tailPollErrorLine(err error) string {
+	var held *tailTriggerHeldError
+	if errors.As(err, &held) {
+		return "[tail] " + err.Error()
+	}
+	return fmt.Sprintf("[tail] poll error: %v; holding the cursor for retry", err)
 }
 
 // tailStartBanner announces what this invocation will actually do.
@@ -279,19 +299,135 @@ func tailKnownResources() []string {
 }
 
 // tailChangeBatch is one poll cycle's emitted events, in emission order, as
-// the post-delivery hook sees them.
+// the post-delivery hook sees them. It is also the on-disk form of the events
+// a trigger still owes (see tailTriggerHook).
 type tailChangeBatch struct {
 	// Baseline marks the first poll (no stored cursor): its upserts list the
 	// current records, not changes.
-	Baseline bool
-	Events   []workflowRunTriggerEvent
+	Baseline bool                      `json:"baseline,omitempty"`
+	Events   []workflowRunTriggerEvent `json:"events"`
 }
+
+// merge returns the events a trigger owes once next is delivered on top of
+// b. An event already owed is not listed twice, because a redelivered window
+// (a held cursor) repeats events that are already owed. The result is a
+// baseline if either part is, so a workflow that reads trigger values keeps
+// skipping a listing it never saw as changes.
+func (b tailChangeBatch) merge(next tailChangeBatch) tailChangeBatch {
+	if len(next.Events) == 0 {
+		return b
+	}
+	if len(b.Events) == 0 {
+		return next
+	}
+	merged := tailChangeBatch{
+		Baseline: b.Baseline || next.Baseline,
+		Events:   append(make([]workflowRunTriggerEvent, 0, len(b.Events)+len(next.Events)), b.Events...),
+	}
+	owed := make(map[workflowRunTriggerEvent]struct{}, len(b.Events))
+	for _, event := range b.Events {
+		owed[event] = struct{}{}
+	}
+	for _, event := range next.Events {
+		if _, dup := owed[event]; !dup {
+			merged.Events = append(merged.Events, event)
+		}
+	}
+	return merged
+}
+
+// tailTriggerHook is the --workflow trigger tail runs after delivery.
+//
+// The trigger is decoupled from delivery: once a poll's events reach every
+// sink, they are recorded at pendingPath as owed, the cursor advances, and
+// run is called with every owed event. Only a successful run clears the
+// record. A workflow that fails every time is therefore retried alone on
+// each poll, with any newer events added, and the delivered events are never
+// sent to stdout or a sink again. Holding the cursor instead re-delivered the
+// whole, growing window every interval.
+type tailTriggerHook struct {
+	pendingPath string
+	run         func(batch tailChangeBatch) error
+}
+
+// tailTriggerPendingPath keys the owed-trigger record by local database,
+// resource, and workflow spec, so two workflows tailing one resource each keep
+// their own record. The resource is one of tailKnownResources.
+func tailTriggerPendingPath(dbPath, resource, specPath string) (string, error) {
+	abs, err := filepath.Abs(specPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving workflow spec path: %w", err)
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return dbPath + ".tail-trigger-" + resource + "-" + hex.EncodeToString(sum[:8]) + ".json", nil
+}
+
+// loadTailPendingTrigger reads the owed events. A missing record owes
+// nothing. An unreadable one fails the poll before anything is delivered:
+// guessing would drop events the workflow never ran for.
+func loadTailPendingTrigger(path string) (tailChangeBatch, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return tailChangeBatch{}, nil
+	}
+	if err != nil {
+		return tailChangeBatch{}, fmt.Errorf("reading the pending workflow trigger %s: %w", path, err)
+	}
+	var batch tailChangeBatch
+	if err := json.Unmarshal(data, &batch); err != nil {
+		return tailChangeBatch{}, fmt.Errorf("parsing the pending workflow trigger %s: %w; it lists delivered events the workflow has not run for, so repair it, or delete it to drop them", path, err)
+	}
+	return batch, nil
+}
+
+// saveTailPendingTrigger durably publishes the owed events, or removes the
+// record when nothing is owed. Callers hold the installation writer lock.
+func saveTailPendingTrigger(path string, batch tailChangeBatch) error {
+	if len(batch.Events) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing %s: %w", path, err)
+		}
+		return nil
+	}
+	data, err := json.Marshal(batch)
+	if err != nil {
+		return err
+	}
+	if err := cliutil.AtomicWriteDurableFile(path, append(data, '\n'), 0o600, 0o700); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// tailTriggerHeldError reports a failed trigger after delivery succeeded. The
+// poll's events reached every sink and stay owed to the workflow; only the
+// workflow is retried.
+type tailTriggerHeldError struct {
+	resource string
+	// delivered counts this poll's new events; owed counts every delivered
+	// event the workflow has not run for, including those.
+	delivered, owed int
+	// cursorHeld is set when unread deletions kept the cursor in place, so
+	// this window's upserts are delivered again regardless of the trigger.
+	cursorHeld bool
+	err        error
+}
+
+func (e *tailTriggerHeldError) Error() string {
+	cursor := "the cursor advanced"
+	if e.cursorHeld {
+		cursor = "the cursor is held only for unread deletions"
+	}
+	return fmt.Sprintf("tail %s: triggered workflow failed: %v; delivered %d new event(s) this poll and %s; the %d delivered event(s) the workflow still owes are not re-delivered, and the next poll retries only the workflow", e.resource, e.err, e.delivered, cursor, e.owed)
+}
+
+func (e *tailTriggerHeldError) Unwrap() error { return e.err }
 
 // tailWorkflowTrigger turns a batch into the trigger for a workflow that
 // reads trigger values. A non-empty reason means the run is skipped: a
 // baseline lists the whole current set rather than changes, and a batch
-// above the bound is never cut down to a partial key list. A skip lets the
-// cursor advance; the events were still delivered.
+// above the bound is never cut down to a partial key list. A skip counts as
+// a successful run and clears the owed events; they were still delivered.
 func tailWorkflowTrigger(resource string, batch tailChangeBatch) (*workflowRunTrigger, string) {
 	if batch.Baseline {
 		return nil, fmt.Sprintf("the first %s poll lists %d current record(s), not changes; workflows that read trigger values start with the next poll", resource, len(batch.Events))
@@ -414,15 +550,23 @@ func fetchTailWindowOnce(ctx context.Context, c *client.Client, resource, path s
 // full re-fetch each poll. The cursor is namespaced "tail:<resource>" in
 // sync_state so it never collides with sync's own checkpoint.
 //
-// A non-nil afterDelivery runs a triggered workflow after delivery and before
-// saving the cursor. It receives the emitted events. A failure holds the
-// cursor for retry. A crash after the hook completes can replay it, so
+// A non-nil hook runs a triggered workflow after delivery. The delivered
+// events are recorded as owed before the cursor is saved, and the run gets
+// every owed event; a failure leaves them owed for the next poll, which
+// retries the workflow without re-delivering them (tailTriggerHook). A crash
+// after a successful run, before the record is cleared, replays it, so
 // triggers have at-least-once semantics.
-func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, afterDelivery func(batch tailChangeBatch) error) (int, error) {
+func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, hook *tailTriggerHook) (int, error) {
 	cursorKey := "tail:" + resource
 	cursor, err := db.GetLibraryVersion(cursorKey, c.BaseURL)
 	if err != nil {
 		return 0, fmt.Errorf("tail %s: reading cursor: %w", resource, err)
+	}
+	var owed tailChangeBatch
+	if hook != nil {
+		if owed, err = loadTailPendingTrigger(hook.pendingPath); err != nil {
+			return 0, fmt.Errorf("tail %s: %w", resource, err)
+		}
 	}
 
 	// params carries only the since filter: /deleted is a single bucketed
@@ -446,7 +590,7 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	emitted := 0
 	batch := tailChangeBatch{Baseline: cursor <= 0}
 	recordEvent := func(event, key string) {
-		if afterDelivery != nil {
+		if hook != nil {
 			batch.Events = append(batch.Events, workflowRunTriggerEvent{Event: event, Resource: resource, Key: key})
 		}
 	}
@@ -545,19 +689,23 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	// Delivery is all-or-nothing per batch from the cursor's perspective.
 	// The cursor below advances only after the stdout write, every
 	// configured sink acknowledgment (a 2xx webhook response, a completed
-	// file write+sync+close), the post-delivery trigger (when set), and the
-	// cursor save itself all succeed. Any failure returns before the save,
-	// so the next poll re-fetches the same window via since and redelivers
-	// the whole batch: duplicates are possible (at-least-once; webhook
-	// receivers must be idempotent). A failed file append rolls back to
-	// its original size, preserving line boundaries for the retried batch.
-	// There is deliberately no per-event checkpoint and no durable
-	// pending-batch state: the held cursor IS the retry state. This
-	// per-cycle delivery bypasses the shared deliver_spool path on purpose
-	// (newTailCmd drops the spool so the post-run flush never fires), so a
-	// batch reaches its sink here and never again through root.go;
-	// postDeliverWebhook makes a single POST attempt with no application
-	// retry, so no hidden retry can deliver after the cursor has moved.
+	// file write+sync+close), the owed-trigger record (when --workflow is
+	// set), and the cursor save itself all succeed. Any failure returns
+	// before the save, so the next poll re-fetches the same window via since
+	// and redelivers the whole batch: duplicates are possible (at-least-once;
+	// webhook receivers must be idempotent). A failed file append rolls back
+	// to its original size, and the next append first moves aside any final
+	// line a crash or failed rollback left without its newline, so a retried
+	// batch always starts on a fresh line. There is deliberately no
+	// per-event checkpoint: for delivery, the held cursor IS the retry state.
+	// The triggered workflow is not part of delivery. It runs after the
+	// cursor save, and its retry state is the owed-trigger record, so a
+	// failing workflow never redelivers events. This per-cycle delivery
+	// bypasses the shared deliver_spool path on purpose (newTailCmd drops
+	// the spool so the post-run flush never fires), so a batch reaches its
+	// sink here and never again through root.go; postDeliverWebhook makes a
+	// single POST attempt with no application retry, so no hidden retry can
+	// deliver after the cursor has moved.
 	out := buf.Bytes()
 	if len(out) > 0 {
 		if _, err := w.Write(out); err != nil {
@@ -575,6 +723,9 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 					return emitted, fmt.Errorf("tail %s: creating delivery directory: %w", resource, err)
 				}
 			}
+			if err := quarantineTornTailDelivery(resource, sink.Target); err != nil {
+				return emitted, fmt.Errorf("tail %s: repairing delivery file: %w", resource, err)
+			}
 			f, err := os.OpenFile(sink.Target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 			if err != nil {
 				return emitted, fmt.Errorf("tail %s: opening delivery file: %w", resource, err)
@@ -589,15 +740,33 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 		}
 	}
 
-	if afterDelivery != nil {
-		if err := afterDelivery(batch); err != nil {
-			return emitted, fmt.Errorf("tail %s: triggered workflow: %w", resource, err)
+	// Record the delivered events as owed before the cursor moves past
+	// them: a crash after the save must still run the workflow for them.
+	owed = owed.merge(batch)
+	if hook != nil && len(batch.Events) > 0 {
+		if err := saveTailPendingTrigger(hook.pendingPath, owed); err != nil {
+			return emitted, fmt.Errorf("tail %s: recording the workflow trigger: %w", resource, err)
 		}
 	}
 
 	if newVer > cursor && !deletionsIncomplete {
 		if err := db.SaveLibraryVersion(cursorKey, c.BaseURL, newVer); err != nil {
 			return emitted, fmt.Errorf("tail %s: saving cursor: %w", resource, err)
+		}
+	}
+
+	if hook != nil && len(owed.Events) > 0 {
+		if err := hook.run(owed); err != nil {
+			return emitted, &tailTriggerHeldError{
+				resource:   resource,
+				delivered:  emitted,
+				owed:       len(owed.Events),
+				cursorHeld: deletionsIncomplete,
+				err:        err,
+			}
+		}
+		if err := saveTailPendingTrigger(hook.pendingPath, tailChangeBatch{}); err != nil {
+			return emitted, fmt.Errorf("tail %s: clearing the workflow trigger after a successful run (the next poll runs it again): %w", resource, err)
 		}
 	}
 	return emitted, nil
@@ -634,4 +803,88 @@ func appendTailBatch(f tailAppendFile, batch []byte) error {
 		return errors.Join(err, fmt.Errorf("syncing delivery rollback: %w", syncErr))
 	}
 	return err
+}
+
+// quarantineTornTailDelivery repairs the delivery file before the next
+// append. A killed append, or a failed append whose rollback also failed,
+// leaves a final fragment with no newline; the batch that follows is a
+// redelivery of the same window (the cursor never moved past it), and
+// appended as is it would glue its first event to the fragment. The bytes
+// after the last newline are moved to a sibling sidecar for diagnosis and the
+// file is truncated back to its last complete line, as the mutation journal
+// does for a torn record. A fragment is never terminated in place: its batch
+// is redelivered in full, so keeping it would duplicate an event. Callers
+// hold the delivery file's writer lock.
+func quarantineTornTailDelivery(resource, path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := st.Size()
+	if size == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], size-1); err != nil {
+		return fmt.Errorf("reading the final byte: %w", err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+
+	// Scan back from the end for the last newline; the file may hold a long
+	// history, and only its final line matters.
+	var chunk [4096]byte
+	prefixLen := int64(0)
+	for end := size; end > 0; {
+		start := max(int64(0), end-int64(len(chunk)))
+		part := chunk[:end-start]
+		if _, err := f.ReadAt(part, start); err != nil {
+			return fmt.Errorf("reading the final line: %w", err)
+		}
+		if i := bytes.LastIndexByte(part, '\n'); i >= 0 {
+			prefixLen = start + int64(i) + 1
+			break
+		}
+		end = start
+	}
+	torn := make([]byte, size-prefixLen)
+	if _, err := f.ReadAt(torn, prefixLen); err != nil {
+		return fmt.Errorf("reading the final line: %w", err)
+	}
+	sidecar, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".torn-*")
+	if err != nil {
+		return fmt.Errorf("quarantining the incomplete final line: %w", err)
+	}
+	if err := sidecar.Chmod(0o600); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("securing the incomplete final line: %w", err)
+	}
+	if _, err := sidecar.Write(torn); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("quarantining the incomplete final line: %w", err)
+	}
+	if err := sidecar.Sync(); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("syncing the incomplete final line: %w", err)
+	}
+	if err := sidecar.Close(); err != nil {
+		return fmt.Errorf("closing the incomplete final line: %w", err)
+	}
+	if err := f.Truncate(prefixLen); err != nil {
+		return fmt.Errorf("truncating the incomplete final line: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("syncing the repaired file: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "warning: tail %s: %s ended in an incomplete line from an earlier failed append; moved its %d byte(s) to %s so this batch starts on a new line\n", resource, path, len(torn), sidecar.Name())
+	return nil
 }

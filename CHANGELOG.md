@@ -13,6 +13,23 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   binds are unchanged. To serve other hosts, keep the bearer token
   (`ZOTIO_MCP_TOKEN` or `--mcp-auth-token-file`); a reverse proxy can send it.
 
+### Fixed
+
+- **`tail --workflow` no longer re-sends delivered events when its workflow
+  fails.** A failing trigger used to hold the cursor, so every poll sent the
+  whole, growing window to stdout, the webhook and the file sink again. Events
+  are now delivered once and the cursor advances. The events the workflow has
+  not run for are recorded next to the local database, and each later poll
+  retries only the workflow, with any newer events. The stderr line says what
+  was delivered and what is still owed. This replaces the 0.29.0 behaviour of
+  keeping the cursor behind a failed triggered workflow.
+
+- **A `tail` `file:` sink no longer joins an event to a broken last line.** A
+  killed append, or a rollback that failed, could leave the file without a
+  final newline, and the redelivered batch then glued its first event to the
+  fragment. Before each append, tail now moves such a line to a
+  `<file>.torn-*` sidecar, so every event starts on its own line.
+
 ## [0.31.0] — 2026-10-29
 
 ### Added
