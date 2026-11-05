@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"zotio/internal/cliutil"
 )
 
 func TestLegacyConfigPathRejectsRelativeHome(t *testing.T) {
@@ -24,12 +26,16 @@ func TestLegacyConfigPathRejectsRelativeHome(t *testing.T) {
 }
 
 func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cfgPath := filepath.Join(home, "config.toml")
+	authConfigHome(t)
+	cfgPath := filepath.Join(os.Getenv("HOME"), "config.toml")
 
-	if err := os.WriteFile(cfgPath, nil, 0o600); err != nil {
+	seed := "auth_header = \"legacy-header\"\naccess_token = \"legacy-bearer\"\n"
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
 		t.Fatalf("seed config: %v", err)
+	}
+	// Legacy slots survive Load only via the credentials file, so seed it too.
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{AuthHeaderVal: "legacy-header", AccessToken: "legacy-bearer"}); err != nil {
+		t.Fatalf("seed credentials: %v", err)
 	}
 	cfg, err := Load(cfgPath)
 	if err != nil {
@@ -39,6 +45,31 @@ func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *
 	cfg.AccessToken = "legacy-bearer"
 	if err := cfg.SaveCredential("secret-token"); err != nil {
 		t.Fatalf("SaveCredential: %v", err)
+	}
+
+	// Load() zeroes legacy slots in memory, so only the raw bytes can prove
+	// SaveCredential scrubbed them from disk (config and credentials files).
+	credPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("credentials path: %v", err)
+	}
+	for _, p := range []string{cfgPath, credPath} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		for _, stale := range []string{"legacy-header", "legacy-bearer"} {
+			if strings.Contains(string(raw), stale) {
+				t.Fatalf("%s still contains %q after SaveCredential:\n%s", p, stale, raw)
+			}
+		}
+	}
+	credRaw, err := os.ReadFile(credPath)
+	if err != nil {
+		t.Fatalf("read credentials: %v", err)
+	}
+	if !strings.Contains(string(credRaw), "api_key = 'secret-token'") {
+		t.Fatalf("credentials file lacks api_key = 'secret-token':\n%s", credRaw)
 	}
 
 	reloaded, err := Load(cfgPath)
