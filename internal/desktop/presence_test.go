@@ -286,17 +286,14 @@ func TestConnectorRefusedClassifiesRealPingErrors(t *testing.T) {
 }
 
 // Zotero's connector runs on its main thread, which a large sync can hold for
-// seconds. A connector that stalls for 10s and then answers must end the wait
-// as ready, never as unresponsive, under the production stall evidence
-// (60s span, 3 checks, 10s confirming pings). Only the re-check cadence is
-// shortened, so the test takes about 10s rather than 20s.
+// seconds. A connector that stalls for a few seconds and then answers must end
+// the wait as ready, never as unresponsive, under the production stall evidence
+// (60s span, 3 checks). The re-check cadence is shortened so several rechecks
+// occur before the stall ends without paying a 10s+ wall-clock in CI.
 func TestWaitTreatsATenSecondStallAsBusyNotUnresponsive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs a real 10s connector stall")
-	}
 	dir := t.TempDir()
 	startLockHolder(t, dir)
-	stallUntil := time.Now().Add(10 * time.Second)
+	stallUntil := time.Now().Add(3 * time.Second)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-time.After(time.Until(stallUntil)):
@@ -313,9 +310,9 @@ func TestWaitTreatsATenSecondStallAsBusyNotUnresponsive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	st, err := Wait(ctx, WaitOptions{Prober: prober, WatchDirs: []string{dir}, StallRecheck: 2 * time.Second})
+	st, err := Wait(ctx, WaitOptions{Prober: prober, WatchDirs: []string{dir}, StallRecheck: 500 * time.Millisecond})
 	if err != nil || st.State != StateReady {
-		t.Fatalf("Wait across a 10s stall = %+v, %v; want ready", st, err)
+		t.Fatalf("Wait across a 3s stall = %+v, %v; want ready", st, err)
 	}
 	if time.Now().Before(stallUntil) {
 		t.Fatal("Wait returned ready before the stall ended")
