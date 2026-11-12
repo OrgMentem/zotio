@@ -104,15 +104,7 @@ func TestPostFeedbackStatusHandling(t *testing.T) {
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("postFeedback reported %d as sent, want an error naming the status", tt.status)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("postFeedback error = %v, want it to contain %q", err, tt.wantErr)
-			}
-			if len(paths) != 1 || paths[0] != "/feedback" {
-				t.Fatalf("request paths = %v, want the refused redirect not to be followed", paths)
-			}
+			assertRedirectRefused(t, tt.status, tt.wantErr, "/feedback", paths, err)
 		})
 	}
 }

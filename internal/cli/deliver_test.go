@@ -6,7 +6,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -51,15 +50,7 @@ func TestDeliverWebhookStatusHandling(t *testing.T) {
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("deliverWebhook reported %d as delivered, want an error naming the status", tt.status)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("deliverWebhook error = %v, want it to contain %q", err, tt.wantErr)
-			}
-			if len(paths) != 1 || paths[0] != "/hook" {
-				t.Fatalf("request paths = %v, want the refused redirect not to be followed", paths)
-			}
+			assertRedirectRefused(t, tt.status, tt.wantErr, "/hook", paths, err)
 		})
 	}
 }
