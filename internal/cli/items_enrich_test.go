@@ -3098,121 +3098,144 @@ func TestNormalizeTitleForMatch_UnicodeAware(t *testing.T) {
 	}
 }
 
-func TestResolveDOIViaCrossRef_NonLatinMismatchReturnsNoMatch(t *testing.T) {
+func testResolveDOIViaWithServer(t *testing.T, base *string, body, title string, resolve func(context.Context, *http.Client, map[string]any) (string, bool), wantDOI string) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := `{"message":{"items":[{"title":["量子物理基础"],"DOI":"10.9/wrong"}]}}`
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	withBase(t, &enrichCrossRefBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	if _, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
-		t.Fatal("expected no DOI match for unrelated Chinese titles")
+	withBase(t, base, srv.URL)
+	data := map[string]any{"title": title}
+	doi, ok := resolve(context.Background(), http.DefaultClient, data)
+	if wantDOI == "" {
+		if ok {
+			t.Fatal("expected no DOI match")
+		}
+		return
+	}
+	if !ok || doi != wantDOI {
+		t.Fatalf("doi = %q ok=%v, want %q", doi, ok, wantDOI)
 	}
 }
 
-func TestResolveDOIViaCrossRef_NonLatinIdenticalMatches(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := `{"message":{"items":[{"title":["机器学习导论"],"DOI":"10.9/match"}]}}`
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichCrossRefBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	doi, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
-	if !ok || doi != "10.9/match" {
-		t.Fatalf("doi = %q ok=%v, want 10.9/match for identical Chinese titles", doi, ok)
+func TestResolveDOIVia_NonLatinMismatchReturnsNoMatch(t *testing.T) {
+	type resolveFn func(context.Context, *http.Client, map[string]any) (string, bool)
+	tests := []struct {
+		name    string
+		base    *string
+		body    string
+		resolve resolveFn
+	}{
+		{
+			name: "crossref", base: &enrichCrossRefBase,
+			body: `{"message":{"items":[{"title":["量子物理基础"],"DOI":"10.9/wrong"}]}}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, _, ok, _ := resolveDOIViaCrossRef(ctx, c, data)
+				return "", ok
+			},
+		},
+		{
+			name: "semantic_scholar", base: &enrichSemanticScholarBase,
+			body: `{"data":[{"title":"量子物理基础","externalIds":{"DOI":"10.9/wrong"}}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, ok, _ := resolveDOIViaSemanticScholar(ctx, c, data)
+				return "", ok
+			},
+		},
+		{
+			name: "openalex", base: &enrichOpenAlexBase,
+			body: `{"results":[{"doi":"https://doi.org/10.9/wrong","title":"量子物理基础"}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, ok, _ := resolveDOIViaOpenAlex(ctx, c, data, "")
+				return "", ok
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testResolveDOIViaWithServer(t, tt.base, tt.body, "机器学习导论", tt.resolve, "")
+		})
 	}
 }
 
-func TestResolveDOIViaCrossRef_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
-	hit := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hit = true // guard should fire before provider is consulted; url stays same but logic short-circuits
-		_, _ = w.Write([]byte(`{"message":{"items":[{"title":["!!!"],"DOI":"10.9/wrong"}]}}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichCrossRefBase, srv.URL)
-	data := map[string]any{"title": "...!!!"}
-	if _, _, ok, _ := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
-		t.Fatal("expected no match for punctuation-only local title")
+func TestResolveDOIVia_NonLatinIdenticalMatches(t *testing.T) {
+	type resolveFn func(context.Context, *http.Client, map[string]any) (string, bool)
+	tests := []struct {
+		name    string
+		base    *string
+		body    string
+		wantDOI string
+		resolve resolveFn
+	}{
+		{
+			name: "crossref", base: &enrichCrossRefBase, wantDOI: "10.9/match",
+			body: `{"message":{"items":[{"title":["机器学习导论"],"DOI":"10.9/match"}]}}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				doi, _, ok, _ := resolveDOIViaCrossRef(ctx, c, data)
+				return doi, ok
+			},
+		},
+		{
+			name: "semantic_scholar", base: &enrichSemanticScholarBase, wantDOI: "10.9/ssmatch",
+			body: `{"data":[{"title":"机器学习导论","externalIds":{"DOI":"10.9/ssmatch"}}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				doi, ok, _ := resolveDOIViaSemanticScholar(ctx, c, data)
+				return doi, ok
+			},
+		},
+		{
+			name: "openalex", base: &enrichOpenAlexBase, wantDOI: "10.9/oamatch",
+			body: `{"results":[{"doi":"https://doi.org/10.9/oamatch","title":"机器学习导论"}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				doi, ok, _ := resolveDOIViaOpenAlex(ctx, c, data, "")
+				return doi, ok
+			},
+		},
 	}
-	// The guard returns before iterating, but getJSON still ran (empty guard
-	// sits after fetch). What matters is no-match, not whether the server was
-	// contacted — a follow-up could move the guard earlier.
-	_ = hit
-}
-
-func TestResolveDOIViaSemanticScholar_NonLatinMismatchReturnsNoMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"title":"量子物理基础","externalIds":{"DOI":"10.9/wrong"}}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichSemanticScholarBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	if _, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
-		t.Fatal("expected no DOI match for unrelated Chinese titles via Semantic Scholar")
-	}
-}
-
-func TestResolveDOIViaSemanticScholar_NonLatinIdenticalMatches(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"title":"机器学习导论","externalIds":{"DOI":"10.9/ssmatch"}}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichSemanticScholarBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	doi, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data)
-	if !ok || doi != "10.9/ssmatch" {
-		t.Fatalf("doi = %q ok=%v, want 10.9/ssmatch for identical Chinese titles", doi, ok)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testResolveDOIViaWithServer(t, tt.base, tt.body, "机器学习导论", tt.resolve, tt.wantDOI)
+		})
 	}
 }
 
-func TestResolveDOIViaOpenAlex_NonLatinMismatchReturnsNoMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/wrong","title":"量子物理基础"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichOpenAlexBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	if _, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
-		t.Fatal("expected no DOI match for unrelated Chinese titles via OpenAlex")
+func TestResolveDOIVia_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
+	type resolveFn func(context.Context, *http.Client, map[string]any) (string, bool)
+	tests := []struct {
+		name    string
+		base    *string
+		body    string
+		resolve resolveFn
+	}{
+		{
+			name: "crossref", base: &enrichCrossRefBase,
+			body: `{"message":{"items":[{"title":["!!!"],"DOI":"10.9/wrong"}]}}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, _, ok, _ := resolveDOIViaCrossRef(ctx, c, data)
+				return "", ok
+			},
+		},
+		{
+			name: "semantic_scholar", base: &enrichSemanticScholarBase,
+			body: `{"data":[{"title":"...!!!","externalIds":{"DOI":"10.9/wrong"}}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, ok, _ := resolveDOIViaSemanticScholar(ctx, c, data)
+				return "", ok
+			},
+		},
+		{
+			name: "openalex", base: &enrichOpenAlexBase,
+			body: `{"results":[{"doi":"https://doi.org/10.9/wrong","title":"...!!!"}]}`,
+			resolve: func(ctx context.Context, c *http.Client, data map[string]any) (string, bool) {
+				_, ok, _ := resolveDOIViaOpenAlex(ctx, c, data, "")
+				return "", ok
+			},
+		},
 	}
-}
-
-func TestResolveDOIViaOpenAlex_NonLatinIdenticalMatches(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/oamatch","title":"机器学习导论"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichOpenAlexBase, srv.URL)
-	data := map[string]any{"title": "机器学习导论"}
-	doi, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
-	if !ok || doi != "10.9/oamatch" {
-		t.Fatalf("doi = %q ok=%v, want 10.9/oamatch for identical Chinese titles", doi, ok)
-	}
-}
-
-func TestResolveDOIViaOpenAlex_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/wrong","title":"...!!!"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichOpenAlexBase, srv.URL)
-	data := map[string]any{"title": "...!!!"}
-	if _, ok, _ := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
-		t.Fatal("expected no match for punctuation-only local title via OpenAlex")
-	}
-}
-func TestResolveDOIViaSemanticScholar_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"title":"...!!!","externalIds":{"DOI":"10.9/wrong"}}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	withBase(t, &enrichSemanticScholarBase, srv.URL)
-	data := map[string]any{"title": "...!!!"}
-	if _, ok, _ := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
-		t.Fatal("expected no match for punctuation-only local title via Semantic Scholar")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testResolveDOIViaWithServer(t, tt.base, tt.body, "...!!!", tt.resolve, "")
+		})
 	}
 }
 
