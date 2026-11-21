@@ -6,6 +6,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **Snapshot exports refuse a change in the reported result count.** Without a
+  library version, a deletion between pages could make the export skip a record
+  without repeating any key. A changed count now stops fresh and resumed exports
+  before they replace the previous snapshot.
+
 - **A write run stops when the journal cannot record a write that landed.**
   Each landed write is journaled as it lands, so a run killed mid-flight stays
   undoable, but a failed record was ignored and the run kept writing. When that

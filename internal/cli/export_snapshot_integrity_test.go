@@ -19,6 +19,7 @@ import (
 type snapshotServer struct {
 	mu      sync.Mutex
 	version string
+	total   string
 	body    func(start, limit int) (any, bool)
 	starts  []int
 }
@@ -31,6 +32,9 @@ func newSnapshotServer(t *testing.T, s *snapshotServer) {
 		s.mu.Lock()
 		s.starts = append(s.starts, start)
 		version := s.version
+		if s.total != "" {
+			w.Header().Set("Total-Results", s.total)
+		}
 		override, replaced := (any)(nil), false
 		if s.body != nil {
 			override, replaced = s.body(start, limit)
@@ -200,6 +204,53 @@ func TestExportSnapshotResumeRefusesChangedLibraryVersion(t *testing.T) {
 		t.Fatalf("resume on the recorded version: %v", err)
 	}
 	assertSnapshotFormatManifest(t, output, "jsonl", 5)
+}
+
+func TestExportSnapshotRefusesChangedTotalWithoutVersion(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run("resume="+strconv.FormatBool(resume), func(t *testing.T) {
+			srv := &snapshotServer{total: "5"}
+			newSnapshotServer(t, srv)
+			output := filepath.Join(t.TempDir(), "library.jsonl")
+			if err := runSnapshotFormat(output, "jsonl", false); err != nil {
+				t.Fatal(err)
+			}
+			data, manifest := publishedSnapshot(t, output)
+
+			// Delete the first row after page one. Offset two now skips item
+			// two, but no key repeats to expose the loss in the manifest.
+			interrupt := resume
+			srv.mu.Lock()
+			srv.body = func(start, limit int) (any, bool) {
+				switch start {
+				case 0:
+					srv.total = "4"
+					return nil, false
+				case 2:
+					if interrupt {
+						return nil, true // JSON null leaves the first page checkpointed
+					}
+					return []any{snapshotFormatItem(3), snapshotFormatItem(4)}, true
+				default:
+					return []any{}, true
+				}
+			}
+			srv.mu.Unlock()
+			if resume {
+				if err := runSnapshotFormat(output, "jsonl", false); err == nil {
+					t.Fatal("interrupted export succeeded")
+				}
+				srv.mu.Lock()
+				interrupt = false
+				srv.mu.Unlock()
+			}
+			err := runSnapshotFormat(output, "jsonl", resume)
+			if err == nil || exitCodeOf(err) != 9 {
+				t.Fatalf("export after Total-Results changed = %v, want exit 9", err)
+			}
+			assertSnapshotUnchanged(t, output, data, manifest)
+		})
+	}
 }
 
 func TestBuildExportLockfileRejectsDuplicateKeys(t *testing.T) {

@@ -19,15 +19,9 @@ import (
 // Like those helpers it bypasses the read cache and honours ctx; a nil ctx
 // falls back to the client base context.
 func (c *Client) GetWithVersionAndHeaderContext(ctx context.Context, path string, params map[string]string, header string) (json.RawMessage, int, string, error) {
-	if ctx == nil {
-		ctx = c.baseCtx()
-	}
-	respBody, _, hdr, err := c.doRequest(ctx, "GET", path, params, nil, nil)
+	respBody, hdr, err := c.GetWithResponseHeadersContext(ctx, path, params)
 	if err != nil {
 		return nil, 0, "", err
-	}
-	if hdr == nil {
-		return respBody, 0, "", nil
 	}
 	return respBody, parseLastModifiedVersion(hdr), strings.TrimSpace(hdr.Get(header)), nil
 }

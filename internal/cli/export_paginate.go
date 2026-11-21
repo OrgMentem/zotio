@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// support resumable header-free paginated snapshot exports.
+// Support resumable paginated snapshot exports.
 
 package cli
 
@@ -37,6 +37,9 @@ type exportCheckpoint struct {
 	// A resume refuses when the library has since moved, because the saved
 	// offset no longer addresses the same records.
 	LibraryVersion string `json:"library_version,omitempty"`
+	// TotalResults pins the first reported count, even on a server that
+	// omits Last-Modified-Version. Older checkpoints do not carry a count.
+	TotalResults *int `json:"total_results,omitempty"`
 }
 
 func exportReadSource(c *client.Client, profile string) exportCheckpointSource {
@@ -161,6 +164,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 	snapshotFormat := format
 	start := 0
 	var libraryVersion string
+	var totalResults *int
 	versionPinned := false
 	if checkpointFile != "" {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
@@ -172,6 +176,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 			if start > 0 {
 				versionPinned = true
 				libraryVersion = cp.LibraryVersion
+				totalResults = cp.TotalResults
 			}
 		}
 	}
@@ -198,7 +203,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		params2["start"] = strconv.Itoa(start)
 		params2["limit"] = strconv.Itoa(thisLimit)
 
-		data, pageVersion, err := c.GetWithHeaderContext(ctx, path, params2, "Last-Modified-Version")
+		data, headers, err := c.GetWithResponseHeadersContext(ctx, path, params2)
 		if err != nil {
 			return fetched, fmt.Errorf("fetching %s page at start %d: %w", path, start, classifyAPIError(err, &rootFlags{}))
 		}
@@ -217,11 +222,24 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		// Offsets are only stable while the library is. Every page, and a
 		// resumed run, must report the version the traversal started at, or an
 		// edit that reorders the listing duplicates one record and drops another.
+		pageVersion := strings.TrimSpace(headers.Get("Last-Modified-Version"))
 		if !versionPinned {
 			versionPinned = true
 			libraryVersion = pageVersion
 		} else if pageVersion != libraryVersion {
 			return fetched, preconditionErr(fmt.Errorf("the library changed during the export (Last-Modified-Version %s, then %s at start %d); offsets into a changing library skip and repeat records; rerun without --resume to start over", describeLibraryVersion(libraryVersion), describeLibraryVersion(pageVersion), start))
+		}
+		n, present, err := parseTotalResults(headers.Get("Total-Results"))
+		if err != nil {
+			return fetched, apiErr(fmt.Errorf("%s page at start %d: %w", path, start, err))
+		}
+		if present {
+			if totalResults == nil {
+				totalResults = new(int)
+				*totalResults = n
+			} else if *totalResults != n {
+				return fetched, preconditionErr(fmt.Errorf("the library changed during the export (Total-Results %d, then %d at start %d); rerun without --resume to start over", *totalResults, n, start))
+			}
 		}
 		if len(page) > 0 {
 			if err := onPage(page); err != nil {
@@ -233,7 +251,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		start += len(page)
 		done := len(page) < thisLimit || (limit > 0 && fetched >= limit)
 		if checkpointFile != "" {
-			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done, LibraryVersion: libraryVersion}
+			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done, LibraryVersion: libraryVersion, TotalResults: totalResults}
 			if committedBytes != nil {
 				offset, err := committedBytes()
 				if err != nil {

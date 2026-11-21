@@ -1896,17 +1896,20 @@ func (c *Client) GetWithHeader(path string, params map[string]string, header str
 // GetWithHeaderContext is GetWithHeader honoring a caller-provided context.
 // A nil ctx falls back to the client base context.
 func (c *Client) GetWithHeaderContext(ctx context.Context, path string, params map[string]string, header string) (json.RawMessage, string, error) {
+	body, hdr, err := c.GetWithResponseHeadersContext(ctx, path, params)
+	return body, strings.TrimSpace(hdr.Get(header)), err
+}
+
+// GetWithResponseHeadersContext returns the body and headers from one uncached GET.
+func (c *Client) GetWithResponseHeadersContext(ctx context.Context, path string, params map[string]string) (json.RawMessage, http.Header, error) {
 	if ctx == nil {
 		ctx = c.baseCtx()
 	}
 	respBody, _, hdr, err := c.doRequest(ctx, "GET", path, params, nil, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	if hdr == nil {
-		return respBody, "", nil
-	}
-	return respBody, strings.TrimSpace(hdr.Get(header)), nil
+	return respBody, hdr, nil
 }
 
 // parseLastModifiedVersion extracts the Zotero Last-Modified-Version header as

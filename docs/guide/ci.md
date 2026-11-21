@@ -109,6 +109,8 @@ zotio export snapshot collection:ABCD1234 --output corpus.jsonl      # regenerat
 zotio export snapshot verify corpus.jsonl.manifest.json --fail-on-drift  # exit 11 on added/removed/changed items
 ```
 
+If the reported result count changes between pages or on `--resume`, the export exits 9 and keeps the previous snapshot. Rerun without `--resume` to read the new listing from the start.
+
 Because `verify` compares content hashes rather than Zotero version integers, an item whose version bumped with no content change is reported as `touched` and never trips the gate — only genuine additions, removals, and content edits do.
 
 !!! tip "Systematic-review corpora"
