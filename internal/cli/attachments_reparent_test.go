@@ -2460,3 +2460,38 @@ func TestMarkedTemporaryParentsPagesPastTheNewestFiveHundred(t *testing.T) {
 		}
 	}
 }
+
+// Only documents can carry the marker. A library with many articles but a
+// single document should need one page to find its temporary parent.
+func TestMarkedTemporaryParentsSkipsUnrelatedPages(t *testing.T) {
+	const articles = 650
+	var pages atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages.Add(1)
+		first, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if r.URL.Query().Get("itemType") == "document" {
+			first += articles
+		}
+		rows := make([]map[string]any, 0, limit)
+		for i := first; i < min(first+limit, articles+1); i++ {
+			if i < articles {
+				rows = append(rows, map[string]any{"data": map[string]any{"itemType": "journalArticle"}})
+			} else {
+				rows = append(rows, map[string]any{"key": "ORPHAN01", "data": map[string]any{
+					"itemType": "document", "abstractNote": connectorTempParentMarker("deadbeefdeadbeef", "TARGET01"),
+				}})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	defer srv.Close()
+	c, err := reparentFlags(t, srv).newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := markedTemporaryParents(c, "TARGET01", time.Time{})
+	if n := pages.Load(); err != nil || !slices.Equal(got, []string{"ORPHAN01"}) || n != 1 {
+		t.Fatalf("got %v, error %v, %d pages; want ORPHAN01 in one page", got, err, n)
+	}
+}

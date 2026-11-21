@@ -1644,6 +1644,7 @@ func markedTemporaryParents(c *client.Client, targetKey string, addedBefore time
 	// has grown since the interrupted run.
 	for start := 0; ; start += connectorChildrenPageSize {
 		data, err := c.Get("/items/top", map[string]string{
+			"itemType":  "document",
 			"sort":      "dateAdded",
 			"direction": "desc",
 			"limit":     strconv.Itoa(connectorChildrenPageSize),
