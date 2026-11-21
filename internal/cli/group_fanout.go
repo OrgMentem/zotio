@@ -172,6 +172,7 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 		return nil, usageErr(fmt.Errorf("set a personal-library base URL (…/users/<id>) to %s; the current base URL targets a group library", purpose))
 	}
 	all := []json.RawMessage{}
+	total := -1 // Keep the last advertised total if a later page omits it.
 	var prev []byte
 	for start := 0; ; start += zoteroPageMax {
 		data, totalHeader, err := c.GetWithHeader("/groups", map[string]string{
@@ -193,17 +194,20 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 		}
 		prev = data
 		all = append(all, page...)
-		total, hasTotal, err := parseTotalResults(totalHeader)
+		pageTotal, hasTotal, err := parseTotalResults(totalHeader)
 		if err != nil {
 			return nil, apiErr(fmt.Errorf("the groups listing sent an %w; refusing to fan out over a partial group list", err))
 		}
+		if hasTotal {
+			total = pageTotal
+		}
 		switch {
-		case hasTotal && len(all) == total:
+		case len(all) == total:
 			return json.Marshal(all)
-		case hasTotal && (len(page) == 0 || len(all) > total):
+		case total >= 0 && (len(page) == 0 || len(all) > total):
 			return nil, apiErr(fmt.Errorf("the groups listing returned %d group(s) but Total-Results is %d; refusing to fan out over a partial group list", len(all), total))
-		case !hasTotal && len(page) < zoteroPageMax:
-			// No Total-Results header: a short page is the only end marker.
+		case total < 0 && len(page) < zoteroPageMax:
+			// No page advertised a total: a short page is the only end marker.
 			return json.Marshal(all)
 		}
 	}

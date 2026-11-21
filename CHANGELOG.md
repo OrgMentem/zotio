@@ -11,6 +11,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   without repeating any key. A changed count now stops fresh and resumed exports
   before they replace the previous snapshot.
 
+- **`groups inspect` rejects a signed or zero-padded group ID.** `+12345` and
+  `012345` were accepted but matched no group. They now exit 2 with a usage
+  error. A group listing that advertised a total on its first page but omitted
+  it on a later page could also end short without an error; the advertised
+  total now holds for the whole listing.
+
 - **A write run stops when the journal cannot record a write that landed.**
   Each landed write is journaled as it lands, so a run killed mid-flight stays
   undoable, but a failed record was ignored and the run kept writing. When that

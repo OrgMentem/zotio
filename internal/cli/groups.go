@@ -81,8 +81,9 @@ ready for write, and 0 otherwise.`,
 				return err
 			}
 			groupID := args[0]
-			if n, convErr := strconv.Atoi(groupID); convErr != nil || n <= 0 {
-				return usageErr(fmt.Errorf("group ID %q must be a positive number; run `zotio groups list` to see your group IDs", groupID))
+			// Atoi also accepts "+12345" and "012345", which name no group.
+			if n, convErr := strconv.Atoi(groupID); convErr != nil || n <= 0 || strconv.Itoa(n) != groupID {
+				return usageErr(fmt.Errorf("group ID %q must be a positive number in plain digits, such as 12345; run `zotio groups list` to see your group IDs", groupID))
 			}
 			data, err := fetchAccessibleGroups(flags, "inspect groups")
 			if err != nil {

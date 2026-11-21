@@ -347,6 +347,26 @@ func TestFetchAccessibleGroups_RefusesShortListing(t *testing.T) {
 	}
 }
 
+func TestFetchAccessibleGroups_RemembersTotalAcrossPages(t *testing.T) {
+	first := "[" + strings.Join(manyGroups(zoteroPageMax), ",") + "]"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start") == "0" {
+			w.Header().Set("Total-Results", strconv.Itoa(zoteroPageMax+1))
+			_, _ = io.WriteString(w, first)
+			return
+		}
+		_, _ = io.WriteString(w, "[]")
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/1")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	_, err := fetchAccessibleGroups(&rootFlags{}, "list groups")
+	if ExitCode(err) != 5 || !strings.Contains(err.Error(), "Total-Results") {
+		t.Fatalf("error = %v, want a Total-Results mismatch (exit 5)", err)
+	}
+}
+
 // A server that ignores start would repeat page one forever.
 func TestFetchAccessibleGroups_RefusesIgnoredStart(t *testing.T) {
 	groups := manyGroups(100)
@@ -404,8 +424,10 @@ func TestGroupsInspect_NonNumericIDAndQuietExit(t *testing.T) {
 		return -1
 	}
 
-	if _, err := run(&rootFlags{}, "my-lab"); exitCode(err) != 2 || !strings.Contains(err.Error(), "zotio groups list") {
-		t.Errorf("non-numeric ID err = %v, want usage error naming `zotio groups list`", err)
+	for _, id := range []string{"my-lab", "+12345", "012345"} {
+		if _, err := run(&rootFlags{}, id); exitCode(err) != 2 || !strings.Contains(err.Error(), "zotio groups list") {
+			t.Errorf("inspect %q: err = %v, want usage error naming `zotio groups list`", id, err)
+		}
 	}
 	out, err := run(&rootFlags{}, "12345")
 	if err != nil || !strings.Contains(out, "write=false") || !strings.Contains(out, "note:") {
