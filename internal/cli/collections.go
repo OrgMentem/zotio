@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -122,9 +121,7 @@ func printCollectionsRead(cmd *cobra.Command, flags *rootFlags, data json.RawMes
 			if err := printAutoTable(out, items); err != nil {
 				return err
 			}
-			if len(items) >= 25 {
-				fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
-			}
+			printListNarrowHint(cmd, len(items))
 			return nil
 		}
 	}

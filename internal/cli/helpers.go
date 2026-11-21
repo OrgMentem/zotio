@@ -353,6 +353,17 @@ func writeNoop(out, errOut io.Writer, flags *rootFlags, reason, prose string) er
 	return nil
 }
 
+func printListNarrowHint(cmd *cobra.Command, count int) {
+	if count < 25 {
+		return
+	}
+	if cmd.Flags().Lookup("limit") != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", count)
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "\nShowing %d results. To narrow the columns: add --json --select <fields>.\n", count)
+}
+
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
 	// An already-typed error keeps its exit code: re-classifying by message

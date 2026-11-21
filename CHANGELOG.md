@@ -17,6 +17,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   it on a later page could also end short without an error; the advertised
   total now holds for the whole listing.
 
+- **Long tables suggest `--limit` only where the command accepts it.**
+  `items children`, `items annotations`, `items tags list`, and the
+  `collections` lists ended a long table with a hint to add `--limit`, which
+  they reject. They now suggest `--json --select <fields>` instead.
+
 - **A write run stops when the journal cannot record a write that landed.**
   Each landed write is journaled as it lands, so a run killed mid-flight stays
   undoable, but a failed record was ignored and the run kept writing. When that

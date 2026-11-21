@@ -5,7 +5,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -63,9 +62,7 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
 						return err
 					}
-					if len(items) >= 25 {
-						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
-					}
+					printListNarrowHint(cmd, len(items))
 					return nil
 				}
 			}
