@@ -184,3 +184,26 @@ func TestImportDiscoverCancellationPreservesManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestImportDiscoverCanceledSourceIsNotAProviderFailure(t *testing.T) {
+	owSeedDiscover(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer source.Close()
+	withBase(t, &collectionGapsOpenCitationsBase, source.URL)
+
+	target := filepath.Join(t.TempDir(), "review.json")
+	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--scope", "collection:OWC", "--output", target})
+	if err := cmd.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("canceled discovery published %s (stat err=%v)", target, err)
+	}
+}

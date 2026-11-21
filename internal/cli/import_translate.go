@@ -115,6 +115,9 @@ func buildImportItemFromURL(ctx context.Context, httpClient *http.Client, rawURL
 	}
 
 	if embedded != nil {
+		if len(failures) > 0 {
+			return embedded, "embedded metadata (CrossRef lookup failed)", nil
+		}
 		return embedded, "embedded metadata", nil
 	}
 

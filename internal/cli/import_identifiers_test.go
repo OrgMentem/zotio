@@ -603,7 +603,9 @@ func TestFetchPubMedItemClassifiesErrorsInOKBody(t *testing.T) {
 		body     string
 		wantCode int
 	}{
-		{"top-level rate limit", `{"error":"API rate limit exceeded"}`, 5},
+		{"top-level rate limit", `{"error":"API rate limit exceeded"}`, 7},
+		{"per-record rate limit", `{"result":{"1":{"error":"API rate limit exceeded"}}}`, 7},
+		{"top-level other error", `{"error":"backend unavailable"}`, 5},
 		{"per-record missing document", `{"result":{"uids":["1"],"1":{"uid":"1","error":"cannot get document summary"}}}`, 3},
 		{"per-record other error", `{"result":{"uids":["1"],"1":{"uid":"1","error":"temporarily unavailable"}}}`, 5},
 		{"record without title", `{"result":{"uids":["1"],"1":{"uid":"1","pubdate":"2000"}}}`, 5},

@@ -22,6 +22,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `collections` lists ended a long table with a hint to add `--limit`, which
   they reject. They now suggest `--json --select <fields>` instead.
 
+- **Imports tell throttling, a lost lookup, and cancellation apart.** A PubMed
+  rate-limit answer exits 7 (rate limited) instead of 5. A URL import that falls
+  back to the page's embedded metadata after a failed CrossRef lookup reports
+  `embedded metadata (CrossRef lookup failed)`. Cancelling `import discover`
+  during a source lookup returns the cancellation instead of a provider outage,
+  and a connector import cancelled before its request is sent no longer leaves
+  a replay guard behind.
+
 - **A write run stops when the journal cannot record a write that landed.**
   Each landed write is journaled as it lands, so a run killed mid-flight stays
   undoable, but a failed record was ignored and the run kept writing. When that

@@ -340,6 +340,7 @@ func TestChallengeReason_HeaderEvidence(t *testing.T) {
 }
 
 func TestBuildImportItemFromURL_VendorScriptsWithoutChallengeTitleStayNormal(t *testing.T) {
+	stubCrossRef(t, new(int), "", http.StatusNotFound)
 	for name, body := range map[string]string{
 		"turnstile comment widget":  turnstileWidgetHTML,
 		"challenge-platform script": challengePlatformNormalHTML,
@@ -351,7 +352,7 @@ func TestBuildImportItemFromURL_VendorScriptsWithoutChallengeTitleStayNormal(t *
 			if err != nil {
 				t.Fatalf("buildImportItemFromURL: %v, want no challenge error", err)
 			}
-			if source != "embedded metadata" && source != "CrossRef (page DOI 10.1017/S135132492100036X)" {
+			if source != "embedded metadata" {
 				t.Fatalf("source = %q, want a real item", source)
 			}
 			if item == nil {

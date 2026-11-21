@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -457,5 +458,29 @@ func TestConnectorImportLostResponseDoesNotReplay(t *testing.T) {
 	env, _ = runOnce(true)
 	if posts.Load() != 2 || env.Result == nil || env.Result.Summary.Applied != 2 {
 		t.Fatalf("--reimport: posts=%d result=%+v, want a second dispatch that applies both records", posts.Load(), env.Result)
+	}
+}
+
+func TestConnectorImportCanceledBeforeDispatchDoesNotBlockReplay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected request after cancellation")
+	}))
+	defer srv.Close()
+	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/api/users/0")}
+	session := &importFileConnectorSession{flags: flags, content: []byte("TY  - JOUR\nER  - \n"), format: "ris", records: 1}
+	cmd := newImportFileCmd(flags)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+	if err := session.dispatch(cmd, connector.New(srv.URL+"/connector", time.Second), ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	path, _, err := importFilePendingPath(session.content, session.format)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) || session.ambiguousSession != "" {
+		t.Fatalf("undispatched import left replay guard: session=%q, stat err=%v", session.ambiguousSession, err)
 	}
 }

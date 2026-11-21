@@ -546,6 +546,9 @@ func buildReferenceAggregateForDirections(ctx context.Context, httpClient *http.
 				return citedDOIAggregate{}, usageErr(fmt.Errorf("--direction must be backward, forward, or both"))
 			}
 			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return citedDOIAggregate{}, ctxErr
+				}
 				// Degrade per source: a single oversized or failing provider
 				// response must not abort the whole chase. The failure stays
 				// visible in the source summary; the aggregate only fails when

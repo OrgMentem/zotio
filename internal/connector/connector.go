@@ -559,6 +559,10 @@ func metadataHeaderJSON(v any) (string, error) {
 }
 
 func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]byte, error) {
+	// Cancellation before Do cannot represent a committed write.
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		wrapped := fmt.Errorf("connector %s: %w", endpoint, err)

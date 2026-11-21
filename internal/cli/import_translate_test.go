@@ -370,7 +370,7 @@ func TestBuildImportItemFromURL_LookupFailureIsNotAbsence(t *testing.T) {
 		{"no DOI and page 500", "/article", 0, 500, bareHTML, "HTTP 500", ""},
 		{"crossref 404 and bare page", "/doi/10.1234/abc", 404, 200, bareHTML, "", "fallback (no metadata)"},
 		{"crossref 410 and page 404", "/doi/10.1234/abc", 410, 404, bareHTML, "", "fallback (no metadata)"},
-		{"crossref 503 but page has metadata", "/doi/10.1234/abc", 503, 200, citationHTML, "", "embedded metadata"},
+		{"crossref 503 but page has metadata", "/doi/10.1234/abc", 503, 200, citationHTML, "", "embedded metadata (CrossRef lookup failed)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			crsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
