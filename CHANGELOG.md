@@ -30,6 +30,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   and a connector import cancelled before its request is sent no longer leaves
   a replay guard behind.
 
+- **Sync keeps a deleted collection until its members are repaired.** When the
+  probe of a member shared by two collections failed, or an item's deletion
+  marker could not be read, sync removed the collection anyway and could leave
+  it in the member's collection list. The collection row now stays and the next
+  sync retries the repair.
+
 - **A write run stops when the journal cannot record a write that landed.**
   Each landed write is journaled as it lands, so a run killed mid-flight stays
   undoable, but a failed record was ignored and the run kept writing. When that

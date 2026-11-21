@@ -505,6 +505,9 @@ An inverse-window key never reaches that code — the version GET fails first.
   again. A sync that does not include `items` keeps such a collection and warns
   instead of reaping it. The Amendment 2026-09-25 text above ("reaps mirrored
   rows absent from them ... then refetches by key") describes the earlier order.
+  A failed probe for a member shared by two collections cannot confirm that
+  member's repair. An unreadable deletion marker cannot confirm a deletion.
+  Either error keeps the collection row so a later sync can retry.
 - **2026-10-22:** field-change markers accumulate (finding
   `zotio-1cae2be097ce0be3`). The marker is the obligation to replay every
   write the read plane has not reported, so a second write to the same item

@@ -340,6 +340,21 @@ type reapProbes struct {
 	inTrash map[string]bool
 }
 
+// forMember shares the deletion-marker check between classification and repair.
+// A marker read error is not evidence that the item was deleted.
+func (probes *reapProbes) forMember(db *store.Store, key string) (*reapProbe, error) {
+	if p := probes.byKey[key]; p != nil {
+		return p, nil
+	}
+	deleted, err := db.PendingDeletion("items", key)
+	if err != nil {
+		return nil, fmt.Errorf("checking deletion marker for item %s: %w", key, err)
+	}
+	p := &reapProbe{readable: !deleted, canUpsert: !deleted && !probes.inTrash[key]}
+	probes.byKey[key] = p
+	return p, nil
+}
+
 // classifyAbsentCollections splits mirrored collections absent from the key
 // listing into confirmed-erased and spared. An absent collection with
 // mirrored live members is probed: the first usable member is fetched, and
@@ -361,21 +376,6 @@ func classifyAbsentCollections(ctx context.Context, c syncHTTPClient, db *store.
 	}
 	for _, k := range guarded {
 		probes.inTrash[k] = true
-	}
-	probeFor := func(key string) *reapProbe {
-		if p, ok := probes.byKey[key]; ok {
-			return p
-		}
-		p := &reapProbe{}
-		probes.byKey[key] = p
-		if deleted, derr := db.PendingDeletion("items", key); derr != nil || deleted {
-			// A confirmed local delete (or an unreadable marker table)
-			// makes the member unusable as a witness.
-			return p
-		}
-		p.readable = true
-		p.canUpsert = !probes.inTrash[key]
-		return p
 	}
 	fetchProbe := func(key string, p *reapProbe) {
 		if p.fetched || !p.readable {
@@ -410,15 +410,18 @@ func classifyAbsentCollections(ctx context.Context, c syncHTTPClient, db *store.
 		}
 		sort.Strings(members)
 		for _, m := range members {
-			p := probeFor(m)
-			if !p.readable {
-				continue
+			p, probeErr := probes.forMember(db, m)
+			if probeErr == nil {
+				if !p.readable {
+					continue
+				}
+				fetchProbe(m, p)
+				probeErr = p.fetchErr
 			}
-			fetchProbe(m, p)
-			if p.fetchErr != nil {
+			if probeErr != nil {
 				fetchFailed++
 				if firstFetchErr == nil {
-					firstFetchErr = p.fetchErr
+					firstFetchErr = probeErr
 				}
 				spared = append(spared, id)
 				break
@@ -537,16 +540,17 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 		if err := ctx.Err(); err != nil {
 			return false
 		}
-		p, ok := probes.byKey[key]
-		if !ok {
-			// A member the partition never probed (its collections were
-			// confirmed through another member): build a fresh probe.
-			p = &reapProbe{readable: true, canUpsert: !probes.inTrash[key]}
-			if deleted, derr := db.PendingDeletion("items", key); derr != nil || deleted {
-				out.membersSkipped++
-				continue
+		p, probeErr := probes.forMember(db, key)
+		if probeErr == nil && p.canUpsert {
+			// A failed probe for another collection is not a missing item.
+			probeErr = p.fetchErr
+		}
+		if probeErr != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = probeErr
 			}
-			probes.byKey[key] = p
+			continue
 		}
 		if !p.readable || !p.canUpsert {
 			out.membersSkipped++

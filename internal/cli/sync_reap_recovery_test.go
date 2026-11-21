@@ -216,3 +216,85 @@ func TestIncrementalCollectionReapRecoversInterruptedMemberRepair(t *testing.T) 
 		}
 	})
 }
+
+func TestIncrementalCollectionReapRetriesFailedSharedProbe(t *testing.T) {
+	const trashed = "CCCC0002"
+	ctx := context.Background()
+	db := recoverySeed(t, filepath.Join(t.TempDir(), "mirror.db"))
+	defer db.Close()
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
+		json.RawMessage(`{"key":"` + trashed + `","version":5,"data":{"name":"Trashed"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		recoveryMember(recoveryMemberB, recoveryCollKey, trashed),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var failShared atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/0/collections":
+			w.Header().Set("Total-Results", "0")
+		case "/users/0/items/" + recoveryMemberA:
+			_, _ = w.Write(recoveryMember(recoveryMemberA))
+		case "/users/0/items/" + recoveryMemberB:
+			if failShared.Load() {
+				http.Error(w, "unavailable", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write(recoveryMember(recoveryMemberB, trashed))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := syncTestClient(srv.URL + "/users/0")
+	resources := []string{"collections", "items"}
+	// A proves the first collection was erased. B is also the witness for
+	// the trashed collection, so the repair inherits B's failed probe.
+	failShared.Store(true)
+	reconcileIncrementalSync(ctx, c, db, resources, recoveryClean)
+	if !recoveryCollectionMirrored(t, db) {
+		t.Error("reaped the erased collection while its shared member still needs repair")
+	}
+	failShared.Store(false)
+	reconcileIncrementalSync(ctx, c, db, resources, recoveryClean)
+	if got := recoveryMemberCollections(t, db, recoveryMemberB); len(got) != 1 || got[0] != trashed {
+		t.Errorf("shared member collections after retry = %v, want [%s]", got, trashed)
+	}
+	if recoveryCollectionMirrored(t, db) {
+		t.Error("kept the erased collection after repairing its shared member")
+	}
+}
+
+func TestIncrementalCollectionReapRetriesUnreadableMarker(t *testing.T) {
+	db := recoverySeed(t, filepath.Join(t.TempDir(), "mirror.db"))
+	defer db.Close()
+	// B is the only witness. A failed marker lookup for B does not prove
+	// that the collection has no live members.
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{recoveryMember(recoveryMemberA)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().Exec(`INSERT INTO pending_writes(resource_type, id, changes, deleted)
+		VALUES ('items', ?, '[]', 'unreadable')`, recoveryMemberB); err != nil {
+		t.Fatal(err)
+	}
+	var failBatch atomic.Bool
+	c := recoveryPlane(t, &failBatch)
+	ctx := context.Background()
+	resources := []string{"collections", "items"}
+	first := reconcileIncrementalSync(ctx, c, db, resources, recoveryClean)
+	if !first.incomplete || !recoveryCollectionMirrored(t, db) {
+		t.Error("an unreadable marker must report an incomplete pass and keep the collection")
+	}
+	if _, err := db.DB().Exec(`DELETE FROM pending_writes WHERE resource_type = 'items' AND id = ?`, recoveryMemberB); err != nil {
+		t.Fatal(err)
+	}
+	reconcileIncrementalSync(ctx, c, db, resources, recoveryClean)
+	if got := recoveryMemberCollections(t, db, recoveryMemberB); len(got) != 0 || recoveryCollectionMirrored(t, db) {
+		t.Errorf("retry did not finish the repair: member collections = %v", got)
+	}
+}
