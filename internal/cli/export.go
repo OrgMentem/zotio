@@ -277,7 +277,9 @@ backwards-compatible resource exports.`,
 			if flags.asJSON {
 				return printCommandJSON(cmd.OutOrStdout(), result, flags)
 			}
-			fmt.Fprintln(cmd.ErrOrStderr(), result.message())
+			if !flags.quiet {
+				fmt.Fprintln(cmd.ErrOrStderr(), result.message())
+			}
 			return nil
 		},
 	}

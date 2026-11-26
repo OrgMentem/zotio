@@ -5,6 +5,7 @@ package cobratree
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -201,10 +202,12 @@ func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 	}
 }
 
-func safeFlagNames(cmd *cobra.Command) map[string]struct{} {
-	names := map[string]struct{}{}
+// safeFlagNames maps every flag the mirror exposes for cmd to its pflag type,
+// so argument validation can check each value's JSON type against the flag.
+func safeFlagNames(cmd *cobra.Command) map[string]string {
+	names := map[string]string{}
 	visitSafeMirrorFlags(cmd, func(flag *pflag.Flag) {
-		names[flag.Name] = struct{}{}
+		names[flag.Name] = flag.Value.Type()
 	})
 	return names
 }
@@ -219,7 +222,7 @@ func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 
 // Validate MCP-supplied arguments before the generated in-process handler
 // converts them back to Cobra CLI flags.
-func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]struct{}) server.ToolHandlerFunc {
+func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]string) server.ToolHandlerFunc {
 	inner := inProcessHandler(rootFactory, commandPath)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		callArgs := req.GetArguments()
@@ -235,7 +238,7 @@ func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []strin
 
 // Reject hidden globals, unknown schema parameters, and raw flag tokens in
 // positional args.
-func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct{}) error {
+func validateMirrorArguments(args map[string]any, allowedFlags map[string]string) error {
 	for name := range unsafeMCPMirrorFlags {
 		if _, ok := args[name]; ok {
 			return fmt.Errorf("MCP command mirror does not expose --%s; configure it on the MCP server instead", name)
@@ -245,8 +248,12 @@ func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct
 		if name == "args" {
 			continue
 		}
-		if _, ok := allowedFlags[name]; !ok {
+		flagType, ok := allowedFlags[name]
+		if !ok {
 			return fmt.Errorf("MCP command mirror does not expose --%s for this command", name)
+		}
+		if err := validateMirrorFlagValue(name, flagType, args[name]); err != nil {
+			return err
 		}
 	}
 	if rawValue, exists := args["args"]; exists && rawValue != nil {
@@ -258,6 +265,56 @@ func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct
 			if strings.HasPrefix(token, "-") {
 				return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
 			}
+		}
+	}
+	return nil
+}
+
+// validateMirrorFlagValue refuses a flag value whose JSON type does not match
+// the Cobra flag it targets. The generated schema already declares these
+// types, but command_run and workflow_submit accept free-form flag objects, and
+// a mismatched value is a malformed call, not something to coerce: a string
+// aimed at a bool flag must never reach argv. A nil value means "absent".
+func validateMirrorFlagValue(name, flagType string, value any) error {
+	if value == nil {
+		return nil
+	}
+	mismatch := func(want string) error {
+		return fmt.Errorf("MCP command mirror flag --%s expects %s, got %T", name, want, value)
+	}
+	switch flagType {
+	case "bool":
+		if _, ok := value.(bool); !ok {
+			return mismatch("a boolean")
+		}
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "count":
+		n, ok := value.(float64)
+		if !ok {
+			return mismatch("an integer")
+		}
+		if n != math.Trunc(n) || math.IsInf(n, 0) {
+			return fmt.Errorf("MCP command mirror flag --%s expects an integer, got %v", name, n)
+		}
+	case "float32", "float64":
+		if _, ok := value.(float64); !ok {
+			return mismatch("a number")
+		}
+	case "stringSlice", "stringArray":
+		switch tv := value.(type) {
+		case string:
+		case []any:
+			for _, item := range tv {
+				if _, ok := item.(string); !ok {
+					return fmt.Errorf("MCP command mirror flag --%s expects an array of strings, got item %T", name, item)
+				}
+			}
+		default:
+			return mismatch("a string or an array of strings")
+		}
+	default:
+		if _, ok := value.(string); !ok {
+			return mismatch("a string")
 		}
 	}
 	return nil

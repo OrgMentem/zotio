@@ -200,92 +200,8 @@ func writeGuardObject(w http.ResponseWriter, key string, version int, data map[s
 	_ = json.NewEncoder(w).Encode(map[string]any{"key": key, "version": version, "data": data})
 }
 
-// putWithVersionGuard reconciles a lost PUT response by comparing the current
-// object against the fields it asked for. collections update and collections
-// move route every rename and reparent through it, so an inverted comparison
-// would report someone else's collection tree as the one the caller asked for.
-func TestGuardedPutReconcilesLostCommittedResponse(t *testing.T) {
-	const path = "/collections/COLL0001"
-	desired := map[string]any{"name": "Requested", "parentCollection": "PARENT01"}
-
-	for _, tc := range []struct {
-		name        string
-		serveGet    func(w http.ResponseWriter)
-		wantStatus  string
-		wantCode    int
-		wantData    bool
-		wantErr     bool
-		wantErrText string
-	}{
-		{
-			name: "requested write landed",
-			serveGet: func(w http.ResponseWriter) {
-				writeGuardObject(w, "COLL0001", 8, map[string]any{"name": "Requested", "parentCollection": "PARENT01"})
-			},
-			wantStatus: "applied",
-			wantCode:   http.StatusOK,
-			wantData:   true,
-		},
-		{
-			name: "another write won",
-			serveGet: func(w http.ResponseWriter) {
-				writeGuardObject(w, "COLL0001", 8, map[string]any{"name": "Another actor", "parentCollection": "PARENT01"})
-			},
-			wantStatus: "conflict",
-			wantErr:    true,
-		},
-		{
-			name: "read-back body cannot be compared",
-			serveGet: func(w http.ResponseWriter) {
-				w.Header().Set("Last-Modified-Version", "8")
-				_, _ = w.Write([]byte(`["not an object"]`))
-			},
-			wantStatus:  "failed",
-			wantErr:     true,
-			wantErrText: "cannot be compared",
-		},
-		{
-			name:        "read-back fails",
-			serveGet:    func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) },
-			wantStatus:  "failed",
-			wantErr:     true,
-			wantErrText: "reconciliation failed",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fastRetryBackoff(t)
-			srv := writeGuardDropOnceServer(t, http.MethodPut, tc.serveGet)
-			c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
-			c.NoCache = true
-
-			data, statusCode, status, detail, err := putWithVersionGuard(c, path, desired, 7)
-			if status != tc.wantStatus {
-				t.Fatalf("status=%q detail=%v err=%v, want %q", status, detail, err, tc.wantStatus)
-			}
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, want error: %v", err, tc.wantErr)
-			}
-			if statusCode != tc.wantCode {
-				t.Errorf("statusCode = %d, want %d", statusCode, tc.wantCode)
-			}
-			if (data != nil) != tc.wantData {
-				t.Errorf("data = %s, want present: %v", data, tc.wantData)
-			}
-			if tc.wantStatus == "applied" {
-				evidence, ok := detail.(map[string]any)
-				if !ok || evidence["reconciled"] != true || evidence["observed_version"] != 8 {
-					t.Fatalf("detail = %#v, want reconciled evidence naming the observed version", detail)
-				}
-			}
-			if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
-				t.Errorf("error = %q, want it to mention %q", err, tc.wantErrText)
-			}
-		})
-	}
-}
-
 // deleteWithVersionGuard reconciles a lost DELETE response by the target's
-// ABSENCE, the opposite evidence to the PUT guard's field comparison. Only a
+// ABSENCE, the opposite evidence to the PATCH guard's field comparison. Only a
 // 404 read-back proves the delete landed: a surviving object means the delete
 // is still unproven, and reporting it as applied would tell items delete
 // --permanent and collections delete that a purge succeeded when it did not.
@@ -427,6 +343,32 @@ func TestGuardedWritesReconcileCommittedWrite5xx(t *testing.T) {
 			}
 			if got := reads.Load(); got != 1 {
 				t.Errorf("reconciliation reads = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// Zotero omits data.deleted for an item that is not trashed, so a restore
+// (deleted=0) that landed must reconcile as applied, and a trash (deleted=1)
+// must match deleted true or 1.
+func TestRequestedPatchFieldsMatchDeletedFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		current   string
+		body      map[string]any
+		wantMatch bool
+	}{
+		{"restore, key omitted", `{"key":"A","version":9,"data":{"key":"A","title":"t"}}`, map[string]any{"deleted": 0}, true},
+		{"restore, still trashed", `{"key":"A","version":9,"data":{"key":"A","deleted":1}}`, map[string]any{"deleted": 0}, false},
+		{"restore, false", `{"data":{"deleted":false}}`, map[string]any{"deleted": 0}, true},
+		{"trash, number", `{"data":{"deleted":1}}`, map[string]any{"deleted": 1}, true},
+		{"trash, bool", `{"data":{"deleted":true}}`, map[string]any{"deleted": 1}, true},
+		{"trash, key omitted", `{"data":{"title":"t"}}`, map[string]any{"deleted": 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := requestedPatchFieldsMatch(json.RawMessage(tc.current), tc.body)
+			if err != nil || got != tc.wantMatch {
+				t.Fatalf("match = %v, err = %v, want %v", got, err, tc.wantMatch)
 			}
 		})
 	}

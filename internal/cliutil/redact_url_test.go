@@ -49,6 +49,10 @@ func TestRedactURL(t *testing.T) {
 			raw:  "https://api.zotero.org/users/1?%6Bey=SECRET",
 			want: "https://api.zotero.org/users/1?%6Bey=***",
 		},
+		{name: "secret parameter", raw: "https://api.zotero.org/users/1?secret=S3&x=1", want: "https://api.zotero.org/users/1?secret=***&x=1"},
+		{name: "password parameter", raw: "https://api.zotero.org/users/1?password=S3&x=1", want: "https://api.zotero.org/users/1?password=***&x=1"},
+		{name: "auth parameter", raw: "https://api.zotero.org/users/1?auth=S3&x=1", want: "https://api.zotero.org/users/1?auth=***&x=1"},
+		{name: "apikey parameter", raw: "https://api.zotero.org/users/1?apikey=S3&x=1", want: "https://api.zotero.org/users/1?apikey=***&x=1"},
 	}
 
 	for _, tt := range tests {

@@ -181,7 +181,7 @@
     {
       "name": "collections_update",
       "description": "Update a collection. Required: collectionKey. Optional: name, parentCollection. (requires API key)",
-      "method": "PUT",
+      "method": "PATCH",
       "path": "/collections/{collectionKey}",
       "params": [
         {

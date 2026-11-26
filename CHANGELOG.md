@@ -6,6 +6,74 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **MCP mirror refuses a non-boolean value for a boolean flag.** A string such
+  as `"true --deliver …"` became extra argv tokens, so an agent could inject
+  `--deliver`, `--config`, `--group` or `--profile`. Each value now goes out as
+  one `--flag=value` token after a type check, an explicit empty string reaches
+  the command, and integer flags advertise an `integer` schema.
+
+- **A JSON `null` page is an error, not the end of a list.** Children, trash,
+  tag, collection, export-verify, reap and vault-push walkers stopped early on a
+  `null` body, which could truncate output, under-delete, or create duplicates.
+  `--limit 0` on live list reads now pages through every row instead of the
+  API's first 25. `items file`/`items fulltext` find a PDF past the first
+  children page, and `tags rename`/`tags delete` escape a leading `-`.
+
+- **`collections move` and `collections update` use PATCH.** The PUT body held
+  only changed fields, so a move dropped the name and a rename reset the parent.
+  `collections tags --query` now filters on the live plane too.
+
+- **`import file` maps container, volume, issue and pages per item type.**
+  Chapters, conference papers and books no longer get `publicationTitle`; RIS
+  lines outside a TY…ER record are ignored. Malformed 2xx import responses are
+  reported as committed-but-unknown instead of applied or failed.
+
+- **Client and store hardening.** A refused first dial is a definite write
+  failure; the response cache is invalidated before a mutation is sent;
+  `CloneForRead` refuses writes; `--quiet` silences retry notices;
+  `ZOTERO_BASE_URL` is no longer saved into `config.toml`; read-only store paths
+  containing `#` or `%` open the right file; the read-only SQL gate refuses
+  writing `WITH` and `PRAGMA` statements. `mark3labs/mcp-go` is v1.2.1
+  (GHSA-xf6j-693p-wqxx).
+
+- **`--quiet` silences notes** from `agent-context`, `capabilities`,
+  `annotations export`, `auth set-token`, `export --output`, provenance lines
+  and the local-mirror fallback. Exit 15 is labeled `stuck` in JSON errors.
+
+- **A completed workflow is no longer rerun after a crash.** `workflow run`,
+  `tail --workflow`, and `watch --workflow-on-change` deleted the checkpoint
+  before their own acknowledgement was durable, so a kill in that window made
+  the next invocation start the workflow from step one. A successful run now
+  records completion in its checkpoint first. A retried `workflow run` reports
+  `workflow run already completed` and runs nothing, and tail and watch clear
+  their owed marker instead of replaying the run.
+
+- **Durable writes report a failed directory sync.** `AtomicWriteDurableFile`
+  ignored a real directory-sync error and returned success. `--deliver file:`
+  now syncs the data and the directory before it reports the delivery, and
+  `items enrich` syncs the directory after it publishes a PDF.
+
+- **`--deliver file:` and vault writes no longer replace a symlink.** The
+  rename replaced the link itself with a regular file. Both now refuse a
+  symlinked target, as `export --output` does.
+
+- **Webhook deliveries carry an `Idempotency-Key`.** The key is a hash of the
+  payload, so a retried delivery of the same output names the same delivery and
+  a receiver that honors the header processes it once.
+
+- **`items enrich` refuses PDFs hosted in 100.64.0.0/10.** The PDF download guard
+  allowed carrier-grade NAT and Tailscale addresses that the `--deliver` and
+  import guards already blocked.
+
+- **A failed repair of a torn tail delivery file or journal no longer leaks a
+  sidecar.** A failed quarantine left a `.torn-*` copy behind on every retry.
+  The copy now stays only once the file is truncated.
+
+- **A journaled undo records what it changed.** An undo that skipped a change
+  because the item no longer held it journaled the full plan, so undoing that
+  undo re-applied the skipped change over a manual edit. The journal now records
+  the changes that landed.
+
 - **Snapshot exports refuse a change in the reported result count.** Without a
   library version, a deletion between pages could make the export skip a record
   without repeating any key. A changed count now stops fresh and resumed exports

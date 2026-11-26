@@ -182,6 +182,15 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 							}
 							return "failed", nil, classifyAPIError(err, flags)
 						}
+						// HTTP status alone does not prove the write: require a
+						// batch envelope attributing the one record, else the
+						// dispatched create's outcome is unknown, not applied.
+						if err := checkBatchEnvelope(raw, 1); err != nil {
+							return "conflict", map[string]any{
+								"committed": true, "outcome": "unknown",
+								"message": ambiguousCreateRefusal("import."+resource, "record", err).Error(),
+							}, err
+						}
 						if reason := importRejection(raw); reason != "" {
 							return "failed", nil, errors.New(reason)
 						}

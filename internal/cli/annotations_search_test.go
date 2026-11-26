@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -460,5 +461,65 @@ func seedAnnotationSearchStore(t *testing.T, items []json.RawMessage) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close annotation search store: %v", err)
+	}
+}
+
+func TestIntersectAnnotationCohorts(t *testing.T) {
+	item := func(title string) map[string]any { return map[string]any{"title": title} }
+	keys := func(cohort []annotationCohortItem) []string {
+		out := make([]string, 0, len(cohort))
+		for _, c := range cohort {
+			out = append(out, c.Key)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name     string
+		a, b     []annotationCohortItem
+		wantKeys []string
+	}{
+		{"overlap keeps only common keys in first-arm order", []annotationCohortItem{{Key: "A"}, {Key: "B"}, {Key: "C"}}, []annotationCohortItem{{Key: "C"}, {Key: "A"}, {Key: "Z"}}, []string{"A", "C"}},
+		{"disjoint is empty", []annotationCohortItem{{Key: "A"}}, []annotationCohortItem{{Key: "B"}}, []string{}},
+		{"empty first arm", nil, []annotationCohortItem{{Key: "B"}}, []string{}},
+		{"empty second arm", []annotationCohortItem{{Key: "A"}}, nil, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := keys(intersectAnnotationCohorts(tc.a, tc.b))
+			if !slices.Equal(got, tc.wantKeys) {
+				t.Fatalf("keys = %v, want %v", got, tc.wantKeys)
+			}
+		})
+	}
+	t.Run("nil item borrows metadata from the second arm", func(t *testing.T) {
+		got := intersectAnnotationCohorts(
+			[]annotationCohortItem{{Key: "A"}, {Key: "B", Item: item("first")}},
+			[]annotationCohortItem{{Key: "A", Item: item("second")}, {Key: "B", Item: item("other")}})
+		if len(got) != 2 || got[0].Item["title"] != "second" || got[1].Item["title"] != "first" {
+			t.Fatalf("items = %+v, want A filled from arm two and B keeping arm one's item", got)
+		}
+	})
+}
+
+// A multi-arm scope must narrow to the items every arm names; the mirror-backed
+// arm (query) resolves against the synced store.
+func TestAnnotationReaderResolveCohortIntersectsMirrorArms(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"BOTH1","version":1,"data":{"key":"BOTH1","itemType":"journalArticle","title":"Alpha Beta"}}`),
+		json.RawMessage(`{"key":"ALPH1","version":1,"data":{"key":"ALPH1","itemType":"journalArticle","title":"Alpha Only"}}`),
+		json.RawMessage(`{"key":"BETA1","version":1,"data":{"key":"BETA1","itemType":"journalArticle","title":"Beta Only"}}`),
+	})
+	cmd := newAnnotationsSearchCmd(&rootFlags{dataSource: "local"})
+	reader := newAnnotationReader(cmd, &rootFlags{dataSource: "local"}, &rootFlags{dataSource: "local"}, nil)
+
+	cohort, restricted, err := reader.resolveCohort(context.Background(), "query:Alpha AND query:Beta")
+	if err != nil {
+		t.Fatalf("resolveCohort: %v", err)
+	}
+	if !restricted || len(cohort) != 1 || cohort[0].Key != "BOTH1" {
+		t.Fatalf("cohort = %+v restricted=%v, want only BOTH1", cohort, restricted)
+	}
+	single, _, err := reader.resolveCohort(context.Background(), "query:Alpha")
+	if err != nil || len(single) != 2 {
+		t.Fatalf("single-arm cohort = %+v, %v; want ALPH1 and BOTH1", single, err)
 	}
 }

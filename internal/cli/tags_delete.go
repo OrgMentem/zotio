@@ -28,11 +28,7 @@ func tagsDeleteCarrierKeys(c *client.Client, tagNames []string, limit int) ([]st
 	var keys []string
 	matched := 0
 	for _, tagName := range tagNames {
-		query := tagName
-		if strings.HasPrefix(query, "-") {
-			// A leading dash negates the match in Zotero's tag filter.
-			query = `\` + query
-		}
+		query := zoteroLiteralTagQuery(tagName)
 		for start := 0; ; start += limit {
 			data, err := c.Get("/items", map[string]string{
 				"tag":   query,
@@ -42,11 +38,11 @@ func tagsDeleteCarrierKeys(c *client.Client, tagNames []string, limit int) ([]st
 			if err != nil {
 				return nil, 0, err
 			}
-			var page []struct {
+			page, err := decodeListPage[struct {
 				Key string `json:"key"`
-			}
-			if err := json.Unmarshal(data, &page); err != nil {
-				return nil, 0, fmt.Errorf("parsing items page: %w", err)
+			}](data, fmt.Sprintf("items page for tag %q at start %d", tagName, start))
+			if err != nil {
+				return nil, 0, err
 			}
 			for _, item := range page {
 				matched++
@@ -65,6 +61,17 @@ func tagsDeleteCarrierKeys(c *client.Client, tagNames []string, limit int) ([]st
 		}
 	}
 	return keys, matched, nil
+}
+
+// zoteroLiteralTagQuery returns name as a value for the /items `tag` filter
+// that matches the tag literally. A leading dash negates the match in Zotero's
+// tag filter, so a tag such as "-draft" would select every item that does NOT
+// carry it unless the dash is escaped.
+func zoteroLiteralTagQuery(name string) string {
+	if strings.HasPrefix(name, "-") {
+		return `\` + name
+	}
+	return name
 }
 
 // noCarriersRun reports a delete that found nothing to remove. The reason says

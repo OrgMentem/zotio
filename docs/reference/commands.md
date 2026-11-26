@@ -68,7 +68,7 @@ These flags are available on every command.
 | `--select` | `string` |  | Comma-separated fields to include in output (e.g. --select id,name,status) |
 | `--timeout` | `duration` | `30s` | Request timeout |
 | `--via` | `string` | `auto` | Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) |
-| `--yes` | `bool` | `false` | Skip confirmation prompts (for agents and scripts) |
+| `--yes` | `bool` | `false` | Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) |
 
 ## Configuration
 
@@ -298,9 +298,10 @@ content hash alone, because Zotero names the stored file after the parent item
 rather than after your file: an identical retry no-ops, a run interrupted
 before the move is resumed rather than duplicated. Every connector retry cleans
 up empty temporary parents left by earlier runs once they are more than seven
-minutes old, even if the new upload fails. Two limits are worth knowing:
-a retry issued before Zotero has registered the hash can still add a second
-copy, and two simultaneous runs against one item can both add one.
+minutes old, even if the new upload fails. A retry issued before Zotero has
+registered the hash of an interrupted upload waits for the hash, and stops with
+an error instead of adding a second copy if it does not appear. One limit
+remains: two simultaneous runs against one item can both add a copy.
 
 By default this previews the planned attachment; apply with --yes.
 
@@ -480,6 +481,9 @@ zotio collections create --name "Reading list" --parent-collection ABCD2345
 
 Permanently delete a collection and its subcollections (items stay in the library)
 
+Irreversible. Requires --allow-destructive; add --yes to apply. Preview first with --allow-destructive alone.
+Without --allow-destructive the command is refused, not previewed.
+
 ```
 zotio collections delete <collectionKey>
 ```
@@ -487,7 +491,8 @@ zotio collections delete <collectionKey>
 Examples:
 
 ```bash
-zotio collections delete ABCD2345
+zotio collections delete ABCD2345 --allow-destructive
+  zotio collections delete ABCD2345 --allow-destructive --yes
 ```
 
 ### `zotio collections export`
@@ -1849,9 +1854,10 @@ zotio items children ABCD2345
 Get a formatted citation for an item
 
 Retrieve a formatted bibliographic citation for an item. The Zotero local
-API renders citations using your installed CSL styles. For the most common
-styles (apa, chicago, mla), use the --style flag. For others, pass the
-CSL style ID directly (e.g. "nature", "harvard-cite-them-right").
+API renders the default citation and the bibtex, ris, and csljson formats.
+Any other --style value is a CSL style ID (for example "nature" or
+"harvard-cite-them-right"); it is rendered through the Zotero Web API and
+needs a configured Web API key.
 
 ```
 zotio items cite <itemKey> [flags]
@@ -3554,8 +3560,8 @@ The cursor advances once the events are delivered. The events the workflow has
 not yet run for are recorded next to the local database first (one record per
 API source and workflow spec), so a failed or interrupted trigger is retried on
 the next poll, alone and with any newer events, without delivering the earlier
-events again. A crash after a successful run can repeat it, so workflows must
-be idempotent.
+events again. A completed run is recorded before its pending record clears, so
+a crash in between settles the record without running the workflow again.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.

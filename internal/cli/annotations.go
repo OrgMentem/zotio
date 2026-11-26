@@ -539,7 +539,7 @@ func (r *annotationReader) mirrorCohort(ctx context.Context, arm scopeSpec) ([]a
 // noteEmptyLocalAnnotations tells the caller that an empty answer came from
 // the local mirror, which may lag the library.
 func noteEmptyLocalAnnotations(cmd *cobra.Command, prov DataProvenance, count int) {
-	if count > 0 || prov.Source != "local" {
+	if count > 0 || prov.Source != "local" || commandQuiet(cmd) {
 		return
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "note: no annotations matched in the local mirror; it can lag the library. Run 'zotio sync', or use --data-source live")

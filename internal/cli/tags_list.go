@@ -41,7 +41,15 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return usageErr(err)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "tags", false, path, params, nil)
+			// With --query the live branch below re-walks every tag, so the
+			// first read stays a single request there.
+			var data json.RawMessage
+			var prov DataProvenance
+			if flagQ != "" {
+				data, prov, err = resolveRead(cmd.Context(), c, flags, "tags", false, path, params, nil)
+			} else {
+				data, prov, err = resolveListRead(cmd.Context(), c, flags, "tags", false, path, params)
+			}
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -52,7 +60,7 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 				if flagLimit > 0 {
 					need = flagStart + flagLimit
 				}
-				data, err = fetchLiveTagsMatching(c, flagQ, flagQMode, need)
+				data, err = fetchLiveTagsMatching(c, path, flagQ, flagQMode, need)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
@@ -133,10 +141,11 @@ func filterLiveTagsByQuery(data json.RawMessage, query, queryMode string) (json.
 	return json.Marshal(kept)
 }
 
-// fetchLiveTagsMatching pages through /tags, filtering each page client-side
+// fetchLiveTagsMatching pages through a tag-list path (/tags or
+// /collections/{key}/tags), filtering each page client-side
 // as it arrives. With need > 0 it stops as soon as that many matches have
 // been collected; need == 0 reads every page.
-func fetchLiveTagsMatching(c *client.Client, query, queryMode string, need int) (json.RawMessage, error) {
+func fetchLiveTagsMatching(c *client.Client, path, query, queryMode string, need int) (json.RawMessage, error) {
 	const pageSize = 100
 	var matched []json.RawMessage
 	for start := 0; ; start += pageSize {
@@ -146,16 +155,16 @@ func fetchLiveTagsMatching(c *client.Client, query, queryMode string, need int) 
 		if mode == "" {
 			mode = "contains"
 		}
-		page, err := c.Get("/tags", map[string]string{
+		page, err := c.Get(path, map[string]string{
 			"limit": strconv.Itoa(pageSize), "start": strconv.Itoa(start),
 			"q": query, "qmode": mode,
 		})
 		if err != nil {
 			return nil, err
 		}
-		var rows []json.RawMessage
-		if err := json.Unmarshal(page, &rows); err != nil {
-			return nil, fmt.Errorf("parsing tags page: %w", err)
+		rows, err := decodeListPage[json.RawMessage](page, fmt.Sprintf("tags page at start %d", start))
+		if err != nil {
+			return nil, err
 		}
 		kept, err := filterLiveTagsByQuery(page, query, queryMode)
 		if err != nil {

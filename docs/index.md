@@ -6,7 +6,7 @@ template: home.html
 
 ## How it works
 
-Reads stay on your machine. Writes split by intent: **creating a new item** (with its attachments/PDFs) prefers the local desktop connector (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update** route to the Zotero Web API and need a configured key. `attachments add --via connector` is an opt-in desktop route for an existing item; it still needs a key to re-parent the attachment through the Web API. Writes are preview-first. Item updates read their version precondition from the Web API at apply time, and supported applied changes update an existing local mirror.
+Reads stay on your machine, except the few that render server-side and need a Web API key: `items bibliography` and `items cite` with a custom `--style`. Writes split by intent: **creating a new item** (with its attachments/PDFs) prefers the local desktop connector (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update** route to the Zotero Web API and need a configured key. `attachments add --via connector` is an opt-in desktop route for an existing item; it still needs a key to re-parent the attachment through the Web API. Writes are preview-first. Item updates read their version precondition from the Web API at apply time, and supported applied changes update an existing local mirror.
 
 <div class="zotio-diagram-wrap">
 --8<-- "docs/assets/architecture.svg"
@@ -14,7 +14,7 @@ Reads stay on your machine. Writes split by intent: **creating a new item** (wit
 
 | Plane | Backend | Needs a key? |
 |---|---|---|
-| **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror | No |
+| **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror | No (Web API-only reads such as `items bibliography` need one) |
 | **Write — new item** | Local desktop connector when personal + desktop up; else Web API | No (connector path) |
 | **Write — everything else** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves | Yes — configured once |
 | **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |

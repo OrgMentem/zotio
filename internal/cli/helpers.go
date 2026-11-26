@@ -471,12 +471,6 @@ func sanitizeErrorForTerminal(s string) string {
 	return replaceControlBytes(s, errorControlByte)
 }
 
-// SanitizeErrorForTerminal exposes sanitizeErrorForTerminal to the binary entry
-// point, which prints zotio's own multi-line error and hint text.
-func SanitizeErrorForTerminal(s string) string {
-	return sanitizeErrorForTerminal(s)
-}
-
 func replaceControlBytes(s string, bad func(byte) bool) string {
 	for i := range len(s) {
 		if bad(s[i]) {
@@ -758,20 +752,6 @@ func selectPathMatches(data json.RawMessage, path []string) (matched, sawObject 
 	// A list envelope is only a wrapper: its records decide, so an empty
 	// results array is not a candidate record.
 	return matched, sawObject || topMatched || !foundArray
-}
-
-// camelToKebab converts "orderDate" or "orderdate" to "order-date" by splitting on
-// uppercase boundaries. For already-lowercase input, splits on known word boundaries.
-func camelToKebab(s string) string {
-	var b strings.Builder
-	runes := []rune(s)
-	for i, r := range runes {
-		if i > 0 && unicode.IsUpper(r) && unicode.IsLower(runes[i-1]) {
-			b.WriteByte('-')
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	return b.String()
 }
 
 // printOutputWithFlags routes output through the right format based on flags.
@@ -1701,7 +1681,7 @@ type DataProvenance struct {
 // already carries meta.source, so the stderr line is redundant and becomes
 // noise in agent flows that merge stderr into stdout.
 func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
-	if !isTerminal(cmd.OutOrStdout()) {
+	if !isTerminal(cmd.OutOrStdout()) || commandQuiet(cmd) {
 		return
 	}
 	noun := "results"
@@ -2012,6 +1992,13 @@ func markRendered(err error) error {
 	return &renderedError{err: err}
 }
 
+// commandQuiet reports whether the global --quiet flag is set on cmd, for
+// diagnostics helpers that receive only the cobra command.
+func commandQuiet(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup("quiet")
+	return f != nil && f.Value.String() == "true"
+}
+
 // errorKindForCode names the JSON error kind for an exit code.
 func errorKindForCode(code int) string {
 	switch code {
@@ -2037,6 +2024,8 @@ func errorKindForCode(code int) string {
 		return "degraded"
 	case 14:
 		return "timeout"
+	case 15:
+		return "stuck"
 	default:
 		return "general"
 	}

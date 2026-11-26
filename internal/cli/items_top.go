@@ -54,7 +54,7 @@ func newItemsTopCmd(flags *rootFlags) *cobra.Command {
 			if flagQ != "" {
 				params["q"] = fmt.Sprintf("%v", flagQ)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+			data, prov, err := resolveListRead(cmd.Context(), c, flags, "items", false, path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

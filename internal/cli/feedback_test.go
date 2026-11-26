@@ -58,55 +58,82 @@ func TestFeedbackListReportsCorruptJournalLines(t *testing.T) {
 	}
 }
 
-// postFeedback installs http.ErrUseLastResponse so a trusted endpoint cannot
-// redirect feedback into an internal target. The refused 3xx response is
-// therefore a send that never happened and must not be reported as delivered.
-func TestPostFeedbackStatusHandling(t *testing.T) {
+// redirectStatusCase is one upstream status for requireRefusedRedirects.
+type redirectStatusCase struct {
+	name    string
+	status  int
+	wantErr string
+}
+
+// requireRefusedRedirects is the shared harness for outbound POST helpers that
+// install http.ErrUseLastResponse so a trusted endpoint cannot redirect a body
+// into an internal target. net/http then hands back the 3xx itself; the send
+// never happened, so only a 2xx may be reported as success and the redirect
+// target must never be requested. post receives the endpoint URL and the test
+// server (for TLS transport setup); tls selects an https test server.
+func requireRefusedRedirects(t *testing.T, tls bool, hookPath string, cases []redirectStatusCase, post func(t *testing.T, srv *httptest.Server, url string) error) {
+	t.Helper()
 	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
 	allowPrivateOutboundForTests.Store(true)
 	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
-	tests := []struct {
-		name    string
-		status  int
-		wantErr string
-	}{
-		{name: "moved permanently", status: http.StatusMovedPermanently, wantErr: "feedback endpoint returned 301"},
-		{name: "temporary redirect", status: http.StatusTemporaryRedirect, wantErr: "feedback endpoint returned 307"},
-		{name: "ok", status: http.StatusOK},
-		{name: "no content", status: http.StatusNoContent},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			var paths []string
-			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				paths = append(paths, r.URL.Path)
-				if r.URL.Path == "/feedback" {
+				if r.URL.Path == hookPath {
 					w.Header().Set("Location", "/moved")
 					w.WriteHeader(tt.status)
 					return
 				}
 				w.WriteHeader(http.StatusOK)
-			}))
+			})
+			var srv *httptest.Server
+			if tls {
+				srv = httptest.NewTLSServer(handler)
+			} else {
+				srv = httptest.NewServer(handler)
+			}
 			t.Cleanup(srv.Close)
-			// postFeedback requires https and builds its own client, so the
-			// test server's certificate has to be trusted through the default
-			// transport that externalFetchHTTPClient clones.
-			oldTransport := http.DefaultTransport
-			http.DefaultTransport = srv.Client().Transport
-			t.Cleanup(func() { http.DefaultTransport = oldTransport })
 
-			err := postFeedback(srv.URL+"/feedback", FeedbackEntry{Text: "hello"})
+			err := post(t, srv, srv.URL+hookPath)
 			if tt.wantErr == "" {
 				if err != nil {
-					t.Fatalf("postFeedback(%d) = %v, want success", tt.status, err)
+					t.Fatalf("post(%d) = %v, want success", tt.status, err)
 				}
 				return
 			}
-			assertRedirectRefused(t, tt.status, tt.wantErr, "/feedback", paths, err)
+			if err == nil {
+				t.Fatalf("post reported %d as sent, want an error naming the status", tt.status)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("post error = %v, want it to contain %q", err, tt.wantErr)
+			}
+			if len(paths) != 1 || paths[0] != hookPath {
+				t.Fatalf("request paths = %v, want the refused redirect not to be followed", paths)
+			}
 		})
 	}
+}
+
+// A refused 3xx from the feedback endpoint is a send that never happened and
+// must not be reported as delivered.
+func TestPostFeedbackStatusHandling(t *testing.T) {
+	requireRefusedRedirects(t, true, "/feedback", []redirectStatusCase{
+		{name: "moved permanently", status: http.StatusMovedPermanently, wantErr: "feedback endpoint returned 301"},
+		{name: "temporary redirect", status: http.StatusTemporaryRedirect, wantErr: "feedback endpoint returned 307"},
+		{name: "ok", status: http.StatusOK},
+		{name: "no content", status: http.StatusNoContent},
+	}, func(t *testing.T, srv *httptest.Server, url string) error {
+		// postFeedback requires https and builds its own client, so the
+		// test server's certificate has to be trusted through the default
+		// transport that externalFetchHTTPClient clones.
+		oldTransport := http.DefaultTransport
+		http.DefaultTransport = srv.Client().Transport
+		t.Cleanup(func() { http.DefaultTransport = oldTransport })
+		return postFeedback(url, FeedbackEntry{Text: "hello"})
+	})
 }
 
 // Truncation must land on a rune boundary: a byte slice through a multi-byte

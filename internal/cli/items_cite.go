@@ -21,9 +21,10 @@ func newItemsCiteCmd(flags *rootFlags) *cobra.Command {
 		Use:   "cite <itemKey>",
 		Short: "Get a formatted citation for an item",
 		Long: `Retrieve a formatted bibliographic citation for an item. The Zotero local
-API renders citations using your installed CSL styles. For the most common
-styles (apa, chicago, mla), use the --style flag. For others, pass the
-CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
+API renders the default citation and the bibtex, ris, and csljson formats.
+Any other --style value is a CSL style ID (for example "nature" or
+"harvard-cite-them-right"); it is rendered through the Zotero Web API and
+needs a configured Web API key.`,
 		Example: `  zotio items cite ABCD2345
   zotio items cite ABCD2345 --style apa
   zotio items cite ABCD2345 --style bibtex --json`,

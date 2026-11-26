@@ -34,7 +34,7 @@ func newCollectionsListCmd(flags *rootFlags) *cobra.Command {
 			if flagStart != 0 {
 				params["start"] = fmt.Sprintf("%v", flagStart)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "collections", false, path, params, nil)
+			data, prov, err := resolveListRead(cmd.Context(), c, flags, "collections", false, path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

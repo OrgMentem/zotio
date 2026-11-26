@@ -286,10 +286,14 @@ func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) 
 	matched := 0
 	for start := 0; ; start += limit {
 		data, err := c.Get("/items", map[string]string{
-			"tag":   oldName,
+			"tag":   zoteroLiteralTagQuery(oldName),
 			"limit": fmt.Sprintf("%d", limit),
 			"start": fmt.Sprintf("%d", start),
 		})
+		if err != nil {
+			return nil, 0, err
+		}
+		page, err := decodeListPage[json.RawMessage](data, fmt.Sprintf("items page for tag %q at start %d", oldName, start))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -298,10 +302,6 @@ func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) 
 			return nil, 0, err
 		}
 		all = append(all, updates...)
-		var page []json.RawMessage
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, 0, fmt.Errorf("parsing items page: %w", err)
-		}
 		matched += len(page)
 		if len(page) < limit {
 			break

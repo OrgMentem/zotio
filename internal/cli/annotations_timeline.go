@@ -119,18 +119,13 @@ func parseZoteroTime(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid time %q", value)
 }
 
-// sortAnnotationsByInstantDesc orders annotations newest-first by parsed
+// sortByAnnotationInstantDesc orders annotations newest-first by parsed
 // instant. Comparing the raw RFC3339 strings would order by text, which only
 // coincides with chronological order while every timestamp shares one offset
 // and width; a payload carrying mixed offsets would silently interleave.
 // Unparseable timestamps cannot be placed on the timeline at all, so they sort
 // last by key rather than being dropped or comparing as the zero instant.
-func sortAnnotationsByInstantDesc(annotations []annotationSummary) []annotationSummary {
-	return sortByAnnotationInstantDesc(annotations, func(a annotationSummary) annotationSummary { return a })
-}
-
-// sortByAnnotationInstantDesc is sortAnnotationsByInstantDesc for any row type
-// that carries an annotationSummary.
+// Rows are any type that carries an annotationSummary.
 func sortByAnnotationInstantDesc[T any](rows []T, summary func(T) annotationSummary) []T {
 	type keyed struct {
 		row   T

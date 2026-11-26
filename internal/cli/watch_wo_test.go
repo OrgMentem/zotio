@@ -350,3 +350,88 @@ func TestWatchWorkflowOnChangeRunsForACycleKilledMidway(t *testing.T) {
 		t.Fatalf("marker still present after the workflow ran: %v", statErr)
 	}
 }
+
+// A watcher killed after its workflow completed but before it cleared the owed
+// marker finds a marker that names a completed run. The next process clears the
+// marker and runs nothing; replaying it would repeat the workflow's side
+// effects.
+func TestWatchWorkflowOnChangeDoesNotReplayACompletedRun(t *testing.T) {
+	woSeededLibrary(t)
+	spec := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	owedPath, err := watchWorkflowOwedPath(spec)
+	if err != nil {
+		t.Fatalf("watchWorkflowOwedPath: %v", err)
+	}
+	if err := os.WriteFile(owedPath, []byte(`{"upserted":1,"deleted":0,"run_id":"run-done"}`), 0o600); err != nil {
+		t.Fatalf("seeding the marker a killed process leaves: %v", err)
+	}
+	checkpointPath := workflowRunCompletionPath(spec, "run-done")
+	if err := writeWorkflowRunCheckpoint(checkpointPath, workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-done", Done: true,
+	}); err != nil {
+		t.Fatalf("seeding the completed checkpoint: %v", err)
+	}
+	// The run also died before it removed its own checkpoint.
+	orphanPath := workflowRunCheckpointPath(spec)
+	if err := writeWorkflowRunCheckpoint(orphanPath, workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-done",
+	}); err != nil {
+		t.Fatalf("seeding the orphan checkpoint: %v", err)
+	}
+
+	stderr, err := woRunWatch(t, "--workflow", spec, "--workflow-on-change")
+	if err != nil {
+		t.Fatalf("watch: %v; stderr=%s", err, stderr)
+	}
+	if strings.Contains(stderr, "workflow preview") || strings.Contains(stderr, "workflow apply") {
+		t.Fatalf("the completed run was replayed; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "had already completed") {
+		t.Fatalf("stderr = %q, want the completed run reported", stderr)
+	}
+	if _, statErr := os.Stat(owedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("marker still present: %v", statErr)
+	}
+	if _, statErr := os.Stat(checkpointPath); !os.IsNotExist(statErr) {
+		t.Fatalf("completion record still present: %v", statErr)
+	}
+	if _, statErr := os.Stat(orphanPath); !os.IsNotExist(statErr) {
+		t.Fatalf("orphan checkpoint still present: %v", statErr)
+	}
+}
+
+// The completion record stays until the marker's removal is durable: if the
+// directory sync fails, power loss could revive the marker and the record is
+// then the only thing that stops a replay.
+func TestWatchWorkflowOnChangeKeepsCompletionRecordWhenMarkerRemovalIsNotDurable(t *testing.T) {
+	woSeededLibrary(t)
+	spec := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	owedPath, err := watchWorkflowOwedPath(spec)
+	if err != nil {
+		t.Fatalf("watchWorkflowOwedPath: %v", err)
+	}
+	if err := os.WriteFile(owedPath, []byte(`{"upserted":1,"deleted":0,"run_id":"run-done"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := workflowRunCompletionPath(spec, "run-done")
+	if err := writeWorkflowRunCheckpoint(recordPath, workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-done", Done: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	old := ackSyncDir
+	t.Cleanup(func() { ackSyncDir = old })
+	ackSyncDir = func(string) error { return fmt.Errorf("fsync failed") }
+	stderr, err := woRunWatch(t, "--workflow", spec, "--workflow-on-change")
+	if err == nil {
+		t.Fatalf("watch succeeded although the marker removal was not durable; stderr=%s", stderr)
+	}
+	if _, statErr := os.Stat(recordPath); statErr != nil {
+		t.Fatalf("completion record removed before the marker removal was durable: %v", statErr)
+	}
+}

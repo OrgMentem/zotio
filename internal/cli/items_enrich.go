@@ -1767,16 +1767,9 @@ func enrichProvenanceLine(p *enrichProposal) string {
 	return fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
 }
 
-// appendEnrichProvenance returns the new Extra value: the item's existing Extra
-// with the provenance line appended (so re-runs leave an audit trail). The
-// existing content is always preserved — Extra carries user data such as Better
-// BibTeX "Citation Key:" lines that a wholesale PATCH replace would destroy.
-func appendEnrichProvenance(p *enrichProposal, _ *rootFlags) string {
-	extra, _ := enrichProvenanceExtra(p)
-	return extra
-}
-
-// enrichProvenanceExtra is appendEnrichProvenance plus the line this call
+// enrichProvenanceExtra returns the new Extra value: the item's existing Extra
+// (always preserved — it carries user data such as Better BibTeX "Citation
+// Key:" lines) with the provenance line appended, plus the line this call
 // added. added is empty when an identical line was already present (a
 // same-day re-run), even one an editor gave a CRLF terminator: the earlier
 // write owns that line, so undoing this one must not delete it.
@@ -1996,6 +1989,12 @@ func rejectNonPublicPDFIP(ip net.IP) error {
 		(ip.To4() == nil && len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc) {
 		return fmt.Errorf("non-public address")
 	}
+	// RFC 6598 shared address space (100.64.0.0/10) is carrier-grade NAT and
+	// Tailscale: not public, and net.IP.IsPrivate does not cover it. This
+	// matches outboundHostIsPrivate, which guards --deliver and import fetches.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 64 {
+		return fmt.Errorf("non-public address")
+	}
 	return nil
 }
 
@@ -2083,7 +2082,7 @@ func publishPDFNoClobber(tmpPath, destPath string) error {
 	defer func() { _ = os.Remove(tmpPath) }()
 	err := os.Link(tmpPath, destPath)
 	if err == nil {
-		return nil
+		return syncPublishedPDFDir(destPath)
 	}
 	if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("refusing to clobber existing file %s", destPath)
@@ -2099,6 +2098,23 @@ func publishPDFNoClobber(tmpPath, destPath string) error {
 	if renameErr := os.Rename(tmpPath, destPath); renameErr != nil {
 		_ = os.Remove(destPath)
 		return fmt.Errorf("publishing %s: %w", destPath, renameErr)
+	}
+	return syncPublishedPDFDir(destPath)
+}
+
+// enrichPDFSyncDir is a seam so tests can observe the directory-sync barrier.
+var enrichPDFSyncDir = cliutil.SyncDir
+
+// syncPublishedPDFDir makes the new directory entry durable. The body was
+// fsynced before publication, but without this the name itself can vanish on
+// power loss after the command reported the PDF as saved. This process just
+// created destPath without clobbering anything, so on failure it takes the
+// unconfirmed name back and a retry starts clean instead of meeting a file it
+// must refuse to replace.
+func syncPublishedPDFDir(destPath string) error {
+	if err := enrichPDFSyncDir(filepath.Dir(destPath)); err != nil {
+		_ = os.Remove(destPath)
+		return fmt.Errorf("syncing directory of %s: %w", destPath, err)
 	}
 	return nil
 }
@@ -2559,11 +2575,21 @@ func reconstructAbstract(idx map[string][]int) string {
 	return strings.TrimSpace(b.String())
 }
 
-// httpStatusError is getJSON's error for a non-2xx answer, kept typed so a
-// caller can tell a missing record (404) from a provider failure.
-type httpStatusError struct{ Code int }
+// httpStatusError is the typed error for a provider's non-2xx answer, kept
+// typed so a caller can tell a missing record (404) from a provider failure by
+// Code. Body is the provider's bounded reply text, for display only: it is
+// untrusted and must never be matched to decide an outcome.
+type httpStatusError struct {
+	Code int
+	Body string
+}
 
-func (e *httpStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+func (e *httpStatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("HTTP %d", e.Code)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.Code, e.Body)
+}
 
 // getJSON performs a GET and decodes a JSON body, treating non-2xx as an error.
 func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out any) error {

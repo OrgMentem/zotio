@@ -411,3 +411,121 @@ func assertNoDeliverTemp(t *testing.T, target string) {
 		t.Fatalf("leftover deliver temps: %q", temps)
 	}
 }
+
+// An ambiguous webhook outcome is retried with the same payload. The delivery
+// must carry a stable Idempotency-Key so the receiver can suppress the repeat,
+// and a different payload must carry a different one.
+func TestDeliverWebhookSendsPayloadDerivedIdempotencyKey(t *testing.T) {
+	var keys []string
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		bodies = append(bodies, string(b))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	old := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(old) })
+
+	for _, payload := range []string{"same\n", "same\n", "other\n"} {
+		if err := deliverWebhook(context.Background(), srv.URL+"/hook", []byte(payload), false); err != nil {
+			t.Fatalf("deliverWebhook: %v", err)
+		}
+	}
+	if len(keys) != 3 || keys[0] == "" {
+		t.Fatalf("keys = %q, want an Idempotency-Key on every POST", keys)
+	}
+	if keys[0] != keys[1] {
+		t.Errorf("identical payloads got keys %q and %q, want the same key", keys[0], keys[1])
+	}
+	if keys[0] == keys[2] {
+		t.Errorf("different payloads shared key %q", keys[0])
+	}
+	if bodies[0] != "same\n" || bodies[2] != "other\n" {
+		t.Errorf("bodies = %q, want the full payloads (the key hash must rewind the body)", bodies)
+	}
+}
+
+// Rename replaces a symlink's own inode, so --deliver file: must refuse a
+// symlinked target like export --output does instead of destroying the link.
+func TestDeliverFileRefusesSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.json")
+	link := filepath.Join(dir, "out.json")
+	if err := os.WriteFile(real, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The refusal belongs to publication, so a command's own outcome is not
+	// replaced by it: the spool opens, and commitFile refuses.
+	linked, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: link})
+	if err != nil {
+		t.Fatalf("newDeliverSpool: %v", err)
+	}
+	t.Cleanup(linked.cleanup)
+	if _, err := io.WriteString(linked, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := linked.commitFile(); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("commitFile over a symlink = %v, want a symlink refusal", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced: %v, %v", info, err)
+	}
+
+	// A link created after the spool opened is caught at publication too.
+	target := filepath.Join(dir, "late.json")
+	spool, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(spool.cleanup)
+	if _, err := io.WriteString(spool, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.commitFile(); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("commitFile over a late symlink = %v, want a symlink refusal", err)
+	}
+	if got, _ := os.ReadFile(real); string(got) != "old" {
+		t.Errorf("referent = %q, want it untouched", got)
+	}
+}
+
+// A delivery reported as successful must survive power loss: the rename is only
+// durable once the parent directory is synced, and a failed sync is an error.
+func TestDeliverFileCommitSyncsDirectoryAfterRename(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.json")
+	spool, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(spool.cleanup)
+	if _, err := io.WriteString(spool, "payload"); err != nil {
+		t.Fatal(err)
+	}
+	old := deliverSyncDir
+	t.Cleanup(func() { deliverSyncDir = old })
+	var synced string
+	var presentAtSync bool
+	boom := errors.New("fsync failed")
+	deliverSyncDir = func(d string) error {
+		synced = d
+		_, statErr := os.Stat(target)
+		presentAtSync = statErr == nil
+		return boom
+	}
+	if err := spool.commitFile(); !errors.Is(err, boom) {
+		t.Fatalf("commitFile = %v, want the directory sync failure", err)
+	}
+	if synced != dir || !presentAtSync {
+		t.Fatalf("synced %q (target present: %v), want %q synced after the rename", synced, presentAtSync, dir)
+	}
+}

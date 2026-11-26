@@ -151,12 +151,24 @@ func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 			addVaultAuditIssue(&report, rel, key, vaultAuditIssueOrphaned)
 			return nil
 		}
-		storeVersion := sqlIntValue(rows[0]["version"])
 		st, perr := parseStateComment(body)
 		if perr != nil {
 			addVaultAuditIssue(&report, rel, key, "unparseable_state")
-		} else if st.NoteVersion > 0 && storeVersion > st.NoteVersion {
-			addVaultAuditIssue(&report, rel, key, vaultAuditIssueStale)
+		} else if st.NoteKey != "" && st.NoteVersion > 0 {
+			// NoteVersion is the child note's own version baseline, so it is
+			// compared with the child note's store version, never the parent's:
+			// the two are independent counters. A child the store does not hold
+			// yet cannot be judged stale.
+			noteRows, err := qs.QueryRaw(
+				"SELECT COALESCE(json_extract(data,'$.data.version'), json_extract(data,'$.version')) AS version FROM resources WHERE resource_type='items' AND id=?",
+				st.NoteKey,
+			)
+			if err != nil {
+				return err
+			}
+			if len(noteRows) > 0 && sqlIntValue(noteRows[0]["version"]) > st.NoteVersion {
+				addVaultAuditIssue(&report, rel, key, vaultAuditIssueStale)
+			}
 		}
 		return nil
 	})

@@ -35,7 +35,7 @@ func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
 			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":7,"data":{"key":"CLCTAB23","name":"before"}}`))
 			return
 		}
-		if r.Method == http.MethodPut {
+		if r.Method == http.MethodPatch {
 			rec.putHeader = r.Header.Get("If-Unmodified-Since-Version")
 		}
 		rec.mutating = append(rec.mutating, request)
@@ -218,7 +218,7 @@ func TestCollectionsUpdateAppliesVersionPrecondition(t *testing.T) {
 
 	runCollectionsWriteCmd(t, rec, cmd, "CLCTAB23", "--name", "Renamed")
 
-	if got, want := strings.Join(rec.requests, ","), "GET /users/0/collections/CLCTAB23,PUT /users/0/collections/CLCTAB23"; got != want {
+	if got, want := strings.Join(rec.requests, ","), "GET /users/0/collections/CLCTAB23,PATCH /users/0/collections/CLCTAB23"; got != want {
 		t.Fatalf("request order = %q, want %q", got, want)
 	}
 	if got, want := rec.putHeader, "7"; got != want {

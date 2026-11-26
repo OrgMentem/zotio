@@ -148,9 +148,13 @@ func atomicWrite(path string, data []byte, fileMode, dirMode os.FileMode, durabl
 		return fmt.Errorf("publishing file: %w", err)
 	}
 	if durable {
-		// Some platforms cannot sync directories, but the published file remains
-		// usable, so do not make a completed write fail for that limitation.
-		_ = syncDir(dir)
+		// syncDir already accepts the platforms that cannot sync a directory
+		// (Windows, EINVAL/ENOTSUP/ENOSYS). Anything else is a real storage
+		// failure: the rename may not survive power loss, so the write is not
+		// the durable publication the caller asked for.
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("syncing directory %q: %w", dir, err)
+		}
 	}
 	return nil
 }

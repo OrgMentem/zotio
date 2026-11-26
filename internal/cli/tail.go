@@ -22,6 +22,7 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+	"zotio/internal/mutation"
 	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
@@ -61,8 +62,8 @@ The cursor advances once the events are delivered. The events the workflow has
 not yet run for are recorded next to the local database first (one record per
 API source and workflow spec), so a failed or interrupted trigger is retried on
 the next poll, alone and with any newer events, without delivering the earlier
-events again. A crash after a successful run can repeat it, so workflows must
-be idempotent.
+events again. A completed run is recorded before its pending record clears, so
+a crash in between settles the record without running the workflow again.
 
 A workflow that reads trigger values (${trigger.json:PATH} or "stdin_trigger")
 receives the cycle's events, with upserted and deleted keys in separate lists.
@@ -161,8 +162,12 @@ native streaming instead of polling.`,
 			// Run a trigger after delivery. Delivered events are recorded as
 			// owed before the cursor advances and cleared only after a
 			// successful run, so a failing workflow is retried alone on later
-			// polls instead of re-delivering its window. A crash after a
-			// successful trigger can replay it, so workflows must be
+			// polls instead of re-delivering its window. The owed record names
+			// its workflow run, and an applied run keeps a completed checkpoint
+			// until the record is cleared, so a crash after a successful run
+			// clears the record at the next poll instead of replaying the
+			// workflow; a run cut off mid-step still resumes from its
+			// checkpoint, so steps with an ambiguous outcome should stay
 			// idempotent. Without --workflow there is no hook, so no batch is
 			// collected.
 			var hook *tailTriggerHook
@@ -175,6 +180,7 @@ native streaming instead of polling.`,
 						DryRun:           flags.dryRun,
 						Agent:            flags.agent,
 						NoInput:          flags.noInput,
+						RunID:            batch.RunID,
 					}
 					// A spec that cannot be read is reported by the run
 					// itself. Only a spec that reads trigger values gets the
@@ -309,6 +315,11 @@ type tailChangeBatch struct {
 	// current records, not changes.
 	Baseline bool                      `json:"baseline,omitempty"`
 	Events   []workflowRunTriggerEvent `json:"events"`
+	// RunID names the workflow run owed events are handed to. It is recorded
+	// before the run starts, so a crash after the run completed but before the
+	// owed record was cleared can find the completed run and clear the record
+	// instead of replaying the workflow. Only the on-disk record carries it.
+	RunID string `json:"run_id,omitempty"`
 }
 
 // merge returns the events a trigger owes once next is delivered on top of
@@ -330,17 +341,19 @@ func (b tailChangeBatch) merge(next tailChangeBatch) tailChangeBatch {
 	case len(next.Events) == 0:
 		return b
 	case len(b.Events) == 0:
+		next.RunID = b.RunID
 		return next
 	case next.Baseline && !b.Baseline:
 		return b
 	case b.Baseline:
+		next.RunID = b.RunID
 		return next
 	}
 	replaced := make(map[[2]string]struct{}, len(next.Events))
 	for _, event := range next.Events {
 		replaced[[2]string{event.Resource, event.Key}] = struct{}{}
 	}
-	merged := tailChangeBatch{Events: make([]workflowRunTriggerEvent, 0, len(b.Events)+len(next.Events))}
+	merged := tailChangeBatch{RunID: b.RunID, Events: make([]workflowRunTriggerEvent, 0, len(b.Events)+len(next.Events))}
 	for _, event := range b.Events {
 		if _, ok := replaced[[2]string{event.Resource, event.Key}]; !ok {
 			merged.Events = append(merged.Events, event)
@@ -409,12 +422,58 @@ func loadTailPendingTrigger(path string) (tailChangeBatch, error) {
 	return batch, nil
 }
 
+// settleCompleted finishes an acknowledgement a crash cut short. The owed
+// record names the run it was handed to; if that run's completed checkpoint is
+// still on disk, the workflow already ran for every owed event, so the record is
+// cleared instead of running the workflow a second time. It must run before
+// new events merge into the record: they were never part of that run.
+func (h *tailTriggerHook) settleCompleted(pendingPath string, owed tailChangeBatch) (tailChangeBatch, error) {
+	if owed.RunID == "" {
+		return owed, nil
+	}
+	done, err := workflowRunCompleted(h.specPath, owed.RunID)
+	if err != nil {
+		return owed, err
+	}
+	if !done {
+		return owed, nil
+	}
+	if err := h.acknowledge(pendingPath, owed.RunID); err != nil {
+		return owed, fmt.Errorf("clearing the workflow trigger of completed run %s: %w", owed.RunID, err)
+	}
+	return tailChangeBatch{}, nil
+}
+
+// acknowledge retires run runID in the order acknowledgeWorkflowRun documents.
+// A failure to remove the completion record is only reported: the run is
+// acknowledged and the leftover record is harmless.
+func (h *tailTriggerHook) acknowledge(pendingPath, runID string) error {
+	releaseErr, err := acknowledgeWorkflowRun(h.specPath, runID, func() error {
+		return saveTailPendingTrigger(pendingPath, tailChangeBatch{})
+	})
+	if releaseErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: tail: %v\n", releaseErr)
+	}
+	return err
+}
+
+// ackSyncDir is a seam so tests can fail the directory sync that makes the
+// removal of an owed marker durable.
+var ackSyncDir = cliutil.SyncDir
+
 // saveTailPendingTrigger durably publishes the owed events, or removes the
 // record when nothing is owed. Callers hold the installation writer lock.
 func saveTailPendingTrigger(path string, batch tailChangeBatch) error {
 	if len(batch.Events) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("removing %s: %w", path, err)
+		}
+		// The removal is the acknowledgement of a completed run, so it must be
+		// on stable storage before the caller releases the run's completion
+		// record; otherwise power loss revives the record with no run to
+		// recognize.
+		if err := ackSyncDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("syncing the directory of %s: %w", path, err)
 		}
 		return nil
 	}
@@ -582,8 +641,9 @@ func fetchTailWindowOnce(ctx context.Context, c *client.Client, resource, path s
 // events are recorded as owed before the cursor is saved, and the run gets
 // every owed event; a failure leaves them owed for the next poll, which
 // retries the workflow without re-delivering them (tailTriggerHook). A crash
-// after a successful run, before the record is cleared, replays it, so
-// triggers have at-least-once semantics.
+// after a successful run, before the record is cleared, finds the run's
+// completed checkpoint at the next poll (settleCompleted) and clears the record
+// without running the workflow again.
 func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, hook *tailTriggerHook) (int, error) {
 	cursorKey := "tail:" + resource
 	cursor, err := db.GetLibraryVersion(cursorKey, c.BaseURL)
@@ -595,6 +655,9 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	if hook != nil {
 		pendingPath = hook.pendingPath(resource, c.BaseURL)
 		if owed, err = loadTailPendingTrigger(pendingPath); err != nil {
+			return 0, fmt.Errorf("tail %s: %w", resource, err)
+		}
+		if owed, err = hook.settleCompleted(pendingPath, owed); err != nil {
 			return 0, fmt.Errorf("tail %s: %w", resource, err)
 		}
 	}
@@ -773,7 +836,12 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 	// Record the delivered events as owed before the cursor moves past
 	// them: a crash after the save must still run the workflow for them.
 	owed = owed.merge(batch)
-	if hook != nil && len(batch.Events) > 0 {
+	if hook != nil && len(owed.Events) > 0 && (len(batch.Events) > 0 || owed.RunID == "") {
+		// The run ID is durable before the run starts so a crash after the
+		// run completed can find it again (settleCompleted).
+		if owed.RunID == "" {
+			owed.RunID = mutation.NewRunID(time.Now())
+		}
 		if err := saveTailPendingTrigger(pendingPath, owed); err != nil {
 			return emitted, fmt.Errorf("tail %s: recording the workflow trigger: %w", resource, err)
 		}
@@ -795,8 +863,8 @@ func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store,
 				err:        err,
 			}
 		}
-		if err := saveTailPendingTrigger(pendingPath, tailChangeBatch{}); err != nil {
-			return emitted, fmt.Errorf("tail %s: clearing the workflow trigger after a successful run (the next poll runs it again): %w", resource, err)
+		if err := hook.acknowledge(pendingPath, owed.RunID); err != nil {
+			return emitted, fmt.Errorf("tail %s: clearing the workflow trigger after a successful run (the next poll finds the completed run and clears it without running it again): %w", resource, err)
 		}
 	}
 	return emitted, nil
@@ -894,6 +962,16 @@ func quarantineTornTailDelivery(resource, path string) error {
 	if err != nil {
 		return fmt.Errorf("quarantining the incomplete final line: %w", err)
 	}
+	// The sidecar is the diagnostic copy of a repair that has not happened yet.
+	// Until the file is truncated and synced the fragment is still in place and
+	// the next poll repeats the whole repair, so a failed attempt must not leave
+	// one more copy behind each time.
+	repaired := false
+	defer func() {
+		if !repaired {
+			_ = os.Remove(sidecar.Name())
+		}
+	}()
 	if err := sidecar.Chmod(0o600); err != nil {
 		_ = sidecar.Close()
 		return fmt.Errorf("securing the incomplete final line: %w", err)
@@ -912,6 +990,9 @@ func quarantineTornTailDelivery(resource, path string) error {
 	if err := f.Truncate(prefixLen); err != nil {
 		return fmt.Errorf("truncating the incomplete final line: %w", err)
 	}
+	// From here the fragment is gone from the file, so the sidecar is its only
+	// copy and stays even if the sync below fails.
+	repaired = true
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing the repaired file: %w", err)
 	}

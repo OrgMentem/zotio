@@ -5,8 +5,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -410,6 +412,14 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 	if compact {
 		contentType = "application/x-ndjson"
 	}
+	// A POST whose outcome is unknown (the process died, or the response was
+	// lost) is retried by the operator with the same payload. The key derives
+	// from the payload, so every retry names the same delivery and a receiver
+	// that honors Idempotency-Key processes it once.
+	key, err := webhookIdempotencyKey(body)
+	if err != nil {
+		return fmt.Errorf("deriving webhook idempotency key: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return fmt.Errorf("building webhook request: %w", err)
@@ -426,6 +436,7 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "zotio/deliver")
+	req.Header.Set("Idempotency-Key", key)
 
 	client := externalFetchHTTPClient(&http.Client{Timeout: 30 * time.Second}, false)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -439,6 +450,22 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 	}
 	defer resp.Body.Close()
 	return externalHTTPPostStatusError("webhook", resp)
+}
+
+// webhookIdempotencyKey names a webhook delivery by its payload: the SHA-256 of
+// the body, read through and then rewound so the request still sends it whole.
+func webhookIdempotencyKey(body io.ReadSeeker) (string, error) {
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	sum := sha256.New()
+	if _, err := io.Copy(sum, body); err != nil {
+		return "", err
+	}
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return "zotio-" + hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // webhookOrigin reduces a webhook URL to scheme://host[:port] for messages.

@@ -299,7 +299,7 @@ func getProviderXML(ctx context.Context, httpClient *http.Client, provider, rawU
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		statusErr := fmt.Errorf("HTTP %d", resp.StatusCode)
+		statusErr := error(&httpStatusError{Code: resp.StatusCode})
 		if isRegistryRecordAbsent(statusErr) {
 			return false, nil
 		}

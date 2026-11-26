@@ -58,7 +58,7 @@ func recordingImportServer(t *testing.T) (*httptest.Server, *int) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"ABCD2345"}},"success":{"0":"ABCD2345"},"unchanged":{},"failed":{}}`))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -334,6 +334,52 @@ func TestGenericImportRejectsNonObjectLines(t *testing.T) {
 			}
 			if !strings.Contains(errOut, "skipping invalid JSON") {
 				t.Fatalf("stderr = %q, want a skip warning", errOut)
+			}
+		})
+	}
+}
+
+// A 2xx is applied only when its body is a batch envelope attributing the one
+// record; any other body leaves the dispatched write unproven.
+func TestGenericImportRequiresAttributableEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name, body  string
+		wantApplied bool
+		wantReason  string
+	}{
+		{name: "success", body: `{"successful":{"0":{"key":"ABCD2345"}},"success":{"0":"ABCD2345"},"unchanged":{},"failed":{}}`, wantApplied: true},
+		{name: "unchanged", body: `{"unchanged":{"0":"ABCD2345"}}`, wantApplied: true},
+		{name: "failed", body: `{"failed":{"0":{"code":400,"message":"bad itemType"}}}`, wantReason: "bad itemType"},
+		{name: "empty", body: ``, wantReason: "not valid JSON"},
+		{name: "html", body: `<html>proxy</html>`, wantReason: "not valid JSON"},
+		{name: "truncated", body: `{"successful":{"0":`, wantReason: "not valid JSON"},
+		{name: "singleton", body: `{"key":"ABCD2345"}`, wantReason: "not a batch envelope"},
+		{name: "empty envelope", body: `{"successful":{},"failed":{}}`, wantReason: "attributed 0 of 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			filePath := writeImportGenericFixture(t, "{\"title\":\"A\"}\n")
+			flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+			env, raw, stderr, err := runImportGeneric(t, flags, "items", "--input", filePath)
+			if tc.wantApplied {
+				if err != nil || env.Succeeded != 1 {
+					t.Fatalf("want applied, got err=%v env=%+v (%s)", err, env, raw)
+				}
+				return
+			}
+			if err == nil || env.Succeeded != 0 || env.Failed != 1 {
+				t.Fatalf("want failure, got err=%v env=%+v (%s)", err, env, raw)
+			}
+			if !strings.Contains(stderr, tc.wantReason) {
+				t.Fatalf("stderr %q lacks %q", stderr, tc.wantReason)
+			}
+			if tc.name != "failed" && !strings.Contains(raw, `"conflict"`) {
+				t.Fatalf("invalid 2xx must be journaled as a conflict: %s", raw)
 			}
 		})
 	}

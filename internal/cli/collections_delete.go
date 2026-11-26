@@ -17,7 +17,8 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "delete <collectionKey>",
 		Short:   "Permanently delete a collection and its subcollections (items stay in the library)",
-		Example: "  zotio collections delete ABCD2345",
+		Long:    "Irreversible. Requires --allow-destructive; add --yes to apply. Preview first with --allow-destructive alone.\nWithout --allow-destructive the command is refused, not previewed.",
+		Example: "  zotio collections delete ABCD2345 --allow-destructive\n  zotio collections delete ABCD2345 --allow-destructive --yes",
 		Annotations: map[string]string{
 			"zotio:endpoint": "collections.delete",
 			"zotio:method":   "DELETE",

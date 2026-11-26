@@ -9,48 +9,15 @@ import (
 	"testing"
 )
 
-// postDeliverWebhook installs http.ErrUseLastResponse so a webhook URL cannot
-// bounce into a private service. net/http therefore hands back the 3xx itself
-// and the body is never delivered, so only a 2xx may be reported as success.
+// A webhook 3xx is never followed, so only a 2xx may be reported as delivered.
 func TestDeliverWebhookStatusHandling(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
-	allowPrivateOutboundForTests.Store(true)
-	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
-
-	tests := []struct {
-		name    string
-		status  int
-		wantErr string
-	}{
+	requireRefusedRedirects(t, false, "/hook", []redirectStatusCase{
 		{name: "moved permanently", status: http.StatusMovedPermanently, wantErr: "webhook returned 301"},
 		{name: "found", status: http.StatusFound, wantErr: "webhook returned 302"},
 		{name: "permanent redirect", status: http.StatusPermanentRedirect, wantErr: "webhook returned 308"},
 		{name: "ok", status: http.StatusOK},
 		{name: "no content", status: http.StatusNoContent},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var paths []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				paths = append(paths, r.URL.Path)
-				if r.URL.Path == "/hook" {
-					w.Header().Set("Location", "/moved")
-					w.WriteHeader(tt.status)
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-			}))
-			t.Cleanup(srv.Close)
-
-			err := deliverWebhook(context.Background(), srv.URL+"/hook", []byte(`{"ok":true}`), false)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("deliverWebhook(%d) = %v, want success", tt.status, err)
-				}
-				return
-			}
-			assertRedirectRefused(t, tt.status, tt.wantErr, "/hook", paths, err)
-		})
-	}
+	}, func(_ *testing.T, _ *httptest.Server, url string) error {
+		return deliverWebhook(context.Background(), url, []byte(`{"ok":true}`), false)
+	})
 }

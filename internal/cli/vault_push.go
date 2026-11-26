@@ -908,7 +908,10 @@ func parseStateComment(body string) (pushState, error) {
 	rest := body[i+len(vaultStatePrefix):]
 	end := strings.Index(rest, " -->")
 	if end < 0 {
-		return st, nil
+		// A truncated comment is as corrupt as invalid JSON: reading it as "no
+		// state" would send pushOne down the create path and duplicate a child
+		// note that already exists.
+		return pushState{}, fmt.Errorf("parsing vault state comment: missing closing %q", " -->")
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(rest[:end])), &st); err != nil {
 		return pushState{}, fmt.Errorf("parsing vault state comment: %w", err)
@@ -939,6 +942,15 @@ func replaceOrInsertStateComment(body string, st pushState) string {
 		if rel := strings.Index(body[i:], " -->"); rel >= 0 {
 			return body[:i] + comment + body[i+rel+len(" -->"):]
 		}
+		// A terminator-less prefix is a truncated state comment. The comment is
+		// one line, so overwrite to the end of that line instead of leaving the
+		// stub in place and inserting a second comment that would make the next
+		// parse span both.
+		lineEnd := len(body)
+		if nl := strings.IndexByte(body[i:], '\n'); nl >= 0 {
+			lineEnd = i + nl
+		}
+		return body[:i] + comment + body[lineEnd:]
 	}
 	if ei := strings.Index(body, vaultNotesEnd); ei >= 0 {
 		insertAt := ei + len(vaultNotesEnd)
@@ -1124,7 +1136,9 @@ func findChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr
 		if err != nil {
 			return childNoteCreateResult{}, fmt.Errorf("reconciling a possibly committed note create: %w", errors.Join(createErr, err))
 		}
-		var rows []struct {
+		// A null page must not read as "no managed child exists": createChildNote
+		// POSTs a second managed note whenever discovery finds nothing.
+		rows, err := decodeListPage[struct {
 			Key  string `json:"key"`
 			Data struct {
 				ItemType   string `json:"itemType"`
@@ -1132,9 +1146,9 @@ func findChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr
 				Note       string `json:"note"`
 				Deleted    int    `json:"deleted"`
 			} `json:"data"`
-		}
-		if err := json.Unmarshal(data, &rows); err != nil {
-			return childNoteCreateResult{}, fmt.Errorf("parsing child notes while reconciling a possibly committed create: %w", errors.Join(createErr, err))
+		}](data, fmt.Sprintf("child notes of %s at start %d while reconciling a possibly committed create", parentKey, start))
+		if err != nil {
+			return childNoteCreateResult{}, errors.Join(createErr, err)
 		}
 		for _, row := range rows {
 			if row.Data.ItemType != "note" || row.Data.Deleted != 0 || row.Data.ParentItem != parentKey {

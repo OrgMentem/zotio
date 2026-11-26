@@ -614,8 +614,11 @@ func refreshReapedCollectionMembers(ctx context.Context, c syncHTTPClient, db *s
 			}
 			continue
 		}
-		var raws []json.RawMessage
-		if jerr := json.Unmarshal(data, &raws); jerr != nil {
+		// A null body is a malformed answer, not an empty batch: read as one it
+		// would mark every requested member gone and reap the collection row,
+		// the only durable repair trigger, with the members still unrepaired.
+		raws, jerr := decodeListPage[json.RawMessage](data, "batch refetch of erased-collection members")
+		if jerr != nil {
 			failed += len(chunk)
 			if firstErr == nil {
 				firstErr = jerr

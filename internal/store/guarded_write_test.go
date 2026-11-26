@@ -181,12 +181,17 @@ func TestGuardedDBReadMethodsRefuseWrites(t *testing.T) {
 		`/* setup */ DELETE FROM resources WHERE id = 'seed'`,
 		`delete from resources where id = 'seed'`,
 	}
-	// NOTE: WITH stays on the read allowlist so SELECT-form CTEs keep
-	// working (the assignment's allowlist is SELECT, WITH, PRAGMA,
-	// EXPLAIN). A CTE-wrapped write (WITH ... DELETE) therefore passes
-	// this gate and is stopped one layer down by mode=ro on the
-	// read-only production opens — the same split the MCP sql tool's
-	// validateReadOnlyQuery documents — so it is not asserted here.
+	writes = append(writes,
+		`WITH r AS (SELECT id FROM resources) DELETE FROM resources WHERE id IN (SELECT id FROM r)`,
+		`with x as (select 1) update resources set resource_type = 'hijacked'`,
+		`WITH x AS (SELECT 1) INSERT INTO resources (id, resource_type, data) VALUES ('evil', 'thing', '{}')`,
+		`WITH x AS (SELECT 1) REPLACE INTO resources (id, resource_type, data) VALUES ('seed', 'thing', '{}')`,
+		`PRAGMA user_version = 99`,
+		`PRAGMA journal_mode = DELETE`,
+		`PRAGMA journal_mode(DELETE)`,
+		`PRAGMA wal_checkpoint(TRUNCATE)`,
+		`PRAGMA optimize`,
+	)
 	for _, stmt := range writes {
 		if _, err := s.DB().Query(stmt); err == nil {
 			t.Errorf("Query(%q) succeeded, want refusal", stmt)
@@ -233,7 +238,10 @@ func TestGuardedDBReadMethodsAcceptReadForms(t *testing.T) {
 		{"leading comment select", "  \n-- leading comment\n" + `SELECT COUNT(*) FROM resources`, true, 1},
 		{"leading block select", `/* leading block */ SELECT COUNT(*) FROM resources`, true, 1},
 		{"cte select", `WITH r AS (SELECT id FROM resources WHERE id = 'seed') SELECT COUNT(*) FROM r`, true, 1},
+		{"cte with replace function", `WITH r AS (SELECT replace(id, 'x', 'y') AS id FROM resources WHERE id = 'seed') SELECT COUNT(*) FROM r`, true, 1},
+		{"cte write keyword in literal", `WITH r AS (SELECT 'delete me' AS id FROM resources) SELECT COUNT(*) FROM r`, true, 1},
 		{"pragma", `PRAGMA table_info(resources)`, false, 0},
+		{"pragma user_version read", `PRAGMA user_version`, false, 0},
 		{"explain", `EXPLAIN SELECT COUNT(*) FROM resources`, false, 0},
 	}
 	for _, r := range reads {

@@ -85,7 +85,7 @@ func TestRtwRepairFailuresKeepChangeOnlyWorkflowIncomplete(t *testing.T) {
 					if err := cmd.Execute(); err != nil {
 						t.Fatalf("sync exit = %d, want 0: %v", ExitCode(err), err)
 					}
-					if summary != nil && (summary.Complete || !summary.changed()) {
+					if summary != nil && (summary.Complete || (summary.Upserted == 0 && summary.Deleted == 0)) {
 						t.Fatalf("summary = %+v, want changed but incomplete", summary)
 					}
 				}

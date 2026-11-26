@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"os"
@@ -108,8 +109,15 @@ type Client struct {
 	HTTPClient *http.Client
 	DryRun     bool
 	NoCache    bool
-	cacheDir   string
-	limiter    *cliutil.AdaptiveLimiter
+	// readOnly is set on a CloneForRead client: every mutating method on it
+	// refuses before any network I/O or cache change.
+	readOnly bool
+	// Quiet silences the retry and back-off progress notices written to
+	// stderr, so --quiet ("print nothing") holds while a request is retried.
+	// Warnings about degraded behavior are not progress notices and stay.
+	Quiet    bool
+	cacheDir string
+	limiter  *cliutil.AdaptiveLimiter
 	// backoff holds the server-directed `Backoff` deadline. It is always
 	// present (unlike limiter, which is nil without --rate-limit) and shared
 	// with clones so every request through the same session honours it.
@@ -273,12 +281,14 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 }
 
 type dispatchTrackingTransport struct {
-	base       http.RoundTripper
-	dispatched *atomic.Bool
+	base http.RoundTripper
+	// roundTrips counts RoundTrip calls for one request: more than one means
+	// the client followed a redirect, so an earlier hop reached a server.
+	roundTrips *atomic.Int32
 }
 
 func (t dispatchTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.dispatched.Store(true)
+	t.roundTrips.Add(1)
 	return t.base.RoundTrip(req)
 }
 
@@ -338,7 +348,8 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	return c
 }
 
-// CloneForRead returns a read-only client targeting baseURL, sharing the config,
+// CloneForRead returns a read-only client targeting baseURL (mutating methods on
+// it return an error without dispatching), sharing the config,
 // HTTP client, rate limiter, and cancellation context but with fresh
 // synchronization state. A Client must never be copied by value because it holds
 // sync.Once values and mutexes; global schema endpoints need the library prefix
@@ -355,6 +366,8 @@ func (c *Client) CloneForRead(baseURL string) *Client {
 		HTTPClient: c.HTTPClient,
 		DryRun:     c.DryRun,
 		NoCache:    c.NoCache,
+		Quiet:      c.Quiet,
+		readOnly:   true,
 		cacheDir:   c.cacheDir,
 		limiter:    c.limiter,
 		backoff:    c.backoff,
@@ -1147,6 +1160,9 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if c.readOnly && isMutatingMethod(method) {
+		return nil, 0, nil, fmt.Errorf("%s %s: refused: this client was made by CloneForRead and is read-only", method, path)
+	}
 	// A multi-object write carries its precondition as each object's body
 	// `version` because one If-Unmodified-Since-Version header cannot express
 	// many versions. That is still a conditional write — a replay after an
@@ -1260,6 +1276,21 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		}
 	}
 
+	// Advance the cache generation BEFORE the write is dispatched, not only
+	// after it succeeds. A process killed between the server committing the
+	// write and the post-response invalidation would otherwise leave the
+	// pre-write responses (and the old generation marker) to be served as
+	// current by the next run until their TTL lapses. The post-response
+	// invalidation below still runs and also catches a read that re-cached
+	// pre-write data in between. A failure here only warns: the request has
+	// not been sent, and refusing every write over a cache-directory problem
+	// would turn regenerable state into an outage.
+	if isMutatingMethod(method) && !c.DryRun {
+		if ierr := c.invalidateCache(path); ierr != nil {
+			c.warnCacheInvalidation(method, path, ierr)
+		}
+	}
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// proactive rate limiting must honor context
 		// cancellation before dialing. A Backoff deadline another response
@@ -1359,16 +1390,25 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			req.Header.Get("If-Match") != "" ||
 			req.Header.Get("If-None-Match") != ""
 		httpClient := c.requestHTTPClient()
-		var dispatched atomic.Bool
+		var roundTrips atomic.Int32
 		transport := httpClient.Transport
 		if transport == nil {
 			transport = http.DefaultTransport
 		}
-		httpClient.Transport = dispatchTrackingTransport{base: transport, dispatched: &dispatched}
+		httpClient.Transport = dispatchTrackingTransport{base: transport, roundTrips: &roundTrips}
+		// connUsed records whether ANY hop of this request (redirects and
+		// net/http's own internal retries included) ever held a connection or
+		// began writing. A dial that failed before that point carried nothing.
+		var connUsed atomic.Bool
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn:      func(httptrace.GotConnInfo) { connUsed.Store(true) },
+			WroteHeaders: func() { connUsed.Store(true) },
+			WroteRequest: func(httptrace.WroteRequestInfo) { connUsed.Store(true) },
+		}))
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				if isMutatingMethod(method) && dispatched.Load() {
+				if isMutatingMethod(method) && roundTrips.Load() > 0 {
 					return nil, 0, nil, &AmbiguousWriteError{
 						Method: method, Path: path, Attempts: attempt + 1,
 						Err: fmt.Errorf("%s %s: %w", method, path, ctxErr),
@@ -1377,6 +1417,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, path, redactTransportError(err))
+			// A refused dial proves the write never left the process only if no
+			// hop of this request ever acquired a connection: after a followed
+			// redirect, or a transport-internal retry on a reused connection,
+			// an earlier send may have committed and lost its response. It
+			// stays a plain error unless an earlier attempt of this same
+			// request was already ambiguous.
+			if isMutatingMethod(method) && errors.Is(err, syscall.ECONNREFUSED) && !connUsed.Load() {
+				return nil, 0, nil, wrapAmbiguous(attempt+1, lastErr)
+			}
 			if isMutatingMethod(method) {
 				ambiguousFailures = append(ambiguousFailures, lastErr)
 			}
@@ -1393,7 +1442,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, 0, nil, lastErr
 			}
 			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
-			fmt.Fprintf(os.Stderr, "transport error, retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
+			c.notef("transport error, retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
 			}
@@ -1404,7 +1453,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// the status handling below so success, retry, and error paths all
 		// make the next request wait it out.
 		if d := cliutil.BackoffFromHeader(resp.Header); c.backoff.Extend(d) {
-			fmt.Fprintf(os.Stderr, "server asked clients to back off, pausing requests for %s\n", d)
+			c.notef("server asked clients to back off, pausing requests for %s\n", d)
 		}
 
 		// cap API response bodies
@@ -1421,6 +1470,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				}
 			}
 			readErr := fmt.Errorf("reading response: %w", err)
+			// The status line already arrived: a 4xx is the server's
+			// definitive refusal, so an unreadable body does not make the
+			// write possibly applied. 2xx and 5xx stay ambiguous.
+			if isMutatingMethod(method) && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, resp.StatusCode, resp.Header, wrapAmbiguous(attempt+1, &APIError{
+					Method: method, Path: path, StatusCode: resp.StatusCode,
+					Body: "(response body unreadable: " + err.Error() + ")",
+				})
+			}
 			if isMutatingMethod(method) {
 				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: readErr}
 			}
@@ -1428,6 +1486,12 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		}
 		if int64(len(respBody)) > maxZoteroResponseBytes {
 			limitErr := fmt.Errorf("response exceeded %d bytes", maxZoteroResponseBytes)
+			if isMutatingMethod(method) && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, resp.StatusCode, resp.Header, wrapAmbiguous(attempt+1, &APIError{
+					Method: method, Path: path, StatusCode: resp.StatusCode,
+					Body: "(" + limitErr.Error() + ")",
+				})
+			}
 			if isMutatingMethod(method) {
 				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: limitErr}
 			}
@@ -1450,9 +1514,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 					// would treat the successful write as failed, risking a retry
 					// that duplicates a create. Warn once (de-silencing the stale-
 					// cache risk) and return success.
-					c.cacheInvalidateWarnOnce.Do(func() {
-						fmt.Fprintf(os.Stderr, "warning: cache invalidation after successful %s %s failed (%v); a later read may return stale data until the cache at %s is cleared\n", method, path, ierr, c.cacheDir)
-					})
+					c.warnCacheInvalidation(method, path, ierr)
 				}
 			}
 			return json.RawMessage(respBody), resp.StatusCode, resp.Header, nil
@@ -1486,7 +1548,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			if synthetic {
 				wait = 5 * retryBackoffBase()
 			}
-			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
+			c.notef("rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
 			}
@@ -1508,7 +1570,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			if serverWait, synthetic := cliutil.RetryAfterOrFallback(resp); !synthetic {
 				wait = serverWait
 			}
-			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
+			c.notef("server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
 			}
@@ -1535,6 +1597,22 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	}
 
 	return nil, 0, nil, wrapAmbiguous(maxRetries+1, lastErr)
+}
+
+// warnCacheInvalidation reports, once per client, that the response cache could
+// not be invalidated around a mutation.
+func (c *Client) warnCacheInvalidation(method, path string, err error) {
+	c.cacheInvalidateWarnOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "warning: cache invalidation around %s %s failed (%v); a later read may return stale data until the cache at %s is cleared\n", method, path, err, c.cacheDir)
+	})
+}
+
+// notef writes a retry or back-off progress notice to stderr unless Quiet.
+func (c *Client) notef(format string, args ...any) {
+	if c.Quiet {
+		return
+	}
+	fmt.Fprintf(os.Stderr, format, args...)
 }
 
 // transportErrorRetryable reports whether a failed dial or round trip is worth

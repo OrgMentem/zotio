@@ -177,6 +177,7 @@ func TestEnsureLiveReportsAReachableDesktop(t *testing.T) {
 // Zotero, and the message must name the --launch remediation doctor advertises.
 func TestEnsureLiveWithoutLaunchIsAPrecondition(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
 
 	// Port zero is not a usable destination, so another test cannot reuse this
 	// address and make the probe succeed.
@@ -200,6 +201,7 @@ func TestEnsureLiveWithoutLaunchIsAPrecondition(t *testing.T) {
 func TestEnsureLiveUnderVerifyEnvNeverLaunches(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(cliutil.VerifyEnvVar, "1")
+	t.Cleanup(client.SetRetryBackoffBaseForTest(time.Millisecond))
 
 	// Port zero is not a usable destination, so another test cannot reuse this
 	// address and make the probe succeed.

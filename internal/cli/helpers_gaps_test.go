@@ -296,23 +296,6 @@ func TestHelpersStringsAndSuggestions(t *testing.T) {
 		t.Fatalf("replacePathParam escaped path metacharacters = %q", got)
 	}
 
-	caseTests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "camel", in: "orderDate", want: "order-date"},
-		{name: "lower", in: "orderdate", want: "orderdate"},
-		{name: "upper boundary", in: "statusCode", want: "status-code"},
-	}
-	for _, tt := range caseTests {
-		t.Run("camelToKebab "+tt.name, func(t *testing.T) {
-			if got := camelToKebab(tt.in); got != tt.want {
-				t.Fatalf("camelToKebab(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-
 	splitTests := []struct {
 		in   string
 		want []string

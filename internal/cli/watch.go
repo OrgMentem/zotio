@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 func newWatchCmd(flags *rootFlags) *cobra.Command {
@@ -153,6 +155,23 @@ preprint-check fix.`,
 					if loadErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] workflow marker unusable, treating the workflow as owed: %v\n", loadErr)
 					}
+					// A previous process may have finished the workflow and died
+					// before clearing the marker. Settle that before this
+					// cycle adds changes the finished run never saw.
+					if pending.RunID != "" {
+						done, doneErr := workflowRunCompleted(workflowPath, pending.RunID)
+						if doneErr != nil {
+							return fmt.Errorf("checking the previous workflow run %s: %w", pending.RunID, doneErr)
+						}
+						if done {
+							completedRunID := pending.RunID
+							if err := acknowledgeWatchWorkflowRun(cmd, flags, workflowPath, owedPath, completedRunID); err != nil {
+								return fmt.Errorf("clearing the workflow marker of completed run %s: %w", completedRunID, err)
+							}
+							pending = watchWorkflowOwed{}
+							fmt.Fprintf(cmd.ErrOrStderr(), "[watch] workflow run %s had already completed; its marker is cleared without running it again\n", completedRunID)
+						}
+					}
 					if pending.Unknown {
 						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] a previous watch stopped before its changes ran the workflow; it runs after the next complete cycle\n")
 					}
@@ -191,20 +210,30 @@ preprint-check fix.`,
 							fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s library changed: %d upserted, %d deleted row(s)\n",
 								now.Format(time.RFC3339), pending.Upserted, pending.Deleted)
 						}
+						// Record the run ID before the run so a crash after the
+						// workflow completed finds it again at the next cycle.
+						if owedPath != "" && pending.RunID == "" {
+							pending.RunID = mutation.NewRunID(now)
+							if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
+								return fmt.Errorf("recording the workflow run before it starts: %w", saveErr)
+							}
+						}
+						runID := pending.RunID
 						if werr := runTriggeredWorkflowE(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
 							Yes:              flags.yes,
 							AllowDestructive: flags.allowDestructive,
 							Agent:            flags.agent,
 							NoInput:          flags.noInput,
+							RunID:            runID,
 						}); werr != nil {
 							return fmt.Errorf("triggered workflow failed: %w", werr)
 						}
-						pending = watchWorkflowOwed{}
 						if owedPath != "" {
-							if saveErr := saveWatchWorkflowOwed(cmd, flags, owedPath, pending, false); saveErr != nil {
-								return fmt.Errorf("clearing the workflow marker: %w", saveErr)
+							if ackErr := acknowledgeWatchWorkflowRun(cmd, flags, workflowPath, owedPath, runID); ackErr != nil {
+								return fmt.Errorf("clearing the workflow marker (the next cycle finds the completed run and clears it without running it again): %w", ackErr)
 							}
 						}
+						pending = watchWorkflowOwed{}
 					}
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
@@ -299,6 +328,20 @@ func watchWorkflowSkipReason(summary *syncChangeSummary, pending watchWorkflowOw
 	}
 }
 
+// acknowledgeWatchWorkflowRun retires run runID in the order
+// acknowledgeWorkflowRun documents: its leftover checkpoint, then the owed
+// marker, then the completion record. A failure to remove the completion record
+// is only reported: the run is acknowledged and the leftover record is harmless.
+func acknowledgeWatchWorkflowRun(cmd *cobra.Command, flags *rootFlags, specPath, owedPath, runID string) error {
+	releaseErr, err := acknowledgeWorkflowRun(specPath, runID, func() error {
+		return saveWatchWorkflowOwed(cmd, flags, owedPath, watchWorkflowOwed{}, false)
+	})
+	if releaseErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "[watch] warning: %v\n", releaseErr)
+	}
+	return err
+}
+
 // runTriggeredWorkflowE runs a workflow and reports its outcome. The caller
 // decides whether a failed workflow stops its sync or tail cycle.
 func runTriggeredWorkflowE(ctx context.Context, cmd *cobra.Command, source, specPath string, inv workflowRunInvocation) error {
@@ -311,6 +354,12 @@ func runTriggeredWorkflowE(ctx context.Context, cmd *cobra.Command, source, spec
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	if errors.Is(err, errWorkflowRunAlreadyCompleted) {
+		// The run this trigger asked for had already finished; its interrupted
+		// acknowledgement is what is being completed, so the trigger is done.
+		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s already completed run_id=%s; nothing ran again\n", source, now, mode, report.RunID)
+		return nil
+	}
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s failed: %v\n", source, now, mode, err)
 		return err

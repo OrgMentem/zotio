@@ -176,6 +176,15 @@ func validateJSONReadBody(data json.RawMessage, params map[string]string) error 
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
 func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, DataProvenance, error) {
+	return resolveReadVia(ctx, flags, resourceType, isList, path, params, func() (json.RawMessage, error) {
+		return c.GetWithHeadersContext(ctx, path, params, headers)
+	})
+}
+
+// resolveReadVia is resolveRead with the live fetch supplied by the caller, so
+// a list read can walk pages (resolveListRead) while sharing the data-source
+// dispatch, validation, write-through cache and mirror fallback.
+func resolveReadVia(ctx context.Context, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, fetchLive func() (json.RawMessage, error)) (json.RawMessage, DataProvenance, error) {
 	if raw := params["limit"]; raw != "" {
 		if n, convErr := strconv.Atoi(raw); convErr == nil {
 			if limitErr := validateLimitFlag("--limit", n); limitErr != nil {
@@ -189,7 +198,7 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
+		data, err := fetchLive()
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
@@ -199,7 +208,7 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
+		data, err := fetchLive()
 		if err == nil {
 			if validationErr := validateJSONReadBody(data, params); validationErr != nil {
 				return nil, DataProvenance{}, validationErr
@@ -235,7 +244,9 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 			}
 			return nil, DataProvenance{}, preconditionErr(fmt.Errorf("Zotero API unreachable and the local mirror cannot answer (%w). Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", fallbackErr, err))
 		}
-		fmt.Fprintf(os.Stderr, "note: Zotero API unreachable; serving the local mirror (synced %s)\n", mirrorAge(fallbackProv.SyncedAt))
+		if !flags.quiet {
+			fmt.Fprintf(os.Stderr, "note: Zotero API unreachable; serving the local mirror (synced %s)\n", mirrorAge(fallbackProv.SyncedAt))
+		}
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
 }

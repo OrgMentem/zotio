@@ -647,3 +647,69 @@ func TestWriteEntryTerminatesMultiChunkCompleteTail(t *testing.T) {
 		})
 	}
 }
+
+// A quarantine that fails before the journal is truncated leaves the torn
+// record in place, so the next append repeats it. The sidecar of the failed
+// attempt must not stay behind to be duplicated by every retry; once the
+// truncate has succeeded it is the only copy of the torn bytes and must stay.
+func TestQuarantineTornJournalTailRemovesSidecarOfFailedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	if err := WriteEntry(dir, first); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	torn := tornFragment(64)
+	appendJournalBytes(t, dir, torn)
+
+	oldTruncate := journalTruncate
+	t.Cleanup(func() { journalTruncate = oldTruncate })
+	boom := errors.New("truncate failed")
+	journalTruncate = func(*os.File, int64) error { return boom }
+
+	next, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	next.RunID = "run-2"
+	for range 3 {
+		if err := WriteEntry(dir, next); !errors.Is(err, boom) {
+			t.Fatalf("WriteEntry = %v, want the truncate failure", err)
+		}
+	}
+	if sidecars, _ := filepath.Glob(filepath.Join(dir, JournalFileName+".torn-*")); len(sidecars) != 0 {
+		t.Fatalf("sidecars after failed quarantines = %v, want none", sidecars)
+	}
+
+	journalTruncate = oldTruncate
+	if err := WriteEntry(dir, next); err != nil {
+		t.Fatalf("write after the disk recovered: %v", err)
+	}
+	sidecars, _ := filepath.Glob(filepath.Join(dir, JournalFileName+".torn-*"))
+	if len(sidecars) != 1 {
+		t.Fatalf("sidecars after the successful repair = %v, want exactly one", sidecars)
+	}
+	if preserved, _ := os.ReadFile(sidecars[0]); !bytes.Equal(preserved, torn) {
+		t.Fatalf("sidecar holds %d bytes, want the %d torn bytes", len(preserved), len(torn))
+	}
+}
+
+// An op that skipped part of its plan (an undo leaves alone what the live item
+// no longer holds) is journaled by what it did, so undoing the undo does not
+// re-apply a change nobody made.
+func TestJournalOpRecordsEffectiveChangesOfAppliedOp(t *testing.T) {
+	planned := []Change{{Field: "tags", Add: "to-read"}, {Field: "tags", Remove: "reading"}}
+	landed := []Change{{Field: "tags", Add: "to-read"}}
+	op := Op{ID: "op1", Key: "K1", Kind: "tag_remove", Changes: planned, Effective: func() []Change { return landed }}
+
+	got := journalOp(op, ResultItem{OpID: "op1", Key: "K1", Status: "applied"})
+	if len(got.Changes) != 1 || got.Changes[0].Add != "to-read" {
+		t.Fatalf("applied op changes = %+v, want only the landed Add", got.Changes)
+	}
+	// nil means the whole plan landed; a failed op keeps its plan.
+	op.Effective = func() []Change { return nil }
+	if got := journalOp(op, ResultItem{OpID: "op1", Status: "applied"}); len(got.Changes) != 2 {
+		t.Fatalf("nil effective changes = %+v, want the full plan", got.Changes)
+	}
+	op.Effective = func() []Change { return landed }
+	if got := journalOp(op, ResultItem{OpID: "op1", Status: "failed"}); len(got.Changes) != 2 {
+		t.Fatalf("failed op changes = %+v, want the full plan", got.Changes)
+	}
+}

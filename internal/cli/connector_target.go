@@ -5,7 +5,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -105,9 +104,9 @@ func apiCollectionPath(flags *rootFlags, collectionKey string) (string, error) {
 		if err != nil {
 			return "", classifyAPIError(err, flags)
 		}
-		var page []apiCollectionRow
-		if err := json.Unmarshal(data, &page); err != nil {
-			return "", fmt.Errorf("decoding collections for connector target resolution: %w", err)
+		page, err := decodeListPage[apiCollectionRow](data, "collections for connector target resolution")
+		if err != nil {
+			return "", err
 		}
 		rows = append(rows, page...)
 		if len(page) < 100 {

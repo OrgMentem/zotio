@@ -9,7 +9,7 @@ import (
 )
 
 func sortFilteredAnnotations(annotations []annotationSummary) []annotationSummary {
-	return sortAnnotationsByInstantDesc(annotations)
+	return sortByAnnotationInstantDesc(annotations, func(a annotationSummary) annotationSummary { return a })
 }
 
 func TestAnnotationsTimelineSortByParsedInstant(t *testing.T) {

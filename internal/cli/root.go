@@ -489,7 +489,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
-	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
+	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default)")
 	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid)")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, collection delete, creators rename/audit fix, vault resolve) to apply")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowZoteroCloud, "allow-zotero-cloud", false, "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV)")
@@ -863,6 +863,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c.SetContext(f.ctx)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+	c.Quiet = f.quiet
 	// the Zotero local API is read-only, so when pointed at it, route writes
 	// to the Web API (resolved lazily on the first write) while reads stay local.
 	// Only an apply persists the resolved user ID: a preview must not save config.
@@ -973,6 +974,7 @@ func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error
 	c.SetContext(ctx)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+	c.Quiet = f.quiet
 	if isLocalZoteroAPI(cfg.BaseURL) {
 		base, err := resolveWebWriteBaseWithoutPersist(ctx, cfg, f.group, f.timeout)
 		if err != nil {

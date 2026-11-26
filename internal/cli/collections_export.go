@@ -647,9 +647,9 @@ func collectCollectionItems(c collectionItemReader, collKey, format string, flat
 		}
 		prev = data
 
-		var page []json.RawMessage
-		if err := json.Unmarshal(data, &page); err != nil {
-			return fmt.Errorf("decoding items for collection %s: %w", collKey, err)
+		page, err := decodeListPage[json.RawMessage](data, fmt.Sprintf("items for collection %s at start %d", collKey, start))
+		if err != nil {
+			return err
 		}
 		*items = append(*items, page...)
 		// These formats are countable arrays, so a short page is the last page
@@ -695,9 +695,9 @@ func fetchSubcollectionKeys(c collectionItemReader, collKey string) ([]string, e
 		}
 		prev = data
 
-		var page []map[string]any
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, fmt.Errorf("decoding subcollections for %s: %w", collKey, err)
+		page, err := decodeListPage[map[string]any](data, fmt.Sprintf("subcollections for %s at start %d", collKey, start))
+		if err != nil {
+			return nil, err
 		}
 		for _, sub := range page {
 			if key := subcollectionKey(sub); key != "" {

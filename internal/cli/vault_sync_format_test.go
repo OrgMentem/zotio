@@ -146,6 +146,25 @@ func TestAtomicReplaceCompareBeforeReplace(t *testing.T) {
 	}
 }
 
+func TestAtomicReplaceRefusesSymlinkedNote(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.md")
+	link := filepath.Join(dir, "note.md")
+	writeFile(t, real, "A")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := atomicReplace(link, []byte("A"), []byte("B")); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("atomicReplace over a symlink = %v, want a symlink refusal", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced: %v, %v", info, err)
+	}
+	if got := readNote(t, real); got != "A" {
+		t.Errorf("target changed to %q", got)
+	}
+}
+
 func TestAtomicReplaceSyncsParentDirAndSurfacesFailure(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "n.md")

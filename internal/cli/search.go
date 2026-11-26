@@ -193,7 +193,7 @@ With --fulltext, --scope limits hits to one item cohort before ranking and
 				// where the user cannot see the API is gone.
 				liveFlags := *flags
 				liveFlags.dataSource = "live"
-				data, prov, getErr := resolveRead(cmd.Context(), c, &liveFlags, "items", true, "/items", params, nil)
+				data, prov, getErr := resolveListRead(cmd.Context(), c, &liveFlags, "items", true, "/items", params)
 				if getErr == nil {
 					results, err := extractSearchResults(data)
 					if err != nil {

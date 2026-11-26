@@ -162,7 +162,7 @@ func OpenImmutableSnapshotContext(ctx context.Context, dbPath string) (*Store, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1"+
+	db, err := sql.Open("sqlite", sqliteFileURI(dbPath)+"?mode=ro&immutable=1"+
 		"&_pragma=foreign_keys(ON)"+
 		"&_pragma=temp_store(MEMORY)")
 	if err != nil {
@@ -177,8 +177,20 @@ func OpenImmutableSnapshotContext(ctx context.Context, dbPath string) (*Store, e
 	return s, nil
 }
 
+// sqliteFileURI builds the "file:" URI prefix for dbPath. SQLite parses the
+// path of a URI filename itself: '?' starts the query, '#' starts a fragment
+// that is dropped, and '%HH' is percent-decoded. A data directory containing
+// any of them would open a different file (or lose mode=ro) unless those
+// three bytes are escaped. The writable opener passes a plain filename and
+// needs no escaping, so both sides address the same file.
+func sqliteFileURI(dbPath string) string {
+	return "file:" + sqliteURIPathEscaper.Replace(dbPath)
+}
+
+var sqliteURIPathEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
 func openReadOnlyStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
+	db, err := sql.Open("sqlite", sqliteFileURI(dbPath)+"?mode=ro"+
 		"&_pragma=busy_timeout(10000)"+
 		"&_pragma=foreign_keys(ON)"+
 		"&_pragma=temp_store(MEMORY)"+
@@ -357,18 +369,158 @@ func (g *GuardedDB) QueryRowContext(ctx context.Context, query string, args ...a
 // bypass the single-writer lock. The keyword match is case-insensitive and
 // requires a word boundary so a write hiding behind a read prefix (for
 // example "-- setup\nDELETE ...") is still refused.
+//
+// A leading keyword alone cannot prove a statement is read-only, so two
+// prefixes get a closer look: WITH is refused when its body carries a write
+// keyword (a CTE-wrapped DELETE/UPDATE/INSERT), and PRAGMA is limited to a
+// fixed set of read-only pragmas with no assignment, because many pragmas
+// (journal_mode=, user_version=, ...) change database state. This is a
+// conservative lexical gate, not a parser; read-only connections (mode=ro)
+// remain the hard backstop.
 func validateGuardedRead(query string) error {
 	rest := stripGuardedReadPrefix(query)
 	upper := strings.ToUpper(rest)
 	for _, kw := range []string{"SELECT", "WITH", "PRAGMA", "EXPLAIN"} {
 		if strings.HasPrefix(upper, kw) {
-			if len(rest) == len(kw) || !isGuardedReadIdentChar(rest[len(kw)]) {
-				return nil
+			if len(rest) != len(kw) && isGuardedReadIdentChar(rest[len(kw)]) {
+				break
 			}
-			break
+			switch kw {
+			case "WITH":
+				if guardedBodyWrites(rest) {
+					return fmt.Errorf("store: GuardedDB read methods refuse a WITH statement that contains a write; use ExecWrite for writes")
+				}
+			case "PRAGMA":
+				if !guardedPragmaReadOnly(rest[len(kw):]) {
+					return fmt.Errorf("store: GuardedDB read methods accept only read-only PRAGMA statements; use ExecWrite for writes")
+				}
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("store: GuardedDB read methods accept only SELECT, WITH, PRAGMA and EXPLAIN statements; use ExecWrite for writes")
+}
+
+// guardedReadPragmas are the pragmas GuardedDB reads may run. Each only
+// reports state (with or without a table/index argument in parentheses).
+var guardedReadPragmas = map[string]bool{
+	"table_info":       true,
+	"table_xinfo":      true,
+	"table_list":       true,
+	"index_list":       true,
+	"index_info":       true,
+	"index_xinfo":      true,
+	"foreign_key_list": true,
+	"database_list":    true,
+	"collation_list":   true,
+	"compile_options":  true,
+	"user_version":     true,
+	"schema_version":   true,
+	"page_count":       true,
+	"page_size":        true,
+	"freelist_count":   true,
+	"busy_timeout":     true,
+	"journal_mode":     true,
+	"synchronous":      true,
+	"foreign_keys":     true,
+	"encoding":         true,
+}
+
+// guardedPragmaReadOnly accepts "name" or "name(arg)" for an allowlisted
+// pragma and refuses any assignment ("name = value") and any
+// "name(value)" form of a pragma that is not an introspection pragma.
+func guardedPragmaReadOnly(tail string) bool {
+	tail = strings.TrimSpace(stripGuardedReadPrefix(tail))
+	tail = strings.TrimRight(tail, "; \t\r\n")
+	if strings.ContainsAny(tail, "=;") {
+		return false
+	}
+	name, arg, hasArg := strings.Cut(tail, "(")
+	name = strings.ToLower(strings.TrimSpace(name))
+	// A schema qualifier ("main.table_info") is allowed.
+	if _, after, ok := strings.Cut(name, "."); ok {
+		name = after
+	}
+	if !guardedReadPragmas[name] {
+		return false
+	}
+	if !hasArg {
+		return true
+	}
+	// Parenthesised arguments are a read only for the introspection pragmas;
+	// journal_mode(x), user_version(x) and friends assign.
+	switch name {
+	case "table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list":
+		return strings.HasSuffix(strings.TrimSpace(arg), ")") && !strings.ContainsAny(strings.TrimSuffix(strings.TrimSpace(arg), ")"), "()")
+	}
+	return false
+}
+
+// guardedWriteKeywords are the leading keywords of statements that change the
+// database. A WITH statement carrying one of them is a CTE-wrapped write.
+var guardedWriteKeywords = map[string]bool{
+	"INSERT": true, "UPDATE": true, "DELETE": true, "DROP": true,
+	"CREATE": true, "ALTER": true, "ATTACH": true, "DETACH": true,
+	"VACUUM": true, "REINDEX": true,
+}
+
+// guardedBodyWrites reports whether stmt contains a write keyword outside
+// quoted text and comments. REPLACE counts only as "REPLACE INTO", because
+// replace() is a read-only scalar function.
+func guardedBodyWrites(stmt string) bool {
+	var prev string
+	for i := 0; i < len(stmt); {
+		c := stmt[i]
+		switch {
+		case c == '\'' || c == '"' || c == '`':
+			i++
+			for i < len(stmt) {
+				if stmt[i] == c {
+					if i+1 < len(stmt) && stmt[i+1] == c {
+						i += 2
+						continue
+					}
+					break
+				}
+				i++
+			}
+			i++
+			prev = ""
+		case c == '[':
+			end := strings.IndexByte(stmt[i:], ']')
+			if end < 0 {
+				return false
+			}
+			i += end + 1
+			prev = ""
+		case strings.HasPrefix(stmt[i:], "--"):
+			end := strings.IndexByte(stmt[i:], '\n')
+			if end < 0 {
+				return false
+			}
+			i += end + 1
+		case strings.HasPrefix(stmt[i:], "/*"):
+			end := strings.Index(stmt[i+2:], "*/")
+			if end < 0 {
+				return false
+			}
+			i += 2 + end + 2
+		case isGuardedReadIdentChar(c):
+			j := i
+			for j < len(stmt) && isGuardedReadIdentChar(stmt[j]) {
+				j++
+			}
+			tok := strings.ToUpper(stmt[i:j])
+			if guardedWriteKeywords[tok] || (tok == "INTO" && prev == "REPLACE") {
+				return true
+			}
+			prev = tok
+			i = j
+		default:
+			i++
+		}
+	}
+	return false
 }
 
 // stripGuardedReadPrefix removes the leading whitespace, statement
@@ -408,8 +560,17 @@ func (g *GuardedDB) PingContext(ctx context.Context) error {
 	return g.s.db.PingContext(ctx)
 }
 
-// writeLeaseKey carries an already-held writeMu lease on a specific Store.
+// writeLeaseKey carries the chain of already-held writeMu leases.
 type writeLeaseKey struct{}
+
+// writeLease is one link of the lease chain a context carries: a held lease on
+// store, and the leases held by enclosing WithWriteLease calls on other stores.
+// A chain (rather than a single value) lets nested leases on different Stores
+// compose: an inner lease never hides an outer one.
+type writeLease struct {
+	store  *Store
+	parent *writeLease
+}
 
 // holdsWriteLease reports whether ctx carries a lease on this store's
 // writeMu, taken by WithWriteLease on the calling goroutine's behalf.
@@ -417,8 +578,13 @@ func (s *Store) holdsWriteLease(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
-	holder, _ := ctx.Value(writeLeaseKey{}).(*Store)
-	return holder == s
+	lease, _ := ctx.Value(writeLeaseKey{}).(*writeLease)
+	for ; lease != nil; lease = lease.parent {
+		if lease.store == s {
+			return true
+		}
+	}
+	return false
 }
 
 // WithWriteLease runs fn holding the store's single-writer lock, so a caller
@@ -429,7 +595,8 @@ func (s *Store) holdsWriteLease(ctx context.Context) bool {
 // Context-taking store writes called with the context fn receives see the
 // lease and reuse the held lock instead of deadlocking on it. The lease is
 // bound to this Store, so a write to any other Store still takes that store's
-// own lock. A write method that takes NO context cannot see the lease and must
+// own lock. Leases on different Stores nest: the context carries every lease
+// held by enclosing calls. A write method that takes NO context cannot see the lease and must
 // not be called inside fn: it waits for the lock fn holds. That covers the
 // context-less wrappers (Upsert, UpsertBatch, UpsertMirroredWrite, ...) and
 // the methods that lock writeMu directly (RecordPendingWrite,
@@ -454,7 +621,8 @@ func (s *Store) WithWriteLease(ctx context.Context, fn func(context.Context) err
 		return err
 	}
 	defer release()
-	return fn(context.WithValue(ctx, writeLeaseKey{}, s))
+	outer, _ := ctx.Value(writeLeaseKey{}).(*writeLease)
+	return fn(context.WithValue(ctx, writeLeaseKey{}, &writeLease{store: s, parent: outer}))
 }
 
 // acquireWrite serializes writers honouring cancellation. A plain

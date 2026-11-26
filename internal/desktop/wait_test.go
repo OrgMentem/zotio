@@ -314,7 +314,6 @@ func TestWaitIgnoresEventsWhileBusy(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(in.data, "zotero.sqlite-wal"), []byte{byte(i)}, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	assertStillWaiting(t, done, 200*time.Millisecond)
 	if got := conn.count(); got != 1 {

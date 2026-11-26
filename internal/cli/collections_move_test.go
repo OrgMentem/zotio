@@ -17,7 +17,7 @@ import (
 type collectionMoveTestServer struct {
 	server       *httptest.Server
 	getCount     int
-	putCount     int
+	patchCount   int
 	putHeader    string
 	putBody      map[string]any
 	requestPaths []string
@@ -38,8 +38,8 @@ func newCollectionMoveTestServer(t *testing.T) *collectionMoveTestServer {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Last-Modified-Version", "77")
 			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":77,"data":{"key":"CLCTAB23","name":"Child","parentCollection":false}}`))
-		case http.MethodPut:
-			ts.putCount++
+		case http.MethodPatch:
+			ts.patchCount++
 			ts.putHeader = r.Header.Get("If-Unmodified-Since-Version")
 			if err := json.NewDecoder(r.Body).Decode(&ts.putBody); err != nil {
 				t.Errorf("decode put body: %v", err)
@@ -129,22 +129,22 @@ func TestCollectionsMoveApplyGetsThenPutsWithVersionPrecondition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
 	}
-	if srv.getCount != 2 || srv.putCount != 1 {
-		t.Fatalf("GET=%d PUT=%d requests=%v, want the collection and parent reads then one PUT", srv.getCount, srv.putCount, srv.requestPaths)
+	if srv.getCount != 2 || srv.patchCount != 1 {
+		t.Fatalf("GET=%d PUT=%d requests=%v, want the collection and parent reads then one PUT", srv.getCount, srv.patchCount, srv.requestPaths)
 	}
-	if got, want := strings.Join(srv.requestPaths, ","), "GET /users/0/collections/CLCTAB23,GET /users/0/collections/PRNTAB23,PUT /users/0/collections/CLCTAB23"; got != want {
+	if got, want := strings.Join(srv.requestPaths, ","), "GET /users/0/collections/CLCTAB23,GET /users/0/collections/PRNTAB23,PATCH /users/0/collections/CLCTAB23"; got != want {
 		t.Fatalf("request order = %q, want %q", got, want)
 	}
 	if srv.putHeader != "77" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want 77", srv.putHeader)
 	}
 	if srv.putBody["parentCollection"] != "PRNTAB23" {
-		t.Fatalf("PUT body = %+v, want parentCollection PRNTAB23", srv.putBody)
+		t.Fatalf("PATCH body = %+v, want parentCollection PRNTAB23", srv.putBody)
 	}
 }
 
 // TestCollectionsMoveIsJournaled guards the fix for the reviewer-flagged gap:
-// the PUT used to bypass runMutation entirely, so an applied move never
+// the PATCH used to bypass runMutation entirely, so an applied move never
 // reached the journal. Route it through runMutation and the run must appear
 // as a journaled "collections.move" entry with one applied change.
 func TestCollectionsMoveIsJournaled(t *testing.T) {
@@ -171,7 +171,7 @@ func TestCollectionsMoveIsJournaled(t *testing.T) {
 // TestCollectionsMoveHonorsMaxChanges guards the same gap from the gate side:
 // the direct PutWithHeaders call never consulted CheckGates, so --max-changes
 // had no effect on this command. Routing through runMutation must make a cap
-// of zero refuse the write before any PUT is issued.
+// of zero refuse the write before any PATCH is issued.
 func TestCollectionsMoveHonorsMaxChanges(t *testing.T) {
 	srv := newCollectionMoveTestServer(t)
 
@@ -179,8 +179,8 @@ func TestCollectionsMoveHonorsMaxChanges(t *testing.T) {
 	if err == nil {
 		t.Fatalf("collections move at cap 0 = nil error, want max-changes refusal; stderr=%s", stderr)
 	}
-	if srv.putCount != 0 {
-		t.Fatalf("putCount = %d, want 0 (max-changes must block before the PUT)", srv.putCount)
+	if srv.patchCount != 0 {
+		t.Fatalf("patchCount = %d, want 0 (max-changes must block before the PUT)", srv.patchCount)
 	}
 }
 
@@ -201,7 +201,7 @@ func TestCollectionsMoveSendsVersionHeader(t *testing.T) {
 
 	var putAttempted bool
 	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
+		if r.Method == http.MethodPatch {
 			putAttempted = true
 		}
 		http.Error(w, "version lookup failed", http.StatusBadRequest)
@@ -220,7 +220,7 @@ func TestCollectionsMoveSendsVersionHeader(t *testing.T) {
 		t.Fatal("collections move with failing version GET = nil error, want failure")
 	}
 	if putAttempted {
-		t.Fatal("PUT was attempted despite a failed version GET")
+		t.Fatal("PATCH was attempted despite a failed version GET")
 	}
 }
 
@@ -233,8 +233,8 @@ func TestCollectionsMoveMissingCollectionIsNotFound(t *testing.T) {
 		if err == nil || ExitCode(err) != 3 {
 			t.Fatalf("yes=%v: error = %v, exit=%d; want not found (exit 3)", flags.yes, err, ExitCode(err))
 		}
-		if out != "" || srv.putCount != 0 {
-			t.Fatalf("yes=%v: out=%q puts=%d, want no envelope and no write", flags.yes, out, srv.putCount)
+		if out != "" || srv.patchCount != 0 {
+			t.Fatalf("yes=%v: out=%q puts=%d, want no envelope and no write", flags.yes, out, srv.patchCount)
 		}
 	}
 }

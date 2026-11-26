@@ -219,6 +219,9 @@ func newAgentContextCmd(rootCmd *cobra.Command) *cobra.Command {
 agents can introspect this CLI at runtime without parsing --help or
 reading source. Schema is versioned via schema_version.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if commandQuiet(cmd) {
+				return nil
+			}
 			ctx := buildAgentContext(rootCmd)
 			// cmd.OutOrStdout(), not os.Stdout: every other command writes through
 			// the Cobra writer, which is what --deliver-spool tees and what
@@ -295,15 +298,6 @@ func buildAgentDiscoveryContext() *agentContextDiscovery {
 	}
 }
 
-// collectAgentCommands walks the cobra tree from the given command and
-// returns its direct children (skipping hidden commands and the
-// agent-context command itself to avoid self-reference). Each child is
-// recursed into if it has subcommands. Flags are captured via VisitAll.
-// Output is sorted by command name for stable diffs across regenerations.
-func collectAgentCommands(c *cobra.Command) []agentContextCommand {
-	return collectAgentCommandsIn(c, c.Root(), registryByPath(buildCapabilityRegistry(c.Root())))
-}
-
 // registryDerivedAnnotations are the annotation keys agent-context takes only
 // from the capability registry. A literal value a command carries for one of
 // them is ignored, so the registry stays the single source and no command can
@@ -321,6 +315,11 @@ var registryDerivedAnnotations = []string{
 // comma separated. agent-context publishes it as typed_exit_codes.
 const typedExitCodesAnnotation = "zotio:typed-exit-codes"
 
+// collectAgentCommandsIn walks the cobra tree from the given command and
+// returns its direct children (skipping hidden commands and the
+// agent-context command itself to avoid self-reference). Each child is
+// recursed into if it has subcommands. Flags are captured via VisitAll.
+// Output is sorted by command name for stable diffs across regenerations.
 func collectAgentCommandsIn(c, root *cobra.Command, registry map[string]capabilityEntry) []agentContextCommand {
 	children := c.Commands()
 	sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })

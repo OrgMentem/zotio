@@ -406,3 +406,31 @@ func TestItemsTagsPlanningReadIsBatched(t *testing.T) {
 		t.Fatalf("ExitCode(batched read with a missing key) = %d, want 3; err = %v", ExitCode(err), err)
 	}
 }
+
+// A removal journals the type of each tag it drops, so undo re-adds an
+// automatic tag as automatic instead of silently demoting it to manual.
+func TestTagMutationChangesRemoveRecordsRemovedTagTypes(t *testing.T) {
+	current := []map[string]any{
+		{"tag": "Humans", "type": float64(1)},
+		{"tag": "both"},
+		{"tag": "both", "type": float64(1)},
+		{"tag": "other"},
+	}
+	got := tagMutationChanges(current, []string{"Humans", "both"}, false, false)
+	if len(got) != 3 {
+		t.Fatalf("changes = %+v, want one per removed (name, type) pair", got)
+	}
+	want := []struct {
+		name string
+		typ  int
+	}{{"Humans", 1}, {"both", 0}, {"both", 1}}
+	for i, w := range want {
+		if got[i].Remove != w.name || got[i].TagType != w.typ {
+			t.Errorf("change %d = %+v, want remove %q type %d", i, got[i], w.name, w.typ)
+		}
+	}
+	auto := tagMutationChanges(current, []string{"both"}, false, true)
+	if len(auto) != 1 || auto[0].TagType != 1 {
+		t.Errorf("automatic-only changes = %+v, want one type-1 removal", auto)
+	}
+}

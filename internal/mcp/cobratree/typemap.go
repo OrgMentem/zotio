@@ -22,8 +22,9 @@ func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
 	case "bool":
 		return mcplib.WithBoolean(flag.Name, propOpts...)
 	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float32", "float64", "count":
+		"uint", "uint8", "uint16", "uint32", "uint64", "count":
+		return mcplib.WithInteger(flag.Name, propOpts...)
+	case "float32", "float64":
 		return mcplib.WithNumber(flag.Name, propOpts...)
 	case "string", "duration":
 		return mcplib.WithString(flag.Name, propOpts...)

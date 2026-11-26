@@ -161,9 +161,9 @@ func fetchSnapshotItemsForVerify(ctx context.Context, c *client.Client, path str
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s page at start %d: %w", path, start, classifyAPIError(err, flags))
 		}
-		var page []json.RawMessage
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, fmt.Errorf("decoding %s page at start %d: %w", path, start, err)
+		page, err := decodeListPage[json.RawMessage](data, fmt.Sprintf("%s page at start %d", path, start))
+		if err != nil {
+			return nil, err
 		}
 		items = append(items, page...)
 		if len(page) < pageSize {

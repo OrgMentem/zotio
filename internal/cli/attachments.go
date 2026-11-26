@@ -95,9 +95,10 @@ content hash alone, because Zotero names the stored file after the parent item
 rather than after your file: an identical retry no-ops, a run interrupted
 before the move is resumed rather than duplicated. Every connector retry cleans
 up empty temporary parents left by earlier runs once they are more than seven
-minutes old, even if the new upload fails. Two limits are worth knowing:
-a retry issued before Zotero has registered the hash can still add a second
-copy, and two simultaneous runs against one item can both add one.
+minutes old, even if the new upload fails. A retry issued before Zotero has
+registered the hash of an interrupted upload waits for the hash, and stops with
+an error instead of adding a second copy if it does not appear. One limit
+remains: two simultaneous runs against one item can both add a copy.
 
 By default this previews the planned attachment; apply with --yes.`,
 		Args: cobra.ExactArgs(2),
@@ -381,9 +382,9 @@ func findLinkedURLAttachment(ctx context.Context, r writePlaneReader, parentKey,
 		if err != nil {
 			return "", fmt.Errorf("listing children of %s: %w", parentKey, err)
 		}
-		var page []childRow
-		if err := json.Unmarshal(data, &page); err != nil {
-			return "", fmt.Errorf("parsing children of %s: %w", parentKey, err)
+		page, err := decodeListPage[childRow](data, fmt.Sprintf("children of %s at start %d", parentKey, start))
+		if err != nil {
+			return "", err
 		}
 		for _, row := range page {
 			if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_url" && row.Data.URL == url && row.Data.Deleted == 0 {
@@ -687,7 +688,22 @@ func createStoredAttachmentChild(c *client.Client, req storedUploadRequest, flag
 	}
 	key, ok := createdItemKey(resp)
 	if !ok {
-		return "", fmt.Errorf("could not read created attachment key from /items response")
+		if reason := importRejection(resp); reason != "" && checkBatchEnvelope(resp, 1) == nil {
+			return "", errors.New(reason)
+		}
+		// The create was accepted but its response proves nothing: reconcile
+		// against the parent's children before declaring the outcome unknown.
+		if sibling, rerr := findStoredSibling(c, req.ParentKey, req.Filename, req.MD5); rerr == nil {
+			if sibling.ExistingKey != "" {
+				return sibling.ExistingKey, nil
+			}
+			if sibling.PendingKey != "" {
+				return sibling.PendingKey, nil
+			}
+		}
+		return "", &storedConflictError{fmt.Sprintf(
+			"creating %q under %s returned a response without a readable attachment key; the child may already exist, so review the item manually before retrying",
+			req.Filename, req.ParentKey)}
 	}
 	return key, nil
 }

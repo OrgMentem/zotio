@@ -1229,3 +1229,54 @@ func TestReapMirroredItemCascadesToChildrenAndAnnotations(t *testing.T) {
 		}
 	}
 }
+
+// TestRestartSyncCursorContext pins the sync-cursor restart interlock: a torn
+// cursor becomes the explicit unfinished-pass cursor "0", the scope the caller
+// passes is kept (or cleared), and last_synced_at is left untouched so an
+// incomplete pass is never read as a fresh mirror.
+func TestRestartSyncCursorContext(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenWithContext(ctx, filepath.Join(t.TempDir(), "restart.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Fresh row: the INSERT branch.
+	if err := s.RestartSyncCursorContext(ctx, "items", "since=5"); err != nil {
+		t.Fatalf("restart on empty row: %v", err)
+	}
+	cursor, scope, synced, _, err := s.GetSyncResumeStateContext(ctx, "items")
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if cursor != "0" || scope != "since=5" || !synced.IsZero() {
+		t.Fatalf("after insert restart: cursor=%q scope=%q synced=%v, want \"0\", \"since=5\", zero", cursor, scope, synced)
+	}
+
+	// Existing completed pass, then a torn cursor: the ON CONFLICT branch must
+	// reset the cursor and scope but keep the completion time.
+	if err := s.SaveSyncStateContext(ctx, "collections", "", 3); err != nil {
+		t.Fatalf("complete pass: %v", err)
+	}
+	_, _, completed, _, err := s.GetSyncResumeStateContext(ctx, "collections")
+	if err != nil || completed.IsZero() {
+		t.Fatalf("seed completion: synced=%v err=%v", completed, err)
+	}
+	if err := s.SaveSyncResumeStateContext(ctx, "collections", "400", "scope-a", 3); err != nil {
+		t.Fatalf("save torn cursor: %v", err)
+	}
+	if err := s.RestartSyncCursorContext(ctx, "collections", ""); err != nil {
+		t.Fatalf("restart on existing row: %v", err)
+	}
+	cursor, scope, synced, _, err = s.GetSyncResumeStateContext(ctx, "collections")
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if cursor != "0" || scope != "" {
+		t.Fatalf("after upsert restart: cursor=%q scope=%q, want \"0\" and empty scope", cursor, scope)
+	}
+	if !synced.Equal(completed) {
+		t.Fatalf("restart changed last_synced_at: %v -> %v", completed, synced)
+	}
+}

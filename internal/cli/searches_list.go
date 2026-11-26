@@ -31,7 +31,7 @@ func newSearchesListCmd(flags *rootFlags) *cobra.Command {
 			if flagLimit != 0 {
 				params["limit"] = fmt.Sprintf("%v", flagLimit)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "searches", false, path, params, nil)
+			data, prov, err := resolveListRead(cmd.Context(), c, flags, "searches", false, path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

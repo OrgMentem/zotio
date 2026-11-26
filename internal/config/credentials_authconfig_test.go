@@ -90,3 +90,45 @@ func TestCredentialChangesClearCachedAccountAuthConfig(t *testing.T) {
 		})
 	}
 }
+
+// ZOTERO_BASE_URL is a process-scoped override like ZOTERO_API_KEY and
+// ZOTERO_USER_ID: a config save made while it is set (the first-write user-ID
+// cache, auth set-token, init) must not write it into config.toml.
+func TestEnvBaseURLOverrideIsNotPersistedBySaves(t *testing.T) {
+	authConfigHome(t)
+	const fileBase = "http://file.invalid/api/users/0"
+	path, _, err := resolveConfigPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("base_url = \""+fileBase+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ZOTERO_BASE_URL", "http://env.invalid/api/users/0")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "http://env.invalid/api/users/0" {
+		t.Fatalf("env override not applied: BaseURL = %q", cfg.BaseURL)
+	}
+	if err := cfg.SaveUserID("42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveCredential("key-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ZOTERO_BASE_URL", "")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != fileBase {
+		t.Fatalf("persisted base_url = %q, want the file value %q", cfg.BaseURL, fileBase)
+	}
+}

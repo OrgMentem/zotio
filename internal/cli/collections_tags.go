@@ -35,9 +35,22 @@ func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/collections/{collectionKey}/tags"
 			path = replacePathParam(path, "collectionKey", args[0])
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "collections", false, path, params, nil)
+			data, prov, err := resolveListRead(cmd.Context(), c, flags, "collections", false, path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
+			}
+			// The live Zotero API ignores ?q=, so filter client-side over every
+			// tag and then apply --start/--limit to the filtered list.
+			if flagQ != "" && prov.Source == "live" {
+				need := 0
+				if flagLimit > 0 {
+					need = flagStart + flagLimit
+				}
+				data, err = fetchLiveTagsMatching(c, path, flagQ, flagQMode, need)
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
+				data = windowJSONArray(data, flagStart, flagLimit)
 			}
 			data = truncateJSONArray(data, flagLimit)
 			return printCollectionsRead(cmd, flags, data, prov)

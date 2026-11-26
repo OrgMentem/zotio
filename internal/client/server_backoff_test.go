@@ -12,43 +12,11 @@ import (
 	"zotio/internal/config"
 )
 
-// The Web API asks clients to pause with a Backoff header, even on a 2xx. The
-// next request through the same client must wait it out.
-func TestBackoffHeaderPausesNextRequest(t *testing.T) {
-	var mu sync.Mutex
-	var stamps []time.Time
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		stamps = append(stamps, time.Now())
-		first := len(stamps) == 1
-		mu.Unlock()
-		if first {
-			w.Header().Set("Backoff", "1")
-		}
-		_, _ = w.Write([]byte(`[]`))
-	}))
-	defer srv.Close()
-
-	c := New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
-	c.NoCache = true
-	for range 2 {
-		if _, err := c.Get("/items", nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(stamps) != 2 {
-		t.Fatalf("requests = %d, want 2", len(stamps))
-	}
-	if gap := stamps[1].Sub(stamps[0]); gap < 950*time.Millisecond {
-		t.Fatalf("gap between requests = %v, want >= the 1s the server asked for", gap)
-	}
-}
-
-// A clone shares the session's backoff: a read client built for a global
-// endpoint must not hammer a server the parent was told to leave alone.
-func TestBackoffHeaderAppliesToClones(t *testing.T) {
+// requireBackoffGap serves one Backoff: 1 response on the first request, makes
+// two GETs (the second through secondGet, which receives the first client and
+// the server URL), and requires the server-requested pause between them.
+func requireBackoffGap(t *testing.T, secondGet func(c *Client, baseURL string) *Client) {
+	t.Helper()
 	var mu sync.Mutex
 	var stamps []time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,15 +36,29 @@ func TestBackoffHeaderAppliesToClones(t *testing.T) {
 	if _, err := c.Get("/items", nil); err != nil {
 		t.Fatal(err)
 	}
-	clone := c.CloneForRead(srv.URL)
-	if _, err := clone.Get("/items", nil); err != nil {
+	if _, err := secondGet(c, srv.URL).Get("/items", nil); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if gap := stamps[1].Sub(stamps[0]); gap < 950*time.Millisecond {
-		t.Fatalf("clone request gap = %v, want >= 1s", gap)
+	if len(stamps) != 2 {
+		t.Fatalf("requests = %d, want 2", len(stamps))
 	}
+	if gap := stamps[1].Sub(stamps[0]); gap < 950*time.Millisecond {
+		t.Fatalf("gap between requests = %v, want >= the 1s the server asked for", gap)
+	}
+}
+
+// The Web API asks clients to pause with a Backoff header, even on a 2xx. The
+// next request through the same client must wait it out.
+func TestBackoffHeaderPausesNextRequest(t *testing.T) {
+	requireBackoffGap(t, func(c *Client, _ string) *Client { return c })
+}
+
+// A clone shares the session's backoff: a read client built for a global
+// endpoint must not hammer a server the parent was told to leave alone.
+func TestBackoffHeaderAppliesToClones(t *testing.T) {
+	requireBackoffGap(t, func(c *Client, baseURL string) *Client { return c.CloneForRead(baseURL) })
 }
 
 func TestRetryAfterOnServerErrorOverridesExponentialBackoff(t *testing.T) {

@@ -100,6 +100,15 @@ type workflowRunInvocation struct {
 	// Trigger is the change batch that started this run. It is read-only
 	// data for the steps and never approves a write: only Yes applies.
 	Trigger *workflowRunTrigger
+	// RunID is set by a caller that owns its own acknowledgement of the run
+	// (tail --workflow, watch --workflow-on-change). The run uses it as its
+	// run ID and, once every step succeeded, writes a completion record of its
+	// own (workflowRunCompletionPath) before it removes its checkpoint. The
+	// caller records the run ID durably before the run, so after a crash it can
+	// ask workflowRunCompleted whether that run already finished, and clears its
+	// own marker without replaying the steps. The caller then calls
+	// releaseWorkflowRunCompletion; nothing else removes the record.
+	RunID string
 }
 
 type workflowRunStepReport struct {
@@ -242,6 +251,9 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 				}
 				return workflowRunReport{}, err
 			}
+			if checkpoint.Done {
+				return clearCompletedWorkflowRunCheckpoint(checkpointPath, checkpoint)
+			}
 			completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps), resolvedVars)
 			if err != nil {
 				return workflowRunReport{}, err
@@ -261,9 +273,37 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 				return workflowRunReport{}, err
 			}
 			if exists {
+				// A completed checkpoint is not an interrupted run: every step
+				// already ran and only its removal was cut short.
+				prior, readErr := readWorkflowRunCheckpoint(checkpointPath)
+				if readErr == nil && prior.Done {
+					// Only an invocation without a caller leaves a completed
+					// checkpoint. A caller-owned run never touches it: that
+					// record is the standalone retry's only guard.
+					if inv.RunID != "" {
+						return workflowRunReport{}, preconditionErr(fmt.Errorf("a completed workflow run %s awaits acknowledgement at %q; run `workflow run` on this spec once to clear it", prior.RunID, checkpointPath))
+					}
+					if prior.SpecSHA256 == specSHA256 &&
+						workflowRunVarsEqual(prior.Vars, resolvedVars) &&
+						workflowRunTriggersEqual(prior.Trigger, trigger) {
+						// The operator is retrying a run that already
+						// finished: report it, do not repeat it.
+						return clearCompletedWorkflowRunCheckpoint(checkpointPath, prior)
+					}
+					// Different inputs are a genuinely new run.
+					if err := os.Remove(checkpointPath); err != nil && !os.IsNotExist(err) {
+						return workflowRunReport{}, fmt.Errorf("remove completed workflow checkpoint %q: %w", checkpointPath, err)
+					}
+					exists = false
+				}
+			}
+			if exists {
 				return workflowRunReport{}, fmt.Errorf("an interrupted workflow run exists at %q; pass --resume to continue or delete %q to start over", checkpointPath, checkpointPath)
 			}
-			checkpoint.RunID = mutation.NewRunID(time.Now())
+			checkpoint.RunID = inv.RunID
+			if checkpoint.RunID == "" {
+				checkpoint.RunID = mutation.NewRunID(time.Now())
+			}
 			if err := writeWorkflowRunCheckpoint(checkpointPath, checkpoint); err != nil {
 				return workflowRunReport{}, err
 			}
@@ -293,8 +333,30 @@ func runWorkflowRunFile(ctx context.Context, specPath string, inv workflowRunInv
 		report, executionErr = executeWorkflowRunSpecWithOptions(ctx, spec, execution)
 	}
 	if executionErr == nil && execution.Mode == workflowRunModeApply && report.OK {
-		if err := os.Remove(execution.CheckpointPath); err != nil && !os.IsNotExist(err) {
-			executionErr = fmt.Errorf("remove workflow checkpoint %q: %w", execution.CheckpointPath, err)
+		// Deleting the checkpoint is what lets the next invocation start over,
+		// so completion is recorded durably first.
+		if inv.RunID != "" {
+			// A caller owns this run's acknowledgement. Its completion record
+			// is a file of its own, keyed by run ID, so no other invocation
+			// of the spec can remove it; only the caller releases it.
+			done := *execution.Checkpoint
+			done.Done = true
+			completionPath := workflowRunCompletionPath(specPath, inv.RunID)
+			if err := writeWorkflowRunCheckpoint(completionPath, done); err != nil {
+				executionErr = fmt.Errorf("record workflow completion in %q: %w", completionPath, err)
+			} else if err := os.Remove(execution.CheckpointPath); err != nil && !os.IsNotExist(err) {
+				executionErr = fmt.Errorf("remove workflow checkpoint %q: %w", execution.CheckpointPath, err)
+			}
+		} else {
+			// A kill between the write and the delete leaves a completed
+			// checkpoint the next invocation recognizes instead of repeating
+			// every step.
+			execution.Checkpoint.Done = true
+			if err := writeWorkflowRunCheckpoint(execution.CheckpointPath, *execution.Checkpoint); err != nil {
+				executionErr = fmt.Errorf("record workflow completion in checkpoint %q: %w", execution.CheckpointPath, err)
+			} else if err := os.Remove(execution.CheckpointPath); err != nil && !os.IsNotExist(err) {
+				executionErr = fmt.Errorf("remove workflow checkpoint %q: %w", execution.CheckpointPath, err)
+			}
 		}
 	}
 	if executionErr != nil {
@@ -709,6 +771,127 @@ type workflowRunCheckpoint struct {
 	Vars          map[string]string           `json:"vars,omitempty"`
 	Trigger       *workflowRunTrigger         `json:"trigger,omitempty"`
 	Completed     []workflowRunCheckpointStep `json:"completed"`
+	// Done marks a run whose every step succeeded. Without a caller-owned run
+	// ID the checkpoint file keeps it until the file is deleted, so a crash
+	// between the last step and the delete cannot be mistaken for "no run
+	// happened". Caller-owned runs record it in workflowRunCompletionPath.
+	Done bool `json:"done,omitempty"`
+}
+
+// errWorkflowRunAlreadyCompleted reports that the requested run had already
+// finished when it was started again. Nothing ran.
+var errWorkflowRunAlreadyCompleted = errors.New("workflow run already completed")
+
+// clearCompletedWorkflowRunCheckpoint deletes a completed run's leftover
+// checkpoint and reports the run as already completed without running a step.
+func clearCompletedWorkflowRunCheckpoint(path string, checkpoint workflowRunCheckpoint) (workflowRunReport, error) {
+	report := workflowRunReport{OK: true, Mode: workflowRunModeApply, RunID: checkpoint.RunID}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return report, fmt.Errorf("remove completed workflow checkpoint %q: %w", path, err)
+	}
+	return report, fmt.Errorf("%w: run %s finished before an earlier invocation was interrupted; its checkpoint is cleared and no step ran again, so run the workflow again to start a new run", errWorkflowRunAlreadyCompleted, checkpoint.RunID)
+}
+
+func workflowRunTriggersEqual(left, right *workflowRunTrigger) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	l, lerr := json.Marshal(left)
+	r, rerr := json.Marshal(right)
+	return lerr == nil && rerr == nil && bytes.Equal(l, r)
+}
+
+// workflowRunCompletionPath is where a caller-owned run (workflowRunInvocation.RunID)
+// records that it finished. It is keyed by run ID so another invocation of the
+// same spec can neither overwrite nor delete it.
+func workflowRunCompletionPath(specPath, runID string) string {
+	return specPath + ".completed-" + runID + ".json"
+}
+
+// workflowRunCompleted reports whether run runID, started with a caller-owned
+// run ID, recorded its completion. Callers use it after a crash to tell a
+// finished run from one that never ran.
+func workflowRunCompleted(specPath, runID string) (bool, error) {
+	record, err := readWorkflowRunCheckpoint(workflowRunCompletionPath(specPath, runID))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return record.Done && record.RunID == runID, nil
+}
+
+// errWorkflowRunIncomplete reports that a run's checkpoint is still on disk
+// without a completion record: the applied run was interrupted or failed and
+// has steps left, so its caller must not acknowledge it.
+var errWorkflowRunIncomplete = errors.New("workflow run is incomplete")
+
+// settleWorkflowRunCheckpoint makes the absence of run runID's checkpoint
+// durable. A crash between recording a run's completion and removing its
+// checkpoint leaves an orphan that every later run would reject as an
+// interrupted run, and the run's own unlink was never directory-synced, so the
+// directory is synced even when the file is already gone. The checkpoint is
+// deleted only when the completion record proves the run finished; a matching
+// checkpoint with no completion record is an unfinished run and is kept, with
+// errWorkflowRunIncomplete. Another run's checkpoint is left alone.
+func settleWorkflowRunCheckpoint(specPath, runID string) error {
+	path := workflowRunCheckpointPath(specPath)
+	checkpoint, err := readWorkflowRunCheckpoint(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	case checkpoint.RunID == runID:
+		completed, err := workflowRunCompleted(specPath, runID)
+		if err != nil {
+			return err
+		}
+		if !completed {
+			return fmt.Errorf("%w: run %s still has its checkpoint %q without a completion record; resume it with `workflow run --yes --resume` or delete the checkpoint to start over", errWorkflowRunIncomplete, runID, path)
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove workflow checkpoint %q: %w", path, err)
+		}
+	}
+	if err := workflowRunSyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync workflow checkpoint directory %q: %w", filepath.Dir(path), err)
+	}
+	return nil
+}
+
+// acknowledgeWorkflowRun is the one ordered way a caller that owns a run's
+// acknowledgement (tail, watch) retires it. Each step is durable before the
+// next, and the completion record, the only proof the run finished, goes last:
+//
+//  1. remove the run's own leftover checkpoint, only if the completion record
+//     proves the run finished, and sync its directory even when the file is
+//     already gone, so no orphan is left for later runs to reject and the
+//     run's own unlink is durable;
+//  2. clearMarker, which removes the caller's owed marker and syncs it;
+//  3. remove the completion record.
+//
+// A failure in step 1 or 2 returns err with the completion record intact, so a
+// later call finishes the job without replaying the workflow. A run whose
+// checkpoint has no completion record is unfinished: step 1 fails with
+// errWorkflowRunIncomplete and both the checkpoint and the marker stay. A failure in step
+// 3 comes back as releaseErr: the run is already acknowledged and the record is
+// harmless.
+func acknowledgeWorkflowRun(specPath, runID string, clearMarker func() error) (releaseErr, err error) {
+	if runID == "" {
+		return nil, clearMarker()
+	}
+	if err := settleWorkflowRunCheckpoint(specPath, runID); err != nil {
+		return nil, err
+	}
+	if err := clearMarker(); err != nil {
+		return nil, err
+	}
+	path := workflowRunCompletionPath(specPath, runID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove workflow completion record %q: %w", path, err), nil
+	}
+	return nil, nil
 }
 
 type workflowRunCheckpointStep struct {

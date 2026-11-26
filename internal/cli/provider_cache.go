@@ -100,7 +100,7 @@ func getCappedProviderJSON(ctx context.Context, httpClient *http.Client, provide
 		if truncated {
 			message += "... (truncated)"
 		}
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, message)
+		return &httpStatusError{Code: resp.StatusCode, Body: message}
 	}
 	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {

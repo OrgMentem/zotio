@@ -63,9 +63,11 @@ func TestWithWriteLease_ReentrantForContextWrites(t *testing.T) {
 func TestWithWriteLease_ExcludesOtherWriters(t *testing.T) {
 	s := openWriteLeaseStore(t)
 	inside := make(chan struct{})
+	attempting := make(chan struct{})
 	otherLanded := make(chan struct{})
 	go func() {
 		<-inside
+		close(attempting)
 		if err := s.Upsert("items", "BBB", json.RawMessage(`{"key":"BBB","version":1,"data":{"key":"BBB","itemType":"book"}}`)); err != nil {
 			t.Errorf("competing write: %v", err)
 		}
@@ -75,10 +77,13 @@ func TestWithWriteLease_ExcludesOtherWriters(t *testing.T) {
 	var sawOther bool
 	err := s.WithWriteLease(context.Background(), func(ctx context.Context) error {
 		close(inside)
+		// The competitor signals just before its write; the lease stays held
+		// until it is at least about to contend.
+		<-attempting
 		select {
 		case <-otherLanded:
 			sawOther = true
-		case <-time.After(time.Second):
+		default:
 		}
 		return nil
 	})
@@ -108,5 +113,39 @@ func TestWithWriteLease_CancelledContextDoesNotRunFn(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("cancelled lease ran its body")
+	}
+}
+
+// TestWithWriteLease_NestedAcrossStoresKeepsOuterLease proves a lease on a
+// second Store does not hide the lease on the first: a write to the outer
+// Store through the inner context must reuse the held lock, not wait on it.
+func TestWithWriteLease_NestedAcrossStoresKeepsOuterLease(t *testing.T) {
+	a := openWriteLeaseStore(t)
+	b := openWriteLeaseStore(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- a.WithWriteLease(context.Background(), func(ctxA context.Context) error {
+			return b.WithWriteLease(ctxA, func(ctxB context.Context) error {
+				if !a.holdsWriteLease(ctxB) || !b.holdsWriteLease(ctxB) {
+					t.Error("inner context lost a lease")
+				}
+				return a.UpsertContext(ctxB, "items", "AAA", json.RawMessage(`{"key":"AAA","version":1,"data":{"key":"AAA","itemType":"book"}}`))
+			})
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("nested cross-store write: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("nested cross-store write deadlocked on the outer writeMu")
+	}
+	for name, s := range map[string]*Store{"a": a, "b": b} {
+		release, err := s.acquireWrite(context.Background())
+		if err != nil {
+			t.Fatalf("store %s writeMu still held: %v", name, err)
+		}
+		release()
 	}
 }

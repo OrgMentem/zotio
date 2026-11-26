@@ -73,3 +73,37 @@ func TestCollectionsTagsAutoWriteThroughTargetsTags(t *testing.T) {
 		t.Fatalf("local collections = %s, want only the verified collection", localData)
 	}
 }
+
+// The live read plane ignores q/qmode, so `collections tags --query` must
+// filter client-side exactly like `tags list` does.
+func TestCollectionsTagsQueryFiltersClientSideOnLivePlane(t *testing.T) {
+	collChildCacheIsolateMirror(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/collections/CLCTAB23":
+			_, _ = w.Write([]byte(`{"key":"CLCTAB23","version":1,"data":{"key":"CLCTAB23","name":"Mine","parentCollection":false}}`))
+		case "/collections/CLCTAB23/tags":
+			// Ignores q and qmode on purpose.
+			_, _ = w.Write([]byte(`[{"tag":"Ethics","meta":{"type":0,"numItems":1}},{"tag":"physics","meta":{"type":0,"numItems":2}},{"tag":"bioethics","meta":{"type":0,"numItems":1}}]`))
+		default:
+			t.Errorf("path = %q, want the collection or its tags", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+
+	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
+	cmd := newCollectionsTagsCmd(flags)
+	cmd.SetArgs([]string{"CLCTAB23", "--query", "ethics"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("collections tags: %v", err)
+	}
+	env := collChildCacheDecodeEnvelope(t, out.String())
+	got := string(env.Results)
+	if !strings.Contains(got, "Ethics") || !strings.Contains(got, "bioethics") || strings.Contains(got, "physics") {
+		t.Fatalf("results = %s, want only tags containing %q", got, "ethics")
+	}
+}

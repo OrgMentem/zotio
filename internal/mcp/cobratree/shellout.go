@@ -176,6 +176,12 @@ func mirroredErrorText(buf *boundedCapture, detail string) string {
 	return bound.LibraryTextCapture(buf.String(), buf.Total(), bound.MaxBytes-len(suffix)) + suffix
 }
 
+// cliArgsFromMCP renders MCP flag values as argv. Every flag becomes ONE
+// "--name=value" token, so a value can never be split off and reparsed as a
+// separate flag: pflag does not consume the following token for a bool flag,
+// and a "--name value" pair would let a value like "--deliver=..." escape the
+// allowlist. An explicit empty string stays "--name=" so it reaches Cobra's own
+// validation instead of silently meaning "omitted". A nil value is absent.
 func cliArgsFromMCP(args map[string]any) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
@@ -196,18 +202,16 @@ func cliArgsFromMCP(args map[string]any) []string {
 				out = append(out, "--"+k+"=false")
 			}
 		case float64:
-			out = append(out, "--"+k, strconv.FormatFloat(tv, 'f', -1, 64))
+			out = append(out, "--"+k+"="+strconv.FormatFloat(tv, 'f', -1, 64))
 		case string:
-			if tv != "" {
-				out = append(out, "--"+k, tv)
-			}
+			out = append(out, "--"+k+"="+tv)
 		case []any:
 			for _, item := range tv {
-				out = append(out, "--"+k, fmt.Sprintf("%v", item))
+				out = append(out, "--"+k+"="+fmt.Sprintf("%v", item))
 			}
 		default:
 			if v != nil {
-				out = append(out, "--"+k, fmt.Sprintf("%v", v))
+				out = append(out, "--"+k+"="+fmt.Sprintf("%v", v))
 			}
 		}
 	}

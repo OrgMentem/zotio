@@ -155,12 +155,14 @@ func TestRmsManuscriptCapabilityRequiresMirrorOnlyForManuscript(t *testing.T) {
 			break
 		}
 	}
-	if len(entry.Requires) != 0 {
-		t.Fatalf("unconditional requirements = %v, want unchanged mirror-free scope", entry.Requires)
+	// Every render is a Web API read, so the key is unconditional; only the
+	// manuscript route adds the synced mirror.
+	if !slices.Equal(entry.Requires, []string{preconditionWebAPIKey}) {
+		t.Fatalf("unconditional requirements = %v, want [%s] and no mirror", entry.Requires, preconditionWebAPIKey)
 	}
-	if len(entry.Routes) != 2 || entry.Routes[0].Via != "default" || len(entry.Routes[0].Requires) != 0 ||
-		entry.Routes[1].Via != "manuscript" || !slices.Equal(entry.Routes[1].Requires, []string{preconditionSyncedStore}) {
-		t.Fatalf("routes = %+v, want mirror-free default and manuscript synced_store", entry.Routes)
+	if len(entry.Routes) != 2 || entry.Routes[0].Via != "default" || !slices.Equal(entry.Routes[0].Requires, []string{preconditionWebAPIKey}) ||
+		entry.Routes[1].Via != "manuscript" || !slices.Equal(entry.Routes[1].Requires, []string{preconditionSyncedStore, preconditionWebAPIKey}) {
+		t.Fatalf("routes = %+v, want mirror-free default and manuscript synced_store plus web_api_key", entry.Routes)
 	}
 	isolateCSLTestEnv(t)
 	mbStartBibServer(t)

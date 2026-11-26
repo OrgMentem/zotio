@@ -131,7 +131,11 @@ func TestStripValidateAcceptsWriteGatingOnMutating(t *testing.T) {
 	for _, name := range writeGatingGlobalFlagNames {
 		name := name
 		t.Run(name, func(t *testing.T) {
-			if err := validateMirrorArguments(map[string]any{name: true}, allowed); err != nil {
+			value := any(true)
+			if allowed[name] != "bool" {
+				value = float64(1)
+			}
+			if err := validateMirrorArguments(map[string]any{name: value}, allowed); err != nil {
 				t.Fatalf("validateMirrorArguments rejected write-gating flag %q on mutating command: %v", name, err)
 			}
 		})
@@ -292,6 +296,75 @@ func TestStripFileWriterKeepsOnlyDryRun(t *testing.T) {
 		}
 		if _, ok := allowed[name]; ok {
 			t.Errorf("safeFlagNames(read-only file writer) exposed write-gating flag %q", name)
+		}
+	}
+}
+
+// A flag value whose JSON type does not match the Cobra flag is refused. The
+// dangerous case is a string aimed at a bool flag: pflag gives a bool flag no
+// value token, so a "--name value" pair would reparse the value as a new flag
+// and smuggle in --deliver, --config, --group or --profile.
+func TestValidateMirrorArgumentsRefusesFlagTypeMismatch(t *testing.T) {
+	cmd := &cobra.Command{Use: "leaf"}
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Int("limit", 0, "")
+	cmd.Flags().Float64("ratio", 0, "")
+	cmd.Flags().String("via", "", "")
+	cmd.Flags().StringArray("tag", nil, "")
+	allowed := safeFlagNames(cmd)
+
+	refused := map[string]any{
+		"dry-run": "--deliver=file:/tmp/x",
+		"limit":   1.5,
+		"ratio":   "high",
+		"via":     true,
+		"tag":     []any{"ok", 3.0},
+	}
+	for name, value := range refused {
+		if err := validateMirrorArguments(map[string]any{name: value}, allowed); err == nil {
+			t.Errorf("validateMirrorArguments accepted %T %v for flag --%s", value, value, name)
+		}
+	}
+	for _, value := range []any{[]any{"--deliver=x"}, 1.0, map[string]any{"a": "b"}} {
+		if err := validateMirrorArguments(map[string]any{"dry-run": value}, allowed); err == nil {
+			t.Errorf("validateMirrorArguments accepted %T for bool flag --dry-run", value)
+		}
+	}
+	accepted := map[string]any{
+		"dry-run": false,
+		"limit":   5.0,
+		"ratio":   1.5,
+		"via":     "",
+		"tag":     []any{"a", ""},
+	}
+	for name, value := range accepted {
+		if err := validateMirrorArguments(map[string]any{name: value}, allowed); err != nil {
+			t.Errorf("validateMirrorArguments rejected %T %v for flag --%s: %v", value, value, name, err)
+		}
+	}
+}
+
+// command_run reaches the leaf through the shared validator, so a bool flag
+// holding a string must be refused before any command runs and must never put
+// a value token on argv.
+func TestCommandRunRefusesStringForBoolFlag(t *testing.T) {
+	root := &cobra.Command{Use: "zotio"}
+	root.PersistentFlags().String("deliver", "", "")
+	ran := false
+	leaf := &cobra.Command{Use: "leaf", RunE: func(*cobra.Command, []string) error { ran = true; return nil }}
+	leaf.Flags().Bool("dry-run", false, "")
+	root.AddCommand(leaf)
+
+	err := validateMirrorArguments(map[string]any{"dry-run": "--deliver=file:/tmp/x"}, safeFlagNames(leaf))
+	if err == nil {
+		t.Fatal("string value for bool flag was accepted")
+	}
+	if ran {
+		t.Fatal("leaf ran")
+	}
+	for _, token := range cliArgsFromMCP(map[string]any{"via": "--deliver=file:/tmp/x", "dry-run": true}) {
+		if strings.HasPrefix(token, "--deliver") {
+			t.Fatalf("argv carries a standalone value-derived flag token %q", token)
 		}
 	}
 }

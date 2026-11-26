@@ -216,7 +216,7 @@ func renderImportPDFMutationResult(cmd *cobra.Command, flags *rootFlags, env mut
 			(result.ItemKey == "" && result.AttachmentKey == "") {
 			continue
 		}
-		if err := os.Remove(result.pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := retireImportIntent(result.pendingPath); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove completed PDF import intent %s: %v\n", result.pendingPath, err)
 		}
 	}

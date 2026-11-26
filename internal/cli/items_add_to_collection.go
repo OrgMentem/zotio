@@ -248,9 +248,9 @@ func collectionsByName(c *client.Client) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		var rows []collectionRow
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return nil, fmt.Errorf("decoding collections: %w", err)
+		rows, err := decodeListPage[collectionRow](raw, fmt.Sprintf("collections page at start %d", start))
+		if err != nil {
+			return nil, err
 		}
 		for _, row := range rows {
 			name := strings.TrimSpace(row.Data.Name)

@@ -18,7 +18,7 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 		Short:   "Move a collection under a new parent",
 		Example: "  zotio collections move ABCD2345 --to EFGH6789\n  zotio collections move ABCD2345 --to root",
 		Annotations: map[string]string{
-			"zotio:method": "PUT",
+			"zotio:method": "PATCH",
 			"zotio:path":   "/collections/{collectionKey}",
 		},
 		// One key per run. Cobra's default for a command with no subcommands is
@@ -70,14 +70,16 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 				Changes: []mutation.Change{{Field: "collection", Add: body}},
 			}}
 			var applyErr error
-			// Only the PUT itself is the write; routing just this call through
-			// the mutation engine journals it and (best-effort) mirror-replays it.
+			// Only the PATCH itself is the write (PUT would be a full
+			// replace: it needs name and resets an omitted parentCollection);
+			// routing just this call through the mutation engine journals it
+			// and (best-effort) mirror-replays it.
 			ops[0].Apply = func() (string, any, error) {
-				_, _, status, detail, putErr := putWithVersionGuard(c, path, body, version)
-				if putErr != nil {
-					applyErr = putErr
+				status, detail, patchErr := patchWithVersionGuard(c, path, body, version)
+				if patchErr != nil {
+					applyErr = patchErr
 				}
-				return status, detail, putErr
+				return status, detail, patchErr
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "collections.move", ops)
 			return renderMutationResult(cmd, flags, env, preferApplyErr(runErr, applyErr), collectionWriteLine("move", "moved"))

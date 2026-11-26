@@ -253,7 +253,7 @@ refused before any item is created; apply it in a separate run.`,
 			// cancellation, and the successful run has a durable journal ID.
 			if runErr == nil && renderErr == nil && cmd.Context().Err() == nil && runID != "" {
 				for _, path := range intents.paths {
-					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					if err := retireImportIntent(path); err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove completed import intent %s: %v\n", path, err)
 					}
 				}
@@ -957,7 +957,15 @@ func postImportApplyParent(writeClient importApplyPoster, flags *rootFlags, entr
 	}
 	createdKey, ok := createdItemKey(data)
 	if !ok {
-		return "", nil, fmt.Errorf("could not read created item key from /items response")
+		// A 2xx without a readable key is a rejection only when the envelope
+		// says so explicitly; anything else leaves a dispatched create's
+		// outcome unproven, so it is a committed conflict, never a clean failure.
+		if reason := importRejection(data); reason != "" && checkBatchEnvelope(data, 1) == nil {
+			return "", nil, errors.New(reason)
+		}
+		refusal := ambiguousCreateRefusal("import apply", fmt.Sprintf("manifest entry %d %q", entryNumber, entryTitle),
+			fmt.Errorf("could not read created item key from /items response"))
+		return "", map[string]any{"committed": true, "title": entryTitle, "message": refusal.Error()}, refusal
 	}
 	return createdKey, nil, nil
 }

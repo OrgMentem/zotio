@@ -87,13 +87,7 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 	if _, err := c.Get(replacePathParam("/items/{itemKey}", "itemKey", itemKey), nil); err != nil {
 		return "", "", err
 	}
-	// replacePathParam encodes the user-supplied key as one Zotero path segment.
-	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", itemKey)
-	children, err := c.Get(childrenPath, nil)
-	if err != nil {
-		return "", "", err
-	}
-	pdfKey, err := findPDFAttachmentKeyForParent(children, itemKey)
+	pdfKey, err := findParentPDFAttachmentKey(c, itemKey)
 	if err != nil {
 		return "", "", err
 	}

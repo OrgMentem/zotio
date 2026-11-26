@@ -109,8 +109,9 @@ func TestReplacePathParamEscapesPathMetacharacters(t *testing.T) {
 func TestItemsGetAndFileEscapePathSegmentsOnce(t *testing.T) {
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests = append(requests, r.RequestURI)
-		switch r.RequestURI {
+		// The escaped path, not RequestURI: paged reads add query parameters.
+		requests = append(requests, r.URL.EscapedPath())
+		switch r.URL.EscapedPath() {
 		case "/users/0/items/A%2FB":
 			_, _ = w.Write([]byte(`{"key":"A/B"}`))
 		case "/users/0/items/PARENT%2FKEY/file/view/url":

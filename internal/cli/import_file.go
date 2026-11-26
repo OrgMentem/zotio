@@ -334,7 +334,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 	// A canceled run or failed journal publication must retain the replay
 	// guard, even when Zotero returned every key.
 	if renderErr == nil && cmd.Context().Err() == nil && session.err == nil && runID != "" && session.pendingPath != "" {
-		if err := os.Remove(session.pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := retireImportIntent(session.pendingPath); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot remove import replay guard %s: %v\n", session.pendingPath, err)
 		}
 	}
@@ -846,16 +846,56 @@ func bibTeXItemFromFields(entryType string, fields map[string]string) map[string
 		item["creators"] = creators
 	}
 	setImportString(item, "date", fields["year"])
-	setImportString(item, "publicationTitle", fields["journal"])
+	container := fields["journal"]
+	if strings.TrimSpace(container) == "" {
+		container = fields["booktitle"]
+	}
+	setImportContainerTitle(item, container)
 	setImportString(item, "DOI", fields["doi"])
 	setImportString(item, "ISBN", fields["isbn"])
 	setImportString(item, "abstractNote", fields["abstract"])
 	setImportString(item, "publisher", fields["publisher"])
-	setImportString(item, "pages", fields["pages"])
-	setImportString(item, "volume", fields["volume"])
-	setImportString(item, "issue", fields["number"])
+	setImportCitationFields(item, fields["volume"], fields["number"], fields["pages"])
 	setImportString(item, "url", fields["url"])
 	return item
+}
+
+// setImportContainerTitle places a source's container title (journal, book,
+// proceedings or site) in the field the item's type defines. A type with no
+// container field keeps it in Extra rather than sending a field Zotero rejects.
+func setImportContainerTitle(item map[string]any, container string) {
+	container = strings.TrimSpace(container)
+	if container == "" {
+		return
+	}
+	switch itemType, _ := item["itemType"].(string); itemType {
+	case "journalArticle", "magazineArticle", "newspaperArticle":
+		item["publicationTitle"] = container
+	case "conferencePaper":
+		item["proceedingsTitle"] = container
+	case "bookSection":
+		item["bookTitle"] = container
+	case "webpage":
+		item["websiteTitle"] = container
+	default:
+		item["extra"] = "Container: " + container
+	}
+}
+
+// setImportCitationFields emits volume, issue and pages only where the item's
+// type defines them.
+func setImportCitationFields(item map[string]any, volume, issue, pages string) {
+	itemType, _ := item["itemType"].(string)
+	wantVolume, wantIssue, wantPages := itemTypeCitationFields(itemType)
+	if wantVolume {
+		setImportString(item, "volume", volume)
+	}
+	if wantIssue {
+		setImportString(item, "issue", issue)
+	}
+	if wantPages {
+		setImportString(item, "pages", pages)
+	}
 }
 
 func bibTeXItemType(entryType string) string {
@@ -875,6 +915,10 @@ func bibTeXItemType(entryType string) string {
 	}
 }
 
+// risContainerKey holds a RIS container title (JO/JF/T2) until the record's
+// type is final, since TY decides which field it belongs in.
+const risContainerKey = "\x00container"
+
 func parseRISItems(content, collection string) ([]map[string]any, error) {
 	items := make([]map[string]any, 0)
 	var current map[string]any
@@ -886,6 +930,10 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 		}
 		if len(creators) > 0 {
 			current["creators"] = creators
+		}
+		if container, ok := current[risContainerKey].(string); ok {
+			delete(current, risContainerKey)
+			setImportContainerTitle(current, container)
 		}
 		addImportCollection(current, collection)
 		items = append(items, current)
@@ -918,8 +966,10 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 			flush()
 			continue
 		}
+		// A tagged line outside a TY..ER record is not a record: only TY
+		// starts one, matching countImportFileRecords.
 		if current == nil {
-			current = map[string]any{"itemType": "document"}
+			continue
 		}
 		switch tag {
 		case "TI", "T1":
@@ -932,7 +982,7 @@ func parseRISItems(content, collection string) ([]map[string]any, error) {
 		case "PY", "Y1":
 			setImportString(current, "date", risDate(value))
 		case "JO", "JF", "T2":
-			lastField = "publicationTitle"
+			lastField = risContainerKey
 		case "DO":
 			setImportString(current, "DOI", value)
 		case "AB", "N2":

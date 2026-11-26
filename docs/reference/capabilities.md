@@ -62,9 +62,9 @@ The machine-readable registry classifies each command by operation, write target
 | `items audit` | read |  |  | `synced_store` | `default`: `synced_store`<br>`verify-files`: `synced_store`, `live_local_api` |
 | `items authors` | read |  |  | `synced_store` |  |
 | `items bibcheck` | read |  |  | `synced_store` | `default`: `synced_store`<br>`citekey`: `synced_store`, `better_bibtex` |
-| `items bibliography` | read |  |  |  | `default`: <br>`manuscript`: `synced_store` |
+| `items bibliography` | read |  |  | `web_api_key` | `default`: `web_api_key`<br>`manuscript`: `synced_store`, `web_api_key` |
 | `items children` | read |  |  |  |  |
-| `items cite` | read |  |  |  |  |
+| `items cite` | read |  |  |  | `default`: <br>`style`: `web_api_key` |
 | `items citekey-conflicts` | read |  |  | `synced_store`, `better_bibtex` |  |
 | `items collections-of` | read |  |  |  |  |
 | `items create` | write | `web_api` |  | `web_api_key` | `default`: `web_api_key`<br>`connector`: `desktop_connector` |

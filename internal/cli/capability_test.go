@@ -441,7 +441,13 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 			"refresh": {"items", "fulltext", probeItemKey, "--refresh"},
 		},
 	},
+	"items cite": {
+		routes: map[string][]string{
+			"style": {"items", "cite", probeItemKey, "--style", "nature"},
+		},
+	},
 	"items bibliography": {
+		args: []string{"items", "bibliography", "--scope", "library"},
 		routes: map[string][]string{
 			"manuscript": {"items", "bibliography", "--manuscript", probeTempFile},
 		},
@@ -690,11 +696,11 @@ func offlinePlaneFailure(out string, err error, planeErr string) (bool, string) 
 	var env preconditionUnmetEnvelope
 	if json.Unmarshal([]byte(out), &env) == nil && env.Kind == "precondition_unmet" {
 		switch env.Precondition {
-		case preconditionLiveLocalAPI, preconditionDesktopConnector:
+		case preconditionLiveLocalAPI, preconditionDesktopConnector, preconditionWebAPIKey:
 			return true, "precondition_unmet " + env.Precondition
 		}
 	}
-	for _, plane := range []string{preconditionLiveLocalAPI, preconditionDesktopConnector} {
+	for _, plane := range []string{preconditionLiveLocalAPI, preconditionDesktopConnector, preconditionWebAPIKey} {
 		if strings.Contains(err.Error(), plane) {
 			return true, "refusal naming " + plane
 		}

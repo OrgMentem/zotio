@@ -73,8 +73,4 @@ func TestRetryBackoffDefaultIsOneSecond(t *testing.T) {
 	if got := retryBackoffBase(); got != time.Second {
 		t.Fatalf("retryBackoffBase default = %v, want 1s", got)
 	}
-	// Also check the raw atomic holds 1e9 nanos.
-	if got := retryBackoffBaseNanos.Load(); got != int64(time.Second) {
-		t.Fatalf("retryBackoffBaseNanos = %d, want %d", got, int64(time.Second))
-	}
 }

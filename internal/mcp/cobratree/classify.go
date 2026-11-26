@@ -86,8 +86,8 @@ var frameworkCommands = map[string]bool{
 	"sql":           true,
 	"version":       true,
 	"which":         true,
-	// tail is a long-running streaming command that writes
-	// to os.Stdout and never returns under --follow; it cannot run in-process
+	// tail is a long-running streaming command that emits through
+	// cmd.OutOrStdout() and never returns under --follow; it cannot run in-process
 	// as a request/response MCP tool, so exclude it from the mirror.
 	"tail": true,
 	// watch runs periodic incremental sync cycles

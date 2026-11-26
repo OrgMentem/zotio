@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -281,6 +282,64 @@ func TestJournalUndoRecordsLinkBeforeInverseRequest(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("requests=%d, want inverse GET and PATCH", requests.Load())
+	}
+}
+
+// The undo link must be durable before the first inverse request: a crash after
+// a PATCH with no link would let a later undo replay over newer edits. When the
+// reservation cannot be written, no request may leave and the op must fail.
+func TestJournalUndoReservationFailureSendsNoInverseRequest(t *testing.T) {
+	dir := journalRecoverySetup(t)
+	original := mutation.JournalEntry{
+		SchemaVersion: mutation.JournalSchemaVersion, RunID: "original", Library: "user",
+		Operation: "items.tags.remove", Mode: "apply",
+		Ops: []mutation.JournalOp{{
+			ID: "remove", Key: "ABCD2345", Kind: "tag_remove", Status: "applied",
+			Changes: []mutation.Change{{Field: "tags", Remove: "x"}},
+		}},
+	}
+	if err := mutation.WriteEntry(dir, original); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	boom := errors.New("disk full")
+	previous := journalUndoWriteEntry
+	t.Cleanup(func() { journalUndoWriteEntry = previous })
+	journalUndoWriteEntry = func(string, mutation.JournalEntry) error { return boom }
+
+	var out bytes.Buffer
+	cmd := newJournalUndoCmd(&rootFlags{yes: true, asJSON: true, maxChanges: -1})
+	cmd.SetArgs([]string{original.RunID})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("undo reported success without its durable link")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want none: the inverse must not be sent without its durable link", requests.Load())
+	}
+	if !strings.Contains(out.String(), `"failed"`) || !strings.Contains(out.String(), boom.Error()) {
+		t.Errorf("output = %s, want the op reported failed with the reservation error", out.String())
+	}
+	entries, listErr := mutation.ListEntries(dir)
+	if listErr != nil {
+		t.Fatalf("list journal: %v", listErr)
+	}
+	for _, entry := range entries {
+		if entry.Undoes != "" {
+			t.Fatalf("entry %s links an undo of %s although its reservation failed", entry.RunID, entry.Undoes)
+		}
+	}
+	if refuseErr := refuseRecordedUndo(original.RunID); refuseErr != nil {
+		t.Fatalf("a failed reservation must leave the run undoable: %v", refuseErr)
 	}
 }
 

@@ -2908,9 +2908,9 @@ func TestAppendEnrichProvenanceSameDayIdempotent(t *testing.T) {
 	existing := "Citation Key: smith2020\n" + enrichProvenanceLine(&p)
 	p.extra = existing
 
-	got := appendEnrichProvenance(&p, &rootFlags{})
+	got, _ := enrichProvenanceExtra(&p)
 	if got != existing {
-		t.Fatalf("appendEnrichProvenance duplicated same-day provenance: got %q, want %q", got, existing)
+		t.Fatalf("enrichProvenanceExtra duplicated same-day provenance: got %q, want %q", got, existing)
 	}
 	if strings.Count(got, enrichProvenanceLine(&p)) != 1 {
 		t.Fatalf("provenance count = %d, want 1 in %q", strings.Count(got, enrichProvenanceLine(&p)), got)
@@ -3983,5 +3983,58 @@ func TestEnrichLookupFailureEnvelopeAndExit(t *testing.T) {
 	err = enrichLookupFailure(&env, nil, lookupErrs)
 	if ExitCode(err) != 13 || env.OK {
 		t.Errorf("partial apply: exit=%d ok=%v, want 13 and ok:false", ExitCode(err), env.OK)
+	}
+}
+
+// A saved PDF is only durable once its directory entry is synced. A failed sync
+// must fail the download and release the name, so the retry is not refused as a
+// clobber of a file whose publication was never confirmed.
+func TestWritePDFResponseSyncsDirectoryAndReleasesNameOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "paper.pdf")
+	old := enrichPDFSyncDir
+	t.Cleanup(func() { enrichPDFSyncDir = old })
+
+	var synced string
+	var presentAtSync bool
+	enrichPDFSyncDir = func(d string) error {
+		synced = d
+		_, err := os.Stat(dest)
+		presentAtSync = err == nil
+		return nil
+	}
+	if err := writePDFResponse(strings.NewReader("%PDF-1.7\nbody"), dest, 1024); err != nil {
+		t.Fatalf("writePDFResponse: %v", err)
+	}
+	if synced != dir || !presentAtSync {
+		t.Fatalf("synced %q (dest present: %v), want %q synced after publication", synced, presentAtSync, dir)
+	}
+
+	other := filepath.Join(dir, "other.pdf")
+	boom := errors.New("fsync failed")
+	enrichPDFSyncDir = func(string) error { return boom }
+	if err := writePDFResponse(strings.NewReader("%PDF-1.7\nbody"), other, 1024); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the directory sync failure", err)
+	}
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Fatalf("unconfirmed destination left behind: %v", err)
+	}
+}
+
+// RFC 6598 shared space (carrier-grade NAT, Tailscale) is not public. The dial
+// gate must refuse it like the --deliver and import guards do.
+func TestRejectNonPublicPDFIPRefusesCGNAT(t *testing.T) {
+	for _, raw := range []string{"100.64.0.1", "100.100.100.100", "100.127.255.254", "::ffff:100.64.0.1"} {
+		if err := rejectNonPublicPDFIP(net.ParseIP(raw)); err == nil {
+			t.Errorf("%s accepted, want refusal", raw)
+		}
+	}
+	for _, raw := range []string{"100.63.255.255", "100.128.0.0", "8.8.8.8"} {
+		if err := rejectNonPublicPDFIP(net.ParseIP(raw)); err != nil {
+			t.Errorf("%s refused: %v", raw, err)
+		}
+	}
+	if err := rejectLocalPDFURL(context.Background(), &url.URL{Scheme: "http", Host: "100.64.0.1"}); err == nil {
+		t.Error("rejectLocalPDFURL accepted a CGNAT literal")
 	}
 }

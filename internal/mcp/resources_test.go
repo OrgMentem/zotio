@@ -238,39 +238,6 @@ func seedStore(t *testing.T) {
 	}
 }
 
-func TestMCPCollectionManifestResource(t *testing.T) {
-	s := qfuqServer(t)
-	seedStore(t)
-	result := rpc(t, s, "resources/read", map[string]any{"uri": "zotero://collections/COL1"})
-	var manifest map[string]any
-	if err := json.Unmarshal([]byte(firstResourceText(t, result)), &manifest); err != nil {
-		t.Fatalf("manifest not JSON: %v", err)
-	}
-	if manifest["item_count"].(float64) != 2 {
-		t.Errorf("item_count = %v, want 2", manifest["item_count"])
-	}
-	keys := collectStrings(manifest["items"], "key")
-	if !keys["TOP1"] || !keys["P2"] {
-		t.Errorf("manifest items = %v, want TOP1 and P2", keys)
-	}
-}
-
-func TestMCPItemBundleResource(t *testing.T) {
-	s := qfuqServer(t)
-	seedStore(t)
-	result := rpc(t, s, "resources/read", map[string]any{"uri": "zotero://items/TOP1"})
-	var bundle map[string]any
-	if err := json.Unmarshal([]byte(firstResourceText(t, result)), &bundle); err != nil {
-		t.Fatalf("bundle not JSON: %v", err)
-	}
-	if bundle["annotation_count"].(float64) != 1 {
-		t.Errorf("annotation_count = %v, want 1 (AN1 via ATT1)", bundle["annotation_count"])
-	}
-	if bundle["item"] == nil {
-		t.Errorf("bundle missing item payload")
-	}
-}
-
 func TestMCPLibraryResourcesFrameLibraryData(t *testing.T) {
 	s := qfuqServer(t)
 	seedStore(t)
@@ -886,5 +853,63 @@ func TestPrepareCitationExportPromptFormatHandling(t *testing.T) {
 				t.Fatalf("rejection message = %q, want supported formats listed", msg)
 			}
 		})
+	}
+}
+
+// rpcError reads a resource and returns the JSON-RPC error object, failing the
+// test when the call unexpectedly succeeds.
+func rpcError(t *testing.T, s *server.MCPServer, uri string) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": map[string]any{"uri": uri}})
+	out, _ := json.Marshal(s.HandleMessage(context.Background(), raw))
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	e, ok := parsed["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("resources/read %s succeeded, want a JSON-RPC error: %s", uri, out)
+	}
+	return e
+}
+
+// A collection whose metadata row is not synchronized still reports its
+// membership: a missing row is not an error, only a missing "collection" field.
+func TestMCPCollectionManifestWithoutMetadataRow(t *testing.T) {
+	s := qfuqServer(t)
+	seedStore(t)
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := db.Upsert("items", "UNSYNC1", json.RawMessage(`{"key":"UNSYNC1","version":1,"data":{"key":"UNSYNC1","itemType":"book","title":"Orphan","collections":["COLMISSING"]}}`)); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	result := rpc(t, s, "resources/read", map[string]any{"uri": "zotero://collections/COLMISSING"})
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(firstResourceText(t, result)), &manifest); err != nil {
+		t.Fatalf("manifest not JSON: %v", err)
+	}
+	if manifest["key"] != "COLMISSING" || manifest["item_count"].(float64) != 1 {
+		t.Errorf("manifest = %v, want key COLMISSING with item_count 1", manifest)
+	}
+	if !collectStrings(manifest["items"], "key")["UNSYNC1"] {
+		t.Errorf("manifest items = %v, want UNSYNC1", manifest["items"])
+	}
+	if _, present := manifest["collection"]; present {
+		t.Errorf("manifest carries a collection payload for a missing row: %v", manifest["collection"])
+	}
+}
+
+// An item key absent from the mirror is a sync-remediation error, not a partial
+// bundle.
+func TestMCPItemBundleMissingItem(t *testing.T) {
+	s := qfuqServer(t)
+	seedStore(t)
+	e := rpcError(t, s, "zotero://items/MISSING")
+	msg, _ := e["message"].(string)
+	if !strings.Contains(msg, "MISSING") || !strings.Contains(msg, "run sync") {
+		t.Errorf("error message = %q, want the key and the sync remediation", msg)
 	}
 }

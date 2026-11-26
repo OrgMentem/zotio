@@ -4,7 +4,7 @@
 
 ## Command-orchestration facade (default)
 
-By default the server exposes three framework tools — `context`, `search`, and `sql` — plus a **command-orchestration facade** (`command_search` and `command_run`) and `workflow_submit`, a validated inline multi-step workflow tool. Agents can read domain context, search/query the synced local store directly, drive the CLI the same way a human would (search for the right command, then run it), and submit whole [workflows](workflows.md) — all on the same trust model as the CLI. Writes applied over MCP are journaled and replayed into the local mirror exactly like CLI writes.
+By default the server exposes three framework tools — `context`, `search`, and `sql` — plus a **command-orchestration facade** (`command_search` and `command_run`) and `workflow_submit`, a validated inline multi-step workflow tool. Agents can read domain context, search/query the synced local store directly, drive the CLI the same way a human would (search for the right command, then run it), and submit whole [workflows](workflows.md) — all on the same trust model as the CLI. Writes applied over MCP that use the mutation envelope are journaled and replayed into the local mirror exactly like CLI writes. Vault writes such as `vault push` run outside that envelope, so they do not appear in `journal list` and `journal undo` cannot recover them.
 
 The rationale and trade-offs are summarized in [Architecture decisions › MCP command surface](../contributing/architecture-decisions.md#mcp-command-surface), with the full records in the repo.
 

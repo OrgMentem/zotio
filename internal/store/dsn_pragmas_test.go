@@ -155,3 +155,45 @@ func TestOpenConvertsAnExistingDeleteModeDatabase(t *testing.T) {
 		t.Errorf("migrated schema version = %d, want %d", version, StoreSchemaVersion)
 	}
 }
+
+// TestReadOnlyOpensEscapeURIPathBytes proves the read-only openers address the
+// same file the writable opener created when the data directory holds bytes
+// SQLite's URI parser treats specially: '#' (fragment) and '%HH' (escape).
+// Unescaped, '#' truncates the path and drops mode=ro and the pragmas, and
+// '%41' decodes to a different directory.
+func TestReadOnlyOpensEscapeURIPathBytes(t *testing.T) {
+	for _, dir := range []string{"C#data", "100%41"} {
+		t.Run(dir, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), dir, "data.db")
+			w, err := OpenWithContext(context.Background(), dbPath)
+			if err != nil {
+				t.Fatalf("open writable: %v", err)
+			}
+			if err := w.Upsert("items", "AAA", []byte(`{"key":"AAA","version":1,"data":{"key":"AAA","itemType":"book"}}`)); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			defer w.Close()
+
+			ro, err := OpenReadOnlyContext(context.Background(), dbPath)
+			if err != nil {
+				t.Fatalf("open read-only: %v", err)
+			}
+			defer ro.Close()
+			if _, err := ro.Get("items", "AAA"); err != nil {
+				t.Fatalf("read-only open did not see the seeded row: %v", err)
+			}
+			if _, err := ro.ExecWrite(context.Background(), `DELETE FROM resources`); err == nil {
+				t.Fatal("read-only open accepted a write: mode=ro was dropped from the DSN")
+			}
+
+			diag, err := OpenReadOnlyDiagnosticContext(context.Background(), dbPath)
+			if err != nil {
+				t.Fatalf("open diagnostic: %v", err)
+			}
+			defer diag.Close()
+			if _, err := diag.Get("items", "AAA"); err != nil {
+				t.Fatalf("diagnostic open did not see the seeded row: %v", err)
+			}
+		})
+	}
+}

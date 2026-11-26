@@ -372,3 +372,114 @@ func TestCreatorsAuditFixPreviewRequiresAllowDestructive(t *testing.T) {
 		t.Fatalf("envelope = %+v, want ok:false destructive_opt_in_required", env)
 	}
 }
+
+func creatorAuditFixApplyFlags() *rootFlags {
+	return &rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1}
+}
+
+func TestCreatorsAuditFixFoldsMultipleAliasesOnSingleItem(t *testing.T) {
+	items := append(creatorAuditFixFixtureItems(),
+		json.RawMessage(`{"key":"M1","version":5,"data":{"key":"M1","version":5,"itemType":"journalArticle","title":"Two aliases","creators":[{"creatorType":"author","firstName":"john","lastName":"smith"},{"creatorType":"author","firstName":"Carol","lastName":"Ng"},{"creatorType":"editor","firstName":"J.","lastName":"Smith"}]}}`))
+	seedCreatorAuditFixStore(t, items)
+	srv := newCreatorAuditFixServer(t, items)
+
+	env, _, err := runCreatorAuditFixCmd(t, creatorAuditFixApplyFlags(), srv.server.URL, "--map", "J. Smith=John Smith")
+	if err != nil {
+		t.Fatalf("creators audit fix apply: %v", err)
+	}
+	var m1 *mutation.Op
+	for i := range env.Plan.Operations {
+		if env.Plan.Operations[i].Key == "M1" {
+			m1 = &env.Plan.Operations[i]
+		}
+	}
+	if m1 == nil {
+		t.Fatalf("planned keys = %v, want M1 included", plannedCreatorKeys(env))
+	}
+	if len(m1.Changes) != 2 {
+		t.Fatalf("M1 changes = %+v, want both alias renames folded into one operation", m1.Changes)
+	}
+	assertCreatorPatch(t, srv.patches["M1"], "5", []map[string]string{
+		{"creatorType": "author", "firstName": "John", "lastName": "Smith"},
+		{"creatorType": "author", "firstName": "Carol", "lastName": "Ng"},
+		{"creatorType": "editor", "firstName": "John", "lastName": "Smith"},
+	})
+}
+
+func TestCreatorsAuditFixSingleNameCreatorKeepsSingleFieldShape(t *testing.T) {
+	items := append(creatorAuditFixFixtureItems(),
+		json.RawMessage(`{"key":"S1","version":6,"data":{"key":"S1","version":6,"itemType":"journalArticle","title":"Single field","creators":[{"creatorType":"author","name":"john smith"}]}}`))
+	seedCreatorAuditFixStore(t, items)
+	srv := newCreatorAuditFixServer(t, items)
+
+	if _, _, err := runCreatorAuditFixCmd(t, creatorAuditFixApplyFlags(), srv.server.URL); err != nil {
+		t.Fatalf("creators audit fix apply: %v", err)
+	}
+	assertCreatorPatch(t, srv.patches["S1"], "6", []map[string]string{
+		{"creatorType": "author", "name": "John Smith"},
+	})
+}
+
+func TestCreatorsAuditFixApplyNoOpWhenWritePlaneDrifted(t *testing.T) {
+	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
+	// The write plane already carries the canonical name for K2.
+	srv := newCreatorAuditFixServer(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K2","version":2,"data":{"key":"K2","version":2,"itemType":"journalArticle","creators":[{"creatorType":"author","firstName":"John","lastName":"Smith"}]}}`),
+	})
+
+	env, _, err := runCreatorAuditFixCmd(t, creatorAuditFixApplyFlags(), srv.server.URL)
+	if err != nil {
+		t.Fatalf("creators audit fix apply: %v", err)
+	}
+	if env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Summary.Applied != 0 {
+		t.Fatalf("result = %+v, want one structured no_op and nothing applied", env.Result)
+	}
+	if len(srv.patches) != 0 {
+		t.Fatalf("patches = %#v, want none for a drifted write plane", srv.patches)
+	}
+}
+
+func TestCreatorsAuditFixRefusesWriteWithoutWritePlaneVersion(t *testing.T) {
+	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
+	srv := newCreatorAuditFixServer(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K2","data":{"key":"K2","itemType":"journalArticle","creators":[{"creatorType":"author","firstName":"john","lastName":"smith"}]}}`),
+	})
+
+	env, out, err := runCreatorAuditFixCmd(t, creatorAuditFixApplyFlags(), srv.server.URL)
+	if err == nil {
+		t.Fatal("creators audit fix applied without a write-plane version, want a refusal")
+	}
+	if env.Result == nil || env.Result.Summary.Failed != 1 || env.Result.Summary.Applied != 0 {
+		t.Fatalf("result = %+v, want one failed item and nothing applied", env.Result)
+	}
+	if !strings.Contains(out, "refusing to write without an If-Unmodified-Since-Version precondition") {
+		t.Fatalf("output = %s, want the version-precondition refusal", out)
+	}
+	if len(srv.patches) != 0 {
+		t.Fatalf("patches = %#v, want none without a precondition", srv.patches)
+	}
+}
+
+func TestCreatorsAuditFixMapParsingErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		maps []string
+		want string
+	}{
+		{"no equals sign", []string{"invalid"}, "alias=canonical"},
+		{"empty alias", []string{"=canonical"}, "non-empty alias"},
+		{"empty canonical", []string{"alias="}, "non-empty alias"},
+		{"identity mapping", []string{"alias=alias"}, "does not rename anything"},
+		{"duplicate alias", []string{"alias=one", "alias=two"}, "duplicate --map alias"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseCreatorAuditFixMaps(tt.maps); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseCreatorAuditFixMaps(%v) err = %v, want it to contain %q", tt.maps, err, tt.want)
+			}
+		})
+	}
+	got, err := parseCreatorAuditFixMaps([]string{" J.  Smith = John Smith "})
+	if err != nil || got["J. Smith"] != "John Smith" {
+		t.Fatalf("whitespace-collapsed map = %v, %v; want J. Smith -> John Smith", got, err)
+	}
+}

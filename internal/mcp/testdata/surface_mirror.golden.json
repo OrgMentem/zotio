@@ -18,7 +18,7 @@
         },
         "limit": {
           "description": "Maximum groups to show with --group-by (0 = no limit) (default: 25)",
-          "type": "number"
+          "type": "integer"
         },
         "type": {
           "description": "Mirrored resource kind to count (items, collections, tags, ...)",
@@ -48,7 +48,7 @@
         },
         "limit": {
           "description": "Maximum number of annotations to export (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "output": {
           "description": "Output file path (default: stdout)",
@@ -86,7 +86,7 @@
         },
         "limit": {
           "description": "Maximum number of annotations to return (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "refresh": {
           "description": "Search live only, skipping the local index (same as --data-source live) (default: false)",
@@ -116,7 +116,7 @@
         },
         "limit": {
           "description": "Maximum number of annotations to return (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "refresh": {
           "description": "Read live only, with no local mirror fallback (same as --data-source live) (default: false)",
@@ -137,7 +137,7 @@
   },
   {
     "name": "attachments_add",
-    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, a run interrupted\nbefore the move is resumed rather than duplicated. Every connector retry cleans\nup empty temporary parents left by earlier runs once they are more than seven\nminutes old, even if the new upload fails. Two limits are worth knowing:\na retry issued before Zotero has registered the hash can still add a second\ncopy, and two simultaneous runs against one item can both add one.\n\nBy default this previews the planned attachment; apply with --yes.",
+    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child that syncs to all devices. Mode \"linked-file\"\nrecords the absolute local path without consuming Zotero storage quota; the\nbytes remain local to this machine.\n\nA stored upload through the Zotero Web API always lands in Zotero's OWN cloud\nstorage and is billed against that storage plan. When Zotero desktop keeps files\nelsewhere (a personal WebDAV server, or file syncing turned off) that upload is\nrefused rather than silently misrouted.\n\n--via connector is the local route for that case. Zotero's connector cannot\nattach to an item that already exists, so this creates a temporary parent and\nthe file in one connector session — putting the bytes in whatever file store the\ndesktop actually uses — then moves the attachment onto your item and trashes the\ntemporary parent. Moving it relocates no bytes: every storage name derives from\nthe attachment's own key, not its parent's. Requires Zotero desktop running.\n\nThe route is opt-in and never chosen by --via auto, because it creates and\ntrashes a temporary item in your library. Pass --allow-zotero-cloud instead to\naccept the cloud upload.\n\nAll routes are retry-safe. Stored files reconcile by filename and registered\nMD5, and linked files by absolute path. The connector route reconciles on\ncontent hash alone, because Zotero names the stored file after the parent item\nrather than after your file: an identical retry no-ops, a run interrupted\nbefore the move is resumed rather than duplicated. Every connector retry cleans\nup empty temporary parents left by earlier runs once they are more than seven\nminutes old, even if the new upload fails. A retry issued before Zotero has\nregistered the hash of an interrupted upload waits for the hash, and stops with\nan error instead of adding a second copy if it does not appear. One limit\nremains: two simultaneous runs against one item can both add a copy.\n\nBy default this previews the planned attachment; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -170,11 +170,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "title": {
           "description": "Attachment title (default: the file name)",
@@ -185,7 +185,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -254,11 +254,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "name": {
           "description": "Collection name",
@@ -273,7 +273,7 @@
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -283,7 +283,7 @@
   },
   {
     "name": "collections_delete",
-    "description": "Permanently delete a collection and its subcollections (items stay in the library)",
+    "description": "Irreversible. Requires --allow-destructive; add --yes to apply. Preview first with --allow-destructive alone.\nWithout --allow-destructive the command is refused, not previewed.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -308,14 +308,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -350,7 +350,7 @@
         },
         "page-size": {
           "description": "Items fetched per API request (max 100); the export always walks every page (default: 100)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -368,11 +368,11 @@
         },
         "limit": {
           "description": "Maximum DOI-bearing collection items to scan (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "top": {
           "description": "Number of citation gaps to show (0 = no limit) (default: 20)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -408,11 +408,11 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "start": {
           "description": "Pagination offset (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -426,11 +426,11 @@
       "properties": {
         "limit": {
           "description": "Maximum number of collections to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "start": {
           "description": "Pagination offset (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -464,18 +464,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "New parent collection key (use root or empty string for top-level)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -494,7 +494,7 @@
         },
         "top": {
           "description": "Number of top venues to show (0 = no limit) (default: 5)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -526,7 +526,7 @@
         },
         "limit": {
           "description": "Maximum number of tags to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "query": {
           "description": "Filter tags by name substring",
@@ -538,7 +538,7 @@
         },
         "start": {
           "description": "Pagination offset (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -552,7 +552,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of collections to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -586,11 +586,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "name": {
           "description": "New collection name",
@@ -605,7 +605,7 @@
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -678,18 +678,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -728,11 +728,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: library)",
@@ -743,7 +743,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -809,22 +809,22 @@
         },
         "limit": {
           "description": "Maximum records to export (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "output": {
           "description": "Output file path (default: stdout)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -851,7 +851,7 @@
         },
         "limit": {
           "description": "Maximum items to export (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "output": {
           "description": "Output data file (required); the manifest is written to \u003coutput\u003e.manifest.json",
@@ -859,7 +859,7 @@
         },
         "page-size": {
           "description": "Items per API page (1-100) (default: 100)",
-          "type": "number"
+          "type": "integer"
         },
         "resume": {
           "description": "Resume an interrupted snapshot from its checkpoint sidecar (default: false)",
@@ -942,14 +942,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -998,11 +998,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "reimport": {
           "description": "Permit stored connector import replay after manually reconciling an earlier run (default: false)",
@@ -1017,7 +1017,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1060,11 +1060,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Destination collection key to add the item to",
@@ -1075,7 +1075,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1098,11 +1098,11 @@
         },
         "limit": {
           "description": "Maximum manifest entries to emit (0 = no limit) (default: 25)",
-          "type": "number"
+          "type": "integer"
         },
         "min-count": {
           "description": "Minimum number of source items citing a DOI (default: 2)",
-          "type": "number"
+          "type": "integer"
         },
         "output": {
           "description": "Path to write the reviewable import manifest",
@@ -1163,11 +1163,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Destination collection key to add the item to",
@@ -1178,7 +1178,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1221,11 +1221,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "reimport": {
           "description": "With --via connector, import again even though an earlier import of this exact file was never confirmed and may have committed (default: false)",
@@ -1240,7 +1240,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1283,11 +1283,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Destination collection key to add the item to",
@@ -1298,7 +1298,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1324,7 +1324,7 @@
         },
         "limit": {
           "description": "Maximum manifest entries to write (0 = no limit) (default: 25)",
-          "type": "number"
+          "type": "integer"
         },
         "output": {
           "description": "Required reviewable import manifest output path",
@@ -1382,11 +1382,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "on-duplicate": {
           "description": "How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create (default: skip)",
@@ -1397,7 +1397,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1440,11 +1440,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Destination collection key to add the item to",
@@ -1455,7 +1455,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1474,7 +1474,7 @@
         },
         "limit": {
           "description": "Scan at most N PDFs when resolving a directory (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -1492,7 +1492,7 @@
         },
         "limit": {
           "description": "Scan at most N PDFs (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "resolve": {
           "description": "Fetch titles for 'new' PDFs from CrossRef, then DataCite (network) (default: false)",
@@ -1561,11 +1561,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Destination collection key to add the item to",
@@ -1576,7 +1576,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1611,14 +1611,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1657,14 +1657,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1705,7 +1705,7 @@
         },
         "limit": {
           "description": "Maximum number of items per category (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "missing-abstract": {
           "description": "List items with no abstract (default: false)",
@@ -1755,7 +1755,7 @@
         },
         "limit": {
           "description": "Maximum number of authors to return (0 = no limit) (default: 20)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
@@ -1849,7 +1849,7 @@
   },
   {
     "name": "items_cite",
-    "description": "Retrieve a formatted bibliographic citation for an item. The Zotero local\nAPI renders citations using your installed CSL styles. For the most common\nstyles (apa, chicago, mla), use the --style flag. For others, pass the\nCSL style ID directly (e.g. \"nature\", \"harvard-cite-them-right\").",
+    "description": "Retrieve a formatted bibliographic citation for an item. The Zotero local\nAPI renders the default citation and the bibtex, ris, and csljson formats.\nAny other --style value is a CSL style ID (for example \"nature\" or\n\"harvard-cite-them-right\"); it is rendered through the Zotero Web API and\nneeds a configured Web API key.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -1928,11 +1928,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "stdin": {
           "description": "Read request body as JSON from stdin (array or single object, as --items) (default: false)",
@@ -1943,7 +1943,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -1982,18 +1982,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "permanent": {
           "description": "Destroy the item and its attachments outright instead of trashing it (irreversible; requires --allow-destructive) (default: false)",
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2042,11 +2042,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "strategy": {
           "description": "Resolution strategy (keep-most-complete) (default: keep-most-complete)",
@@ -2057,7 +2057,7 @@
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2108,15 +2108,15 @@
         },
         "limit": {
           "description": "Maximum items to process per category (0 = no limit) (default: 25)",
-          "type": "number"
+          "type": "integer"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "missing-abstract": {
           "description": "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) (default: false)",
@@ -2167,7 +2167,7 @@
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2290,7 +2290,7 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "query": {
           "description": "Quick search across title, creator, and year; quote multi-word queries",
@@ -2298,7 +2298,7 @@
         },
         "since-version": {
           "description": "Return only items modified after this library version number (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "sort": {
           "description": "Sort field (dateAdded, dateModified, title, creator, type, date, publisher, publicationTitle, journalAbbreviation,...",
@@ -2306,7 +2306,7 @@
         },
         "start": {
           "description": "Pagination offset (zero-based) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "tag": {
           "description": "Filter by tag name",
@@ -2336,7 +2336,7 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
@@ -2382,18 +2382,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "Collection key to add item into",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2443,11 +2443,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "stdin": {
           "description": "Read a JSON object of item fields from stdin (default: false)",
@@ -2462,7 +2462,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2519,18 +2519,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "target": {
           "description": "Target type: item, collection, or attachment (PDF) (default: item)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2545,7 +2545,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of preprints to check (default: 20)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -2575,18 +2575,18 @@
         },
         "limit": {
           "description": "Maximum number of preprints to check (default: 20)",
-          "type": "number"
+          "type": "integer"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2601,7 +2601,7 @@
       "properties": {
         "days": {
           "description": "Return only items added in the last N days (0 = no date filter) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "item-type": {
           "description": "Filter by Zotero item type",
@@ -2609,7 +2609,7 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 20)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -2661,14 +2661,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2687,7 +2687,7 @@
         },
         "limit": {
           "description": "Maximum DOI-bearing items to check (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
@@ -2709,7 +2709,7 @@
         },
         "limit": {
           "description": "Maximum number of similar items to return (0 = no limit) (default: 10)",
-          "type": "number"
+          "type": "integer"
         },
         "min-score": {
           "description": "Minimum composite similarity score to include (default: 0)",
@@ -2727,7 +2727,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "no-annotations": {
           "description": "Include only items without annotation children (default: false)",
@@ -2739,7 +2739,7 @@
         },
         "older-than-days": {
           "description": "Items added more than this many days ago (default: 365)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -2765,11 +2765,11 @@
         },
         "max-annotations": {
           "description": "Max annotations included per item (default: 40)",
-          "type": "number"
+          "type": "integer"
         },
         "max-chars": {
           "description": "Max characters of fulltext per item: the excerpt, or with --focus the matched PDF-text passages (default: 8000)",
-          "type": "number"
+          "type": "integer"
         },
         "no-fulltext": {
           "description": "Omit the fulltext excerpt (abstract + annotations only) (default: false)",
@@ -2837,11 +2837,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "tag": {
           "description": "Tag to add (repeatable)",
@@ -2851,7 +2851,7 @@
           "type": "array"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2912,11 +2912,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "tag": {
           "description": "Tag to remove (repeatable)",
@@ -2926,7 +2926,7 @@
           "type": "array"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -2945,7 +2945,7 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "query": {
           "description": "Quick search query",
@@ -2957,7 +2957,7 @@
         },
         "start": {
           "description": "Pagination offset (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "tag": {
           "description": "Filter by tag",
@@ -2975,11 +2975,11 @@
       "properties": {
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "start": {
           "description": "Pagination offset (zero-based) (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3017,18 +3017,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "older-than": {
           "description": "Only items whose dateModified is older than this age (e.g. 30d, 720h)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3047,7 +3047,7 @@
         },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "suggest": {
           "description": "Suggest collections from local tags, creators, and venue (read-only) (default: false)",
@@ -3055,7 +3055,7 @@
         },
         "suggest-limit": {
           "description": "Maximum collection suggestions per item (requires --suggest) (default: 3)",
-          "type": "number"
+          "type": "integer"
         },
         "suggest-min-score": {
           "description": "Drop collection suggestions scoring below this (requires --suggest) (default: 0.05)",
@@ -3105,11 +3105,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "stdin": {
           "description": "Read request body as JSON from stdin (default: false)",
@@ -3124,7 +3124,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3143,7 +3143,7 @@
         },
         "limit": {
           "description": "Maximum number of venues to return (0 = no limit) (default: 20)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3157,7 +3157,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of runs to return, newest first (0 = no limit) (default: 50)",
-          "type": "number"
+          "type": "integer"
         },
         "workflow": {
           "description": "Filter entries by workflow run ID",
@@ -3209,14 +3209,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3263,7 +3263,7 @@
         },
         "limit": {
           "description": "Max findings listed per kind (0 = all); live checks always cover the whole cohort (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "report": {
           "description": "Write the full JSON health report to this file in addition to stdout/badge output",
@@ -3319,11 +3319,11 @@
         },
         "top": {
           "description": "Number of venues to show (0 = no limit) (default: 10)",
-          "type": "number"
+          "type": "integer"
         },
         "years": {
           "description": "Number of years to show (0 = all years) (default: 20)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3349,7 +3349,7 @@
         },
         "year": {
           "description": "Year to summarize (default: 2026)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3363,7 +3363,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of items to show (0 = no limit) (default: 20)",
-          "type": "number"
+          "type": "integer"
         },
         "tag": {
           "description": "Override the reading queue tag (default: to-read)",
@@ -3405,14 +3405,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3451,14 +3451,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3497,14 +3497,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3632,7 +3632,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of searches to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3666,11 +3666,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "prune": {
           "description": "Remove collection members absent from the saved search (requires --yes to apply) (default: false)",
@@ -3681,7 +3681,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3734,7 +3734,7 @@
         },
         "concurrency": {
           "description": "Number of parallel sync workers (default: 4)",
-          "type": "number"
+          "type": "integer"
         },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
@@ -3762,15 +3762,15 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "max-pages": {
           "description": "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event, saves the resume cursor, and exits 13) (default: 100)",
-          "type": "number"
+          "type": "integer"
         },
         "resources": {
           "description": "Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type)",
@@ -3781,14 +3781,14 @@
         },
         "since-version": {
           "description": "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since-version'. (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "strict": {
           "description": "Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13). (default: false)",
           "type": "boolean"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3837,18 +3837,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "prefer": {
           "description": "Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there. (default: frequency)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3891,18 +3891,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "page-size": {
           "description": "Items to fetch per page while selecting carriers of the tag (1-100) (default: 100)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -3945,7 +3945,7 @@
       "properties": {
         "limit": {
           "description": "Maximum number of tags to return (0 = no limit) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "query": {
           "description": "Filter tags by name substring",
@@ -3957,7 +3957,7 @@
         },
         "start": {
           "description": "Pagination offset (default: 0)",
-          "type": "number"
+          "type": "integer"
         }
       },
       "required": [],
@@ -3999,18 +3999,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "min-items": {
           "description": "Prune automatic tags carried by fewer than this many items (default: 2)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4049,22 +4049,22 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "page-size": {
           "description": "Items to fetch per page while selecting carriers of the tag (1-100) (default: 100)",
-          "type": "number"
+          "type": "integer"
         },
         "to": {
           "description": "New tag name",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4135,18 +4135,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4181,18 +4181,18 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "vault": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4235,11 +4235,11 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "recreate": {
           "description": "Re-create a child note deleted in Zotero (default: false)",
@@ -4250,7 +4250,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4297,15 +4297,15 @@
         },
         "limit": {
           "description": "Maximum items to sync (0 = all) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "scope": {
           "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY; combine arms with AND to intersect, e.g. collection:KEY AND tag:NAME (default: the whole library)",
@@ -4320,7 +4320,7 @@
           "type": "string"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },
@@ -4359,14 +4359,14 @@
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (0 refuses all writes; -1 = default: 500, or 50 under --agent; values below -1 are invalid) (default: -1)",
-          "type": "number"
+          "type": "integer"
         },
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited; negative values are invalid) (default: 0)",
-          "type": "number"
+          "type": "integer"
         },
         "yes": {
-          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "description": "Apply writes instead of previewing them (no prompt exists; mutating commands preview by default) (default: false)",
           "type": "boolean"
         }
       },

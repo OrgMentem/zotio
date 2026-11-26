@@ -100,6 +100,11 @@ func pollDeadline(ctx context.Context) time.Time {
 // the existing connectorForCreate seam.
 var connectorReparentPollInterval = 3 * time.Second
 
+// connectorMD5RegistrationWait bounds how long a retry waits for Zotero to
+// register the MD5 of an interrupted upload before refusing to add a second
+// copy. A var, not a const, so tests need not spend real seconds on it.
+var connectorMD5RegistrationWait = connectorReparentVisibilityTimeout
+
 // connectorChildrenPageSize pages the children reads. Zotero's default page is
 // 25, so an unpaged read silently truncates: an item with many attachments would
 // hide the sibling that makes a retry a no-op.
@@ -208,8 +213,11 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 	// attachment — measured against a real library before this was fixed.
 	//
 	// The content hash is the only identity that survives both. It depends on
-	// Zotero having registered the hash on the write plane, so a retry issued
-	// inside that window can still duplicate; the help text says so.
+	// Zotero having registered the hash on the write plane. A retry inside that
+	// window cannot see a file already moved to the target, but an interrupted
+	// upload still sitting under its temporary parent is bridged by
+	// findResumableTemporaryParent, which waits for the hash rather than
+	// creating a second parent.
 	existing, err := findAttachmentByMD5(webClient, req.ParentKey, req.MD5)
 	if err != nil {
 		return "failed", nil, err
@@ -802,15 +810,15 @@ func findTemporaryParentByMarker(ctx context.Context, flags *rootFlags, nonce, t
 		if err != nil {
 			return "", 0, fmt.Errorf("looking for the temporary parent: %w", err)
 		}
-		var rows []struct {
+		rows, err := decodeListPage[struct {
 			Key  string `json:"key"`
 			Data struct {
 				ItemType     string `json:"itemType"`
 				AbstractNote string `json:"abstractNote"`
 			} `json:"data"`
-		}
-		if err := json.Unmarshal(data, &rows); err != nil {
-			return "", 0, fmt.Errorf("decoding recent items: %w", err)
+		}](data, fmt.Sprintf("recent items at start %d", start))
+		if err != nil {
+			return "", 0, err
 		}
 		for _, row := range rows {
 			if row.Key == targetKey {
@@ -1082,9 +1090,9 @@ func childRows(c *client.Client, parentKey, itemType string) ([]childRow, error)
 			}
 			return nil, fmt.Errorf("listing children of %s: %w", parentKey, err)
 		}
-		var page []childRow
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, fmt.Errorf("parsing children of %s: %w", parentKey, err)
+		page, err := decodeListPage[childRow](data, fmt.Sprintf("children of %s at start %d", parentKey, start))
+		if err != nil {
+			return nil, err
 		}
 		all = append(all, page...)
 		if len(page) < connectorChildrenPageSize {
@@ -1605,13 +1613,65 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 	if err != nil {
 		return "", "", err
 	}
-	var tempKey, attachKey string
-	matched := 0
-	for _, candidate := range candidates {
-		rows, err := attachmentChildRows(c, candidate)
+	if len(candidates) == 0 {
+		return "", "", nil
+	}
+	// A marked parent older than the abandon window cannot belong to a live run.
+	// A younger one may still be mid-upload, which matters below.
+	abandoned, err := markedTemporaryParents(c, targetKey, time.Now().Add(-connectorTempParentAbandonedAfter))
+	if err != nil {
+		return "", "", err
+	}
+	abandonedSet := make(map[string]bool, len(abandoned))
+	for _, key := range abandoned {
+		abandonedSet[key] = true
+	}
+
+	// The MD5 is the only cross-run identity of an uploaded file, and Zotero
+	// registers it after the file lands. A retry inside that window finds a
+	// stored attachment with no hash: it cannot be matched, but creating a
+	// second temporary parent would upload the same bytes again. Wait for the
+	// hash to appear, and refuse rather than duplicate if it does not.
+	deadline := time.Now().Add(connectorMD5RegistrationWait)
+	if routeDeadline, ok := ctx.Deadline(); ok && routeDeadline.Before(deadline) {
+		deadline = routeDeadline
+	}
+	for {
+		tempKey, attachKey, matched, unregistered, err := scanResumableTemporaryParents(c, candidates, abandonedSet, md5hex)
 		if err != nil {
-			return "", "", fmt.Errorf("reading children of resumable temporary parent %s: %w", candidate, err)
+			return "", "", err
 		}
+		// Adopting the wrong orphan would move a file the operator did not name.
+		switch {
+		case matched == 1:
+			return tempKey, attachKey, nil
+		case matched > 1:
+			return "", "", &resumableTemporaryParentAmbiguityError{targetKey: targetKey, matches: matched}
+		case len(unregistered) == 0:
+			return "", "", nil
+		}
+		if time.Now().After(deadline) {
+			return "", "", preconditionErr(fmt.Errorf("temporary parent %s from an earlier upload to %s holds a stored attachment whose MD5 Zotero has not registered yet, "+
+				"so it cannot be told apart from this file; adding now could store a second copy. Wait a minute and retry",
+				strings.Join(unregistered, ", "), targetKey))
+		}
+		if err := sleepWithContext(ctx, connectorReparentPollInterval); err != nil {
+			return "", "", err
+		}
+	}
+}
+
+// scanResumableTemporaryParents reads the attachment children of each marked
+// temporary parent. matched counts stored attachments whose MD5 equals md5hex.
+// unregistered names the not-yet-abandoned parents holding a stored attachment
+// with no MD5 yet: an upload whose identity Zotero has not recorded.
+func scanResumableTemporaryParents(c *client.Client, candidates []string, abandoned map[string]bool, md5hex string) (tempKey, attachKey string, matched int, unregistered []string, err error) {
+	for _, candidate := range candidates {
+		rows, rerr := attachmentChildRows(c, candidate)
+		if rerr != nil {
+			return "", "", 0, nil, fmt.Errorf("reading children of resumable temporary parent %s: %w", candidate, rerr)
+		}
+		pending := false
 		for _, row := range rows {
 			if row.Data.ItemType != "attachment" || row.Data.Deleted != 0 {
 				continue
@@ -1619,18 +1679,19 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 			if strings.EqualFold(row.Data.MD5, md5hex) && zoteroItemKeyRE.MatchString(row.Key) {
 				matched++
 				tempKey, attachKey = candidate, row.Key
+				continue
+			}
+			// Link attachments never carry a hash, so only a stored file's empty
+			// MD5 means "not registered yet".
+			if row.Data.MD5 == "" && row.Data.LinkMode != "linked_url" && row.Data.LinkMode != "linked_file" {
+				pending = true
 			}
 		}
+		if pending && !abandoned[candidate] {
+			unregistered = append(unregistered, candidate)
+		}
 	}
-	// Adopting the wrong orphan would move a file the operator did not name.
-	switch matched {
-	case 0:
-		return "", "", nil
-	case 1:
-		return tempKey, attachKey, nil
-	default:
-		return "", "", &resumableTemporaryParentAmbiguityError{targetKey: targetKey, matches: matched}
-	}
+	return tempKey, attachKey, matched, unregistered, nil
 }
 
 // markedTemporaryParents lists top-level items carrying this route's marker for one
@@ -1653,7 +1714,7 @@ func markedTemporaryParents(c *client.Client, targetKey string, addedBefore time
 		if err != nil {
 			return nil, fmt.Errorf("looking for a resumable temporary parent: %w", err)
 		}
-		var rows []struct {
+		rows, err := decodeListPage[struct {
 			Key  string `json:"key"`
 			Data struct {
 				ItemType     string `json:"itemType"`
@@ -1661,9 +1722,9 @@ func markedTemporaryParents(c *client.Client, targetKey string, addedBefore time
 				Deleted      int    `json:"deleted"`
 				DateAdded    string `json:"dateAdded"`
 			} `json:"data"`
-		}
-		if err := json.Unmarshal(data, &rows); err != nil {
-			return nil, fmt.Errorf("decoding recent items: %w", err)
+		}](data, fmt.Sprintf("recent items at start %d", start))
+		if err != nil {
+			return nil, err
 		}
 		for _, row := range rows {
 			if row.Key == targetKey || row.Data.Deleted != 0 {

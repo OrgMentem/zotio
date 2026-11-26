@@ -26,6 +26,11 @@ func TestBuildAgentDiscoveryContext(t *testing.T) {
 	if len(d.CandidateCommands) != len(whichIndex) {
 		t.Fatalf("candidate_commands len = %d, want %d", len(d.CandidateCommands), len(whichIndex))
 	}
+	for i, e := range whichIndex {
+		if d.CandidateCommands[i] != e.Command {
+			t.Fatalf("candidate_commands[%d] = %q, want %q", i, d.CandidateCommands[i], e.Command)
+		}
+	}
 }
 
 func runAgentContextTestCmd(t *testing.T, args ...string) string {
@@ -139,7 +144,7 @@ func TestCollectAgentCommandsSkipsHiddenAndSelfAndSortsRecursively(t *testing.T)
 	root := &cobra.Command{Use: "zotio"}
 	root.AddCommand(newLeaf("zulu"), newLeaf("bravo"), topHidden, newLeaf("agent-context"), parent)
 
-	got := collectAgentCommands(root)
+	got := collectAgentCommandsIn(root, root, registryByPath(buildCapabilityRegistry(root)))
 
 	var walk func(level string, cmds []agentContextCommand)
 	walk = func(level string, cmds []agentContextCommand) {

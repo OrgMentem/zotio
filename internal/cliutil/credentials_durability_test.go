@@ -122,3 +122,20 @@ func TestRemoveAtomicTempsSkipsDirectoriesAndMissingDir(t *testing.T) {
 		t.Fatalf("RemoveAtomicTemps in a missing dir = %v, want nil", err)
 	}
 }
+
+// A durable write whose directory sync fails with a real storage error must not
+// report success: the rename can still vanish on power loss. Platforms that
+// cannot sync a directory are filtered inside syncDir, so a returned error is
+// always a real failure.
+func TestAtomicWriteDurableFilePropagatesDirectorySyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	boom := errors.New("fsync failed")
+	stubSyncDir(t, func(string) error { return boom })
+	if err := AtomicWriteDurableFile(path, []byte("x"), 0o600, 0o700); !errors.Is(err, boom) {
+		t.Fatalf("AtomicWriteDurableFile with a failing directory sync = %v, want %v", err, boom)
+	}
+	// The non-durable writer never syncs, so it must not be affected.
+	if err := AtomicWriteFile(path, []byte("y"), 0o600, 0o700); err != nil {
+		t.Fatalf("AtomicWriteFile: %v", err)
+	}
+}

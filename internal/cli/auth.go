@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
@@ -198,7 +199,9 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", describeCredentialDestination(destination, cfg.Path, separate))
+			if !flags.quiet {
+				fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", describeCredentialDestination(destination, cfg.Path, separate))
+			}
 			return nil
 		},
 	}
@@ -218,12 +221,23 @@ func describeCredentialDestination(destination, configPath string, separate bool
 }
 
 // readAllContext reads r to EOF but returns ctx.Err() as soon as ctx is done.
-// A blocked read on a pipe or terminal cannot be interrupted portably, so the
-// read keeps running in its own goroutine and its result is discarded; the
-// goroutine ends when the input closes or the process exits. What matters to
-// the caller is that it stops waiting, so the writer lock its command holds is
-// released by the surrounding wrapper instead of staying held behind a stalled
-// producer.
+// A blocked read on a pipe or terminal cannot be interrupted portably, so on
+// cancellation the read is interrupted when the reader allows it and joined,
+// instead of leaving a goroutine (and its buffer) parked until the input
+// closes:
+//
+//   - a reader with SetReadDeadline (an *os.File on a pipe or terminal, which
+//     includes the process stdin) gets an expired deadline, which unblocks the
+//     read without closing a descriptor the process still owns; the deadline
+//     is cleared again once the goroutine has returned;
+//   - any other io.Closer is closed, because a reader the command was handed
+//     (an io.Pipe, a network stream) is the command's to release;
+//   - process stdin and the other standard descriptors are never closed.
+//
+// A reader that supports neither is abandoned: the goroutine ends when the
+// input closes or the process exits. Either way the caller stops waiting, so
+// the writer lock its command holds is released by the surrounding wrapper
+// instead of staying held behind a stalled producer.
 func readAllContext(ctx context.Context, r io.Reader) ([]byte, error) {
 	type result struct {
 		data []byte
@@ -238,8 +252,31 @@ func readAllContext(ctx context.Context, r io.Reader) ([]byte, error) {
 	case res := <-done:
 		return res.data, res.err
 	case <-ctx.Done():
+		if restore, ok := interruptRead(r); ok {
+			<-done
+			restore()
+		}
 		return nil, ctx.Err()
 	}
+}
+
+// interruptRead makes a blocked Read on r return, reporting whether it did.
+// restore undoes any state the interruption left on a reader the process keeps
+// using.
+func interruptRead(r io.Reader) (restore func(), ok bool) {
+	if d, isDeadliner := r.(interface{ SetReadDeadline(time.Time) error }); isDeadliner {
+		if err := d.SetReadDeadline(time.Unix(1, 0)); err == nil {
+			return func() { _ = d.SetReadDeadline(time.Time{}) }, true
+		}
+	}
+	if f, isFile := r.(*os.File); isFile && (f == os.Stdin || f == os.Stdout || f == os.Stderr) {
+		return nil, false
+	}
+	if c, isCloser := r.(io.Closer); isCloser {
+		_ = c.Close()
+		return func() {}, true
+	}
+	return nil, false
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {

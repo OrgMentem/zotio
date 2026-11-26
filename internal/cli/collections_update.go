@@ -24,7 +24,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 		Example: "  zotio collections update ABCD2345 --name \"Reading list\"",
 		Annotations: map[string]string{
 			"zotio:endpoint": "collections.update",
-			"zotio:method":   "PUT",
+			"zotio:method":   "PATCH",
 			"zotio:path":     "/collections/{collectionKey}",
 		},
 		// One key per run. Cobra's default for a command with no subcommands is
@@ -62,14 +62,16 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				Changes:         []mutation.Change{{Field: "collection", Add: body}},
 			}}
 			var applyErr error
-			// Only the PUT itself is the write; routing just this call through
-			// the mutation engine journals it and (best-effort) mirror-replays it.
+			// Only the PATCH itself is the write (PUT would be a full
+			// replace: it needs name and resets an omitted parentCollection);
+			// routing just this call through the mutation engine journals it
+			// and (best-effort) mirror-replays it.
 			ops[0].Apply = func() (string, any, error) {
-				_, _, status, detail, putErr := putWithVersionGuard(c, path, body, version)
-				if putErr != nil {
-					applyErr = putErr
+				status, detail, patchErr := patchWithVersionGuard(c, path, body, version)
+				if patchErr != nil {
+					applyErr = patchErr
 				}
-				return status, detail, putErr
+				return status, detail, patchErr
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "collections.update", ops)
 			return renderMutationResult(cmd, flags, env, preferApplyErr(runErr, applyErr), collectionWriteLine("update", "updated"))
@@ -83,7 +85,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 }
 
 // collectionUpdateBody validates the update flags or stdin payload and returns
-// the fields to PUT.
+// the fields to PATCH.
 func collectionUpdateBody(cmd *cobra.Command, name, parent string, stdinBody bool) (map[string]any, error) {
 	nameSet, parentSet := cmd.Flags().Changed("name"), cmd.Flags().Changed("parent-collection")
 	if stdinBody {

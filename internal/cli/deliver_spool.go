@@ -133,18 +133,33 @@ func (s *deliverSpool) Len() int64 {
 	return s.n
 }
 
+// deliverSyncDir is a seam so tests can observe the directory-sync barrier.
+var deliverSyncDir = cliutil.SyncDir
+
 // commitFile promotes the spool to its final path. The tmp+rename keeps an
 // agent from observing a half-written file, exactly as the buffered
-// implementation did.
+// implementation did. The data is synced before the rename and the parent
+// directory after it, so a delivery reported as successful survives power loss
+// instead of reverting to the previous file or to no file.
 func (s *deliverSpool) commitFile() error {
 	if s.writeErr != nil {
 		return fmt.Errorf("writing deliver tmp: %w", s.writeErr)
 	}
+	if err := s.file.Sync(); err != nil {
+		return fmt.Errorf("syncing deliver tmp: %w", err)
+	}
 	if err := s.file.Close(); err != nil {
 		return fmt.Errorf("closing deliver tmp: %w", err)
 	}
+	// Rename replaces a symlink's own inode instead of writing through it.
+	if _, err := checkAtomicOutputTarget(s.target); err != nil {
+		return err
+	}
 	if err := os.Rename(s.path, s.target); err != nil {
 		return fmt.Errorf("replacing deliver file: %w", err)
+	}
+	if err := deliverSyncDir(filepath.Dir(s.target)); err != nil {
+		return fmt.Errorf("syncing deliver directory: %w", err)
 	}
 	return nil
 }

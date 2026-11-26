@@ -109,3 +109,56 @@ func TestVaultAuditReportsUnparseableStateComment(t *testing.T) {
 		t.Fatalf("missing unparseable_state finding for LIVE: %+v", report.Findings)
 	}
 }
+
+// Stale detection compares the child note's store version with the note's own
+// baseline. The parent item's version is an independent counter and must not
+// drive it.
+func TestVaultAuditStaleComparesChildNoteVersion(t *testing.T) {
+	seedVaultAuditStore(t)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	children := []json.RawMessage{
+		json.RawMessage(`{"key":"NEWER001","version":9,"data":{"key":"NEWER001","itemType":"note","parentItem":"LIVE"}}`),
+		json.RawMessage(`{"key":"SAME0001","version":3,"data":{"key":"SAME0001","itemType":"note","parentItem":"LIVE"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", children); err != nil {
+		t.Fatalf("seed children: %v", err)
+	}
+	_ = db.Close()
+
+	vaultDir := t.TempDir()
+	note := func(noteKey string) string {
+		return "---\nzotero_key: LIVE\n---\n\n## Notes\n" + vaultNotesBegin + "\nnotes\n" + vaultNotesEnd + "\n" +
+			stateComment(pushState{Schema: noteStateSchema, NoteKey: noteKey, NoteVersion: 3}) + "\n"
+	}
+	// Parent LIVE is at version 7 > 3, so the old parent-vs-child comparison
+	// flagged both notes.
+	writeFile(t, filepath.Join(vaultDir, "advanced.md"), note("NEWER001"))
+	writeFile(t, filepath.Join(vaultDir, "current.md"), note("SAME0001"))
+
+	cmd := newVaultCmd(&rootFlags{asJSON: true, maxChanges: -1, allowDestructive: true})
+	cmd.SetArgs([]string{"audit", "--vault", vaultDir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("vault audit: %v", err)
+	}
+	var report struct {
+		Counts   map[string]int `json:"counts"`
+		Findings []Finding      `json:"findings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode audit JSON: %v\n%s", err, out.String())
+	}
+	if report.Counts[vaultAuditIssueStale] != 1 {
+		t.Fatalf("stale count = %d, want 1 (only the note whose child advanced): %+v", report.Counts[vaultAuditIssueStale], report.Findings)
+	}
+	for _, f := range report.Findings {
+		if f.Evidence["issue"] == vaultAuditIssueStale && f.Title != "advanced.md" {
+			t.Fatalf("stale finding on %q, want advanced.md", f.Title)
+		}
+	}
+}

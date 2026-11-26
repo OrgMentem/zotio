@@ -78,3 +78,17 @@ func newImportFilePending(session, identity, format string, records int, target 
 		Format: format, Records: records, Target: target, ContentSHA256: identity,
 	}
 }
+
+// retireImportIntent removes a completed run's replay guard and syncs the
+// directory so a power loss cannot restore it. A process killed before this
+// call still leaves the guard; that is the deliberate fail-closed state, since
+// the connector cannot report whether a session committed.
+func retireImportIntent(path string) error {
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}

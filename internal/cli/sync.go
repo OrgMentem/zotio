@@ -138,10 +138,6 @@ type syncChangeSummary struct {
 	Complete bool
 }
 
-func (s syncChangeSummary) changed() bool {
-	return s.Upserted > 0 || s.Deleted > 0
-}
-
 type syncChangeTrackerContextKey struct{}
 
 // syncChangeTracker accumulates one run's change counts across the

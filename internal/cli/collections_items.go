@@ -43,7 +43,7 @@ func newCollectionsItemsCmd(flags *rootFlags) *cobra.Command {
 			if flagFormat != "" {
 				params["format"] = fmt.Sprintf("%v", flagFormat)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "collections", false, path, params, nil)
+			data, prov, err := resolveListRead(cmd.Context(), c, flags, "collections", false, path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

@@ -141,6 +141,19 @@ func TestCancelledAcquisitionsLeaveNoGoroutines(t *testing.T) {
 	}
 }
 
+func TestCLIArgsFromMCPEmitsSingleTokensAndKeepsEmptyStrings(t *testing.T) {
+	args := map[string]any{
+		"limit": 5.0,
+		"via":   "",
+		"name":  "--deliver=x",
+		"skip":  nil,
+	}
+	want := []string{"--limit=5", "--name=--deliver=x", "--via="}
+	if got := cliArgsFromMCP(args); !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP() = %#v, want %#v", got, want)
+	}
+}
+
 func TestCLIArgsFromMCPRepeatsArrayFlagsAndPreservesFalse(t *testing.T) {
 	args := map[string]any{
 		"enabled": false,
@@ -149,9 +162,9 @@ func TestCLIArgsFromMCPRepeatsArrayFlagsAndPreservesFalse(t *testing.T) {
 
 	want := []string{
 		"--enabled=false",
-		"--tag", "comma,value",
-		"--tag", "two words",
-		"--tag", "",
+		"--tag=comma,value",
+		"--tag=two words",
+		"--tag=",
 	}
 	if got := cliArgsFromMCP(args); !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP() = %#v, want %#v", got, want)

@@ -148,13 +148,23 @@ func journalOp(op Op, item ResultItem) JournalOp {
 	if item.Status == "applied" && op.Revert != nil {
 		revert = op.Revert()
 	}
+	// Record what the write did, not what was planned: an inverse op skips what
+	// the live item no longer holds, and undoing that undo from the plan would
+	// re-apply a change nobody made, over the user's own edit. nil means the
+	// whole plan landed (see Op.Effective).
+	changes := op.Changes
+	if item.Status == "applied" && op.Effective != nil {
+		if landed := op.Effective(); landed != nil {
+			changes = landed
+		}
+	}
 	return JournalOp{
 		ID:          op.ID,
 		Key:         key,
 		Kind:        op.Kind,
 		Status:      item.Status,
 		Destructive: op.Destructive,
-		Changes:     op.Changes,
+		Changes:     changes,
 		Revert:      revert,
 		Reason:      reason,
 	}
@@ -320,6 +330,15 @@ func quarantineTornJournalTail(journalPath string) error {
 	if err != nil {
 		return fmt.Errorf("quarantining torn journal record: %w", err)
 	}
+	// Until the journal is truncated the torn record is still in place and the
+	// next append repeats the whole quarantine, so a failed attempt must not
+	// leave one more copy behind each time.
+	truncated := false
+	defer func() {
+		if !truncated {
+			_ = os.Remove(sidecar.Name())
+		}
+	}()
 	if err := sidecar.Chmod(0o600); err != nil {
 		_ = sidecar.Close()
 		return fmt.Errorf("securing torn journal record: %w", err)
@@ -335,14 +354,21 @@ func quarantineTornJournalTail(journalPath string) error {
 	if err := sidecar.Close(); err != nil {
 		return fmt.Errorf("closing torn journal record: %w", err)
 	}
-	if err := f.Truncate(prefixLen); err != nil {
+	if err := journalTruncate(f, prefixLen); err != nil {
 		return fmt.Errorf("truncating torn journal record: %w", err)
 	}
+	// The record is gone from the journal, so the sidecar is its only copy and
+	// stays even if the sync below fails.
+	truncated = true
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing repaired journal: %w", err)
 	}
 	return nil
 }
+
+// journalTruncate is a seam so tests can fail the truncate that ends a
+// quarantine.
+var journalTruncate = func(f *os.File, size int64) error { return f.Truncate(size) }
 
 // ListEntries reads every recorded run, newest first. A missing journal is not
 // an error: it returns an empty slice.

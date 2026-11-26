@@ -96,32 +96,6 @@ func patchWithWritePlaneVersion(ctx context.Context, m apiMutator, path string, 
 	return "applied", nil, nil
 }
 
-func putWithVersionGuard(c *client.Client, path string, body map[string]any, version int) (json.RawMessage, int, string, any, error) {
-	if c == nil {
-		err := fmt.Errorf("no API client available for %s", path)
-		return nil, 0, "failed", err.Error(), err
-	}
-	if version <= 0 {
-		err := fmt.Errorf("no write-plane version for %s; refusing to write without an If-Unmodified-Since-Version precondition", path)
-		return nil, 0, "failed", err.Error(), err
-	}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-	data, statusCode, err := c.PutWithHeaders(path, body, headers)
-	if err == nil {
-		return data, statusCode, "applied", nil, nil
-	}
-	if !client.IsAmbiguousWriteError(err) {
-		status, detail, classified := classifyWriteError(err)
-		return nil, statusCode, status, detail, classified
-	}
-	current, observedVersion, readErr := readForWriteReconciliation(c.Context(), c, path)
-	status, detail, reconciledErr := classifyReconciledPatch(path, body, current, observedVersion, err, readErr)
-	if reconciledErr == nil {
-		return current, http.StatusOK, status, detail, nil
-	}
-	return nil, statusCode, status, detail, reconciledErr
-}
-
 func deleteWithVersionGuard(c *client.Client, path string, version int) (json.RawMessage, int, string, any, error) {
 	if c == nil {
 		err := fmt.Errorf("no API client available for %s", path)
@@ -219,6 +193,14 @@ func requestedPatchFieldsMatch(current json.RawMessage, body map[string]any) (bo
 	}
 	for field, wanted := range normalizedBody {
 		observed, ok := currentObject[field]
+		if field == "deleted" {
+			// Zotero serialises data.deleted only for trashed items, so a
+			// restored item has no such key; 0/false and absent are the same.
+			if deletedFlagTruthy(wanted) != deletedFlagTruthy(observed) {
+				return false, nil
+			}
+			continue
+		}
 		if !ok {
 			return false, nil
 		}

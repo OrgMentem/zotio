@@ -391,3 +391,157 @@ func TestTailFileSinkRepairsAFailedRollbackOnTheNextEmit(t *testing.T) {
 		t.Fatalf("delivery file keys = %v, want %v", got, want)
 	}
 }
+
+// A kill after the workflow finished but before the owed record was cleared
+// must not run the workflow again. The owed record names its run before the run
+// starts; the completion record of that run lets the next poll clear the
+// record without replaying, and the events that arrived since still run.
+func TestTailCompletedRunIsNotReplayedAfterCrashBeforeAcknowledgement(t *testing.T) {
+	lib := &tailGrowingLibrary{version: 6}
+	lib.add("AAAA0001")
+	api := lib.server(t)
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", api.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.json")
+	var triggered [][]string
+	var runIDs []string
+	crash := true
+	hook := tailTestHookAt(t, filepath.Join(dir, "x.db"), specPath, func(batch tailChangeBatch) error {
+		triggered = append(triggered, batchKeys(batch))
+		runIDs = append(runIDs, batch.RunID)
+		if crash {
+			// The workflow completed and left its completed checkpoint; the
+			// process died before tail could acknowledge it.
+			crash = false
+			// The run also died before it removed its own checkpoint.
+			if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(specPath), workflowRunCheckpoint{
+				SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: batch.RunID,
+			}); err != nil {
+				return err
+			}
+			if err := writeWorkflowRunCheckpoint(workflowRunCompletionPath(specPath, batch.RunID), workflowRunCheckpoint{
+				SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: batch.RunID, Done: true,
+			}); err != nil {
+				return err
+			}
+			return errors.New("killed after the workflow completed")
+		}
+		return nil
+	})
+
+	var out bytes.Buffer
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook); err == nil {
+		t.Fatal("first poll: want the simulated crash")
+	}
+	if len(runIDs) != 1 || runIDs[0] == "" {
+		t.Fatalf("run IDs = %q, want the run ID recorded before the run started", runIDs)
+	}
+	owed, err := loadTailPendingTrigger(hook.pendingPath("items", api.URL))
+	if err != nil || owed.RunID != runIDs[0] {
+		t.Fatalf("owed record = %+v, %v; want it to name run %q", owed, err, runIDs[0])
+	}
+
+	lib.add("BBBB0002")
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	want := [][]string{{"AAAA0001"}, {"BBBB0002"}}
+	if !reflect.DeepEqual(triggered, want) {
+		t.Fatalf("trigger batches = %v, want %v: the completed run's events must not run again", triggered, want)
+	}
+	if runIDs[1] == runIDs[0] {
+		t.Fatalf("the new events reused completed run %q", runIDs[0])
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(specPath)); !os.IsNotExist(err) {
+		t.Fatalf("orphan checkpoint after acknowledgement: %v, want it removed", err)
+	}
+	if _, err := os.Stat(workflowRunCompletionPath(specPath, runIDs[0])); !os.IsNotExist(err) {
+		t.Fatalf("completion record after acknowledgement: %v, want it released", err)
+	}
+	if _, err := os.Stat(hook.pendingPath("items", api.URL)); !os.IsNotExist(err) {
+		t.Fatalf("owed record after the successful run: %v, want it removed", err)
+	}
+}
+
+// The completion record is the only proof the workflow ran. It must stay until
+// the removal of the owed record is durable: when the directory sync fails,
+// power loss could bring the owed record back, and with the completion record
+// gone tail would replay the workflow.
+func TestTailKeepsCompletionRecordWhenOwedRecordRemovalIsNotDurable(t *testing.T) {
+	lib := &tailGrowingLibrary{version: 6}
+	lib.add("AAAA0001")
+	api := lib.server(t)
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", api.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.json")
+	var runID string
+	hook := tailTestHookAt(t, filepath.Join(dir, "x.db"), specPath, func(batch tailChangeBatch) error {
+		runID = batch.RunID
+		return writeWorkflowRunCheckpoint(workflowRunCompletionPath(specPath, batch.RunID), workflowRunCheckpoint{
+			SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: batch.RunID, Done: true,
+		})
+	})
+
+	old := ackSyncDir
+	t.Cleanup(func() { ackSyncDir = old })
+	boom := errors.New("fsync failed")
+	ackSyncDir = func(string) error { return boom }
+
+	var out bytes.Buffer
+	if _, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook); !errors.Is(err, boom) {
+		t.Fatalf("poll = %v, want the directory sync failure", err)
+	}
+	if runID == "" {
+		t.Fatal("the run ID was not recorded before the run")
+	}
+	if done, err := workflowRunCompleted(specPath, runID); err != nil || !done {
+		t.Fatalf("completion record after a failed sync = %v, %v; want it kept", done, err)
+	}
+}
+
+// A trigger that reports success while its run still has an interrupted
+// checkpoint (a preview-mode poll after a failed applied run) must not clear the
+// owed events or erase the checkpoint.
+func TestTailKeepsOwedEventsAndCheckpointOfUnfinishedRun(t *testing.T) {
+	lib := &tailGrowingLibrary{version: 6}
+	lib.add("AAAA0001")
+	api := lib.server(t)
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", api.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.json")
+	hook := tailTestHookAt(t, filepath.Join(dir, "x.db"), specPath, func(batch tailChangeBatch) error {
+		// The earlier applied run failed and left its checkpoint; this
+		// preview-style run succeeds without a completion record.
+		return writeWorkflowRunCheckpoint(workflowRunCheckpointPath(specPath), workflowRunCheckpoint{
+			SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: batch.RunID,
+		})
+	})
+	var out bytes.Buffer
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook)
+	if !errors.Is(err, errWorkflowRunIncomplete) {
+		t.Fatalf("poll = %v, want errWorkflowRunIncomplete", err)
+	}
+	owed, loadErr := loadTailPendingTrigger(hook.pendingPath("items", api.URL))
+	if loadErr != nil || len(owed.Events) != 1 {
+		t.Fatalf("owed record = %+v, %v; want the event kept", owed, loadErr)
+	}
+	if _, statErr := os.Stat(workflowRunCheckpointPath(specPath)); statErr != nil {
+		t.Fatalf("checkpoint removed: %v", statErr)
+	}
+}

@@ -246,6 +246,7 @@ func Load(configPath string) (*Config, error) {
 	// Base URL override (used by tests and mock servers)
 	if v := os.Getenv("ZOTERO_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+		cfg.markEnvOverride("BaseURL")
 	}
 	// Web API user ID override (used to route writes without a keys/current lookup)
 	if v := os.Getenv("ZOTERO_USER_ID"); v != "" {
@@ -568,6 +569,9 @@ func (c *Config) configForSave() Config {
 		}
 		if c.envOverrides["UserID"] {
 			out.UserID = c.fileConfig.UserID
+		}
+		if c.envOverrides["BaseURL"] {
+			out.BaseURL = c.fileConfig.BaseURL
 		}
 	}
 	out.envOverrides = nil

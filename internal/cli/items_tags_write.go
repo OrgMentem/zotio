@@ -283,14 +283,36 @@ func tagMutationChanges(currentTags []map[string]any, tagNames []string, add, au
 			changes = append(changes, change)
 		}
 		if !add && present && (!automatic || itemHasTagType(currentTags, tagName, 1)) {
-			change := mutation.Change{Field: "tags", Remove: tagName}
-			if automatic {
-				change.TagType = 1
+			// One change per removed (name, type) pair: nextTagsForRemove drops
+			// every copy of the name (or only the automatic one), and undo must
+			// re-add each copy with the type it had, not as a manual tag.
+			for _, tagType := range removedTagTypes(currentTags, tagName, automatic) {
+				changes = append(changes, mutation.Change{Field: "tags", Remove: tagName, TagType: tagType})
 			}
-			changes = append(changes, change)
 		}
 	}
 	return changes
+}
+
+// removedTagTypes lists, in order of first appearance, the distinct types of
+// the tag objects a removal of tagName drops from currentTags.
+func removedTagTypes(currentTags []map[string]any, tagName string, automaticOnly bool) []int {
+	var types []int
+	seen := map[int]bool{}
+	for _, tagObj := range currentTags {
+		if name, _ := tagObj["tag"].(string); name != tagName {
+			continue
+		}
+		tagType := itemTagType(tagObj)
+		if automaticOnly && tagType != 1 {
+			continue
+		}
+		if !seen[tagType] {
+			seen[tagType] = true
+			types = append(types, tagType)
+		}
+	}
+	return types
 }
 
 func itemHasTag(tags []map[string]any, tagName string) bool {

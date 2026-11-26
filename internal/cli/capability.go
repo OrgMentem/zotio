@@ -154,11 +154,24 @@ var capabilityOverrides = map[string]capabilityEntry{
 			{Via: "live", Requires: []string{preconditionLiveLocalAPI}},
 		},
 	},
-	// Manuscript selection reads synced citation keys; scope selection does not.
+	// Every bibliography render is a server-side CSL render through the Web API
+	// (webAPIReadClient), so the key is unconditional. Manuscript selection
+	// additionally reads synced citation keys; scope selection does not.
 	"items bibliography": {
+		Requires: []string{preconditionWebAPIKey},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionWebAPIKey}},
+			{Via: "manuscript", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+		},
+	},
+	// `items cite` renders the default and bibtex/ris/csljson formats through
+	// the local API; an explicit custom --style is a server-side CSL render
+	// through the Web API and needs the key. Only the style route claims it,
+	// so the keyless routes stay keyless.
+	"items cite": {
 		Routes: []capabilityRoute{
 			{Via: "default"},
-			{Via: "manuscript", Requires: []string{preconditionSyncedStore}},
+			{Via: "style", Requires: []string{preconditionWebAPIKey}},
 		},
 	},
 	// Reads backed by the synced local store.
@@ -217,11 +230,15 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// Schema templates are built from global endpoints served by the local API.
 	"schema new-item-template": {Requires: []string{preconditionLiveLocalAPI}},
 	// Mutations: auto-routed to the Web API, so they need a key.
-	"items create":             connectorCreateCapability,
-	"items update":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"items move":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"items add-to-collection":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"items restore":            {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items create":            connectorCreateCapability,
+	"items update":            {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items move":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items add-to-collection": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items restore":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// Destructive is a path-level upper bound: `items delete` is reversible
+	// trash by default and irreversible only with --permanent, but the registry
+	// has no per-flag model, so the command path stays destructive. The runtime
+	// gate in the command is the precise one.
 	"items delete":             {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"items trash empty":        {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
@@ -302,8 +319,13 @@ var capabilityOverrides = map[string]capabilityEntry{
 		},
 	},
 	// vault push writes to Zotero; pull and sync write the local vault.
-	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
+	"vault push": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"vault pull": {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
+	// vault resolve is direction-dependent: --keep-vault and --keep-remote
+	// discard a side (destructive); --recreate is not; --keep-remote writes only
+	// the local vault. The registry has no per-flag model, so the entry is the
+	// conservative upper bound (web_api, destructive); the command's own gates
+	// are the precise ones.
 	"vault resolve": {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"vault sync":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionSyncedStore}},
 	// Local-state writers mutate the installation (credentials, named flag
@@ -638,6 +660,9 @@ A destructive command makes a change "journal undo" cannot reverse. A command
 that writes local files you name (an export, a report, a baseline) keeps
 operation read and reports write_target local_file.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if commandQuiet(cmd) {
+				return nil
+			}
 			data, err := json.Marshal(buildCapabilityRegistry(rootCmd))
 			if err != nil {
 				return err

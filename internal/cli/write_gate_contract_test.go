@@ -32,7 +32,7 @@ func TestCrudAppliesAreJournaled(t *testing.T) {
 		{name: "items update", operation: "items.update", build: newItemsUpdateCmd, args: []string{"K1", "--title", "Updated"}, method: http.MethodPatch},
 		// items delete trashes (PATCH deleted=1); --permanent is the DELETE form.
 		{name: "items delete", operation: "items.delete", build: newItemsDeleteCmd, args: []string{"K2"}, method: http.MethodPatch},
-		{name: "collections update", operation: "collections.update", build: newCollectionsUpdateCmd, args: []string{"K3", "--name", "Updated"}, method: http.MethodPut},
+		{name: "collections update", operation: "collections.update", build: newCollectionsUpdateCmd, args: []string{"K3", "--name", "Updated"}, method: http.MethodPatch},
 	}
 
 	for _, tc := range cases {

@@ -423,6 +423,9 @@ func refuseRecordedUndo(runID string) error {
 	return nil
 }
 
+// journalUndoWriteEntry is a seam so tests can fail the reservation write.
+var journalUndoWriteEntry = mutation.WriteEntry
+
 // reserveJournalUndo writes the link before the first inverse request. Even a
 // crash before its outcome arrives must prevent a later replay over new edits.
 func reserveJournalUndo(runID, undoes string) error {
@@ -430,7 +433,7 @@ func reserveJournalUndo(runID, undoes string) error {
 	if err != nil {
 		return err
 	}
-	return mutation.WriteEntry(dir, mutation.JournalEntry{
+	return journalUndoWriteEntry(dir, mutation.JournalEntry{
 		SchemaVersion: mutation.JournalSchemaVersion,
 		RunID:         runID, Undoes: undoes, Operation: "journal.undo",
 		Library: currentJournalLibrary(), Mode: "apply", Timestamp: time.Now().UTC(),
@@ -670,16 +673,19 @@ func itemIsTrashed(body json.RawMessage) bool {
 	if json.Unmarshal(body, &item) != nil {
 		return true
 	}
-	truthy := func(v any) bool {
-		switch t := v.(type) {
-		case bool:
-			return t
-		case float64:
-			return t != 0
-		}
-		return false
+	return deletedFlagTruthy(item.Deleted) || deletedFlagTruthy(item.Data.Deleted)
+}
+
+// deletedFlagTruthy reads Zotero's deleted flag, which is absent, a bool or a
+// number depending on the plane and the item state.
+func deletedFlagTruthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
 	}
-	return truthy(item.Deleted) || truthy(item.Data.Deleted)
+	return false
 }
 
 // applyUndoMembership re-reads the item and applies the inverse changes in a

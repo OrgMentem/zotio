@@ -780,10 +780,13 @@ func TestItemsFindReportsAFailedNearLookup(t *testing.T) {
 	}
 }
 
+// requireMachineFormatsNoteNearRows covers the shared near-match contract:
 // --plain and --csv build no envelope (wantsJSONEnvelope refuses them), so
-// before this the near rows reached neither stream: empty stdout, empty
-// stderr, exit 0. The code comment claimed the envelope carried them.
-func TestItemsFindNotesNearTitlesItCannotShow(t *testing.T) {
+// without a stderr note the near rows reach neither stream. The prose block must
+// stay off stdout, stderr must name the rows and the --json escape, and --quiet
+// is exempt because there the exit code is the whole answer.
+func requireMachineFormatsNoteNearRows(t *testing.T, seed func(*testing.T), selectorArgs []string, proseMarkers []string, wantNote string, checkQuiet bool) {
+	t.Helper()
 	for _, tt := range []struct {
 		name  string
 		flags *rootFlags
@@ -792,12 +795,14 @@ func TestItemsFindNotesNearTitlesItCannotShow(t *testing.T) {
 		{name: "csv", flags: &rootFlags{csv: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			seedNearTitleStore(t)
-			stdout, stderr := runItemsFind(t, tt.flags, "--title", "Attention Is All You Nead")
-			if strings.Contains(stdout, "near titles") || strings.Contains(stdout, "ATTN") {
-				t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
+			seed(t)
+			stdout, stderr := runItemsFind(t, tt.flags, selectorArgs...)
+			for _, marker := range proseMarkers {
+				if strings.Contains(stdout, marker) {
+					t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
+				}
 			}
-			if !strings.Contains(stderr, "near titles found") {
+			if !strings.Contains(stderr, wantNote) {
 				t.Fatalf("%s drops the rows silently; stderr = %q", tt.name, stderr)
 			}
 			if !strings.Contains(stderr, "--json") {
@@ -805,6 +810,24 @@ func TestItemsFindNotesNearTitlesItCannotShow(t *testing.T) {
 			}
 		})
 	}
+	if !checkQuiet {
+		return
+	}
+	t.Run("quiet", func(t *testing.T) {
+		seed(t)
+		stdout, stderr := runItemsFind(t, &rootFlags{quiet: true}, selectorArgs...)
+		if strings.Contains(stderr, wantNote) {
+			t.Fatalf("--quiet asked for silence but got a note: %q", stderr)
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("--quiet stdout = %q, want nothing", stdout)
+		}
+	})
+}
+
+func TestItemsFindNotesNearTitlesItCannotShow(t *testing.T) {
+	requireMachineFormatsNoteNearRows(t, func(t *testing.T) { seedNearTitleStore(t) },
+		[]string{"--title", "Attention Is All You Nead"}, []string{"near titles", "ATTN"}, "near titles found", false)
 }
 
 // --quiet is exempt: there the exit code is the whole answer, and the envelope
@@ -1091,43 +1114,9 @@ func TestItemsFindDoesNotClaimACiteKeyHitFromAnotherSelector(t *testing.T) {
 	}
 }
 
-// --plain and --csv build no envelope (wantsJSONEnvelope refuses them), so
-// without the note the rows reach neither stream: empty stdout, empty stderr,
-// exit 0. --quiet is exempt, because there the exit code is the whole answer.
 func TestItemsFindNotesNearCiteKeysItCannotShow(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		flags *rootFlags
-	}{
-		{name: "plain", flags: &rootFlags{plain: true}},
-		{name: "csv", flags: &rootFlags{csv: true}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			seedNearCiteKeyStore(t)
-			stdout, stderr := runItemsFind(t, tt.flags, "--citekey", "smith2032")
-			if strings.Contains(stdout, "near citekeys") || strings.Contains(stdout, "smith2023") {
-				t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
-			}
-			if !strings.Contains(stderr, "near citekey found") {
-				t.Fatalf("%s drops the rows silently; stderr = %q", tt.name, stderr)
-			}
-			if !strings.Contains(stderr, "--json") {
-				t.Fatalf("%s note does not say how to see them; stderr = %q", tt.name, stderr)
-			}
-		})
-	}
-
-	t.Run("quiet", func(t *testing.T) {
-		seedNearCiteKeyStore(t)
-		stdout, stderr := runItemsFind(t, &rootFlags{quiet: true}, "--citekey", "smith2032")
-		if strings.Contains(stderr, "near citekey found") {
-			t.Fatalf("--quiet asked for silence but got a note: %q", stderr)
-		}
-		// --quiet prints nothing: the exit code is the whole answer.
-		if strings.TrimSpace(stdout) != "" {
-			t.Fatalf("--quiet stdout = %q, want nothing", stdout)
-		}
-	})
+	requireMachineFormatsNoteNearRows(t, seedNearCiteKeyStore,
+		[]string{"--citekey", "smith2032"}, []string{"near citekeys", "smith2023"}, "near citekey found", true)
 }
 
 // The block a human reads. It leads with the key they will paste into the

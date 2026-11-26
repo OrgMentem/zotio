@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -236,15 +237,14 @@ func fetchDOIItemWithCache(ctx context.Context, httpClient *http.Client, doi str
 }
 
 // isRegistryRecordAbsent reports whether an error means "this registry has no
-// such DOI" rather than "this registry could not answer". getCappedProviderJSON
-// renders a non-2xx as "HTTP <code>: <body>", so the status is matched on that
-// rendering; 404 and 410 are the two ways a DOI registry says it has no record.
+// such DOI" rather than "this registry could not answer". It reads the typed
+// status of an httpStatusError, never the message text: the message carries an
+// untrusted provider body, so a 500 whose body mentions "HTTP 404" must not
+// read as an absent record. 404 and 410 are the two ways a DOI registry says
+// it has no record.
 func isRegistryRecordAbsent(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "HTTP 404") || strings.Contains(msg, "HTTP 410")
+	var status *httpStatusError
+	return errors.As(err, &status) && (status.Code == http.StatusNotFound || status.Code == http.StatusGone)
 }
 
 func fetchCrossRefWork(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (crossRefWork, error) {

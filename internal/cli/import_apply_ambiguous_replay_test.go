@@ -273,7 +273,7 @@ func TestImportApplyLinkedFileAttachIsIdempotent(t *testing.T) {
 			var mu sync.Mutex
 			var posts int
 			tokens := map[string]bool{}
-			var children []map[string]any
+			children := []map[string]any{}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()

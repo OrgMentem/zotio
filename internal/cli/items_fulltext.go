@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
+	"zotio/internal/client"
 	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
@@ -73,15 +75,9 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 			if _, err := c.Get(replacePathParam("/items/{itemKey}", "itemKey", itemKey), nil); err != nil {
 				return classifyAPIError(err, flags)
 			}
-			childrenPath := "/items/{itemKey}/children"
-			childrenPath = replacePathParam(childrenPath, "itemKey", itemKey)
-			children, err := c.Get(childrenPath, nil)
+			pdfKey, err := findParentPDFAttachmentKey(c, itemKey)
 			if err != nil {
 				return classifyAPIError(err, flags)
-			}
-			pdfKey, err := findPDFAttachmentKeyForParent(children, itemKey)
-			if err != nil {
-				return err
 			}
 			if pdfKey == "" {
 				return notFoundErr(fmt.Errorf("no PDF attachment found for item %s", itemKey))
@@ -135,6 +131,41 @@ func localPDFFulltext(ctx context.Context, db *store.Store, itemKey string) (jso
 		return nil, false, err
 	}
 	return ft, ok, nil
+}
+
+// findParentPDFAttachmentKey pages the children of parentKey and returns the
+// first PDF attachment key, or "" when none exists. Zotero serves 25 children
+// by default, so a single unpaged read would miss a PDF that sits past the
+// first page of a heavily annotated or multi-attachment item.
+func findParentPDFAttachmentKey(c *client.Client, parentKey string) (string, error) {
+	// replacePathParam encodes the user-supplied key as one Zotero path segment.
+	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", parentKey)
+	var prev []byte
+	for start := 0; ; start += connectorChildrenPageSize {
+		data, err := c.Get(childrenPath, map[string]string{
+			"limit": strconv.Itoa(connectorChildrenPageSize),
+			"start": strconv.Itoa(start),
+		})
+		if err != nil {
+			return "", err
+		}
+		if repeatedPage(prev, data) {
+			return "", apiErr(fmt.Errorf("pagination for the children of %s ignored start %d", parentKey, start))
+		}
+		prev = data
+		page, err := decodeListPage[json.RawMessage](data, fmt.Sprintf("children of %s at start %d", parentKey, start))
+		if err != nil {
+			return "", err
+		}
+		if len(page) > 0 {
+			if key, err := findPDFAttachmentKeyForParent(data, parentKey); err != nil || key != "" {
+				return key, err
+			}
+		}
+		if len(page) < connectorChildrenPageSize {
+			return "", nil
+		}
+	}
 }
 
 func findPDFAttachmentKey(data json.RawMessage) (string, error) {

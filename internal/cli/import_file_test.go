@@ -594,19 +594,22 @@ func TestImportFile_RIS(t *testing.T) {
 		if got := items[0]["url"]; got != "https://example.com/jour" {
 			t.Fatalf("JOUR url = %v, want %v", got, "https://example.com/jour")
 		}
-		// JF maps to publicationTitle (book path).
-		if got := items[1]["publicationTitle"]; got != "Book Series" {
-			t.Fatalf("BOOK publicationTitle (JF) = %v, want %v", got, "Book Series")
+		// A book has no container field, so JF is kept in Extra.
+		if _, bad := items[1]["publicationTitle"]; bad {
+			t.Fatalf("BOOK must not carry publicationTitle: %v", items[1])
+		}
+		if got := items[1]["extra"]; got != "Container: Book Series" {
+			t.Fatalf("BOOK extra (JF) = %v, want %v", got, "Container: Book Series")
 		}
 		if got := items[1]["abstractNote"]; got != "Book abstract via N2" {
 			t.Fatalf("BOOK abstractNote (N2) = %v, want %v", got, "Book abstract via N2")
 		}
-		// T2 maps to publicationTitle (conference/chapter path).
-		if got := items[2]["publicationTitle"]; got != "Proceedings of Testing" {
-			t.Fatalf("CONF publicationTitle (T2) = %v, want %v", got, "Proceedings of Testing")
+		// T2 maps to the type's own container field.
+		if got := items[2]["proceedingsTitle"]; got != "Proceedings of Testing" {
+			t.Fatalf("CONF proceedingsTitle (T2) = %v, want %v", got, "Proceedings of Testing")
 		}
-		if got := items[3]["publicationTitle"]; got != "Container Book" {
-			t.Fatalf("CHAP publicationTitle (T2) = %v, want %v", got, "Container Book")
+		if got := items[3]["bookTitle"]; got != "Container Book" {
+			t.Fatalf("CHAP bookTitle (T2) = %v, want %v", got, "Container Book")
 		}
 		// Title tags TI and T1 both map.
 		if got := items[0]["title"]; got != "Journal Article Title" {
@@ -1006,5 +1009,70 @@ func risCollections(t *testing.T, item map[string]any) []string {
 	default:
 		t.Fatalf("collections type = %T, want []string or []any", raw)
 		return nil
+	}
+}
+
+func TestImportFileTypeAwareFields(t *testing.T) {
+	// Allowed non-core fields per item type (Zotero 7 schema subset).
+	allowed := map[string]map[string]bool{
+		"journalArticle":  {"publicationTitle": true, "volume": true, "issue": true, "pages": true},
+		"bookSection":     {"bookTitle": true, "volume": true, "pages": true},
+		"conferencePaper": {"proceedingsTitle": true, "volume": true, "issue": true, "pages": true},
+		"book":            {"volume": true},
+		"document":        {},
+	}
+	forbidden := []string{"publicationTitle", "bookTitle", "proceedingsTitle", "volume", "issue", "pages"}
+	check := func(t *testing.T, item map[string]any) {
+		t.Helper()
+		itemType, _ := item["itemType"].(string)
+		for _, field := range forbidden {
+			if _, ok := item[field]; ok && !allowed[itemType][field] {
+				t.Fatalf("%s item carries undefined field %q: %v", itemType, field, item)
+			}
+		}
+	}
+	items, err := parseRISItems("TY  - CHAP\nT2  - Container Book\nER  -\nTY  - CONF\nT2  - Proc\nER  -\nTY  - BOOK\nJF  - Series\nER  -\n", "")
+	if err != nil || len(items) != 3 {
+		t.Fatalf("parseRISItems = %v, %v", items, err)
+	}
+	for _, item := range items {
+		check(t, item)
+	}
+	if items[0]["bookTitle"] != "Container Book" || items[1]["proceedingsTitle"] != "Proc" {
+		t.Fatalf("container fields = %v", items)
+	}
+	for entryType, fields := range map[string]map[string]string{
+		"techreport":    {"number": "7", "pages": "1-2", "volume": "3", "journal": "J"},
+		"book":          {"number": "7", "pages": "1-2", "volume": "3"},
+		"inproceedings": {"booktitle": "Proc", "number": "7", "pages": "1-2"},
+		"incollection":  {"booktitle": "Book", "number": "7", "pages": "1-2"},
+	} {
+		item := bibTeXItemFromFields(entryType, fields)
+		check(t, item)
+		switch entryType {
+		case "inproceedings":
+			if item["proceedingsTitle"] != "Proc" || item["issue"] != "7" {
+				t.Fatalf("inproceedings = %v", item)
+			}
+		case "incollection":
+			if item["bookTitle"] != "Book" {
+				t.Fatalf("incollection = %v", item)
+			}
+		}
+	}
+}
+
+func TestParseRISItemsIgnoresTagsOutsideRecords(t *testing.T) {
+	for _, ris := range []string{
+		"TI  - Orphan\nTY  - JOUR\nTI  - Real\nER  -\n",
+		"TY  - JOUR\nTI  - Real\nER  -\nTI  - Orphan\n",
+	} {
+		items, err := parseRISItems(ris, "")
+		if err != nil || len(items) != 1 || items[0]["itemType"] != "journalArticle" || items[0]["title"] != "Real" {
+			t.Fatalf("parseRISItems(%q) = %v, %v", ris, items, err)
+		}
+		if got := countImportFileRecords(ris, "ris"); got != len(items) {
+			t.Fatalf("countImportFileRecords = %d, want %d", got, len(items))
+		}
 	}
 }

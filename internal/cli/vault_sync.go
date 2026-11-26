@@ -481,6 +481,12 @@ var errVaultFileBusy = errors.New("vault file changed during sync")
 var vaultBeforeFinalCompare func()
 
 func atomicReplace(path string, expected, newContent []byte) error {
+	// Rename replaces a symlink's own inode instead of writing through it, so
+	// a note kept as a link would silently become a regular file. Refuse it
+	// like export does.
+	if _, err := checkAtomicOutputTarget(path); err != nil {
+		return err
+	}
 	mode := os.FileMode(0o644)
 	if fi, statErr := os.Stat(path); statErr == nil {
 		mode = fi.Mode().Perm()
@@ -511,6 +517,9 @@ func atomicReplace(path string, expected, newContent []byte) error {
 	// This is deliberately the last possible check before rename. Another process
 	// can still replace the path after it, because the filesystem has no portable
 	// compare-and-swap rename.
+	if _, err := checkAtomicOutputTarget(path); err != nil {
+		return err
+	}
 	cur, err := readVaultFile(path)
 	if err != nil {
 		return err

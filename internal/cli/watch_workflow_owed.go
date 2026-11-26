@@ -32,6 +32,11 @@ type watchWorkflowOwed struct {
 	// committed that nobody counted. It owes a run exactly as a counted change
 	// does.
 	Unknown bool
+	// RunID names the workflow run the obligation is handed to. It is recorded
+	// before the run starts, so a crash after the run completed but before the
+	// marker was cleared can find the completed run and clear the marker
+	// instead of running the workflow again.
+	RunID string
 }
 
 func (o watchWorkflowOwed) changed() bool {
@@ -50,10 +55,11 @@ func (o *watchWorkflowOwed) add(summary *syncChangeSummary) {
 // starts and cleared when the cycle's counts are recorded, so finding it set
 // under the next cycle's lock proves a process stopped inside a cycle.
 type watchWorkflowOwedFile struct {
-	Upserted int  `json:"upserted"`
-	Deleted  int  `json:"deleted"`
-	Unknown  bool `json:"unknown,omitempty"`
-	InFlight bool `json:"in_flight,omitempty"`
+	Upserted int    `json:"upserted"`
+	Deleted  int    `json:"deleted"`
+	Unknown  bool   `json:"unknown,omitempty"`
+	InFlight bool   `json:"in_flight,omitempty"`
+	RunID    string `json:"run_id,omitempty"`
 }
 
 // watchWorkflowOwedPath keys the marker by mirror and workflow spec, so two
@@ -90,6 +96,7 @@ func loadWatchWorkflowOwed(path string) (watchWorkflowOwed, error) {
 		Upserted: file.Upserted,
 		Deleted:  file.Deleted,
 		Unknown:  file.Unknown || file.InFlight,
+		RunID:    file.RunID,
 	}, nil
 }
 
@@ -103,10 +110,15 @@ func saveWatchWorkflowOwed(cmd *cobra.Command, flags *rootFlags, path string, ow
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("removing %s: %w", path, err)
 			}
+			// Clearing the marker acknowledges a completed run: it must be
+			// durable before the caller releases the run's completion record.
+			if err := ackSyncDir(filepath.Dir(path)); err != nil {
+				return fmt.Errorf("syncing the directory of %s: %w", path, err)
+			}
 			return nil
 		}
 		data, err := json.Marshal(watchWorkflowOwedFile{
-			Upserted: owed.Upserted, Deleted: owed.Deleted, Unknown: owed.Unknown, InFlight: inFlight,
+			Upserted: owed.Upserted, Deleted: owed.Deleted, Unknown: owed.Unknown, InFlight: inFlight, RunID: owed.RunID,
 		})
 		if err != nil {
 			return err

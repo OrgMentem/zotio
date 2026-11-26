@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1582,5 +1583,233 @@ func TestWorkflowRunExampleSpecIsRunnable(t *testing.T) {
 	}
 	if enrichSteps == 0 {
 		t.Fatal("the Example spec has no items enrich step to check")
+	}
+}
+
+// A kill between "every step succeeded" and "the checkpoint is gone" must not
+// let the next invocation start over: completion is recorded durably first, and
+// a retry recognizes the finished run instead of repeating its steps.
+func TestRunWorkflowRunFileRetryAfterCompletionRepeatsNoStep(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The state a standalone run leaves when it is killed after it recorded
+	// completion and before it deleted the checkpoint.
+	if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(path), workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-1", SpecSHA256: workflowRunSpecSHA256(raw), Done: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true})
+	if !errors.Is(err, errWorkflowRunAlreadyCompleted) {
+		t.Fatalf("retry error = %v, want errWorkflowRunAlreadyCompleted", err)
+	}
+	if len(retry.Steps) != 0 || retry.RunID != "run-1" {
+		t.Fatalf("retry report = %+v, want no executed step and the finished run's ID", retry)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint after the retry: %v, want it cleared", err)
+	}
+
+	// Once cleared, the next invocation is a genuinely new run.
+	fresh, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true})
+	if err != nil || len(fresh.Steps) != 1 || fresh.RunID == "" || fresh.RunID == "run-1" {
+		t.Fatalf("fresh run = %+v, %v; want a new run that executes its step", fresh, err)
+	}
+}
+
+// A caller-owned run keeps its completion record until its caller releases it.
+// No other invocation of the same spec may remove it, or the caller would
+// replay the workflow after a crash.
+func TestRunWorkflowRunFileCompletionRecordIsOwnedByItsRunID(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{
+		Vars:  map[string]string{"TARGET": "a"},
+		Steps: []workflowRunStepSpec{{Args: []string{"version"}}},
+	})
+	first, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, RunID: "run-1"})
+	if err != nil || !first.OK || first.RunID != "run-1" {
+		t.Fatalf("first run = %+v, %v; want success under run-1", first, err)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint after a completed caller-owned run: %v, want it removed", err)
+	}
+	if done, err := workflowRunCompleted(path, "run-1"); err != nil || !done {
+		t.Fatalf("workflowRunCompleted(run-1) = %v, %v; want true", done, err)
+	}
+	if other, err := workflowRunCompleted(path, "run-2"); err != nil || other {
+		t.Fatalf("workflowRunCompleted(run-2) = %v, %v; want false", other, err)
+	}
+
+	// Standalone runs, with and without changed inputs, and another caller's
+	// run all leave run-1's record alone.
+	for _, inv := range []workflowRunInvocation{
+		{Yes: true},
+		{Yes: true, VarOverrides: []string{"TARGET=b"}},
+		{Yes: true, RunID: "run-2"},
+	} {
+		report, err := runWorkflowRunFile(context.Background(), path, inv)
+		if err != nil || len(report.Steps) != 1 {
+			t.Fatalf("run %+v = %+v, %v; want a new run", inv, report, err)
+		}
+		if done, err := workflowRunCompleted(path, "run-1"); err != nil || !done {
+			t.Fatalf("after run %+v run-1's completion record is gone (%v, %v)", inv, done, err)
+		}
+	}
+
+	// Acknowledging one run keeps the others.
+	if releaseErr, err := acknowledgeWorkflowRun(path, "run-1", func() error { return nil }); err != nil || releaseErr != nil {
+		t.Fatalf("acknowledge run-1: release=%v err=%v", releaseErr, err)
+	}
+	if done, _ := workflowRunCompleted(path, "run-1"); done {
+		t.Fatal("run-1's completion record survived its release")
+	}
+	if done, _ := workflowRunCompleted(path, "run-2"); !done {
+		t.Fatal("releasing run-1 removed run-2's completion record")
+	}
+}
+
+// A caller-owned run never touches a standalone run's completed checkpoint,
+// which is that run's only retry guard.
+func TestRunWorkflowRunFileCallerRefusesStandaloneCompletedCheckpoint(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"version"}}}})
+	if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(path), workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "standalone", Done: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, RunID: "run-1"}); err == nil || !strings.Contains(err.Error(), "awaits acknowledgement") {
+		t.Fatalf("error = %v, want the completed checkpoint refused", err)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); err != nil {
+		t.Fatalf("the standalone completed checkpoint was removed: %v", err)
+	}
+}
+
+// Retiring a run goes in a fixed order, each step before the next: the run's
+// orphaned checkpoint (a crash after the completion record, before the
+// checkpoint removal), then the caller's marker, then the completion record. A
+// failure stops the sequence with the completion record intact, so a retry
+// finishes it without replaying the workflow and no orphan outlives the marker.
+func TestAcknowledgeWorkflowRunOrder(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"version"}}}})
+	checkpointPath := workflowRunCheckpointPath(path)
+	recordPath := workflowRunCompletionPath(path, "run-1")
+	seed := func(checkpointRun string) {
+		t.Helper()
+		if err := writeWorkflowRunCheckpoint(recordPath, workflowRunCheckpoint{SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-1", Done: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeWorkflowRunCheckpoint(checkpointPath, workflowRunCheckpoint{SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: checkpointRun}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+
+	seed("run-1")
+	var syncedDirs []string
+	oldSync := workflowRunSyncDir
+	t.Cleanup(func() { workflowRunSyncDir = oldSync })
+	workflowRunSyncDir = func(dir string) error { syncedDirs = append(syncedDirs, dir); return nil }
+	boom := errors.New("marker not durable")
+	_, err := acknowledgeWorkflowRun(path, "run-1", func() error {
+		if exists(checkpointPath) {
+			t.Error("the orphan checkpoint still exists when the marker is cleared")
+		}
+		if !exists(recordPath) {
+			t.Error("the completion record is gone before the marker is cleared")
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the marker failure", err)
+	}
+	if len(syncedDirs) != 1 || syncedDirs[0] != filepath.Dir(checkpointPath) {
+		t.Fatalf("synced dirs = %v, want the checkpoint directory synced after its removal", syncedDirs)
+	}
+	if !exists(recordPath) {
+		t.Fatal("a failed marker clear removed the completion record")
+	}
+
+	// A checkpoint sync failure stops before the marker is touched.
+	seed("run-1")
+	workflowRunSyncDir = func(string) error { return boom }
+	cleared := false
+	if _, err := acknowledgeWorkflowRun(path, "run-1", func() error { cleared = true; return nil }); !errors.Is(err, boom) || cleared {
+		t.Fatalf("err = %v, marker cleared = %v; want the sync failure before any marker clear", err, cleared)
+	}
+	if !exists(recordPath) {
+		t.Fatal("completion record removed after a failed checkpoint sync")
+	}
+
+	// A retry completes the sequence; another run's checkpoint is never removed.
+	workflowRunSyncDir = func(string) error { return nil }
+	seed("other-run")
+	if releaseErr, err := acknowledgeWorkflowRun(path, "run-1", func() error { return nil }); err != nil || releaseErr != nil {
+		t.Fatalf("acknowledge: release=%v err=%v", releaseErr, err)
+	}
+	if !exists(checkpointPath) {
+		t.Fatal("another run's checkpoint was removed")
+	}
+	if exists(recordPath) {
+		t.Fatal("completion record survived a completed acknowledgement")
+	}
+}
+
+// The run's own unlink of its checkpoint is not directory-synced, so the
+// acknowledgement must sync the directory even when the file is already gone,
+// before it clears the marker.
+func TestAcknowledgeWorkflowRunSyncsCheckpointDirWhenFileIsGone(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"version"}}}})
+	if err := writeWorkflowRunCheckpoint(workflowRunCompletionPath(path, "run-1"), workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-1", Done: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldSync := workflowRunSyncDir
+	t.Cleanup(func() { workflowRunSyncDir = oldSync })
+	var synced []string
+	workflowRunSyncDir = func(dir string) error { synced = append(synced, dir); return nil }
+	markerSawSync := false
+	if _, err := acknowledgeWorkflowRun(path, "run-1", func() error { markerSawSync = len(synced) == 1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !markerSawSync || synced[0] != filepath.Dir(workflowRunCheckpointPath(path)) {
+		t.Fatalf("synced %v, marker saw sync = %v; want the checkpoint directory synced before the marker clear", synced, markerSawSync)
+	}
+
+	boom := errors.New("fsync failed")
+	workflowRunSyncDir = func(string) error { return boom }
+	cleared := false
+	if _, err := acknowledgeWorkflowRun(path, "run-1", func() error { cleared = true; return nil }); !errors.Is(err, boom) || cleared {
+		t.Fatalf("err = %v, marker cleared = %v; want the sync failure before the marker clear", err, cleared)
+	}
+}
+
+// A matching checkpoint without a completion record is an unfinished applied
+// run, for example one a preview-mode trigger meets after a failed apply. It
+// must survive with its marker instead of being erased as an orphan.
+func TestAcknowledgeWorkflowRunKeepsUnfinishedRun(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{{Args: []string{"version"}}}})
+	checkpointPath := workflowRunCheckpointPath(path)
+	if err := writeWorkflowRunCheckpoint(checkpointPath, workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion, RunID: "run-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleared := false
+	_, err := acknowledgeWorkflowRun(path, "run-1", func() error { cleared = true; return nil })
+	if !errors.Is(err, errWorkflowRunIncomplete) {
+		t.Fatalf("err = %v, want errWorkflowRunIncomplete", err)
+	}
+	if cleared {
+		t.Fatal("the marker was cleared for an unfinished run")
+	}
+	if _, statErr := os.Stat(checkpointPath); statErr != nil {
+		t.Fatalf("the unfinished run's checkpoint was removed: %v", statErr)
 	}
 }
